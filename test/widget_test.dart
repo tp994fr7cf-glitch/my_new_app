@@ -30,5 +30,11 @@ void main() {
     await tester.drag(find.byType(Scrollable), const Offset(0, -500));
     await tester.pumpAndSettle();
     expect(find.text('受講を開始する'), findsOneWidget);
+    await tester.tap(find.text('受講を開始する'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('動画視聴'), findsOneWidget);
+    expect(find.text('動画プレイヤー仮UI'), findsOneWidget);
+    expect(find.text('レッスン1: Flutterで作るアプリの全体像'), findsOneWidget);
   });
 }

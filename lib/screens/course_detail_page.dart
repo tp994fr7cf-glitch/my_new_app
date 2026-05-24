@@ -1,11 +1,28 @@
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
+import 'video_lesson_page.dart';
 
 class CourseDetailPage extends StatelessWidget {
   const CourseDetailPage({super.key, required this.course});
 
   final Course course;
+
+  void _openLesson(
+    BuildContext context, {
+    required CourseLesson lesson,
+    required int lessonNumber,
+  }) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => VideoLessonPage(
+          course: course,
+          lesson: lesson,
+          lessonNumber: lessonNumber,
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -78,15 +95,29 @@ class CourseDetailPage extends StatelessWidget {
             const _SectionTitle('レッスン一覧'),
             const SizedBox(height: 8),
             for (final entry in course.lessons.indexed)
-              _LessonTile(index: entry.$1 + 1, lesson: entry.$2),
+              _LessonTile(
+                index: entry.$1 + 1,
+                lesson: entry.$2,
+                onTap: () {
+                  _openLesson(
+                    context,
+                    lesson: entry.$2,
+                    lessonNumber: entry.$1 + 1,
+                  );
+                },
+              ),
             const SizedBox(height: 24),
             FilledButton.icon(
               onPressed: () {
-                ScaffoldMessenger.of(context)
-                  ..clearSnackBars()
-                  ..showSnackBar(
-                    const SnackBar(content: Text('動画視聴画面は次のステップで作ります。')),
-                  );
+                if (course.lessons.isEmpty) {
+                  return;
+                }
+
+                _openLesson(
+                  context,
+                  lesson: course.lessons.first,
+                  lessonNumber: 1,
+                );
               },
               icon: const Icon(Icons.play_arrow),
               label: const Text('受講を開始する'),
@@ -133,15 +164,21 @@ class _BulletText extends StatelessWidget {
 }
 
 class _LessonTile extends StatelessWidget {
-  const _LessonTile({required this.index, required this.lesson});
+  const _LessonTile({
+    required this.index,
+    required this.lesson,
+    required this.onTap,
+  });
 
   final int index;
   final CourseLesson lesson;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     return Card(
       child: ListTile(
+        onTap: onTap,
         leading: CircleAvatar(child: Text('$index')),
         title: Text(lesson.title),
         subtitle: Text(lesson.duration),
