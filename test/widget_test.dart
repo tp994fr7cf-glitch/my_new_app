@@ -1,8 +1,10 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:my_new_app/main.dart';
 import 'package:my_new_app/screens/course_list_page.dart';
+import 'package:my_new_app/screens/teacher_application_page.dart';
 
 void main() {
   testWidgets('Firebase setup guidance is shown when setup fails', (
@@ -37,4 +39,32 @@ void main() {
     expect(find.text('動画プレイヤー仮UI'), findsOneWidget);
     expect(find.text('レッスン1: Flutterで作るアプリの全体像'), findsOneWidget);
   });
+
+  testWidgets('Teacher application page shows application action', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherApplicationPage(
+          user: _FakeUser(),
+          profile: const {
+            'roles': ['student'],
+            'teacherApplicationStatus': 'none',
+          },
+        ),
+      ),
+    );
+
+    expect(find.text('先生申請'), findsOneWidget);
+    expect(find.text('未申請'), findsOneWidget);
+    expect(find.text('先生として申請する'), findsOneWidget);
+  });
+}
+
+class _FakeUser implements User {
+  @override
+  String get uid => 'test-user';
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

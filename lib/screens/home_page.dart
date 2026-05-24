@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import 'course_list_page.dart';
 import 'role_switch_page.dart';
+import 'teacher_application_page.dart';
 
 class HomePage extends StatelessWidget {
   const HomePage({super.key, required this.user, required this.profile});
@@ -110,9 +111,16 @@ class StudentHomePage extends StatelessWidget {
           _HomeActionCard(
             icon: Icons.school,
             title: '先生として活動したい場合',
-            description: '先生申請の状況確認や、申請画面への入口をここに追加していきます。',
+            description: '先生申請の状況確認や、申請の送信ができます。',
             buttonText: '申請状況を見る',
-            onPressed: () {},
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) =>
+                      TeacherApplicationPage(user: user, profile: profile),
+                ),
+              );
+            },
           ),
         ],
       ),
