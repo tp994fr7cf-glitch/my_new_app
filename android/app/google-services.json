@@ -1,0 +1,54 @@
+{
+  "project_info": {
+    "project_number": "848607557123",
+    "project_id": "my-new-app-naona-20260523",
+    "storage_bucket": "my-new-app-naona-20260523.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:848607557123:android:a258123325cd9371a78036",
+        "android_client_info": {
+          "package_name": "com.example.my_new_app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "848607557123-g30pgdcju2i13pirjksmjdsh6bag6n09.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.my_new_app",
+            "certificate_hash": "47e3ce872df668ab9843b65009d7a5c5de361823"
+          }
+        },
+        {
+          "client_id": "848607557123-4so07l6aq6ss8nbil142m9ufe6npolfc.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDxLnlQCq9WMPr7CAgpptuffggUHBJwcH0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "848607557123-4so07l6aq6ss8nbil142m9ufe6npolfc.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "848607557123-ep6vgeegut56sv1ftrnav5dv4ojejip7.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.myNewApp"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

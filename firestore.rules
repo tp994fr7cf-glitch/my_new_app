@@ -1,0 +1,51 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function validApplicationStatus(status) {
+      return status in ['none', 'pending'];
+    }
+
+    function hasInitialStudentRole() {
+      return request.resource.data.roles is list
+        && request.resource.data.roles.size() == 1
+        && request.resource.data.roles[0] == 'student'
+        && request.resource.data.activeRole == 'student';
+    }
+
+    function keepsExistingRoles() {
+      return request.resource.data.roles == resource.data.roles
+        && request.resource.data.activeRole in resource.data.roles;
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.role == 'student'
+        && hasInitialStudentRole()
+        && request.resource.data.status == 'active'
+        && request.resource.data.intendedUse in ['learner', 'teacher', 'organization']
+        && validApplicationStatus(request.resource.data.teacherApplicationStatus)
+        && validApplicationStatus(request.resource.data.organizationApplicationStatus);
+
+      allow update: if isOwner(userId)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.role == resource.data.role
+        && keepsExistingRoles()
+        && request.resource.data.status == resource.data.status
+        && request.resource.data.intendedUse in ['learner', 'teacher', 'organization']
+        && validApplicationStatus(request.resource.data.teacherApplicationStatus)
+        && validApplicationStatus(request.resource.data.organizationApplicationStatus);
+    }
+  }
+}
