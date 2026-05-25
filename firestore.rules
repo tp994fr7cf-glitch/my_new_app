@@ -10,8 +10,27 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == userId;
     }
 
-    function validApplicationStatus(status) {
+    function validWritableApplicationStatus(status) {
       return status in ['none', 'pending'];
+    }
+
+    function validExistingOrWritableApplicationStatus(newStatus, oldStatus) {
+      return newStatus == oldStatus
+        || newStatus in ['none', 'pending']
+        || (newStatus == null && oldStatus == null);
+    }
+
+    function validTeacherApplicationStatusUpdate() {
+      return request.resource.data.teacherApplicationStatus == resource.data.teacherApplicationStatus
+        || ((resource.data.teacherApplicationStatus == null
+          || resource.data.teacherApplicationStatus == 'none'
+          || resource.data.teacherApplicationStatus == 'pending')
+          && request.resource.data.teacherApplicationStatus == 'pending');
+    }
+
+    function validTeacherApplication() {
+      return !request.resource.data.keys().hasAny(['teacherApplication'])
+        || request.resource.data.teacherApplication is map;
     }
 
     function hasInitialStudentRole() {
@@ -26,6 +45,26 @@ service cloud.firestore {
         && request.resource.data.activeRole in resource.data.roles;
     }
 
+    function onlyUpdatesTeacherApplicationFields() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'intendedUse',
+        'teacherApplicationStatus',
+        'teacherApplication',
+        'updatedAt'
+      ]);
+    }
+
+    function canSubmitTeacherApplication(userId) {
+      return isOwner(userId)
+        && onlyUpdatesTeacherApplicationFields()
+        && request.resource.data.intendedUse == 'teacher'
+        && request.resource.data.teacherApplicationStatus == 'pending'
+        && (resource.data.teacherApplicationStatus == null
+          || resource.data.teacherApplicationStatus == 'none'
+          || resource.data.teacherApplicationStatus == 'pending')
+        && validTeacherApplication();
+    }
+
     match /users/{userId} {
       allow read: if isOwner(userId);
 
@@ -35,8 +74,9 @@ service cloud.firestore {
         && hasInitialStudentRole()
         && request.resource.data.status == 'active'
         && request.resource.data.intendedUse in ['learner', 'teacher', 'organization']
-        && validApplicationStatus(request.resource.data.teacherApplicationStatus)
-        && validApplicationStatus(request.resource.data.organizationApplicationStatus);
+        && validWritableApplicationStatus(request.resource.data.teacherApplicationStatus)
+        && validWritableApplicationStatus(request.resource.data.organizationApplicationStatus)
+        && validTeacherApplication();
 
       allow update: if isOwner(userId)
         && request.resource.data.uid == resource.data.uid
@@ -44,8 +84,23 @@ service cloud.firestore {
         && keepsExistingRoles()
         && request.resource.data.status == resource.data.status
         && request.resource.data.intendedUse in ['learner', 'teacher', 'organization']
-        && validApplicationStatus(request.resource.data.teacherApplicationStatus)
-        && validApplicationStatus(request.resource.data.organizationApplicationStatus);
+        && validTeacherApplicationStatusUpdate()
+        && validExistingOrWritableApplicationStatus(
+          request.resource.data.organizationApplicationStatus,
+          resource.data.organizationApplicationStatus
+        )
+        && validTeacherApplication();
+
+      allow update: if canSubmitTeacherApplication(userId);
+    }
+
+    match /courses/{courseId} {
+      allow read: if signedIn() && resource.data.status == 'published';
+
+      allow create, update: if signedIn()
+        && courseId.matches('sample-.*')
+        && request.resource.data.status == 'published'
+        && request.resource.data.source == 'developmentSeed';
     }
   }
 }

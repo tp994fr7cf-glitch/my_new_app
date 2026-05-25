@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:my_new_app/main.dart';
+import 'package:my_new_app/models/course.dart';
 import 'package:my_new_app/screens/course_list_page.dart';
 import 'package:my_new_app/screens/teacher_application_page.dart';
 
@@ -19,7 +20,12 @@ void main() {
   testWidgets('Course list opens course detail page', (
     WidgetTester tester,
   ) async {
-    await tester.pumpWidget(const MaterialApp(home: CourseListPage()));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CourseListPage(courseStream: Stream.value(sampleCourses)),
+      ),
+    );
+    await tester.pumpAndSettle();
 
     await tester.tap(find.text('Flutter入門: はじめてのスマホアプリ開発'));
     await tester.pumpAndSettle();
@@ -51,6 +57,10 @@ void main() {
             'roles': ['student'],
             'teacherApplicationStatus': 'none',
           },
+          profileStream: Stream.value(const {
+            'roles': ['student'],
+            'teacherApplicationStatus': 'none',
+          }),
         ),
       ),
     );
@@ -59,11 +69,102 @@ void main() {
     expect(find.text('未申請'), findsOneWidget);
     expect(find.text('先生として申請する'), findsOneWidget);
   });
+
+  testWidgets('Teacher application page opens input form when not applied', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherApplicationPage(
+          user: _FakeUser(),
+          profile: const {
+            'roles': ['student'],
+            'teacherApplicationStatus': 'none',
+          },
+          profileStream: Stream.value(const {
+            'roles': ['student'],
+            'teacherApplicationStatus': 'none',
+          }),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('先生として申請する'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('先生情報の入力'), findsOneWidget);
+    expect(find.text('氏名または表示名'), findsOneWidget);
+    await tester.drag(find.byType(ListView), const Offset(0, -500));
+    await tester.pumpAndSettle();
+    expect(find.text('申請を送信する'), findsOneWidget);
+  });
+
+  testWidgets('Teacher application page reflects latest profile stream', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherApplicationPage(
+          user: _FakeUser(),
+          profile: const {
+            'roles': ['student'],
+            'teacherApplicationStatus': 'none',
+          },
+          profileStream: Stream.value(const {
+            'roles': ['student'],
+            'teacherApplicationStatus': 'pending',
+          }),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('申請中'), findsOneWidget);
+    await tester.tap(find.text('先生として申請する'));
+    await tester.pump();
+
+    expect(find.text('申請中です'), findsOneWidget);
+    expect(find.text('先生情報の入力'), findsNothing);
+  });
+
+  testWidgets('Teacher application page keeps rejected status', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherApplicationPage(
+          user: _FakeUser(),
+          profile: const {
+            'roles': ['student'],
+            'teacherApplicationStatus': 'none',
+          },
+          profileStream: Stream.value(const {
+            'roles': ['student'],
+            'teacherApplicationStatus': 'rejected',
+          }),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('申請却下'), findsOneWidget);
+    await tester.tap(find.text('先生として申請する'));
+    await tester.pump();
+
+    expect(find.text('申請は却下されました'), findsOneWidget);
+    expect(find.text('先生情報の入力'), findsNothing);
+  });
 }
 
 class _FakeUser implements User {
   @override
   String get uid => 'test-user';
+
+  @override
+  String? get displayName => 'テストユーザー';
+
+  @override
+  String? get email => 'test@example.com';
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);

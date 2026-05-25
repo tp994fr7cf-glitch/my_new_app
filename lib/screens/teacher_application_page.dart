@@ -1,32 +1,41 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+
+import 'teacher_application_form_page.dart';
 
 class TeacherApplicationPage extends StatefulWidget {
   const TeacherApplicationPage({
     super.key,
     required this.user,
     required this.profile,
+    this.profileStream,
   });
 
   final User user;
   final Map<String, dynamic> profile;
+  final Stream<Map<String, dynamic>>? profileStream;
 
   @override
   State<TeacherApplicationPage> createState() => _TeacherApplicationPageState();
 }
 
 class _TeacherApplicationPageState extends State<TeacherApplicationPage> {
-  bool _isSaving = false;
   String? _message;
+  Map<String, dynamic>? _latestProfile;
+  Timer? _messageTimer;
+
+  Map<String, dynamic> get _profile => _latestProfile ?? widget.profile;
 
   String get _status {
-    final status = widget.profile['teacherApplicationStatus'];
+    final status = _profile['teacherApplicationStatus'];
     return status is String ? status : 'none';
   }
 
   List<String> get _roles {
-    final roles = widget.profile['roles'];
+    final roles = _profile['roles'];
     if (roles is List) {
       return roles.whereType<String>().toList();
     }
@@ -34,15 +43,14 @@ class _TeacherApplicationPageState extends State<TeacherApplicationPage> {
   }
 
   bool get _canApply {
-    return !_roles.contains('teacher') &&
-        (_status == 'none' || _status == 'rejected');
+    return !_roles.contains('teacher') && _status == 'none';
   }
 
   String _statusLabel(String status) {
     return switch (status) {
       'pending' => '申請中',
       'approved' => '承認済み',
-      'rejected' => '却下',
+      'rejected' => '申請却下',
       'none' => '未申請',
       _ => '未申請',
     };
@@ -55,57 +63,85 @@ class _TeacherApplicationPageState extends State<TeacherApplicationPage> {
 
     return switch (status) {
       'pending' => '先生申請を受け付けました。運営者の確認が終わるまでお待ちください。',
-      'rejected' => '前回の申請は承認されませんでした。内容を見直して再申請できます。',
+      'rejected' => '前回の申請は承認されませんでした。現在は再申請できません。',
       _ => '講座を投稿するには、先生としての申請が必要です。',
     };
   }
 
-  Future<void> _submitApplication() async {
+  void _showTemporaryMessage(String message) {
+    _messageTimer?.cancel();
+
     setState(() {
-      _isSaving = true;
-      _message = null;
+      _message = message;
     });
 
-    try {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(widget.user.uid)
-          .update({
-            'intendedUse': 'teacher',
-            'teacherApplicationStatus': 'pending',
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
+    _messageTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) {
+        setState(() {
+          if (_message == message) {
+            _message = null;
+          }
+        });
+      }
+    });
+  }
 
-      if (mounted) {
-        setState(() {
-          widget.profile['intendedUse'] = 'teacher';
-          widget.profile['teacherApplicationStatus'] = 'pending';
-          _message = '先生申請を送信しました。運営者の承認をお待ちください。';
-        });
-      }
-    } on FirebaseException catch (error) {
-      if (mounted) {
-        setState(() {
-          _message = error.message ?? '先生申請の送信に失敗しました。';
-        });
-      }
-    } catch (error) {
-      if (mounted) {
-        setState(() {
-          _message = 'エラーが発生しました: $error';
-        });
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isSaving = false;
-        });
-      }
+  void _handleApplicationButtonPressed(BuildContext context) {
+    final status = _status;
+
+    if (status == 'pending') {
+      _showTemporaryMessage('申請中です');
+      return;
     }
+
+    if (status == 'rejected') {
+      _showTemporaryMessage('申請は却下されました');
+      return;
+    }
+
+    if (_roles.contains('teacher') || status == 'approved') {
+      _showTemporaryMessage('先生権限は承認済みです');
+      return;
+    }
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => TeacherApplicationFormPage(
+          user: widget.user,
+          initialDisplayName:
+              widget.user.displayName ?? widget.user.email ?? '',
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _messageTimer?.cancel();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final profileStream =
+        widget.profileStream ??
+        FirebaseFirestore.instance
+            .collection('users')
+            .doc(widget.user.uid)
+            .snapshots()
+            .map((snapshot) => snapshot.data() ?? widget.profile);
+
+    return StreamBuilder<Map<String, dynamic>>(
+      stream: profileStream,
+      initialData: _profile,
+      builder: (context, snapshot) {
+        _latestProfile = snapshot.data ?? _profile;
+        return _buildScaffold(context);
+      },
+    );
+  }
+
+  Widget _buildScaffold(BuildContext context) {
     final status = _status;
 
     return Scaffold(
@@ -153,14 +189,10 @@ class _TeacherApplicationPageState extends State<TeacherApplicationPage> {
                 ),
               ),
             ],
-            if (_isSaving) ...[
-              const SizedBox(height: 16),
-              const LinearProgressIndicator(),
-            ],
             const SizedBox(height: 24),
-            if (_canApply)
+            if (_canApply || status == 'pending' || status == 'rejected')
               FilledButton.icon(
-                onPressed: _isSaving ? null : _submitApplication,
+                onPressed: () => _handleApplicationButtonPressed(context),
                 icon: const Icon(Icons.send),
                 label: const Text('先生として申請する'),
               )

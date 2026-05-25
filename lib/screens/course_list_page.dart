@@ -1,85 +1,87 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
 import 'course_detail_page.dart';
 
-class CourseListPage extends StatelessWidget {
-  const CourseListPage({super.key});
+class CourseListPage extends StatefulWidget {
+  const CourseListPage({super.key, this.courseStream});
 
-  static const _courses = [
-    Course(
-      title: 'Flutter入門: はじめてのスマホアプリ開発',
-      instructorName: '山田 太郎',
-      category: 'プログラミング',
-      level: '初心者向け',
-      duration: '6時間',
-      lessonCount: 24,
-      rating: 4.7,
-      priceLabel: '無料',
-      description: 'FlutterとDartの基礎を学び、簡単なアプリ画面を作れるようになる講座です。',
-      lessons: [
-        CourseLesson(
-          title: 'Flutterで作るアプリの全体像',
-          duration: '12分',
-          isPreview: true,
-        ),
-        CourseLesson(title: 'Dartの基本文法', duration: '18分'),
-        CourseLesson(title: '画面レイアウトの作り方', duration: '22分'),
-        CourseLesson(title: 'ボタン操作と状態管理の基礎', duration: '20分'),
-      ],
-    ),
-    Course(
-      title: '高校数学I 基礎から復習',
-      instructorName: '佐藤 花子',
-      category: '数学',
-      level: '基礎',
-      duration: '8時間',
-      lessonCount: 32,
-      rating: 4.5,
-      priceLabel: '¥1,200',
-      description: '数と式、二次関数、図形と計量を基礎から丁寧に復習します。',
-      lessons: [
-        CourseLesson(title: '数と式の復習', duration: '16分', isPreview: true),
-        CourseLesson(title: '因数分解の考え方', duration: '19分'),
-        CourseLesson(title: '二次関数のグラフ', duration: '24分'),
-        CourseLesson(title: '図形と計量の基本', duration: '21分'),
-      ],
-    ),
-    Course(
-      title: '英語リスニング集中トレーニング',
-      instructorName: 'English Lab',
-      category: '英語',
-      level: '中級',
-      duration: '4時間',
-      lessonCount: 18,
-      rating: 4.6,
-      priceLabel: 'サブスク対象',
-      description: '短い会話からニュース音声まで、段階的に聞き取る力を伸ばします。',
-      lessons: [
-        CourseLesson(title: '短い会話を聞き取るコツ', duration: '10分', isPreview: true),
-        CourseLesson(title: '頻出表現の聞き分け', duration: '17分'),
-        CourseLesson(title: 'ニュース音声に慣れる', duration: '23分'),
-        CourseLesson(title: 'シャドーイング実践', duration: '15分'),
-      ],
-    ),
-    Course(
-      title: '企業研修: 新入社員のためのビジネスマナー',
-      instructorName: '研修サポート株式会社',
-      category: '企業研修',
-      level: '初心者向け',
-      duration: '3時間',
-      lessonCount: 12,
-      rating: 4.3,
-      priceLabel: '組織向け',
-      description: 'メール、報連相、会議参加など、社会人としての基本を学ぶ研修講座です。',
-      lessons: [
-        CourseLesson(title: '社会人としての基本姿勢', duration: '11分', isPreview: true),
-        CourseLesson(title: '報連相の実践', duration: '14分'),
-        CourseLesson(title: 'ビジネスメールの基礎', duration: '18分'),
-        CourseLesson(title: '会議参加のマナー', duration: '13分'),
-      ],
-    ),
-  ];
+  final Stream<List<Course>>? courseStream;
+
+  @override
+  State<CourseListPage> createState() => _CourseListPageState();
+}
+
+class _CourseListPageState extends State<CourseListPage> {
+  bool _isSeeding = false;
+  String? _message;
+
+  Stream<List<Course>> _coursesStream() {
+    final providedStream = widget.courseStream;
+    if (providedStream != null) {
+      return providedStream;
+    }
+
+    return FirebaseFirestore.instance
+        .collection('courses')
+        .where('status', isEqualTo: 'published')
+        .snapshots()
+        .map((snapshot) {
+          final courses = snapshot.docs.map(Course.fromFirestore).toList();
+          courses.sort((a, b) => a.title.compareTo(b.title));
+          return courses;
+        });
+  }
+
+  Future<void> _seedSampleCourses() async {
+    setState(() {
+      _isSeeding = true;
+      _message = null;
+    });
+
+    try {
+      final batch = FirebaseFirestore.instance.batch();
+      final coursesRef = FirebaseFirestore.instance.collection('courses');
+
+      for (final course in sampleCourses) {
+        final docRef = coursesRef.doc(course.id);
+        batch.set(docRef, {
+          ...course.toFirestore(),
+          'status': 'published',
+          'source': 'developmentSeed',
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
+
+      await batch.commit();
+
+      if (mounted) {
+        setState(() {
+          _message = 'サンプル講座をFirestoreに登録しました。';
+        });
+      }
+    } on FirebaseException catch (error) {
+      if (mounted) {
+        setState(() {
+          _message = error.message ?? 'サンプル講座の登録に失敗しました。';
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _message = 'エラーが発生しました: $error';
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSeeding = false;
+        });
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -94,7 +96,7 @@ class CourseListPage extends StatelessWidget {
               style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
-            const Text('今は仮データです。後でFirestoreの講座データから表示する形に変更します。'),
+            const Text('Firestoreに保存されている公開講座を表示します。'),
             const SizedBox(height: 16),
             const TextField(
               decoration: InputDecoration(
@@ -116,10 +118,108 @@ class CourseListPage extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 24),
-            for (final course in _courses) ...[
-              _CourseCard(course: course),
-              const SizedBox(height: 12),
+            if (_message != null) ...[
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(_message!),
+                ),
+              ),
+              const SizedBox(height: 16),
             ],
+            StreamBuilder<List<Course>>(
+              stream: _coursesStream(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                if (snapshot.hasError) {
+                  return _CourseLoadError(error: snapshot.error!);
+                }
+
+                final courses = snapshot.data ?? const [];
+                if (courses.isEmpty) {
+                  return _EmptyCoursesCard(
+                    isSeeding: _isSeeding,
+                    onSeedPressed: widget.courseStream == null
+                        ? _seedSampleCourses
+                        : null,
+                  );
+                }
+
+                return Column(
+                  children: [
+                    for (final course in courses) ...[
+                      _CourseCard(course: course),
+                      const SizedBox(height: 12),
+                    ],
+                  ],
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CourseLoadError extends StatelessWidget {
+  const _CourseLoadError({required this.error});
+
+  final Object error;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: Theme.of(context).colorScheme.errorContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Text(
+          '講座データの読み込みに失敗しました: $error',
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onErrorContainer,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyCoursesCard extends StatelessWidget {
+  const _EmptyCoursesCard({
+    required this.isSeeding,
+    required this.onSeedPressed,
+  });
+
+  final bool isSeeding;
+  final VoidCallback? onSeedPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'まだ講座がありません',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            const Text('開発確認用に、サンプル講座をFirestoreへ登録できます。'),
+            if (isSeeding) ...[
+              const SizedBox(height: 16),
+              const LinearProgressIndicator(),
+            ],
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: isSeeding ? null : onSeedPressed,
+              icon: const Icon(Icons.add),
+              label: const Text('サンプル講座を登録する'),
+            ),
           ],
         ),
       ),
