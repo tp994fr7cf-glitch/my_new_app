@@ -1,9 +1,12 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../models/course.dart';
 import 'course_list_page.dart';
 import 'role_switch_page.dart';
 import 'teacher_application_page.dart';
+import 'video_lesson_page.dart';
 
 class HomePage extends StatelessWidget {
   const HomePage({super.key, required this.user, required this.profile});
@@ -83,13 +86,7 @@ class StudentHomePage extends StatelessWidget {
           const SizedBox(height: 24),
           _ProfileSummaryCard(user: user, profile: profile, roles: roles),
           const SizedBox(height: 16),
-          _HomeActionCard(
-            icon: Icons.play_circle,
-            title: '学習中の講座',
-            description: '受講中の講座や前回の続きは、ここに表示していきます。',
-            buttonText: '学習を再開',
-            onPressed: () {},
-          ),
+          _ResumeLearningCard(user: user),
           _HomeActionCard(
             icon: Icons.search,
             title: '講座を探す',
@@ -123,6 +120,156 @@ class StudentHomePage extends StatelessWidget {
             },
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ResumeLearningCard extends StatelessWidget {
+  const _ResumeLearningCard({required this.user});
+
+  final User user;
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> _enrollmentStream() {
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('enrollments')
+        .where('status', isEqualTo: 'inProgress')
+        .snapshots();
+  }
+
+  void _resumeLearning(
+    BuildContext context,
+    DocumentSnapshot<Map<String, dynamic>> enrollment,
+  ) {
+    final data = enrollment.data() ?? {};
+    final courseData = data['course'];
+    if (courseData is! Map) {
+      return;
+    }
+
+    final course = Course.fromMap(courseData, id: data['courseId'] as String?);
+    if (course.lessons.isEmpty) {
+      return;
+    }
+
+    final savedLessonNumber = (data['lastLessonNumber'] as num?)?.toInt() ?? 1;
+    final lessonNumber = savedLessonNumber.clamp(1, course.lessons.length);
+    final lesson = course.lessons[lessonNumber - 1];
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => VideoLessonPage(
+          course: course,
+          lesson: lesson,
+          lessonNumber: lessonNumber,
+        ),
+      ),
+    );
+  }
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _sortedEnrollments(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    final sortedDocs = [...docs];
+
+    sortedDocs.sort((a, b) {
+      final aUpdatedAt = a.data()['updatedAt'];
+      final bUpdatedAt = b.data()['updatedAt'];
+      if (aUpdatedAt is Timestamp && bUpdatedAt is Timestamp) {
+        return bUpdatedAt.compareTo(aUpdatedAt);
+      }
+      return 0;
+    });
+
+    return sortedDocs;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _enrollmentStream(),
+      builder: (context, snapshot) {
+        final enrollments = snapshot.hasData
+            ? _sortedEnrollments(snapshot.data!.docs)
+            : <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.play_circle, size: 40),
+                const SizedBox(height: 12),
+                const Text(
+                  '学習中の講座',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                if (snapshot.connectionState == ConnectionState.waiting)
+                  const Text('学習状況を確認しています...')
+                else if (enrollments.isEmpty)
+                  const Text('受講中の講座や前回の続きは、ここに表示していきます。')
+                else
+                  for (final enrollment in enrollments) ...[
+                    _EnrollmentResumeTile(
+                      enrollment: enrollment,
+                      onResume: () => _resumeLearning(context, enrollment),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _EnrollmentResumeTile extends StatelessWidget {
+  const _EnrollmentResumeTile({
+    required this.enrollment,
+    required this.onResume,
+  });
+
+  final DocumentSnapshot<Map<String, dynamic>> enrollment;
+  final VoidCallback onResume;
+
+  @override
+  Widget build(BuildContext context) {
+    final data = enrollment.data() ?? {};
+    final courseData = data['course'];
+    final courseTitle = courseData is Map
+        ? courseData['title'] as String? ?? '受講中の講座'
+        : '受講中の講座';
+    final lastLessonTitle = data['lastLessonTitle'] as String? ?? '前回の続き';
+
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              courseTitle,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            Text('前回: $lastLessonTitle'),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton(
+                onPressed: onResume,
+                child: const Text('学習を再開'),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

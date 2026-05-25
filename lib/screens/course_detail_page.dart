@@ -1,3 +1,5 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
@@ -8,11 +10,55 @@ class CourseDetailPage extends StatelessWidget {
 
   final Course course;
 
-  void _openLesson(
+  String get _courseId => course.id ?? course.title.replaceAll('/', '_');
+
+  Future<void> _saveLearningProgress({
+    required CourseLesson lesson,
+    required int lessonNumber,
+  }) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('enrollments')
+        .doc(_courseId)
+        .set({
+          'userId': user.uid,
+          'courseId': _courseId,
+          'course': {'id': _courseId, ...course.toFirestore()},
+          'lastLessonNumber': lessonNumber,
+          'lastLessonTitle': lesson.title,
+          'status': 'inProgress',
+          'updatedAt': FieldValue.serverTimestamp(),
+          'createdAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+  }
+
+  Future<void> _openLesson(
     BuildContext context, {
     required CourseLesson lesson,
     required int lessonNumber,
-  }) {
+  }) async {
+    try {
+      await _saveLearningProgress(lesson: lesson, lessonNumber: lessonNumber);
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(
+            const SnackBar(content: Text('学習状況の保存に失敗しました。後でもう一度お試しください。')),
+          );
+      }
+    }
+
+    if (!context.mounted) {
+      return;
+    }
+
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => VideoLessonPage(

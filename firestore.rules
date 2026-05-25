@@ -92,6 +92,18 @@ service cloud.firestore {
         && validTeacherApplication();
 
       allow update: if canSubmitTeacherApplication(userId);
+
+      match /enrollments/{courseId} {
+        allow read: if isOwner(userId);
+
+        allow create, update: if isOwner(userId)
+          && request.resource.data.userId == userId
+          && request.resource.data.courseId == courseId
+          && request.resource.data.status == 'inProgress'
+          && request.resource.data.course is map
+          && request.resource.data.lastLessonNumber is int
+          && request.resource.data.lastLessonTitle is string;
+      }
     }
 
     match /courses/{courseId} {

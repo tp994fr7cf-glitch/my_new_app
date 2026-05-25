@@ -28,11 +28,14 @@ class Course {
   final List<CourseLesson> lessons;
 
   factory Course.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final data = doc.data() ?? {};
+    return Course.fromMap(doc.data() ?? {}, id: doc.id);
+  }
+
+  factory Course.fromMap(Map data, {String? id}) {
     final lessonsData = data['lessons'];
 
     return Course(
-      id: doc.id,
+      id: id ?? data['id'] as String?,
       title: data['title'] as String? ?? '',
       instructorName: data['instructorName'] as String? ?? '',
       category: data['category'] as String? ?? '',
