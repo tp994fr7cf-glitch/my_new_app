@@ -149,6 +149,14 @@ service cloud.firestore {
           && request.resource.data.correctChoiceIndex is int
           && request.resource.data.isCorrect is bool;
       }
+
+      match /courseSearchHistory/{historyId} {
+        allow read: if isOwner(userId);
+
+        allow create, update: if isOwner(userId)
+          && request.resource.data.keyword is string
+          && request.resource.data.normalizedKeyword is string;
+      }
     }
 
     match /courses/{courseId} {

@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
@@ -14,8 +15,17 @@ class CourseListPage extends StatefulWidget {
 }
 
 class _CourseListPageState extends State<CourseListPage> {
+  final _searchController = TextEditingController();
   bool _isSeeding = false;
   String? _message;
+
+  String get _searchText => _searchController.text.trim();
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   Stream<List<Course>> _coursesStream() {
     final providedStream = widget.courseStream;
@@ -83,6 +93,72 @@ class _CourseListPageState extends State<CourseListPage> {
     }
   }
 
+  List<Course> _filteredCourses(List<Course> courses) {
+    final query = _searchText.toLowerCase();
+    if (query.isEmpty) {
+      return courses;
+    }
+
+    return courses.where((course) {
+      return course.title.toLowerCase().contains(query) ||
+          course.instructorName.toLowerCase().contains(query) ||
+          course.category.toLowerCase().contains(query) ||
+          course.level.toLowerCase().contains(query) ||
+          (course.courseCode?.toLowerCase().contains(query) ?? false);
+    }).toList();
+  }
+
+  Future<void> _saveSearchHistory(String keyword) async {
+    final normalizedKeyword = keyword.trim();
+    if (normalizedKeyword.isEmpty || widget.courseStream != null) {
+      return;
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('courseSearchHistory')
+          .doc(normalizedKeyword.toLowerCase())
+          .set({
+            'keyword': normalizedKeyword,
+            'normalizedKeyword': normalizedKeyword.toLowerCase(),
+            'searchedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+    } catch (_) {
+      // 検索自体を優先するため、履歴保存の失敗は画面操作を止めない。
+    }
+  }
+
+  Stream<QuerySnapshot<Map<String, dynamic>>>? _searchHistoryStream() {
+    if (widget.courseStream != null) {
+      return null;
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return null;
+    }
+
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('courseSearchHistory')
+        .orderBy('searchedAt', descending: true)
+        .limit(5)
+        .snapshots();
+  }
+
+  void _applySearch(String value) {
+    setState(() {});
+    _saveSearchHistory(value);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -98,12 +174,32 @@ class _CourseListPageState extends State<CourseListPage> {
             const SizedBox(height: 8),
             const Text('Firestoreに保存されている公開講座を表示します。'),
             const SizedBox(height: 16),
-            const TextField(
+            TextField(
+              controller: _searchController,
               decoration: InputDecoration(
                 border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.search),
-                labelText: '講座名・先生名・カテゴリで検索',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _searchText.isEmpty
+                    ? null
+                    : IconButton(
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() {});
+                        },
+                        icon: const Icon(Icons.clear),
+                      ),
+                labelText: '講座コード・講座名・先生名・カテゴリで検索',
               ),
+              textInputAction: TextInputAction.search,
+              onChanged: (_) => setState(() {}),
+              onSubmitted: _applySearch,
+            ),
+            _SearchHistoryChips(
+              historyStream: _searchHistoryStream(),
+              onSelected: (keyword) {
+                _searchController.text = keyword;
+                _applySearch(keyword);
+              },
             ),
             const SizedBox(height: 16),
             Wrap(
@@ -139,6 +235,7 @@ class _CourseListPageState extends State<CourseListPage> {
                 }
 
                 final courses = snapshot.data ?? const [];
+                final filteredCourses = _filteredCourses(courses);
                 if (courses.isEmpty) {
                   return _EmptyCoursesCard(
                     isSeeding: _isSeeding,
@@ -148,9 +245,13 @@ class _CourseListPageState extends State<CourseListPage> {
                   );
                 }
 
+                if (filteredCourses.isEmpty) {
+                  return _NoSearchResultsCard(query: _searchText);
+                }
+
                 return Column(
                   children: [
-                    for (final course in courses) ...[
+                    for (final course in filteredCourses) ...[
                       _CourseCard(course: course),
                       const SizedBox(height: 12),
                     ],
@@ -160,6 +261,73 @@ class _CourseListPageState extends State<CourseListPage> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _SearchHistoryChips extends StatelessWidget {
+  const _SearchHistoryChips({
+    required this.historyStream,
+    required this.onSelected,
+  });
+
+  final Stream<QuerySnapshot<Map<String, dynamic>>>? historyStream;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final stream = historyStream;
+    if (stream == null) {
+      return const SizedBox.shrink();
+    }
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: stream,
+      builder: (context, snapshot) {
+        final keywords =
+            snapshot.data?.docs
+                .map((doc) => doc.data()['keyword'])
+                .whereType<String>()
+                .where((keyword) => keyword.isNotEmpty)
+                .toList() ??
+            const <String>[];
+
+        if (keywords.isEmpty) {
+          return const SizedBox.shrink();
+        }
+
+        return Padding(
+          padding: const EdgeInsets.only(top: 12),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              const Chip(label: Text('検索履歴')),
+              for (final keyword in keywords)
+                ActionChip(
+                  label: Text(keyword),
+                  onPressed: () => onSelected(keyword),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _NoSearchResultsCard extends StatelessWidget {
+  const _NoSearchResultsCard({required this.query});
+
+  final String query;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Text('「$query」に一致する講座は見つかりませんでした。'),
       ),
     );
   }

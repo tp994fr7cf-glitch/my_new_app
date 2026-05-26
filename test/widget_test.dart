@@ -51,6 +51,63 @@ void main() {
     expect(find.text('レッスン1: Flutterで作るアプリの全体像'), findsOneWidget);
   });
 
+  testWidgets('Course list filters by course code', (
+    WidgetTester tester,
+  ) async {
+    const courses = [
+      Course(
+        id: 'course-a',
+        courseCode: 'ABC123',
+        title: 'コードで探せる講座',
+        instructorName: '先生A',
+        category: '数学',
+        level: '初級',
+        duration: '1時間',
+        lessonCount: 1,
+        rating: 0,
+        priceLabel: '無料',
+        description: '講座コード検索テスト',
+        lessons: [CourseLesson(title: 'レッスン1', duration: '10分')],
+      ),
+      Course(
+        id: 'course-b',
+        courseCode: 'XYZ789',
+        title: '別の講座',
+        instructorName: '先生B',
+        category: '英語',
+        level: '初級',
+        duration: '1時間',
+        lessonCount: 1,
+        rating: 0,
+        priceLabel: '無料',
+        description: '別講座',
+        lessons: [CourseLesson(title: 'レッスン1', duration: '10分')],
+      ),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(home: CourseListPage(courseStream: Stream.value(courses))),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.bySemanticsLabel('講座コード・講座名・先生名・カテゴリで検索'),
+      'ABC123',
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('コードで探せる講座'), findsOneWidget);
+    expect(find.text('別の講座'), findsNothing);
+
+    await tester.enterText(
+      find.bySemanticsLabel('講座コード・講座名・先生名・カテゴリで検索'),
+      'NOPE',
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('「NOPE」に一致する講座は見つかりませんでした。'), findsOneWidget);
+  });
+
   testWidgets('Teacher application page shows application action', (
     WidgetTester tester,
   ) async {
