@@ -21,21 +21,42 @@ class CourseDetailPage extends StatelessWidget {
       return;
     }
 
-    await FirebaseFirestore.instance
+    final firestore = FirebaseFirestore.instance;
+    final enrollmentRef = firestore
         .collection('users')
         .doc(user.uid)
         .collection('enrollments')
-        .doc(_courseId)
-        .set({
-          'userId': user.uid,
-          'courseId': _courseId,
-          'course': {'id': _courseId, ...course.toFirestore()},
-          'lastLessonNumber': lessonNumber,
-          'lastLessonTitle': lesson.title,
-          'status': 'inProgress',
-          'updatedAt': FieldValue.serverTimestamp(),
-          'createdAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
+        .doc(_courseId);
+    final eventRef = firestore
+        .collection('users')
+        .doc(user.uid)
+        .collection('learningEvents')
+        .doc();
+    final now = FieldValue.serverTimestamp();
+    final courseSnapshot = {'id': _courseId, ...course.toFirestore()};
+
+    final batch = firestore.batch()
+      ..set(enrollmentRef, {
+        'userId': user.uid,
+        'courseId': _courseId,
+        'course': courseSnapshot,
+        'lastLessonNumber': lessonNumber,
+        'lastLessonTitle': lesson.title,
+        'status': 'inProgress',
+        'updatedAt': now,
+        'createdAt': now,
+      }, SetOptions(merge: true))
+      ..set(eventRef, {
+        'userId': user.uid,
+        'type': 'lessonOpened',
+        'courseId': _courseId,
+        'courseTitle': course.title,
+        'lessonNumber': lessonNumber,
+        'lessonTitle': lesson.title,
+        'createdAt': now,
+      });
+
+    await batch.commit();
   }
 
   Future<void> _openLesson(

@@ -104,6 +104,18 @@ service cloud.firestore {
           && request.resource.data.lastLessonNumber is int
           && request.resource.data.lastLessonTitle is string;
       }
+
+      match /learningEvents/{eventId} {
+        allow read: if isOwner(userId);
+
+        allow create: if isOwner(userId)
+          && request.resource.data.userId == userId
+          && request.resource.data.type == 'lessonOpened'
+          && request.resource.data.courseId is string
+          && request.resource.data.courseTitle is string
+          && request.resource.data.lessonNumber is int
+          && request.resource.data.lessonTitle is string;
+      }
     }
 
     match /courses/{courseId} {
