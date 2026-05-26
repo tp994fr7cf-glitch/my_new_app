@@ -105,6 +105,7 @@ class _CourseCreatePageState extends State<CourseCreatePage> {
         'priceLabel': _priceLabelController.text.trim(),
         'description': _descriptionController.text.trim(),
         'lessons': lessons,
+        'lessonEvents': [],
         'status': 'published',
         'source': 'teacherCreated',
         'createdAt': FieldValue.serverTimestamp(),

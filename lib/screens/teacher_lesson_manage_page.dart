@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
+import 'teacher_quiz_manage_page.dart';
 
 typedef LessonSaveOverride = Future<void> Function(List<CourseLesson> lessons);
 
@@ -154,6 +155,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
             for (final entry in _lessonEditors.indexed) ...[
               _LessonEditorCard(
                 index: entry.$1 + 1,
+                course: widget.course,
                 editor: entry.$2,
                 requiredText: _requiredText,
                 onChanged: () => setState(() {}),
@@ -221,12 +223,14 @@ class _LessonEditorState {
 class _LessonEditorCard extends StatelessWidget {
   const _LessonEditorCard({
     required this.index,
+    required this.course,
     required this.editor,
     required this.requiredText,
     required this.onChanged,
   });
 
   final int index;
+  final Course course;
   final _LessonEditorState editor;
   final String? Function(String? value) requiredText;
   final VoidCallback onChanged;
@@ -297,6 +301,20 @@ class _LessonEditorCard extends StatelessWidget {
                 editor.isPreview = value;
                 onChanged();
               },
+            ),
+            OutlinedButton.icon(
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => TeacherQuizManagePage(
+                      course: course,
+                      lessonNumber: index,
+                    ),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.quiz),
+              label: const Text('クイズを管理'),
             ),
           ],
         ),

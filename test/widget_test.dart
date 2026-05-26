@@ -4,10 +4,12 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:my_new_app/main.dart';
 import 'package:my_new_app/models/course.dart';
+import 'package:my_new_app/screens/course_detail_page.dart';
 import 'package:my_new_app/screens/course_list_page.dart';
 import 'package:my_new_app/screens/home_page.dart';
 import 'package:my_new_app/screens/teacher_application_page.dart';
 import 'package:my_new_app/screens/teacher_course_list_page.dart';
+import 'package:my_new_app/screens/teacher_quiz_manage_page.dart';
 import 'package:my_new_app/screens/video_lesson_page.dart';
 
 void main() {
@@ -224,6 +226,49 @@ void main() {
     expect(find.text('レッスン管理'), findsOneWidget);
     expect(find.text('授業形式'), findsWidgets);
     expect(find.text('動画・音声URL（仮）'), findsWidgets);
+    await tester.scrollUntilVisible(
+      find.text('クイズを管理').first,
+      500,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.tap(find.text('クイズを管理').first);
+    await tester.pumpAndSettle();
+
+    expect(find.text('クイズ管理'), findsOneWidget);
+    expect(find.text('授業の何秒地点でクイズを表示するかを設定できます。'), findsOneWidget);
+    expect(find.text('クイズ1'), findsOneWidget);
+    expect(find.text('表示タイミング（秒）'), findsOneWidget);
+  });
+
+  testWidgets('Course detail shows course code for learners and teachers', (
+    WidgetTester tester,
+  ) async {
+    const course = Course(
+      id: 'test-course',
+      courseCode: 'ABC123',
+      title: '講座コード確認用',
+      instructorName: '先生',
+      category: 'テスト',
+      level: '初級',
+      duration: '1時間',
+      lessonCount: 1,
+      rating: 0,
+      priceLabel: '無料',
+      description: '講座コードの表示確認',
+      lessons: [CourseLesson(title: 'レッスン1', duration: '10分')],
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(home: CourseDetailPage(course: course)),
+    );
+    expect(find.text('講座コード: ABC123'), findsOneWidget);
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: CourseDetailPage(course: course, isTeacherMode: true),
+      ),
+    );
+    expect(find.text('講座コード: ABC123'), findsOneWidget);
   });
 
   testWidgets('Audio lesson page shows audio placeholder', (
@@ -251,6 +296,109 @@ void main() {
     );
     expect(find.text('授業形式: 音声のみ'), findsOneWidget);
     expect(find.text('動画プレイヤー仮UI'), findsNothing);
+  });
+
+  testWidgets('Quiz manage page disables save until quiz is valid', (
+    WidgetTester tester,
+  ) async {
+    var savedEvents = <LessonEvent>[];
+    const course = Course(
+      id: 'test-course',
+      title: 'テスト講座',
+      instructorName: '先生',
+      category: 'テスト',
+      level: '初級',
+      duration: '1時間',
+      lessonCount: 1,
+      rating: 0,
+      priceLabel: '無料',
+      description: 'テスト用',
+      lessons: [CourseLesson(title: 'テストレッスン', duration: '10分')],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherQuizManagePage(
+          course: course,
+          lessonNumber: 1,
+          onSaveOverride: (events) async {
+            savedEvents = events;
+          },
+        ),
+      ),
+    );
+
+    expect(find.text('まだクイズがありません。「クイズを追加」から作成してください。'), findsOneWidget);
+    FilledButton saveButton() => tester
+        .widgetList<FilledButton>(
+          find.byType(FilledButton, skipOffstage: false),
+        )
+        .last;
+    expect(saveButton().onPressed, isNull);
+
+    await tester.tap(find.text('クイズを追加'));
+    await tester.pumpAndSettle();
+    expect(saveButton().onPressed, isNull);
+
+    await tester.enterText(find.bySemanticsLabel('問題文'), 'Flutterの基本単位は？');
+    await tester.enterText(find.bySemanticsLabel('選択肢1'), 'Widget');
+    await tester.enterText(find.bySemanticsLabel('選択肢2'), 'Database');
+    await tester.pumpAndSettle();
+
+    expect(saveButton().onPressed, isNotNull);
+    await tester.ensureVisible(find.text('クイズを保存'));
+    await tester.tap(find.text('クイズを保存'));
+    await tester.pumpAndSettle();
+
+    expect(savedEvents, hasLength(1));
+    expect(savedEvents.first.quiz?.question, 'Flutterの基本単位は？');
+  });
+
+  testWidgets('Video lesson page shows and answers quiz event', (
+    WidgetTester tester,
+  ) async {
+    LessonEvent? savedEvent;
+    int? savedChoiceIndex;
+    bool? savedIsCorrect;
+
+    final course = sampleCourses.first;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: VideoLessonPage(
+          course: course,
+          lesson: course.lessons.first,
+          lessonNumber: 1,
+          onQuizAnswerSaveOverride:
+              ({
+                required event,
+                required selectedChoiceIndex,
+                required isCorrect,
+              }) async {
+                savedEvent = event;
+                savedChoiceIndex = selectedChoiceIndex;
+                savedIsCorrect = isCorrect;
+              },
+        ),
+      ),
+    );
+
+    await tester.scrollUntilVisible(
+      find.text('授業中クイズ'),
+      500,
+      scrollable: find.byType(Scrollable),
+    );
+    expect(find.text('授業中クイズ'), findsOneWidget);
+    expect(find.text('Flutterで画面を作るときの基本単位はどれですか？'), findsOneWidget);
+
+    await tester.tap(find.text('Widget'));
+    await tester.tap(find.text('回答する'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('結果: 正解'), findsOneWidget);
+    expect(savedEvent?.id, 'sample-flutter-quiz-1');
+    expect(savedChoiceIndex, 0);
+    expect(savedIsCorrect, isTrue);
   });
 }
 

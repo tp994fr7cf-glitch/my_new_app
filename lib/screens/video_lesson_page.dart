@@ -1,20 +1,139 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
 
-class VideoLessonPage extends StatelessWidget {
+typedef QuizAnswerSaveOverride =
+    Future<void> Function({
+      required LessonEvent event,
+      required int selectedChoiceIndex,
+      required bool isCorrect,
+    });
+
+class VideoLessonPage extends StatefulWidget {
   const VideoLessonPage({
     super.key,
     required this.course,
     required this.lesson,
     required this.lessonNumber,
+    this.onQuizAnswerSaveOverride,
   });
 
   final Course course;
   final CourseLesson lesson;
   final int lessonNumber;
+  final QuizAnswerSaveOverride? onQuizAnswerSaveOverride;
+
+  @override
+  State<VideoLessonPage> createState() => _VideoLessonPageState();
+}
+
+class _VideoLessonPageState extends State<VideoLessonPage> {
+  int _currentPositionSec = 0;
+  final Map<String, int> _selectedChoices = {};
+  final Map<String, bool> _answerResults = {};
+  String? _message;
+
+  Course get course => widget.course;
+  CourseLesson get lesson => widget.lesson;
+  int get lessonNumber => widget.lessonNumber;
 
   bool get _isAudioLesson => lesson.mediaType == 'audio';
+
+  List<LessonEvent> get _dueQuizEvents {
+    return course.lessonEvents
+        .where((event) => event.lessonNumber == lessonNumber)
+        .where((event) => event.isQuiz)
+        .where((event) => event.timestampSec <= _currentPositionSec)
+        .toList()
+      ..sort((a, b) => a.timestampSec.compareTo(b.timestampSec));
+  }
+
+  void _advanceTime() {
+    setState(() {
+      _currentPositionSec += 30;
+      _message = null;
+    });
+  }
+
+  Future<void> _submitAnswer(LessonEvent event) async {
+    final selectedChoiceIndex = _selectedChoices[event.id];
+    final quiz = event.quiz;
+    if (selectedChoiceIndex == null || quiz == null) {
+      setState(() {
+        _message = '回答を選択してください。';
+      });
+      return;
+    }
+
+    final isCorrect = selectedChoiceIndex == quiz.correctChoiceIndex;
+
+    try {
+      final saveOverride = widget.onQuizAnswerSaveOverride;
+      if (saveOverride != null) {
+        await saveOverride(
+          event: event,
+          selectedChoiceIndex: selectedChoiceIndex,
+          isCorrect: isCorrect,
+        );
+      } else {
+        await _saveQuizAnswer(
+          event: event,
+          selectedChoiceIndex: selectedChoiceIndex,
+          isCorrect: isCorrect,
+        );
+      }
+
+      if (mounted) {
+        setState(() {
+          _answerResults[event.id] = isCorrect;
+          _message = isCorrect ? '正解です。' : '不正解です。解説を確認しましょう。';
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _message = '回答の保存に失敗しました。後でもう一度お試しください。';
+        });
+      }
+    }
+  }
+
+  Future<void> _saveQuizAnswer({
+    required LessonEvent event,
+    required int selectedChoiceIndex,
+    required bool isCorrect,
+  }) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+
+    final quiz = event.quiz;
+    if (quiz == null) {
+      return;
+    }
+
+    final courseId = course.id ?? course.title.replaceAll('/', '_');
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('quizAttempts')
+        .add({
+          'userId': user.uid,
+          'courseId': courseId,
+          'courseTitle': course.title,
+          'lessonNumber': lessonNumber,
+          'lessonTitle': lesson.title,
+          'eventId': event.id,
+          'question': quiz.question,
+          'selectedChoiceIndex': selectedChoiceIndex,
+          'correctChoiceIndex': quiz.correctChoiceIndex,
+          'isCorrect': isCorrect,
+          'answeredAt': FieldValue.serverTimestamp(),
+        });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -64,9 +183,47 @@ class VideoLessonPage extends StatelessWidget {
             Text('再生時間: ${lesson.duration}'),
             const SizedBox(height: 8),
             Text('授業形式: ${_isAudioLesson ? '音声のみ' : '動画'}'),
+            const SizedBox(height: 8),
+            Text('現在位置: $_currentPositionSec秒'),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: _advanceTime,
+              icon: const Icon(Icons.forward_30),
+              label: const Text('30秒進める（仮）'),
+            ),
             if (lesson.mediaUrl.isNotEmpty) ...[
               const SizedBox(height: 8),
               Text('仮URL: ${lesson.mediaUrl}'),
+            ],
+            if (_dueQuizEvents.isNotEmpty) ...[
+              const SizedBox(height: 24),
+              const _SectionTitle('授業中クイズ'),
+              const SizedBox(height: 8),
+              for (final event in _dueQuizEvents) ...[
+                _QuizCard(
+                  event: event,
+                  selectedChoiceIndex: _selectedChoices[event.id],
+                  answerResult: _answerResults[event.id],
+                  onChoiceChanged: (choiceIndex) {
+                    setState(() {
+                      _selectedChoices[event.id] = choiceIndex;
+                      _message = null;
+                    });
+                  },
+                  onSubmit: () => _submitAnswer(event),
+                ),
+                const SizedBox(height: 12),
+              ],
+            ],
+            if (_message != null) ...[
+              const SizedBox(height: 12),
+              Card(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(_message!),
+                ),
+              ),
             ],
             const SizedBox(height: 24),
             const _SectionTitle('学習メモ'),
@@ -86,6 +243,65 @@ class VideoLessonPage extends StatelessWidget {
             const _BulletText('再生位置の保存'),
             const _BulletText('視聴完了チェック'),
             const _BulletText('コメント・質問欄'),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _QuizCard extends StatelessWidget {
+  const _QuizCard({
+    required this.event,
+    required this.selectedChoiceIndex,
+    required this.answerResult,
+    required this.onChoiceChanged,
+    required this.onSubmit,
+  });
+
+  final LessonEvent event;
+  final int? selectedChoiceIndex;
+  final bool? answerResult;
+  final ValueChanged<int> onChoiceChanged;
+  final VoidCallback onSubmit;
+
+  @override
+  Widget build(BuildContext context) {
+    final quiz = event.quiz!;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('${event.timestampSec}秒のクイズ'),
+            const SizedBox(height: 8),
+            Text(
+              quiz.question,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            for (final entry in quiz.choices.indexed)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  selectedChoiceIndex == entry.$1
+                      ? Icons.radio_button_checked
+                      : Icons.radio_button_unchecked,
+                ),
+                title: Text(entry.$2),
+                onTap: () => onChoiceChanged(entry.$1),
+              ),
+            FilledButton(onPressed: onSubmit, child: const Text('回答する')),
+            if (answerResult != null) ...[
+              const SizedBox(height: 8),
+              Text(answerResult! ? '結果: 正解' : '結果: 不正解'),
+              if (quiz.explanation.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text('解説: ${quiz.explanation}'),
+              ],
+            ],
           ],
         ),
       ),

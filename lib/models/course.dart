@@ -14,6 +14,7 @@ class Course {
     required this.priceLabel,
     required this.description,
     required this.lessons,
+    this.lessonEvents = const [],
   });
 
   final String? id;
@@ -28,6 +29,7 @@ class Course {
   final String priceLabel;
   final String description;
   final List<CourseLesson> lessons;
+  final List<LessonEvent> lessonEvents;
 
   factory Course.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     return Course.fromMap(doc.data() ?? {}, id: doc.id);
@@ -35,6 +37,7 @@ class Course {
 
   factory Course.fromMap(Map data, {String? id}) {
     final lessonsData = data['lessons'];
+    final lessonEventsData = data['lessonEvents'];
 
     return Course(
       id: id ?? data['id'] as String?,
@@ -54,6 +57,12 @@ class Course {
                 .map((lessonData) => CourseLesson.fromMap(lessonData))
                 .toList()
           : const [],
+      lessonEvents: lessonEventsData is List
+          ? lessonEventsData
+                .whereType<Map>()
+                .map((eventData) => LessonEvent.fromMap(eventData))
+                .toList()
+          : const [],
     );
   }
 
@@ -70,6 +79,7 @@ class Course {
       'priceLabel': priceLabel,
       'description': description,
       'lessons': lessons.map((lesson) => lesson.toMap()).toList(),
+      'lessonEvents': lessonEvents.map((event) => event.toMap()).toList(),
     };
   }
 }
@@ -110,6 +120,82 @@ class CourseLesson {
   }
 }
 
+class LessonEvent {
+  const LessonEvent({
+    required this.id,
+    required this.lessonNumber,
+    required this.timestampSec,
+    required this.type,
+    this.quiz,
+  });
+
+  final String id;
+  final int lessonNumber;
+  final int timestampSec;
+  final String type;
+  final LessonQuiz? quiz;
+
+  bool get isQuiz => type == 'quiz' && quiz != null;
+
+  factory LessonEvent.fromMap(Map data) {
+    final quizData = data['quiz'];
+
+    return LessonEvent(
+      id: data['id'] as String? ?? '',
+      lessonNumber: (data['lessonNumber'] as num?)?.toInt() ?? 1,
+      timestampSec: (data['timestampSec'] as num?)?.toInt() ?? 0,
+      type: data['type'] as String? ?? 'quiz',
+      quiz: quizData is Map ? LessonQuiz.fromMap(quizData) : null,
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'lessonNumber': lessonNumber,
+      'timestampSec': timestampSec,
+      'type': type,
+      if (quiz != null) 'quiz': quiz!.toMap(),
+    };
+  }
+}
+
+class LessonQuiz {
+  const LessonQuiz({
+    required this.question,
+    required this.choices,
+    required this.correctChoiceIndex,
+    this.explanation = '',
+  });
+
+  final String question;
+  final List<String> choices;
+  final int correctChoiceIndex;
+  final String explanation;
+
+  factory LessonQuiz.fromMap(Map data) {
+    final choicesData = data['choices'];
+
+    return LessonQuiz(
+      question: data['question'] as String? ?? '',
+      choices: choicesData is List
+          ? choicesData.whereType<String>().toList()
+          : const [],
+      correctChoiceIndex: (data['correctChoiceIndex'] as num?)?.toInt() ?? 0,
+      explanation: data['explanation'] as String? ?? '',
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'question': question,
+      'choices': choices,
+      'correctChoiceIndex': correctChoiceIndex,
+      'explanation': explanation,
+    };
+  }
+}
+
 const sampleCourses = [
   Course(
     id: 'sample-flutter-introduction',
@@ -131,6 +217,20 @@ const sampleCourses = [
       CourseLesson(title: 'Dartの基本文法', duration: '18分'),
       CourseLesson(title: '画面レイアウトの作り方', duration: '22分'),
       CourseLesson(title: 'ボタン操作と状態管理の基礎', duration: '20分'),
+    ],
+    lessonEvents: [
+      LessonEvent(
+        id: 'sample-flutter-quiz-1',
+        lessonNumber: 1,
+        timestampSec: 0,
+        type: 'quiz',
+        quiz: LessonQuiz(
+          question: 'Flutterで画面を作るときの基本単位はどれですか？',
+          choices: ['Widget', 'Database', 'Server'],
+          correctChoiceIndex: 0,
+          explanation: 'FlutterではWidgetを組み合わせて画面を作ります。',
+        ),
+      ),
     ],
   ),
   Course(

@@ -164,6 +164,13 @@ class CourseDetailPage extends StatelessWidget {
               '講師: ${course.instructorName}',
               style: Theme.of(context).textTheme.titleMedium,
             ),
+            if (course.courseCode != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                '講座コード: ${course.courseCode}',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ],
             const SizedBox(height: 16),
             Row(
               children: [
