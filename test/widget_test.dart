@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:my_new_app/main.dart';
 import 'package:my_new_app/models/course.dart';
 import 'package:my_new_app/screens/course_list_page.dart';
+import 'package:my_new_app/screens/home_page.dart';
 import 'package:my_new_app/screens/teacher_application_page.dart';
 
 void main() {
@@ -154,6 +155,34 @@ void main() {
     expect(find.text('申請は却下されました'), findsOneWidget);
     expect(find.text('先生情報の入力'), findsNothing);
   });
+
+  testWidgets('Teacher home opens course creation page', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherHomePage(
+          user: _FakeUser(),
+          profile: const {
+            'roles': ['student', 'teacher'],
+            'activeRole': 'teacher',
+          },
+          roles: const ['student', 'teacher'],
+        ),
+      ),
+    );
+
+    await tester.drag(find.byType(ListView), const Offset(0, -500));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('講座作成へ'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('講座作成'), findsOneWidget);
+    expect(find.text('講座タイトル'), findsOneWidget);
+    await tester.drag(find.byType(ListView), const Offset(0, -800));
+    await tester.pumpAndSettle();
+    expect(find.text('講座を保存する'), findsOneWidget);
+  });
 }
 
 class _FakeUser implements User {
@@ -165,6 +194,9 @@ class _FakeUser implements User {
 
   @override
   String? get email => 'test@example.com';
+
+  @override
+  String? get phoneNumber => null;
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);

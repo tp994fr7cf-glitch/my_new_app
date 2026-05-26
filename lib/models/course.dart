@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class Course {
   const Course({
     this.id,
+    this.courseCode,
     required this.title,
     required this.instructorName,
     required this.category,
@@ -16,6 +17,7 @@ class Course {
   });
 
   final String? id;
+  final String? courseCode;
   final String title;
   final String instructorName;
   final String category;
@@ -36,6 +38,7 @@ class Course {
 
     return Course(
       id: id ?? data['id'] as String?,
+      courseCode: data['courseCode'] as String?,
       title: data['title'] as String? ?? '',
       instructorName: data['instructorName'] as String? ?? '',
       category: data['category'] as String? ?? '',
@@ -57,6 +60,7 @@ class Course {
   Map<String, dynamic> toFirestore() {
     return {
       'title': title,
+      if (courseCode != null) 'courseCode': courseCode,
       'instructorName': instructorName,
       'category': category,
       'level': level,

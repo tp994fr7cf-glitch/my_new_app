@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
+import 'course_create_page.dart';
 import 'course_list_page.dart';
 import 'role_switch_page.dart';
 import 'teacher_application_page.dart';
@@ -315,9 +316,13 @@ class TeacherHomePage extends StatelessWidget {
           _HomeActionCard(
             icon: Icons.add_circle,
             title: '新しい講座を作成',
-            description: '講座タイトル、説明、レッスン構成を登録する画面を後で作ります。',
+            description: '講座タイトル、説明、レッスン構成を登録します。講座コードも自動発行されます。',
             buttonText: '講座作成へ',
-            onPressed: () {},
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => CourseCreatePage(user: user)),
+              );
+            },
           ),
           _HomeActionCard(
             icon: Icons.question_answer,

@@ -65,6 +65,12 @@ service cloud.firestore {
         && validTeacherApplication();
     }
 
+    function isTeacher() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.roles.hasAny(['teacher']);
+    }
+
     match /users/{userId} {
       allow read: if isOwner(userId);
 
@@ -125,6 +131,14 @@ service cloud.firestore {
         && courseId.matches('sample-.*')
         && request.resource.data.status == 'published'
         && request.resource.data.source == 'developmentSeed';
+
+      allow create: if isTeacher()
+        && request.resource.data.instructorId == request.auth.uid
+        && request.resource.data.status == 'published'
+        && request.resource.data.source == 'teacherCreated'
+        && request.resource.data.courseCode is string
+        && request.resource.data.title is string
+        && request.resource.data.lessons is list;
     }
   }
 }

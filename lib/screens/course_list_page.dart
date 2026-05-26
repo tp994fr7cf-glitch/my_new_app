@@ -281,6 +281,10 @@ class _CourseCard extends StatelessWidget {
                   fontWeight: FontWeight.bold,
                 ),
               ),
+              if (course.courseCode != null) ...[
+                const SizedBox(height: 4),
+                Text('講座コード: ${course.courseCode}'),
+              ],
               const SizedBox(height: 4),
               Text('講師: ${course.instructorName}'),
               const SizedBox(height: 8),
