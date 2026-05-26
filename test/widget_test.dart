@@ -7,6 +7,7 @@ import 'package:my_new_app/models/course.dart';
 import 'package:my_new_app/screens/course_list_page.dart';
 import 'package:my_new_app/screens/home_page.dart';
 import 'package:my_new_app/screens/teacher_application_page.dart';
+import 'package:my_new_app/screens/teacher_course_list_page.dart';
 
 void main() {
   testWidgets('Firebase setup guidance is shown when setup fails', (
@@ -182,6 +183,24 @@ void main() {
     await tester.drag(find.byType(ListView), const Offset(0, -800));
     await tester.pumpAndSettle();
     expect(find.text('講座を保存する'), findsOneWidget);
+  });
+
+  testWidgets('Teacher course list shows own courses', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherCourseListPage(
+          user: _FakeUser(),
+          courseStream: Stream.value(sampleCourses.take(1).toList()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('作成した講座'), findsOneWidget);
+    expect(find.text('Flutter入門: はじめてのスマホアプリ開発'), findsOneWidget);
+    expect(find.text('講座詳細を見る'), findsOneWidget);
   });
 }
 

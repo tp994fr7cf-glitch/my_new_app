@@ -7,6 +7,7 @@ import 'course_create_page.dart';
 import 'course_list_page.dart';
 import 'role_switch_page.dart';
 import 'teacher_application_page.dart';
+import 'teacher_course_list_page.dart';
 import 'video_lesson_page.dart';
 
 class HomePage extends StatelessWidget {
@@ -309,9 +310,15 @@ class TeacherHomePage extends StatelessWidget {
           _HomeActionCard(
             icon: Icons.video_library,
             title: '自分の講座',
-            description: '先生が作成した講座一覧を表示する予定です。',
+            description: '作成した講座の一覧と講座コードを確認できます。',
             buttonText: '講座を管理',
-            onPressed: () {},
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => TeacherCourseListPage(user: user),
+                ),
+              );
+            },
           ),
           _HomeActionCard(
             icon: Icons.add_circle,
