@@ -101,7 +101,8 @@ class _TeacherCourseCard extends StatelessWidget {
               onPressed: () {
                 Navigator.of(context).push(
                   MaterialPageRoute(
-                    builder: (_) => CourseDetailPage(course: course),
+                    builder: (_) =>
+                        CourseDetailPage(course: course, isTeacherMode: true),
                   ),
                 );
               },

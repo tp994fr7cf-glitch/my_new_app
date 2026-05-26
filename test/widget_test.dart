@@ -201,6 +201,21 @@ void main() {
     expect(find.text('作成した講座'), findsOneWidget);
     expect(find.text('Flutter入門: はじめてのスマホアプリ開発'), findsOneWidget);
     expect(find.text('講座詳細を見る'), findsOneWidget);
+
+    await tester.tap(find.text('講座詳細を見る'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('講座確認'), findsOneWidget);
+    expect(find.text('この画面は先生用の確認画面です。編集機能は後で追加します。'), findsOneWidget);
+    expect(find.text('受講を開始する'), findsNothing);
+    await tester.scrollUntilVisible(
+      find.text('講座を編集'),
+      500,
+      scrollable: find.byType(Scrollable),
+    );
+    expect(find.text('講座を編集'), findsOneWidget);
+    expect(find.text('レッスンを管理'), findsOneWidget);
+    expect(find.text('プレビューを見る'), findsOneWidget);
   });
 }
 

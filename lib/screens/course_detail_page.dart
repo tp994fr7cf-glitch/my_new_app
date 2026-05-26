@@ -6,9 +6,14 @@ import '../models/course.dart';
 import 'video_lesson_page.dart';
 
 class CourseDetailPage extends StatelessWidget {
-  const CourseDetailPage({super.key, required this.course});
+  const CourseDetailPage({
+    super.key,
+    required this.course,
+    this.isTeacherMode = false,
+  });
 
   final Course course;
+  final bool isTeacherMode;
 
   String get _courseId => course.id ?? course.title.replaceAll('/', '_');
 
@@ -91,10 +96,32 @@ class CourseDetailPage extends StatelessWidget {
     );
   }
 
+  void _previewLesson(BuildContext context) {
+    if (course.lessons.isEmpty) {
+      return;
+    }
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => VideoLessonPage(
+          course: course,
+          lesson: course.lessons.first,
+          lessonNumber: 1,
+        ),
+      ),
+    );
+  }
+
+  void _showComingSoon(BuildContext context, String featureName) {
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text('$featureNameは後で追加します。')));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('講座詳細')),
+      appBar: AppBar(title: Text(isTeacherMode ? '講座確認' : '講座詳細')),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.all(24),
@@ -113,6 +140,10 @@ class CourseDetailPage extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 20),
+            if (isTeacherMode) ...[
+              const _TeacherModeNotice(),
+              const SizedBox(height: 16),
+            ],
             Wrap(
               spacing: 8,
               runSpacing: 8,
@@ -165,33 +196,100 @@ class CourseDetailPage extends StatelessWidget {
               _LessonTile(
                 index: entry.$1 + 1,
                 lesson: entry.$2,
-                onTap: () {
-                  _openLesson(
-                    context,
-                    lesson: entry.$2,
-                    lessonNumber: entry.$1 + 1,
-                  );
-                },
+                onTap: isTeacherMode
+                    ? null
+                    : () {
+                        _openLesson(
+                          context,
+                          lesson: entry.$2,
+                          lessonNumber: entry.$1 + 1,
+                        );
+                      },
               ),
             const SizedBox(height: 24),
-            FilledButton.icon(
-              onPressed: () {
-                if (course.lessons.isEmpty) {
-                  return;
-                }
+            if (isTeacherMode)
+              _TeacherActionButtons(
+                onEditCourse: () => _showComingSoon(context, '講座編集'),
+                onManageLessons: () => _showComingSoon(context, 'レッスン管理'),
+                onPreview: () => _previewLesson(context),
+              )
+            else
+              FilledButton.icon(
+                onPressed: () {
+                  if (course.lessons.isEmpty) {
+                    return;
+                  }
 
-                _openLesson(
-                  context,
-                  lesson: course.lessons.first,
-                  lessonNumber: 1,
-                );
-              },
-              icon: const Icon(Icons.play_arrow),
-              label: const Text('受講を開始する'),
-            ),
+                  _openLesson(
+                    context,
+                    lesson: course.lessons.first,
+                    lessonNumber: 1,
+                  );
+                },
+                icon: const Icon(Icons.play_arrow),
+                label: const Text('受講を開始する'),
+              ),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _TeacherModeNotice extends StatelessWidget {
+  const _TeacherModeNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: Theme.of(context).colorScheme.secondaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Text(
+          'この画面は先生用の確認画面です。編集機能は後で追加します。',
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSecondaryContainer,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TeacherActionButtons extends StatelessWidget {
+  const _TeacherActionButtons({
+    required this.onEditCourse,
+    required this.onManageLessons,
+    required this.onPreview,
+  });
+
+  final VoidCallback onEditCourse;
+  final VoidCallback onManageLessons;
+  final VoidCallback onPreview;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        FilledButton.icon(
+          onPressed: onEditCourse,
+          icon: const Icon(Icons.edit),
+          label: const Text('講座を編集'),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: onManageLessons,
+          icon: const Icon(Icons.playlist_add_check),
+          label: const Text('レッスンを管理'),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: onPreview,
+          icon: const Icon(Icons.visibility),
+          label: const Text('プレビューを見る'),
+        ),
+      ],
     );
   }
 }
@@ -231,15 +329,11 @@ class _BulletText extends StatelessWidget {
 }
 
 class _LessonTile extends StatelessWidget {
-  const _LessonTile({
-    required this.index,
-    required this.lesson,
-    required this.onTap,
-  });
+  const _LessonTile({required this.index, required this.lesson, this.onTap});
 
   final int index;
   final CourseLesson lesson;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
