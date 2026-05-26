@@ -8,6 +8,7 @@ import 'package:my_new_app/screens/course_list_page.dart';
 import 'package:my_new_app/screens/home_page.dart';
 import 'package:my_new_app/screens/teacher_application_page.dart';
 import 'package:my_new_app/screens/teacher_course_list_page.dart';
+import 'package:my_new_app/screens/video_lesson_page.dart';
 
 void main() {
   testWidgets('Firebase setup guidance is shown when setup fails', (
@@ -216,6 +217,40 @@ void main() {
     expect(find.text('講座を編集'), findsOneWidget);
     expect(find.text('レッスンを管理'), findsOneWidget);
     expect(find.text('プレビューを見る'), findsOneWidget);
+
+    await tester.tap(find.text('レッスンを管理'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('レッスン管理'), findsOneWidget);
+    expect(find.text('授業形式'), findsWidgets);
+    expect(find.text('動画・音声URL（仮）'), findsWidgets);
+  });
+
+  testWidgets('Audio lesson page shows audio placeholder', (
+    WidgetTester tester,
+  ) async {
+    final audioCourse = sampleCourses[2];
+    final audioLesson = audioCourse.lessons.first;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: VideoLessonPage(
+          course: audioCourse,
+          lesson: audioLesson,
+          lessonNumber: 1,
+        ),
+      ),
+    );
+
+    expect(find.text('音声授業'), findsOneWidget);
+    expect(find.text('音声プレイヤー仮UI'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('授業形式: 音声のみ'),
+      500,
+      scrollable: find.byType(Scrollable),
+    );
+    expect(find.text('授業形式: 音声のみ'), findsOneWidget);
+    expect(find.text('動画プレイヤー仮UI'), findsNothing);
   });
 }
 

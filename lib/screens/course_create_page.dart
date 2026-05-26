@@ -59,7 +59,15 @@ class _CourseCreatePageState extends State<CourseCreatePage> {
     return _lessonControllers
         .map((controller) => controller.text.trim())
         .where((title) => title.isNotEmpty)
-        .map((title) => {'title': title, 'duration': '未設定', 'isPreview': false})
+        .map(
+          (title) => {
+            'title': title,
+            'duration': '未設定',
+            'mediaType': 'video',
+            'mediaUrl': '',
+            'isPreview': false,
+          },
+        )
         .toList();
   }
 

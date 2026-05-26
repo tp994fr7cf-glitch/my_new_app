@@ -78,23 +78,35 @@ class CourseLesson {
   const CourseLesson({
     required this.title,
     required this.duration,
+    this.mediaType = 'video',
+    this.mediaUrl = '',
     this.isPreview = false,
   });
 
   final String title;
   final String duration;
+  final String mediaType;
+  final String mediaUrl;
   final bool isPreview;
 
   factory CourseLesson.fromMap(Map data) {
     return CourseLesson(
       title: data['title'] as String? ?? '',
       duration: data['duration'] as String? ?? '',
+      mediaType: data['mediaType'] as String? ?? 'video',
+      mediaUrl: data['mediaUrl'] as String? ?? '',
       isPreview: data['isPreview'] as bool? ?? false,
     );
   }
 
   Map<String, dynamic> toMap() {
-    return {'title': title, 'duration': duration, 'isPreview': isPreview};
+    return {
+      'title': title,
+      'duration': duration,
+      'mediaType': mediaType,
+      'mediaUrl': mediaUrl,
+      'isPreview': isPreview,
+    };
   }
 }
 
@@ -151,10 +163,15 @@ const sampleCourses = [
     priceLabel: 'サブスク対象',
     description: '短い会話からニュース音声まで、段階的に聞き取る力を伸ばします。',
     lessons: [
-      CourseLesson(title: '短い会話を聞き取るコツ', duration: '10分', isPreview: true),
-      CourseLesson(title: '頻出表現の聞き分け', duration: '17分'),
-      CourseLesson(title: 'ニュース音声に慣れる', duration: '23分'),
-      CourseLesson(title: 'シャドーイング実践', duration: '15分'),
+      CourseLesson(
+        title: '短い会話を聞き取るコツ',
+        duration: '10分',
+        mediaType: 'audio',
+        isPreview: true,
+      ),
+      CourseLesson(title: '頻出表現の聞き分け', duration: '17分', mediaType: 'audio'),
+      CourseLesson(title: 'ニュース音声に慣れる', duration: '23分', mediaType: 'audio'),
+      CourseLesson(title: 'シャドーイング実践', duration: '15分', mediaType: 'audio'),
     ],
   ),
   Course(

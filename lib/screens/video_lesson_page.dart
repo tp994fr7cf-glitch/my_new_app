@@ -14,10 +14,12 @@ class VideoLessonPage extends StatelessWidget {
   final CourseLesson lesson;
   final int lessonNumber;
 
+  bool get _isAudioLesson => lesson.mediaType == 'audio';
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('動画視聴')),
+      appBar: AppBar(title: Text(_isAudioLesson ? '音声授業' : '動画視聴')),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.all(24),
@@ -33,14 +35,20 @@ class VideoLessonPage extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Icon(
-                      Icons.play_circle_fill,
+                      _isAudioLesson
+                          ? Icons.headphones
+                          : Icons.play_circle_fill,
                       size: 72,
                       color: Theme.of(context).colorScheme.primary,
                     ),
                     const SizedBox(height: 8),
-                    const Text('動画プレイヤー仮UI'),
+                    Text(_isAudioLesson ? '音声プレイヤー仮UI' : '動画プレイヤー仮UI'),
                     const SizedBox(height: 4),
-                    const Text('実際の動画再生機能は後で追加します。'),
+                    Text(
+                      _isAudioLesson
+                          ? '実際の音声再生機能は後で追加します。'
+                          : '実際の動画再生機能は後で追加します。',
+                    ),
                   ],
                 ),
               ),
@@ -54,6 +62,12 @@ class VideoLessonPage extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text('再生時間: ${lesson.duration}'),
+            const SizedBox(height: 8),
+            Text('授業形式: ${_isAudioLesson ? '音声のみ' : '動画'}'),
+            if (lesson.mediaUrl.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text('仮URL: ${lesson.mediaUrl}'),
+            ],
             const SizedBox(height: 24),
             const _SectionTitle('学習メモ'),
             const SizedBox(height: 8),
@@ -68,7 +82,7 @@ class VideoLessonPage extends StatelessWidget {
             const SizedBox(height: 24),
             const _SectionTitle('この画面に後で追加する機能'),
             const SizedBox(height: 8),
-            const _BulletText('実際の動画プレイヤー'),
+            _BulletText(_isAudioLesson ? '実際の音声プレイヤー' : '実際の動画プレイヤー'),
             const _BulletText('再生位置の保存'),
             const _BulletText('視聴完了チェック'),
             const _BulletText('コメント・質問欄'),

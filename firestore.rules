@@ -71,6 +71,17 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.roles.hasAny(['teacher']);
     }
 
+    function canUpdateOwnTeacherCourse() {
+      return isTeacher()
+        && resource.data.instructorId == request.auth.uid
+        && request.resource.data.instructorId == resource.data.instructorId
+        && request.resource.data.courseCode == resource.data.courseCode
+        && request.resource.data.source == resource.data.source
+        && request.resource.data.status == resource.data.status
+        && request.resource.data.lessons is list
+        && request.resource.data.lessonCount is int;
+    }
+
     match /users/{userId} {
       allow read: if isOwner(userId);
 
@@ -142,6 +153,8 @@ service cloud.firestore {
         && request.resource.data.courseCode is string
         && request.resource.data.title is string
         && request.resource.data.lessons is list;
+
+      allow update: if canUpdateOwnTeacherCourse();
     }
   }
 }

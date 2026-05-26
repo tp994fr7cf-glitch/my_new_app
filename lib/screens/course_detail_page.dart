@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
+import 'teacher_lesson_manage_page.dart';
 import 'video_lesson_page.dart';
 
 class CourseDetailPage extends StatelessWidget {
@@ -210,7 +211,13 @@ class CourseDetailPage extends StatelessWidget {
             if (isTeacherMode)
               _TeacherActionButtons(
                 onEditCourse: () => _showComingSoon(context, '講座編集'),
-                onManageLessons: () => _showComingSoon(context, 'レッスン管理'),
+                onManageLessons: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => TeacherLessonManagePage(course: course),
+                    ),
+                  );
+                },
                 onPreview: () => _previewLesson(context),
               )
             else
