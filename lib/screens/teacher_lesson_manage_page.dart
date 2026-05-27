@@ -65,7 +65,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         CourseLesson(
           title: title,
           duration: editor.durationController.text.trim().isEmpty
-              ? '未設定'
+              ? '1分30秒'
               : editor.durationController.text.trim(),
           mediaType: editor.mediaType,
           mediaUrl: editor.mediaUrlController.text.trim(),
@@ -262,7 +262,7 @@ class _LessonEditorCard extends StatelessWidget {
               decoration: const InputDecoration(
                 border: OutlineInputBorder(),
                 labelText: '時間',
-                hintText: '例: 15分',
+                hintText: '例: 1分30秒',
               ),
             ),
             const SizedBox(height: 12),

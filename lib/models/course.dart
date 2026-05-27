@@ -211,12 +211,12 @@ const sampleCourses = [
     lessons: [
       CourseLesson(
         title: 'Flutterで作るアプリの全体像',
-        duration: '12分',
+        duration: '1分30秒',
         isPreview: true,
       ),
-      CourseLesson(title: 'Dartの基本文法', duration: '18分'),
-      CourseLesson(title: '画面レイアウトの作り方', duration: '22分'),
-      CourseLesson(title: 'ボタン操作と状態管理の基礎', duration: '20分'),
+      CourseLesson(title: 'Dartの基本文法', duration: '1分30秒'),
+      CourseLesson(title: '画面レイアウトの作り方', duration: '1分30秒'),
+      CourseLesson(title: 'ボタン操作と状態管理の基礎', duration: '1分30秒'),
     ],
     lessonEvents: [
       LessonEvent(
@@ -245,10 +245,10 @@ const sampleCourses = [
     priceLabel: '¥1,200',
     description: '数と式、二次関数、図形と計量を基礎から丁寧に復習します。',
     lessons: [
-      CourseLesson(title: '数と式の復習', duration: '16分', isPreview: true),
-      CourseLesson(title: '因数分解の考え方', duration: '19分'),
-      CourseLesson(title: '二次関数のグラフ', duration: '24分'),
-      CourseLesson(title: '図形と計量の基本', duration: '21分'),
+      CourseLesson(title: '数と式の復習', duration: '1分30秒', isPreview: true),
+      CourseLesson(title: '因数分解の考え方', duration: '1分30秒'),
+      CourseLesson(title: '二次関数のグラフ', duration: '1分30秒'),
+      CourseLesson(title: '図形と計量の基本', duration: '1分30秒'),
     ],
   ),
   Course(
@@ -265,13 +265,13 @@ const sampleCourses = [
     lessons: [
       CourseLesson(
         title: '短い会話を聞き取るコツ',
-        duration: '10分',
+        duration: '1分30秒',
         mediaType: 'audio',
         isPreview: true,
       ),
-      CourseLesson(title: '頻出表現の聞き分け', duration: '17分', mediaType: 'audio'),
-      CourseLesson(title: 'ニュース音声に慣れる', duration: '23分', mediaType: 'audio'),
-      CourseLesson(title: 'シャドーイング実践', duration: '15分', mediaType: 'audio'),
+      CourseLesson(title: '頻出表現の聞き分け', duration: '1分30秒', mediaType: 'audio'),
+      CourseLesson(title: 'ニュース音声に慣れる', duration: '1分30秒', mediaType: 'audio'),
+      CourseLesson(title: 'シャドーイング実践', duration: '1分30秒', mediaType: 'audio'),
     ],
   ),
   Course(
@@ -286,10 +286,10 @@ const sampleCourses = [
     priceLabel: '組織向け',
     description: 'メール、報連相、会議参加など、社会人としての基本を学ぶ研修講座です。',
     lessons: [
-      CourseLesson(title: '社会人としての基本姿勢', duration: '11分', isPreview: true),
-      CourseLesson(title: '報連相の実践', duration: '14分'),
-      CourseLesson(title: 'ビジネスメールの基礎', duration: '18分'),
-      CourseLesson(title: '会議参加のマナー', duration: '13分'),
+      CourseLesson(title: '社会人としての基本姿勢', duration: '1分30秒', isPreview: true),
+      CourseLesson(title: '報連相の実践', duration: '1分30秒'),
+      CourseLesson(title: 'ビジネスメールの基礎', duration: '1分30秒'),
+      CourseLesson(title: '会議参加のマナー', duration: '1分30秒'),
     ],
   ),
 ];

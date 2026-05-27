@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -30,7 +32,11 @@ class VideoLessonPage extends StatefulWidget {
 }
 
 class _VideoLessonPageState extends State<VideoLessonPage> {
+  static const int _developmentPlaybackDurationSec = 90;
+
   int _currentPositionSec = 0;
+  bool _isPlaying = false;
+  Timer? _playbackTimer;
   final Map<String, int> _selectedChoices = {};
   final Map<String, bool> _answerResults = {};
   String? _message;
@@ -40,6 +46,27 @@ class _VideoLessonPageState extends State<VideoLessonPage> {
   int get lessonNumber => widget.lessonNumber;
 
   bool get _isAudioLesson => lesson.mediaType == 'audio';
+  int get _totalDurationSec => _developmentPlaybackDurationSec;
+  bool get _isAtEnd => _currentPositionSec >= _totalDurationSec;
+  IconData get _playButtonIcon {
+    if (_isPlaying) {
+      return Icons.pause;
+    }
+    if (_isAtEnd) {
+      return Icons.replay;
+    }
+    return Icons.play_arrow;
+  }
+
+  String get _playButtonLabel {
+    if (_isPlaying) {
+      return '一時停止';
+    }
+    if (_isAtEnd) {
+      return 'もう一度再生';
+    }
+    return '再生';
+  }
 
   List<LessonEvent> get _dueQuizEvents {
     return course.lessonEvents
@@ -50,9 +77,71 @@ class _VideoLessonPageState extends State<VideoLessonPage> {
       ..sort((a, b) => a.timestampSec.compareTo(b.timestampSec));
   }
 
+  @override
+  void dispose() {
+    _playbackTimer?.cancel();
+    super.dispose();
+  }
+
+  String _formatTime(int seconds) {
+    final minutes = seconds ~/ 60;
+    final remainingSeconds = seconds % 60;
+    return '${minutes.toString().padLeft(2, '0')}:${remainingSeconds.toString().padLeft(2, '0')}';
+  }
+
+  void _togglePlayback() {
+    if (_isPlaying) {
+      _pausePlayback();
+      return;
+    }
+
+    if (_isAtEnd) {
+      setState(() {
+        _currentPositionSec = 0;
+        _message = null;
+      });
+    }
+
+    setState(() {
+      _isPlaying = true;
+      _message = null;
+    });
+    _playbackTimer?.cancel();
+    _playbackTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) {
+        _playbackTimer?.cancel();
+        return;
+      }
+
+      setState(() {
+        if (_currentPositionSec < _totalDurationSec) {
+          _currentPositionSec += 1;
+        }
+        if (_currentPositionSec >= _totalDurationSec) {
+          _currentPositionSec = _totalDurationSec;
+          _isPlaying = false;
+          _playbackTimer?.cancel();
+        }
+      });
+    });
+  }
+
+  void _pausePlayback() {
+    _playbackTimer?.cancel();
+    setState(() {
+      _isPlaying = false;
+    });
+  }
+
   void _advanceTime() {
     setState(() {
-      _currentPositionSec += 30;
+      _currentPositionSec = (_currentPositionSec + 30)
+          .clamp(0, _totalDurationSec)
+          .toInt();
+      if (_isAtEnd) {
+        _isPlaying = false;
+        _playbackTimer?.cancel();
+      }
       _message = null;
     });
   }
@@ -143,20 +232,19 @@ class _VideoLessonPageState extends State<VideoLessonPage> {
         child: ListView(
           padding: const EdgeInsets.all(24),
           children: [
-            AspectRatio(
-              aspectRatio: 16 / 9,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(16),
-                ),
+            Container(
+              constraints: const BoxConstraints(minHeight: 260),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(24),
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Icon(
-                      _isAudioLesson
-                          ? Icons.headphones
-                          : Icons.play_circle_fill,
+                      _isAudioLesson ? Icons.headphones : Icons.smart_display,
                       size: 72,
                       color: Theme.of(context).colorScheme.primary,
                     ),
@@ -167,6 +255,29 @@ class _VideoLessonPageState extends State<VideoLessonPage> {
                       _isAudioLesson
                           ? '実際の音声再生機能は後で追加します。'
                           : '実際の動画再生機能は後で追加します。',
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      '${_formatTime(_currentPositionSec)} / ${_formatTime(_totalDurationSec)}',
+                      style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 32),
+                      child: LinearProgressIndicator(
+                        value: _totalDurationSec == 0
+                            ? 0
+                            : _currentPositionSec / _totalDurationSec,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: _togglePlayback,
+                      icon: Icon(_playButtonIcon),
+                      label: Text(_playButtonLabel),
                     ),
                   ],
                 ),
@@ -184,12 +295,14 @@ class _VideoLessonPageState extends State<VideoLessonPage> {
             const SizedBox(height: 8),
             Text('授業形式: ${_isAudioLesson ? '音声のみ' : '動画'}'),
             const SizedBox(height: 8),
-            Text('現在位置: $_currentPositionSec秒'),
+            Text('仮再生時間: ${_formatTime(_totalDurationSec)}'),
+            const SizedBox(height: 8),
+            Text('現在位置: ${_formatTime(_currentPositionSec)}'),
             const SizedBox(height: 8),
             OutlinedButton.icon(
               onPressed: _advanceTime,
               icon: const Icon(Icons.forward_30),
-              label: const Text('30秒進める（仮）'),
+              label: const Text('30秒進める（開発用）'),
             ),
             if (lesson.mediaUrl.isNotEmpty) ...[
               const SizedBox(height: 8),

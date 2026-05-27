@@ -62,7 +62,7 @@ class _CourseCreatePageState extends State<CourseCreatePage> {
         .map(
           (title) => {
             'title': title,
-            'duration': '未設定',
+            'duration': '1分30秒',
             'mediaType': 'video',
             'mediaUrl': '',
             'isPreview': false,
@@ -99,7 +99,7 @@ class _CourseCreatePageState extends State<CourseCreatePage> {
         'instructorName': widget.user.displayName ?? widget.user.email ?? '先生',
         'category': _categoryController.text.trim(),
         'level': _levelController.text.trim(),
-        'duration': '未設定',
+        'duration': '${lessons.length}レッスン',
         'lessonCount': lessons.length,
         'rating': 0,
         'priceLabel': _priceLabelController.text.trim(),

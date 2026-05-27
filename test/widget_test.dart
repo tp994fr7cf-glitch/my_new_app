@@ -434,6 +434,35 @@ void main() {
     expect(find.text('動画プレイヤー仮UI'), findsNothing);
   });
 
+  testWidgets('Video lesson placeholder advances playback time', (
+    WidgetTester tester,
+  ) async {
+    final course = sampleCourses.first;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: VideoLessonPage(
+          course: course,
+          lesson: course.lessons.first,
+          lessonNumber: 1,
+        ),
+      ),
+    );
+
+    expect(find.text('00:00 / 01:30'), findsOneWidget);
+    expect(find.text('現在位置: 00:00'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, '再生'));
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.text('00:01 / 01:30'), findsOneWidget);
+    expect(find.text('現在位置: 00:01'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, '一時停止'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, '一時停止'));
+    await tester.pump();
+  });
+
   testWidgets('Quiz manage page disables save until quiz is valid', (
     WidgetTester tester,
   ) async {
