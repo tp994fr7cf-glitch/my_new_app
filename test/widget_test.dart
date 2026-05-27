@@ -239,6 +239,48 @@ void main() {
     expect(find.text('視聴時間: 90秒'), findsOneWidget);
   });
 
+  testWidgets(
+    'Learning records page does not show legacy records after segment deletion',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime.now());
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            lessonViewSegmentsStream: Stream.value([
+              {
+                'id': 'deleted-segment',
+                'courseTitle': '削除済み講座',
+                'lessonNumber': 1,
+                'lessonTitle': '削除済みレッスン',
+                'cycleNumber': 1,
+                'status': 'completed',
+                'completedAt': now,
+                'studySeconds': 120,
+                'watchSeconds': 90,
+                'isDeleted': true,
+              },
+            ]),
+            learningEventsStream: Stream.value([
+              {
+                'courseTitle': '古い講座',
+                'lessonTitle': '古いレッスン',
+                'createdAt': now,
+              },
+            ]),
+            quizAttemptsStream: const Stream.empty(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('この期間の視聴記録はまだありません。'), findsOneWidget);
+      expect(find.text('古い講座'), findsNothing);
+      expect(find.text('削除済み講座'), findsNothing);
+    },
+  );
+
   testWidgets('Student home opens learning records page', (
     WidgetTester tester,
   ) async {

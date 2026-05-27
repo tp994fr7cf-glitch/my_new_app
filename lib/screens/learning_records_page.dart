@@ -291,8 +291,9 @@ class _ViewRecordsList extends StatelessWidget {
           return const Center(child: CircularProgressIndicator());
         }
 
+        final segmentRecords = snapshot.data ?? const [];
         final records = filterRecords(
-          (snapshot.data ?? const [])
+          segmentRecords
               .where((record) => record['isDeleted'] != true)
               .toList(),
         );
@@ -305,6 +306,10 @@ class _ViewRecordsList extends StatelessWidget {
               ],
             ],
           );
+        }
+
+        if (segmentRecords.isNotEmpty) {
+          return const _EmptyRecordCard(message: 'この期間の視聴記録はまだありません。');
         }
 
         return _LegacyViewRecordsList(
