@@ -202,8 +202,9 @@ void main() {
       MaterialApp(
         home: LearningRecordsPage(
           user: _FakeUser(),
-          lessonViewSessionsStream: Stream.value([
+          lessonViewSegmentsStream: Stream.value([
             {
+              'id': 'segment-1',
               'courseTitle': 'Flutter入門',
               'lessonNumber': 1,
               'lessonTitle': '全体像',
@@ -211,15 +212,18 @@ void main() {
               'status': 'inProgress',
               'startedAt': startedAt,
               'studySeconds': 61,
+              'watchSeconds': 30,
             },
             {
+              'id': 'segment-2',
               'courseTitle': 'Flutter入門',
               'lessonNumber': 1,
               'lessonTitle': '全体像',
               'cycleNumber': 2,
               'status': 'completed',
               'completedAt': completedAt,
-              'studyMinutes': 2,
+              'studySeconds': 120,
+              'watchSeconds': 90,
             },
           ]),
           learningEventsStream: const Stream.empty(),
@@ -231,7 +235,8 @@ void main() {
 
     expect(find.text('レッスン1 1周目'), findsOneWidget);
     expect(find.text('レッスン1 2周目終了'), findsOneWidget);
-    expect(find.text('学習時間: 2分'), findsWidgets);
+    expect(find.text('学習時間: 120秒'), findsOneWidget);
+    expect(find.text('視聴時間: 90秒'), findsOneWidget);
   });
 
   testWidgets('Student home opens learning records page', (
@@ -598,20 +603,18 @@ void main() {
       ),
     );
 
-    final advanceButton = find.widgetWithText(OutlinedButton, '30秒進める（開発用）');
+    await tester.tap(find.widgetWithText(FilledButton, '再生'));
+    await tester.pump();
+    for (var i = 0; i < 85; i += 1) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+
     await tester.scrollUntilVisible(
-      advanceButton,
+      find.textContaining('視聴終了地点に到達しました'),
       500,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.tap(advanceButton);
-    await tester.pumpAndSettle();
-    await tester.tap(advanceButton);
-    await tester.pumpAndSettle();
-    await tester.tap(advanceButton);
-    await tester.pumpAndSettle();
-
-    expect(find.text('レッスン1 1周目終了として記録しました。'), findsOneWidget);
+    expect(find.textContaining('視聴終了地点に到達しました'), findsOneWidget);
   });
 
   testWidgets('Video lesson manual completion finishes cycle', (

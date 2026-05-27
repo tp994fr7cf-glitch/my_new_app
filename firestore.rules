@@ -145,11 +145,30 @@ service cloud.firestore {
           && request.resource.data.lessonTitle is string
           && request.resource.data.cycleNumber is int
           && request.resource.data.status in ['inProgress', 'completed']
-          && request.resource.data.studySeconds is int
-          && request.resource.data.studyMinutes is int
-          && request.resource.data.maxPositionSec is int
+          && request.resource.data.hasPlaybackStarted is bool
+          && request.resource.data.pendingCompletion is bool
+          && request.resource.data.maxWatchedPositionSec is int
           && request.resource.data.totalDurationSec is int
           && request.resource.data.completionThresholdSec is int;
+      }
+
+      match /lessonViewSegments/{segmentId} {
+        allow read: if isOwner(userId);
+
+        allow create, update: if isOwner(userId)
+          && request.resource.data.userId == userId
+          && request.resource.data.sessionId is string
+          && request.resource.data.courseId is string
+          && request.resource.data.courseTitle is string
+          && request.resource.data.lessonNumber is int
+          && request.resource.data.lessonTitle is string
+          && request.resource.data.cycleNumber is int
+          && request.resource.data.status in ['inProgress', 'completed']
+          && request.resource.data.studySeconds is int
+          && request.resource.data.watchSeconds is int
+          && request.resource.data.startPositionSec is int
+          && request.resource.data.endPositionSec is int
+          && request.resource.data.isDeleted is bool;
       }
 
       match /quizAttempts/{attemptId} {

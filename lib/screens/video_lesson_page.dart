@@ -40,13 +40,18 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   int _currentPositionSec = 0;
   int _studySeconds = 0;
+  int _watchSeconds = 0;
   int _cycleNumber = 1;
+  int _cycleMaxWatchedPositionSec = 0;
   bool _isPlaying = false;
   bool _isPreparingSession = false;
   bool _sessionCompleted = false;
+  bool _hasPlaybackStarted = false;
+  bool _pendingCompletion = false;
   Timer? _playbackTimer;
   Timer? _studyTimer;
   String? _sessionId;
+  String? _segmentId;
   final Map<String, int> _selectedChoices = {};
   final Map<String, bool> _answerResults = {};
   final Set<String> _answeredQuizEventIds = {};
@@ -62,6 +67,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       (_totalDurationSec * _completionRate).round();
   bool get _isAtEnd => _currentPositionSec >= _totalDurationSec;
   bool get _hasActiveSession => _sessionId != null && !_sessionCompleted;
+  String get _taskKey => '${_courseId()}-$lessonNumber-$_cycleNumber';
   IconData get _playButtonIcon {
     if (_isPlaying) {
       return Icons.pause;
@@ -102,6 +108,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    unawaited(_resumeLearningTimeOnOpen());
   }
 
   @override
@@ -109,7 +116,11 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _playbackTimer?.cancel();
     _studyTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
-    unawaited(_persistSessionProgress());
+    if (_pendingCompletion && !_sessionCompleted) {
+      unawaited(_completeCurrentSegment(updateUi: false));
+    } else {
+      unawaited(_persistSessionProgress());
+    }
     super.dispose();
   }
 
@@ -120,7 +131,11 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         state == AppLifecycleState.detached ||
         state == AppLifecycleState.hidden) {
       _studyTimer?.cancel();
-      unawaited(_persistSessionProgress());
+      if (_pendingCompletion && !_sessionCompleted) {
+        unawaited(_completeCurrentSegment());
+      } else {
+        unawaited(_persistSessionProgress());
+      }
       return;
     }
 
@@ -135,13 +150,6 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     return '${minutes.toString().padLeft(2, '0')}:${remainingSeconds.toString().padLeft(2, '0')}';
   }
 
-  int _studyMinutes() {
-    if (_studySeconds == 0) {
-      return 0;
-    }
-    return (_studySeconds / 60).ceil();
-  }
-
   Future<void> _togglePlayback() async {
     if (_isPlaying) {
       _pausePlayback();
@@ -152,8 +160,13 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       setState(() {
         _currentPositionSec = 0;
         _sessionId = null;
+        _segmentId = null;
         _sessionCompleted = false;
         _studySeconds = 0;
+        _watchSeconds = 0;
+        _cycleMaxWatchedPositionSec = 0;
+        _hasPlaybackStarted = false;
+        _pendingCompletion = false;
         _selectedChoices.clear();
         _answerResults.clear();
         _answeredQuizEventIds.clear();
@@ -167,6 +180,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
 
     setState(() {
+      _hasPlaybackStarted = true;
       _isPlaying = true;
       _message = null;
     });
@@ -177,14 +191,20 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         return;
       }
 
+      var shouldPersistPending = false;
       setState(() {
         if (_currentPositionSec < _totalDurationSec) {
           _currentPositionSec += 1;
         }
+        _addWatchProgress(_currentPositionSec);
+        if (_currentPositionSec >= _completionThresholdSec &&
+            !_pendingCompletion) {
+          _setCompletionPendingState();
+          shouldPersistPending = true;
+        }
       });
-      if (_currentPositionSec >= _completionThresholdSec &&
-          !_sessionCompleted) {
-        unawaited(_completeCurrentCycle());
+      if (shouldPersistPending) {
+        unawaited(_persistSessionProgress());
       }
     });
   }
@@ -203,13 +223,15 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
 
     setState(() {
+      _hasPlaybackStarted = true;
       _currentPositionSec = (_currentPositionSec + 30)
           .clamp(0, _totalDurationSec)
           .toInt();
+      _addWatchProgress(_currentPositionSec);
       _message = null;
     });
-    if (_currentPositionSec >= _completionThresholdSec && !_sessionCompleted) {
-      await _completeCurrentCycle();
+    if (_currentPositionSec >= _completionThresholdSec && !_pendingCompletion) {
+      await _markCompletionPending();
     }
   }
 
@@ -218,7 +240,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   }
 
   Future<bool> _ensureSession() async {
-    if (_hasActiveSession) {
+    if (_hasActiveSession && _segmentId != null) {
       _startStudyTimer();
       return true;
     }
@@ -239,78 +261,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         return true;
       }
 
-      final firestore = FirebaseFirestore.instance;
-      final sessionsRef = firestore
-          .collection('users')
-          .doc(user.uid)
-          .collection('lessonViewSessions');
-      final snapshot = await sessionsRef
-          .where('courseId', isEqualTo: _courseId())
-          .where('lessonNumber', isEqualTo: lessonNumber)
-          .get();
-
-      final sessions = snapshot.docs.toList()
-        ..sort((a, b) {
-          final aCycle = (a.data()['cycleNumber'] as num?)?.toInt() ?? 0;
-          final bCycle = (b.data()['cycleNumber'] as num?)?.toInt() ?? 0;
-          if (aCycle != bCycle) {
-            return bCycle.compareTo(aCycle);
-          }
-          final aStartedAt = a.data()['startedAt'];
-          final bStartedAt = b.data()['startedAt'];
-          if (aStartedAt is Timestamp && bStartedAt is Timestamp) {
-            return bStartedAt.compareTo(aStartedAt);
-          }
-          return 0;
-        });
-
-      final now = DateTime.now();
-      if (sessions.isNotEmpty) {
-        final latest = sessions.first;
-        final latestData = latest.data();
-        final isCompleted = latestData['status'] == 'completed';
-        final lastActivityAt = latestData['lastActivityAt'];
-        final lastActivityDate = lastActivityAt is Timestamp
-            ? lastActivityAt.toDate()
-            : null;
-        final canResume =
-            !isCompleted &&
-            lastActivityDate != null &&
-            now.difference(lastActivityDate) < _resumeWindow;
-
-        if (canResume) {
-          _loadSession(latest.id, latestData);
-          _startStudyTimer();
-          return true;
-        }
-
-        _cycleNumber = ((latestData['cycleNumber'] as num?)?.toInt() ?? 0) + 1;
-      }
-
-      final newSessionRef = sessionsRef.doc();
-      final startedAt = FieldValue.serverTimestamp();
-      await newSessionRef.set({
-        'userId': user.uid,
-        'courseId': _courseId(),
-        'courseTitle': course.title,
-        'lessonNumber': lessonNumber,
-        'lessonTitle': lesson.title,
-        'cycleNumber': _cycleNumber,
-        'status': 'inProgress',
-        'startedAt': startedAt,
-        'lastActivityAt': startedAt,
-        'studySeconds': 0,
-        'studyMinutes': 0,
-        'maxPositionSec': 0,
-        'totalDurationSec': _totalDurationSec,
-        'completionThresholdSec': _completionThresholdSec,
-        'answeredQuizEventIds': [],
-      });
-
-      _sessionId = newSessionRef.id;
-      _sessionCompleted = false;
-      _studySeconds = 0;
-      _answeredQuizEventIds.clear();
+      final session = await _loadOrCreateCycleSession(user);
+      await _loadOrCreateSegment(user, session);
       _startStudyTimer();
       return true;
     } catch (_) {
@@ -331,9 +283,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   void _startLocalSession() {
     _sessionId = 'local-${DateTime.now().microsecondsSinceEpoch}';
+    _segmentId = 'local-segment-${DateTime.now().microsecondsSinceEpoch}';
     _cycleNumber = _sessionCompleted ? _cycleNumber + 1 : _cycleNumber;
     _sessionCompleted = false;
     _studySeconds = 0;
+    _watchSeconds = 0;
+    _cycleMaxWatchedPositionSec = 0;
+    _hasPlaybackStarted = true;
+    _pendingCompletion = false;
     _answeredQuizEventIds.clear();
     _startStudyTimer();
   }
@@ -341,13 +298,208 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   void _loadSession(String sessionId, Map<String, dynamic> data) {
     _sessionId = sessionId;
     _cycleNumber = (data['cycleNumber'] as num?)?.toInt() ?? 1;
-    _sessionCompleted = data['status'] == 'completed';
-    _studySeconds = (data['studySeconds'] as num?)?.toInt() ?? 0;
-    _currentPositionSec = (data['maxPositionSec'] as num?)?.toInt() ?? 0;
+    _sessionCompleted =
+        data['status'] == 'completed' || data['cycleCompleted'] == true;
+    _cycleMaxWatchedPositionSec =
+        (data['maxWatchedPositionSec'] as num?)?.toInt() ??
+        (data['maxPositionSec'] as num?)?.toInt() ??
+        0;
+    _currentPositionSec = _cycleMaxWatchedPositionSec;
+    _hasPlaybackStarted = data['hasPlaybackStarted'] == true;
+    _pendingCompletion = data['pendingCompletion'] == true;
     final answered = data['answeredQuizEventIds'];
     _answeredQuizEventIds
       ..clear()
       ..addAll(answered is List ? answered.whereType<String>() : const []);
+  }
+
+  Future<void> _resumeLearningTimeOnOpen() async {
+    if (Firebase.apps.isEmpty) {
+      return;
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+
+    try {
+      final session = await _latestCycleSession(user);
+      if (session == null) {
+        return;
+      }
+
+      final data = session.data();
+      final isCompleted =
+          data['status'] == 'completed' || data['cycleCompleted'] == true;
+      final hasPlaybackStarted = data['hasPlaybackStarted'] == true;
+      if (isCompleted || !hasPlaybackStarted) {
+        return;
+      }
+
+      _loadSession(session.id, data);
+      await _loadOrCreateSegment(user, session);
+      _startStudyTimer();
+    } catch (_) {
+      // Opening the page should still work even if record resume fails.
+    }
+  }
+
+  Future<QueryDocumentSnapshot<Map<String, dynamic>>?> _latestCycleSession(
+    User user,
+  ) async {
+    final snapshot = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('lessonViewSessions')
+        .where('courseId', isEqualTo: _courseId())
+        .where('lessonNumber', isEqualTo: lessonNumber)
+        .get();
+
+    if (snapshot.docs.isEmpty) {
+      return null;
+    }
+
+    final sessions = snapshot.docs.toList()
+      ..sort((a, b) {
+        final aCycle = (a.data()['cycleNumber'] as num?)?.toInt() ?? 0;
+        final bCycle = (b.data()['cycleNumber'] as num?)?.toInt() ?? 0;
+        if (aCycle != bCycle) {
+          return bCycle.compareTo(aCycle);
+        }
+        final aStartedAt = a.data()['startedAt'];
+        final bStartedAt = b.data()['startedAt'];
+        if (aStartedAt is Timestamp && bStartedAt is Timestamp) {
+          return bStartedAt.compareTo(aStartedAt);
+        }
+        return 0;
+      });
+
+    return sessions.first;
+  }
+
+  Future<QueryDocumentSnapshot<Map<String, dynamic>>?> _latestOverallSegment(
+    User user,
+  ) async {
+    final snapshot = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('lessonViewSegments')
+        .orderBy('lastActivityAt', descending: true)
+        .limit(1)
+        .get();
+
+    return snapshot.docs.isEmpty ? null : snapshot.docs.first;
+  }
+
+  Future<DocumentSnapshot<Map<String, dynamic>>> _loadOrCreateCycleSession(
+    User user,
+  ) async {
+    final sessionsRef = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('lessonViewSessions');
+    final latest = await _latestCycleSession(user);
+
+    if (latest != null) {
+      final latestData = latest.data();
+      final isCompleted =
+          latestData['status'] == 'completed' ||
+          latestData['cycleCompleted'] == true;
+      if (!isCompleted) {
+        _loadSession(latest.id, latestData);
+        await latest.reference.set({
+          'hasPlaybackStarted': true,
+          'lastActivityAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+        _hasPlaybackStarted = true;
+        return latest;
+      }
+
+      _cycleNumber = ((latestData['cycleNumber'] as num?)?.toInt() ?? 0) + 1;
+    }
+
+    final newSessionRef = sessionsRef.doc();
+    final startedAt = FieldValue.serverTimestamp();
+    await newSessionRef.set({
+      'userId': user.uid,
+      'courseId': _courseId(),
+      'courseTitle': course.title,
+      'lessonNumber': lessonNumber,
+      'lessonTitle': lesson.title,
+      'cycleNumber': _cycleNumber,
+      'status': 'inProgress',
+      'cycleCompleted': false,
+      'pendingCompletion': false,
+      'hasPlaybackStarted': true,
+      'startedAt': startedAt,
+      'lastActivityAt': startedAt,
+      'maxWatchedPositionSec': 0,
+      'totalDurationSec': _totalDurationSec,
+      'completionThresholdSec': _completionThresholdSec,
+      'answeredQuizEventIds': [],
+    });
+
+    final created = await newSessionRef.get();
+    _loadSession(created.id, created.data()!);
+    return created;
+  }
+
+  Future<void> _loadOrCreateSegment(
+    User user,
+    DocumentSnapshot<Map<String, dynamic>> session,
+  ) async {
+    final latestOverall = await _latestOverallSegment(user);
+    final now = DateTime.now();
+    final segmentsRef = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('lessonViewSegments');
+
+    if (latestOverall != null) {
+      final latestData = latestOverall.data();
+      final lastActivityAt = latestData['lastActivityAt'];
+      final lastActivityDate = lastActivityAt is Timestamp
+          ? lastActivityAt.toDate()
+          : null;
+      final canResumeSegment =
+          latestData['sessionId'] == session.id &&
+          latestData['status'] == 'inProgress' &&
+          latestData['isDeleted'] != true &&
+          lastActivityDate != null &&
+          now.difference(lastActivityDate) < _resumeWindow;
+
+      if (canResumeSegment) {
+        _segmentId = latestOverall.id;
+        _studySeconds = (latestData['studySeconds'] as num?)?.toInt() ?? 0;
+        _watchSeconds = (latestData['watchSeconds'] as num?)?.toInt() ?? 0;
+        return;
+      }
+    }
+
+    final newSegmentRef = segmentsRef.doc();
+    final startedAt = FieldValue.serverTimestamp();
+    await newSegmentRef.set({
+      'userId': user.uid,
+      'sessionId': session.id,
+      'courseId': _courseId(),
+      'courseTitle': course.title,
+      'lessonNumber': lessonNumber,
+      'lessonTitle': lesson.title,
+      'cycleNumber': _cycleNumber,
+      'taskKey': _taskKey,
+      'status': 'inProgress',
+      'startedAt': startedAt,
+      'lastActivityAt': startedAt,
+      'studySeconds': 0,
+      'watchSeconds': 0,
+      'startPositionSec': _cycleMaxWatchedPositionSec,
+      'endPositionSec': _cycleMaxWatchedPositionSec,
+      'isDeleted': false,
+    });
+    _segmentId = newSegmentRef.id;
+    _studySeconds = 0;
+    _watchSeconds = 0;
   }
 
   void _startStudyTimer() {
@@ -366,9 +518,20 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     });
   }
 
+  void _addWatchProgress(int currentPositionSec) {
+    if (currentPositionSec <= _cycleMaxWatchedPositionSec) {
+      return;
+    }
+
+    final newWatchSeconds = currentPositionSec - _cycleMaxWatchedPositionSec;
+    _watchSeconds += newWatchSeconds;
+    _cycleMaxWatchedPositionSec = currentPositionSec;
+  }
+
   Future<void> _persistSessionProgress() async {
     final sessionId = _sessionId;
-    if (sessionId == null || Firebase.apps.isEmpty) {
+    final segmentId = _segmentId;
+    if (sessionId == null || segmentId == null || Firebase.apps.isEmpty) {
       return;
     }
     final user = FirebaseAuth.instance.currentUser;
@@ -376,38 +539,81 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
-    await FirebaseFirestore.instance
+    final userRef = FirebaseFirestore.instance
         .collection('users')
-        .doc(user.uid)
-        .collection('lessonViewSessions')
-        .doc(sessionId)
-        .set({
-          'lastActivityAt': FieldValue.serverTimestamp(),
-          'studySeconds': _studySeconds,
-          'studyMinutes': _studyMinutes(),
-          'maxPositionSec': _currentPositionSec,
+        .doc(user.uid);
+    final now = FieldValue.serverTimestamp();
+    final batch = FirebaseFirestore.instance.batch()
+      ..set(
+        userRef.collection('lessonViewSessions').doc(sessionId),
+        {
+          'lastActivityAt': now,
+          'maxWatchedPositionSec': _cycleMaxWatchedPositionSec,
+          'pendingCompletion': _pendingCompletion,
+          'hasPlaybackStarted': _hasPlaybackStarted,
           'answeredQuizEventIds': _answeredQuizEventIds.toList(),
-        }, SetOptions(merge: true));
+        },
+        SetOptions(merge: true),
+      )
+      ..set(
+        userRef.collection('lessonViewSegments').doc(segmentId),
+        {
+          'lastActivityAt': now,
+          'studySeconds': _studySeconds,
+          'watchSeconds': _watchSeconds,
+          'endPositionSec': _cycleMaxWatchedPositionSec,
+        },
+        SetOptions(merge: true),
+      );
+
+    await batch.commit();
   }
 
-  Future<void> _completeCurrentCycle() async {
+  Future<void> _markCompletionPending() async {
+    if (_pendingCompletion || _sessionCompleted) {
+      return;
+    }
+
+    setState(() {
+      _setCompletionPendingState();
+    });
+
+    await _persistSessionProgress();
+  }
+
+  void _setCompletionPendingState() {
+    _playbackTimer?.cancel();
+    _isPlaying = false;
+    _currentPositionSec = _currentPositionSec
+        .clamp(_completionThresholdSec, _totalDurationSec)
+        .toInt();
+    _pendingCompletion = true;
+    _message = '視聴終了地点に到達しました。画面を離れた時刻を終了日時として記録します。';
+  }
+
+  Future<void> _completeCurrentSegment({bool updateUi = true}) async {
     if (_sessionCompleted) {
       return;
     }
 
     _playbackTimer?.cancel();
     _studyTimer?.cancel();
-    setState(() {
+    void updateState() {
       _isPlaying = false;
       _sessionCompleted = true;
-      _currentPositionSec = _currentPositionSec
-          .clamp(_completionThresholdSec, _totalDurationSec)
-          .toInt();
+      _pendingCompletion = false;
       _message = 'レッスン$lessonNumber $_cycleNumber周目終了として記録しました。';
-    });
+    }
+
+    if (updateUi && mounted) {
+      setState(updateState);
+    } else {
+      updateState();
+    }
 
     final sessionId = _sessionId;
-    if (sessionId == null || Firebase.apps.isEmpty) {
+    final segmentId = _segmentId;
+    if (sessionId == null || segmentId == null || Firebase.apps.isEmpty) {
       return;
     }
     final user = FirebaseAuth.instance.currentUser;
@@ -415,20 +621,38 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
-    await FirebaseFirestore.instance
+    final userRef = FirebaseFirestore.instance
         .collection('users')
-        .doc(user.uid)
-        .collection('lessonViewSessions')
-        .doc(sessionId)
-        .set({
+        .doc(user.uid);
+    final now = FieldValue.serverTimestamp();
+    final batch = FirebaseFirestore.instance.batch()
+      ..set(
+        userRef.collection('lessonViewSessions').doc(sessionId),
+        {
           'status': 'completed',
-          'completedAt': FieldValue.serverTimestamp(),
-          'lastActivityAt': FieldValue.serverTimestamp(),
-          'studySeconds': _studySeconds,
-          'studyMinutes': _studyMinutes(),
-          'maxPositionSec': _currentPositionSec,
+          'cycleCompleted': true,
+          'pendingCompletion': false,
+          'completedAt': now,
+          'lastActivityAt': now,
+          'maxWatchedPositionSec': _cycleMaxWatchedPositionSec,
           'answeredQuizEventIds': _answeredQuizEventIds.toList(),
-        }, SetOptions(merge: true));
+        },
+        SetOptions(merge: true),
+      )
+      ..set(
+        userRef.collection('lessonViewSegments').doc(segmentId),
+        {
+          'status': 'completed',
+          'completedAt': now,
+          'lastActivityAt': now,
+          'studySeconds': _studySeconds,
+          'watchSeconds': _watchSeconds,
+          'endPositionSec': _cycleMaxWatchedPositionSec,
+        },
+        SetOptions(merge: true),
+      );
+
+    await batch.commit();
   }
 
   Future<void> _completeManually() async {
@@ -436,7 +660,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     if (!prepared || !mounted) {
       return;
     }
-    await _completeCurrentCycle();
+    await _completeCurrentSegment();
   }
 
   Future<void> _submitAnswer(LessonEvent event) async {
@@ -554,6 +778,10 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   @override
   Widget build(BuildContext context) {
+    final statusMessage =
+        _message ??
+        (_pendingCompletion ? '視聴終了地点に到達しました。画面を離れた時刻を終了日時として記録します。' : null);
+
     return Scaffold(
       appBar: AppBar(title: Text(_isAudioLesson ? '音声授業' : '動画視聴')),
       body: SafeArea(
@@ -633,7 +861,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
             const SizedBox(height: 8),
             Text('現在の周回: $_cycleNumber周目'),
             const SizedBox(height: 8),
-            Text('学習時間: ${_studyMinutes()}分（$_studySeconds秒）'),
+            Text('学習時間: $_studySeconds秒'),
+            const SizedBox(height: 8),
+            Text('視聴時間: $_watchSeconds秒'),
             const SizedBox(height: 8),
             Text('視聴終了判定: $_completionThresholdSec秒到達'),
             const SizedBox(height: 8),
@@ -679,13 +909,13 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                 const SizedBox(height: 12),
               ],
             ],
-            if (_message != null) ...[
+            if (statusMessage != null) ...[
               const SizedBox(height: 12),
               Card(
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 child: Padding(
                   padding: const EdgeInsets.all(12),
-                  child: Text(_message!),
+                  child: Text(statusMessage),
                 ),
               ),
             ],

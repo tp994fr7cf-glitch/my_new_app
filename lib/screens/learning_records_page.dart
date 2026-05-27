@@ -8,13 +8,13 @@ class LearningRecordsPage extends StatefulWidget {
     super.key,
     required this.user,
     this.learningEventsStream,
-    this.lessonViewSessionsStream,
+    this.lessonViewSegmentsStream,
     this.quizAttemptsStream,
   });
 
   final User user;
   final Stream<List<Map<String, dynamic>>>? learningEventsStream;
-  final Stream<List<Map<String, dynamic>>>? lessonViewSessionsStream;
+  final Stream<List<Map<String, dynamic>>>? lessonViewSegmentsStream;
   final Stream<List<Map<String, dynamic>>>? quizAttemptsStream;
 
   @override
@@ -49,8 +49,8 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
         .map((snapshot) => snapshot.docs.map((doc) => doc.data()).toList());
   }
 
-  Stream<List<Map<String, dynamic>>> _lessonViewSessionsStream() {
-    final providedStream = widget.lessonViewSessionsStream;
+  Stream<List<Map<String, dynamic>>> _lessonViewSegmentsStream() {
+    final providedStream = widget.lessonViewSegmentsStream;
     if (providedStream != null) {
       return providedStream;
     }
@@ -62,11 +62,15 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
     return FirebaseFirestore.instance
         .collection('users')
         .doc(widget.user.uid)
-        .collection('lessonViewSessions')
+        .collection('lessonViewSegments')
         .orderBy('lastActivityAt', descending: true)
         .limit(100)
         .snapshots()
-        .map((snapshot) => snapshot.docs.map((doc) => doc.data()).toList());
+        .map(
+          (snapshot) => snapshot.docs
+              .map((doc) => {'id': doc.id, ...doc.data()})
+              .toList(),
+        );
   }
 
   Stream<List<Map<String, dynamic>>> _quizAttemptsStream() {
@@ -170,9 +174,10 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
             const SizedBox(height: 24),
             switch (_selectedType) {
               _RecordType.views => _ViewRecordsList(
-                sessionRecordsStream: _lessonViewSessionsStream(),
+                segmentRecordsStream: _lessonViewSegmentsStream(),
                 legacyRecordsStream: _learningEventsStream(),
                 filterRecords: _filterViewRecordsByPeriod,
+                user: widget.user,
               ),
               _RecordType.quizzes => _QuizRecordsList(
                 recordsStream: _quizAttemptsStream(),
@@ -265,31 +270,37 @@ class _PeriodFilterChips extends StatelessWidget {
 
 class _ViewRecordsList extends StatelessWidget {
   const _ViewRecordsList({
-    required this.sessionRecordsStream,
+    required this.segmentRecordsStream,
     required this.legacyRecordsStream,
     required this.filterRecords,
+    required this.user,
   });
 
-  final Stream<List<Map<String, dynamic>>> sessionRecordsStream;
+  final Stream<List<Map<String, dynamic>>> segmentRecordsStream;
   final Stream<List<Map<String, dynamic>>> legacyRecordsStream;
   final List<Map<String, dynamic>> Function(List<Map<String, dynamic>> records)
   filterRecords;
+  final User user;
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<List<Map<String, dynamic>>>(
-      stream: sessionRecordsStream,
+      stream: segmentRecordsStream,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
         }
 
-        final records = filterRecords(snapshot.data ?? const []);
+        final records = filterRecords(
+          (snapshot.data ?? const [])
+              .where((record) => record['isDeleted'] != true)
+              .toList(),
+        );
         if (records.isNotEmpty) {
           return Column(
             children: [
               for (final record in records) ...[
-                _ViewSessionRecordCard(record: record),
+                _ViewSegmentRecordCard(record: record, user: user),
                 const SizedBox(height: 12),
               ],
             ],
@@ -417,10 +428,28 @@ class _ViewRecordCard extends StatelessWidget {
   }
 }
 
-class _ViewSessionRecordCard extends StatelessWidget {
-  const _ViewSessionRecordCard({required this.record});
+class _ViewSegmentRecordCard extends StatelessWidget {
+  const _ViewSegmentRecordCard({required this.record, required this.user});
 
   final Map<String, dynamic> record;
+  final User user;
+
+  Future<void> _deleteRecord() async {
+    final segmentId = record['id'] as String?;
+    if (segmentId == null || Firebase.apps.isEmpty) {
+      return;
+    }
+
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('lessonViewSegments')
+        .doc(segmentId)
+        .set({
+          'isDeleted': true,
+          'deletedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -428,9 +457,7 @@ class _ViewSessionRecordCard extends StatelessWidget {
     final cycleNumber = (record['cycleNumber'] as num?)?.toInt() ?? 1;
     final isCompleted = record['status'] == 'completed';
     final studySeconds = (record['studySeconds'] as num?)?.toInt() ?? 0;
-    final studyMinutes =
-        (record['studyMinutes'] as num?)?.toInt() ??
-        (studySeconds == 0 ? 0 : (studySeconds / 60).ceil());
+    final watchSeconds = (record['watchSeconds'] as num?)?.toInt() ?? 0;
     final timestamp = isCompleted ? record['completedAt'] : record['startedAt'];
 
     return Card(
@@ -456,7 +483,18 @@ class _ViewSessionRecordCard extends StatelessWidget {
                   : '開始日時: ${_formatTimestamp(timestamp)}',
             ),
             const SizedBox(height: 4),
-            Text('学習時間: $studyMinutes分'),
+            Text('学習時間: $studySeconds秒'),
+            const SizedBox(height: 4),
+            Text('視聴時間: $watchSeconds秒'),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: _deleteRecord,
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('この視聴記録を削除'),
+              ),
+            ),
           ],
         ),
       ),
