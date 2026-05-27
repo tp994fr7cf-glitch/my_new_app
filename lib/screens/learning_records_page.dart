@@ -293,9 +293,9 @@ class _ViewRecordsList extends StatelessWidget {
 
         final segmentRecords = snapshot.data ?? const [];
         final records = filterRecords(
-          segmentRecords
-              .where((record) => record['isDeleted'] != true)
-              .toList(),
+          _recordsWithDisplayCycleNumbers(
+            segmentRecords,
+          ).where((record) => record['isDeleted'] != true).toList(),
         );
         if (records.isNotEmpty) {
           return Column(
@@ -319,6 +319,68 @@ class _ViewRecordsList extends StatelessWidget {
       },
     );
   }
+}
+
+List<Map<String, dynamic>> _recordsWithDisplayCycleNumbers(
+  List<Map<String, dynamic>> records,
+) {
+  final deletedCyclesByLesson = <String, Set<int>>{};
+  final recordsByLessonAndCycle = <String, List<Map<String, dynamic>>>{};
+
+  for (final record in records) {
+    final lessonKey = _lessonDisplayKey(record);
+    final cycleNumber = _cycleNumberOf(record);
+    final cycleKey = '$lessonKey::$cycleNumber';
+    recordsByLessonAndCycle.putIfAbsent(cycleKey, () => []).add(record);
+  }
+
+  for (final entry in recordsByLessonAndCycle.entries) {
+    final cycleRecords = entry.value;
+    final isCycleFullyDeleted = cycleRecords.every(
+      (record) => record['isDeleted'] == true,
+    );
+    if (!isCycleFullyDeleted) {
+      continue;
+    }
+
+    final sampleRecord = cycleRecords.first;
+    final lessonKey = _lessonDisplayKey(sampleRecord);
+    deletedCyclesByLesson
+        .putIfAbsent(lessonKey, () => <int>{})
+        .add(_cycleNumberOf(sampleRecord));
+  }
+
+  return records.map((record) {
+    final lessonKey = _lessonDisplayKey(record);
+    final cycleNumber = _cycleNumberOf(record);
+    final deletedPreviousCycleCount =
+        deletedCyclesByLesson[lessonKey]
+            ?.where((deletedCycle) => deletedCycle < cycleNumber)
+            .length ??
+        0;
+
+    return {...record, 'cycleNumber': cycleNumber - deletedPreviousCycleCount};
+  }).toList();
+}
+
+String _lessonDisplayKey(Map<String, dynamic> record) {
+  final courseId = record['courseId'];
+  final lessonNumber = _lessonNumberOf(record);
+  if (courseId is String && courseId.isNotEmpty) {
+    return 'course:$courseId|lesson:$lessonNumber';
+  }
+
+  final courseTitle = record['courseTitle'] as String? ?? '';
+  final lessonTitle = record['lessonTitle'] as String? ?? '';
+  return 'courseTitle:$courseTitle|lesson:$lessonNumber|lessonTitle:$lessonTitle';
+}
+
+int _cycleNumberOf(Map<String, dynamic> record) {
+  return (record['cycleNumber'] as num?)?.toInt() ?? 1;
+}
+
+int _lessonNumberOf(Map<String, dynamic> record) {
+  return (record['lessonNumber'] as num?)?.toInt() ?? 1;
 }
 
 class _LegacyViewRecordsList extends StatelessWidget {

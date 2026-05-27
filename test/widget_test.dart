@@ -281,6 +281,153 @@ void main() {
     },
   );
 
+  testWidgets(
+    'Learning records page renumbers cycles after a full cycle deletion',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime.now());
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            lessonViewSegmentsStream: Stream.value([
+              {
+                'id': 'cycle-5',
+                'courseId': 'course-a',
+                'courseTitle': '講座A',
+                'lessonNumber': 1,
+                'lessonTitle': 'レッスン1',
+                'cycleNumber': 5,
+                'status': 'completed',
+                'completedAt': now,
+                'studySeconds': 50,
+                'watchSeconds': 10,
+              },
+              {
+                'id': 'cycle-4',
+                'courseId': 'course-a',
+                'courseTitle': '講座A',
+                'lessonNumber': 1,
+                'lessonTitle': 'レッスン1',
+                'cycleNumber': 4,
+                'status': 'completed',
+                'completedAt': now,
+                'studySeconds': 40,
+                'watchSeconds': 10,
+              },
+              {
+                'id': 'cycle-3-deleted-1',
+                'courseId': 'course-a',
+                'courseTitle': '講座A',
+                'lessonNumber': 1,
+                'lessonTitle': 'レッスン1',
+                'cycleNumber': 3,
+                'status': 'completed',
+                'completedAt': now,
+                'studySeconds': 30,
+                'watchSeconds': 10,
+                'isDeleted': true,
+              },
+              {
+                'id': 'cycle-3-deleted-2',
+                'courseId': 'course-a',
+                'courseTitle': '講座A',
+                'lessonNumber': 1,
+                'lessonTitle': 'レッスン1',
+                'cycleNumber': 3,
+                'status': 'inProgress',
+                'startedAt': now,
+                'studySeconds': 20,
+                'watchSeconds': 5,
+                'isDeleted': true,
+              },
+              {
+                'id': 'cycle-2',
+                'courseId': 'course-a',
+                'courseTitle': '講座A',
+                'lessonNumber': 1,
+                'lessonTitle': 'レッスン1',
+                'cycleNumber': 2,
+                'status': 'completed',
+                'completedAt': now,
+                'studySeconds': 20,
+                'watchSeconds': 10,
+              },
+            ]),
+            learningEventsStream: const Stream.empty(),
+            quizAttemptsStream: const Stream.empty(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('レッスン1 4周目終了'), findsOneWidget);
+      expect(find.text('レッスン1 3周目終了'), findsOneWidget);
+      expect(find.text('レッスン1 2周目終了'), findsOneWidget);
+      expect(find.text('レッスン1 5周目終了'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'Learning records page keeps cycle numbers after a partial cycle deletion',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime.now());
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            lessonViewSegmentsStream: Stream.value([
+              {
+                'id': 'cycle-4',
+                'courseId': 'course-a',
+                'courseTitle': '講座A',
+                'lessonNumber': 1,
+                'lessonTitle': 'レッスン1',
+                'cycleNumber': 4,
+                'status': 'completed',
+                'completedAt': now,
+                'studySeconds': 40,
+                'watchSeconds': 10,
+              },
+              {
+                'id': 'cycle-3-visible',
+                'courseId': 'course-a',
+                'courseTitle': '講座A',
+                'lessonNumber': 1,
+                'lessonTitle': 'レッスン1',
+                'cycleNumber': 3,
+                'status': 'inProgress',
+                'startedAt': now,
+                'studySeconds': 20,
+                'watchSeconds': 5,
+              },
+              {
+                'id': 'cycle-3-deleted',
+                'courseId': 'course-a',
+                'courseTitle': '講座A',
+                'lessonNumber': 1,
+                'lessonTitle': 'レッスン1',
+                'cycleNumber': 3,
+                'status': 'completed',
+                'completedAt': now,
+                'studySeconds': 30,
+                'watchSeconds': 10,
+                'isDeleted': true,
+              },
+            ]),
+            learningEventsStream: const Stream.empty(),
+            quizAttemptsStream: const Stream.empty(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('レッスン1 4周目終了'), findsOneWidget);
+      expect(find.text('レッスン1 3周目'), findsOneWidget);
+    },
+  );
+
   testWidgets('Student home opens learning records page', (
     WidgetTester tester,
   ) async {
