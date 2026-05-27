@@ -42,12 +42,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   int _studySeconds = 0;
   int _watchSeconds = 0;
   int _cycleNumber = 1;
+  int? _displayCycleNumber;
   int _cycleMaxWatchedPositionSec = 0;
   bool _isPlaying = false;
   bool _isPreparingSession = false;
   bool _sessionCompleted = false;
   bool _hasPlaybackStarted = false;
   bool _pendingCompletion = false;
+  bool _isLoadingLearningState = true;
   Timer? _playbackTimer;
   Timer? _studyTimer;
   String? _sessionId;
@@ -69,6 +71,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   bool get _isAtEnd => _currentPositionSec >= _totalDurationSec;
   bool get _hasActiveSession => _sessionId != null && !_sessionCompleted;
   String get _taskKey => '${_courseId()}-$lessonNumber-$_cycleNumber';
+  int get _visibleCycleNumber => _displayCycleNumber ?? _cycleNumber;
   IconData get _playButtonIcon {
     if (_isPlaying) {
       return Icons.pause;
@@ -109,7 +112,10 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    unawaited(_resumeLearningTimeOnOpen());
+    _isLoadingLearningState = Firebase.apps.isNotEmpty;
+    if (_isLoadingLearningState) {
+      unawaited(_resumeLearningTimeOnOpen());
+    }
   }
 
   @override
@@ -267,6 +273,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
       final session = await _loadOrCreateCycleSession(user);
       await _loadOrCreateSegment(user, session);
+      await _refreshDisplayedCycleNumber(user);
       _startStudyTimer();
       return true;
     } catch (_) {
@@ -289,6 +296,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _sessionId = 'local-${DateTime.now().microsecondsSinceEpoch}';
     _segmentId = 'local-segment-${DateTime.now().microsecondsSinceEpoch}';
     _cycleNumber = _sessionCompleted ? _cycleNumber + 1 : _cycleNumber;
+    _displayCycleNumber = _cycleNumber;
     _sessionCompleted = false;
     _studySeconds = 0;
     _watchSeconds = 0;
@@ -300,16 +308,23 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _startStudyTimer();
   }
 
-  void _loadSession(String sessionId, Map<String, dynamic> data) {
+  void _loadSession(
+    String sessionId,
+    Map<String, dynamic> data, {
+    bool preserveCurrentPosition = false,
+  }) {
     _sessionId = sessionId;
     _cycleNumber = (data['cycleNumber'] as num?)?.toInt() ?? 1;
+    _displayCycleNumber ??= _cycleNumber;
     _sessionCompleted =
         data['status'] == 'completed' || data['cycleCompleted'] == true;
     _cycleMaxWatchedPositionSec =
         (data['maxWatchedPositionSec'] as num?)?.toInt() ??
         (data['maxPositionSec'] as num?)?.toInt() ??
         0;
-    _currentPositionSec = _cycleMaxWatchedPositionSec;
+    if (!preserveCurrentPosition) {
+      _currentPositionSec = _cycleMaxWatchedPositionSec;
+    }
     _hasPlaybackStarted = data['hasPlaybackStarted'] == true;
     _pendingCompletion = data['pendingCompletion'] == true;
     final answered = data['answeredQuizEventIds'];
@@ -328,17 +343,20 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   Future<void> _resumeLearningTimeOnOpen() async {
     if (Firebase.apps.isEmpty) {
+      _finishLearningStateLoading();
       return;
     }
 
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
+      _finishLearningStateLoading();
       return;
     }
 
     try {
       final session = await _latestCycleSession(user);
       if (session == null) {
+        await _refreshDisplayedCycleNumber(user);
         return;
       }
 
@@ -346,16 +364,35 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       final isCompleted =
           data['status'] == 'completed' || data['cycleCompleted'] == true;
       final hasPlaybackStarted = data['hasPlaybackStarted'] == true;
-      if (isCompleted || !hasPlaybackStarted) {
+      if (isCompleted) {
+        _cycleNumber = ((data['cycleNumber'] as num?)?.toInt() ?? 0) + 1;
+        await _refreshDisplayedCycleNumber(user);
+        return;
+      }
+      if (!hasPlaybackStarted) {
+        _loadSession(session.id, data, preserveCurrentPosition: true);
+        await _refreshDisplayedCycleNumber(user);
         return;
       }
 
       _loadSession(session.id, data);
       await _loadOrCreateSegment(user, session);
+      await _refreshDisplayedCycleNumber(user);
       _startStudyTimer();
     } catch (_) {
       // Opening the page should still work even if record resume fails.
+    } finally {
+      _finishLearningStateLoading();
     }
+  }
+
+  void _finishLearningStateLoading() {
+    if (!mounted || !_isLoadingLearningState) {
+      return;
+    }
+    setState(() {
+      _isLoadingLearningState = false;
+    });
   }
 
   Future<QueryDocumentSnapshot<Map<String, dynamic>>?> _latestCycleSession(
@@ -403,6 +440,40 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         .get();
 
     return snapshot.docs.isEmpty ? null : snapshot.docs.first;
+  }
+
+  Future<void> _refreshDisplayedCycleNumber(User user) async {
+    final snapshot = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('lessonViewSegments')
+        .where('courseId', isEqualTo: _courseId())
+        .where('lessonNumber', isEqualTo: lessonNumber)
+        .get();
+
+    final recordsByCycle = <int, List<Map<String, dynamic>>>{};
+    for (final doc in snapshot.docs) {
+      final data = doc.data();
+      final cycleNumber = (data['cycleNumber'] as num?)?.toInt() ?? 1;
+      recordsByCycle.putIfAbsent(cycleNumber, () => []).add(data);
+    }
+
+    final fullyDeletedCycles = recordsByCycle.entries
+        .where(
+          (entry) => entry.value.every((record) => record['isDeleted'] == true),
+        )
+        .map((entry) => entry.key)
+        .toSet();
+    final deletedPreviousCycleCount = fullyDeletedCycles
+        .where((deletedCycle) => deletedCycle < _cycleNumber)
+        .length;
+
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _displayCycleNumber = _cycleNumber - deletedPreviousCycleCount;
+    });
   }
 
   Future<DocumentSnapshot<Map<String, dynamic>>> _loadOrCreateCycleSession(
@@ -455,7 +526,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     });
 
     final created = await newSessionRef.get();
-    _loadSession(created.id, created.data()!);
+    _loadSession(created.id, created.data()!, preserveCurrentPosition: true);
     return created;
   }
 
@@ -796,6 +867,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     final statusMessage =
         _message ??
         (_pendingCompletion ? '視聴終了地点に到達しました。画面を離れた時刻を終了日時として記録します。' : null);
+    final cycleLabel = _isLoadingLearningState ? 'ー' : '$_visibleCycleNumber周目';
+    final studySecondsLabel = _isLoadingLearningState ? 'ー' : '$_studySeconds秒';
+    final watchSecondsLabel = _isLoadingLearningState ? 'ー' : '$_watchSeconds秒';
 
     return Scaffold(
       appBar: AppBar(title: Text(_isAudioLesson ? '音声授業' : '動画視聴')),
@@ -879,11 +953,11 @@ class _VideoLessonPageState extends State<VideoLessonPage>
             const SizedBox(height: 8),
             Text('現在位置: ${_formatTime(_currentPositionSec)}'),
             const SizedBox(height: 8),
-            Text('現在の周回: $_cycleNumber周目'),
+            Text('現在の周回: $cycleLabel'),
             const SizedBox(height: 8),
-            Text('学習時間: $_studySeconds秒'),
+            Text('学習時間: $studySecondsLabel'),
             const SizedBox(height: 8),
-            Text('視聴時間: $_watchSeconds秒'),
+            Text('視聴時間: $watchSecondsLabel'),
             const SizedBox(height: 8),
             Text('視聴終了判定: $_completionThresholdSec秒到達'),
             const SizedBox(height: 8),

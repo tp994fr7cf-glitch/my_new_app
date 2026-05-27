@@ -814,6 +814,34 @@ void main() {
     expect(find.text('視聴時間: 2秒', skipOffstage: false), findsOneWidget);
   });
 
+  testWidgets('Video lesson starts from preselected first playback position', (
+    WidgetTester tester,
+  ) async {
+    final course = sampleCourses.first;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: VideoLessonPage(
+          course: course,
+          lesson: course.lessons.first,
+          lessonNumber: 1,
+        ),
+      ),
+    );
+
+    final slider = tester.widget<Slider>(find.byType(Slider));
+    slider.onChanged!(30);
+    await tester.pumpAndSettle();
+
+    expect(find.text('現在位置: 00:30'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, '再生'));
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.text('現在位置: 00:31'), findsOneWidget);
+    expect(find.text('視聴時間: 1秒', skipOffstage: false), findsOneWidget);
+  });
+
   testWidgets('Video lesson completes cycle after threshold', (
     WidgetTester tester,
   ) async {
