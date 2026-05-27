@@ -160,10 +160,39 @@ class _ResumeLearningCard extends StatelessWidget {
         .snapshots();
   }
 
-  void _resumeLearning(
+  Future<void> _saveResumeLearningEvent({
+    required String courseId,
+    required Course course,
+    required CourseLesson lesson,
+    required int lessonNumber,
+  }) async {
+    final now = FieldValue.serverTimestamp();
+    final userRef = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid);
+    final batch = FirebaseFirestore.instance.batch()
+      ..set(userRef.collection('enrollments').doc(courseId), {
+        'updatedAt': now,
+        'lastLessonNumber': lessonNumber,
+        'lastLessonTitle': lesson.title,
+      }, SetOptions(merge: true))
+      ..set(userRef.collection('learningEvents').doc(), {
+        'userId': user.uid,
+        'type': 'lessonOpened',
+        'courseId': courseId,
+        'courseTitle': course.title,
+        'lessonNumber': lessonNumber,
+        'lessonTitle': lesson.title,
+        'createdAt': now,
+      });
+
+    await batch.commit();
+  }
+
+  Future<void> _resumeLearning(
     BuildContext context,
     DocumentSnapshot<Map<String, dynamic>> enrollment,
-  ) {
+  ) async {
     final data = enrollment.data() ?? {};
     final courseData = data['course'];
     if (courseData is! Map) {
@@ -178,6 +207,28 @@ class _ResumeLearningCard extends StatelessWidget {
     final savedLessonNumber = (data['lastLessonNumber'] as num?)?.toInt() ?? 1;
     final lessonNumber = savedLessonNumber.clamp(1, course.lessons.length);
     final lesson = course.lessons[lessonNumber - 1];
+    final courseId = data['courseId'] as String? ?? course.id ?? enrollment.id;
+
+    try {
+      await _saveResumeLearningEvent(
+        courseId: courseId,
+        course: course,
+        lesson: lesson,
+        lessonNumber: lessonNumber,
+      );
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(
+            const SnackBar(content: Text('学習記録の保存に失敗しました。後でもう一度お試しください。')),
+          );
+      }
+    }
+
+    if (!context.mounted) {
+      return;
+    }
 
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -237,7 +288,9 @@ class _ResumeLearningCard extends StatelessWidget {
                   for (final enrollment in enrollments) ...[
                     _EnrollmentResumeTile(
                       enrollment: enrollment,
-                      onResume: () => _resumeLearning(context, enrollment),
+                      onResume: () {
+                        _resumeLearning(context, enrollment);
+                      },
                     ),
                     const SizedBox(height: 8),
                   ],

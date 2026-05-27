@@ -161,6 +161,37 @@ void main() {
     expect(find.text('質問コメント記録は、質問コメント機能の実装後にここへ表示します。'), findsOneWidget);
   });
 
+  testWidgets('Learning records page keeps repeated course views', (
+    WidgetTester tester,
+  ) async {
+    final now = Timestamp.fromDate(DateTime.now());
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LearningRecordsPage(
+          user: _FakeUser(),
+          learningEventsStream: Stream.value([
+            {
+              'courseTitle': 'Flutter入門',
+              'lessonTitle': '全体像',
+              'createdAt': now,
+            },
+            {
+              'courseTitle': 'Flutter入門',
+              'lessonTitle': '全体像',
+              'createdAt': now,
+            },
+          ]),
+          quizAttemptsStream: const Stream.empty(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Flutter入門'), findsNWidgets(2));
+    expect(find.text('レッスン: 全体像'), findsNWidgets(2));
+  });
+
   testWidgets('Student home opens learning records page', (
     WidgetTester tester,
   ) async {
