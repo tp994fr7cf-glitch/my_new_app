@@ -1,3 +1,4 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -7,6 +8,7 @@ import 'package:my_new_app/models/course.dart';
 import 'package:my_new_app/screens/course_detail_page.dart';
 import 'package:my_new_app/screens/course_list_page.dart';
 import 'package:my_new_app/screens/home_page.dart';
+import 'package:my_new_app/screens/learning_records_page.dart';
 import 'package:my_new_app/screens/teacher_application_page.dart';
 import 'package:my_new_app/screens/teacher_course_list_page.dart';
 import 'package:my_new_app/screens/teacher_quiz_manage_page.dart';
@@ -106,6 +108,83 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('「NOPE」に一致する講座は見つかりませんでした。'), findsOneWidget);
+  });
+
+  testWidgets('Learning records page shows view and quiz records', (
+    WidgetTester tester,
+  ) async {
+    final now = Timestamp.fromDate(DateTime.now());
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LearningRecordsPage(
+          user: _FakeUser(),
+          learningEventsStream: Stream.value([
+            {
+              'courseTitle': 'Flutter入門',
+              'lessonTitle': '全体像',
+              'createdAt': now,
+            },
+          ]),
+          quizAttemptsStream: Stream.value([
+            {
+              'courseTitle': 'Flutter入門',
+              'lessonTitle': '全体像',
+              'question': 'Widgetとは？',
+              'isCorrect': true,
+              'answeredAt': now,
+            },
+          ]),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('学習記録'), findsWidgets);
+    expect(find.text('視聴記録'), findsWidgets);
+    expect(find.text('クイズ回答'), findsOneWidget);
+    expect(find.text('質問コメント'), findsOneWidget);
+    expect(find.text('今日'), findsOneWidget);
+    expect(find.text('7日間'), findsOneWidget);
+    expect(find.text('Flutter入門'), findsOneWidget);
+    expect(find.text('レッスン: 全体像'), findsOneWidget);
+
+    await tester.tap(find.text('クイズ回答'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('正解数 1 / 1'), findsOneWidget);
+    expect(find.text('Widgetとは？'), findsOneWidget);
+
+    await tester.tap(find.text('質問コメント'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('質問コメント記録は、質問コメント機能の実装後にここへ表示します。'), findsOneWidget);
+  });
+
+  testWidgets('Student home opens learning records page', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: StudentHomePage(
+          user: _FakeUser(),
+          profile: const {
+            'roles': ['student'],
+            'activeRole': 'student',
+          },
+          roles: const ['student'],
+        ),
+      ),
+    );
+
+    final recordsButton = tester.widget<OutlinedButton>(
+      find.widgetWithText(OutlinedButton, '学習記録を見る'),
+    );
+    recordsButton.onPressed!();
+    await tester.pumpAndSettle();
+
+    expect(find.text('視聴記録'), findsWidgets);
+    expect(find.text('クイズ回答'), findsOneWidget);
   });
 
   testWidgets('Teacher application page shows application action', (

@@ -1,10 +1,12 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
 import 'course_create_page.dart';
 import 'course_list_page.dart';
+import 'learning_records_page.dart';
 import 'role_switch_page.dart';
 import 'teacher_application_page.dart';
 import 'teacher_course_list_page.dart';
@@ -90,6 +92,19 @@ class StudentHomePage extends StatelessWidget {
           const SizedBox(height: 16),
           _ResumeLearningCard(user: user),
           _HomeActionCard(
+            icon: Icons.timeline,
+            title: '学習記録',
+            description: '視聴記録、クイズ回答、質問コメントの記録を振り返れます。',
+            buttonText: '学習記録を見る',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => LearningRecordsPage(user: user),
+                ),
+              );
+            },
+          ),
+          _HomeActionCard(
             icon: Icons.search,
             title: '講座を探す',
             description: '次に作る講座一覧画面への入口です。Udemyのようなカード一覧に育てます。',
@@ -133,6 +148,10 @@ class _ResumeLearningCard extends StatelessWidget {
   final User user;
 
   Stream<QuerySnapshot<Map<String, dynamic>>> _enrollmentStream() {
+    if (Firebase.apps.isEmpty) {
+      return const Stream.empty();
+    }
+
     return FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
