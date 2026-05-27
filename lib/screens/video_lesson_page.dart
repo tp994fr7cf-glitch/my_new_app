@@ -55,6 +55,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   final Map<String, int> _selectedChoices = {};
   final Map<String, bool> _answerResults = {};
   final Set<String> _answeredQuizEventIds = {};
+  final Set<int> _cycleWatchedSecondIndexes = {};
   String? _message;
 
   Course get course => widget.course;
@@ -170,6 +171,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         _selectedChoices.clear();
         _answerResults.clear();
         _answeredQuizEventIds.clear();
+        _cycleWatchedSecondIndexes.clear();
         _message = null;
       });
     }
@@ -193,10 +195,11 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
       var shouldPersistPending = false;
       setState(() {
+        final previousPositionSec = _currentPositionSec;
         if (_currentPositionSec < _totalDurationSec) {
           _currentPositionSec += 1;
         }
-        _addWatchProgress(_currentPositionSec);
+        _addWatchProgress(previousPositionSec, _currentPositionSec);
         if (_currentPositionSec >= _completionThresholdSec &&
             !_pendingCompletion) {
           _setCompletionPendingState();
@@ -216,23 +219,24 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     });
   }
 
-  Future<void> _advanceTime() async {
-    final prepared = await _ensureSession();
-    if (!prepared || !mounted) {
+  void _seekPlaybackPosition(int positionSec) {
+    setState(() {
+      _currentPositionSec = positionSec.clamp(0, _totalDurationSec).toInt();
+      _message = null;
+    });
+    unawaited(_persistSessionProgress());
+  }
+
+  Future<void> _seekForDevelopment(int deltaSeconds) async {
+    if (deltaSeconds == 0) {
       return;
     }
 
-    setState(() {
-      _hasPlaybackStarted = true;
-      _currentPositionSec = (_currentPositionSec + 30)
-          .clamp(0, _totalDurationSec)
-          .toInt();
-      _addWatchProgress(_currentPositionSec);
-      _message = null;
-    });
-    if (_currentPositionSec >= _completionThresholdSec && !_pendingCompletion) {
-      await _markCompletionPending();
+    if (!_hasActiveSession && _currentPositionSec == 0 && deltaSeconds < 0) {
+      return;
     }
+
+    _seekPlaybackPosition(_currentPositionSec + deltaSeconds);
   }
 
   String _courseId() {
@@ -292,6 +296,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _hasPlaybackStarted = true;
     _pendingCompletion = false;
     _answeredQuizEventIds.clear();
+    _cycleWatchedSecondIndexes.clear();
     _startStudyTimer();
   }
 
@@ -311,6 +316,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _answeredQuizEventIds
       ..clear()
       ..addAll(answered is List ? answered.whereType<String>() : const []);
+    final watched = data['watchedSecondIndexes'];
+    _cycleWatchedSecondIndexes
+      ..clear()
+      ..addAll(
+        watched is List
+            ? watched.whereType<num>().map((second) => second.toInt())
+            : const <int>[],
+      );
   }
 
   Future<void> _resumeLearningTimeOnOpen() async {
@@ -438,6 +451,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       'totalDurationSec': _totalDurationSec,
       'completionThresholdSec': _completionThresholdSec,
       'answeredQuizEventIds': [],
+      'watchedSecondIndexes': [],
     });
 
     final created = await newSessionRef.get();
@@ -518,14 +532,25 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     });
   }
 
-  void _addWatchProgress(int currentPositionSec) {
-    if (currentPositionSec <= _cycleMaxWatchedPositionSec) {
+  void _addWatchProgress(int fromPositionSec, int toPositionSec) {
+    if (toPositionSec <= fromPositionSec) {
       return;
     }
 
-    final newWatchSeconds = currentPositionSec - _cycleMaxWatchedPositionSec;
-    _watchSeconds += newWatchSeconds;
-    _cycleMaxWatchedPositionSec = currentPositionSec;
+    for (var second = fromPositionSec; second < toPositionSec; second += 1) {
+      if (second < 0 || second >= _totalDurationSec) {
+        continue;
+      }
+      final isNewWatchSecond = _cycleWatchedSecondIndexes.add(second);
+      if (isNewWatchSecond) {
+        _watchSeconds += 1;
+      }
+    }
+
+    if (_cycleWatchedSecondIndexes.isNotEmpty) {
+      _cycleMaxWatchedPositionSec =
+          _cycleWatchedSecondIndexes.reduce((a, b) => a > b ? a : b) + 1;
+    }
   }
 
   Future<void> _persistSessionProgress() async {
@@ -552,6 +577,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           'pendingCompletion': _pendingCompletion,
           'hasPlaybackStarted': _hasPlaybackStarted,
           'answeredQuizEventIds': _answeredQuizEventIds.toList(),
+          'watchedSecondIndexes': _cycleWatchedSecondIndexes.toList()..sort(),
         },
         SetOptions(merge: true),
       )
@@ -567,18 +593,6 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       );
 
     await batch.commit();
-  }
-
-  Future<void> _markCompletionPending() async {
-    if (_pendingCompletion || _sessionCompleted) {
-      return;
-    }
-
-    setState(() {
-      _setCompletionPendingState();
-    });
-
-    await _persistSessionProgress();
   }
 
   void _setCompletionPendingState() {
@@ -636,6 +650,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           'lastActivityAt': now,
           'maxWatchedPositionSec': _cycleMaxWatchedPositionSec,
           'answeredQuizEventIds': _answeredQuizEventIds.toList(),
+          'watchedSecondIndexes': _cycleWatchedSecondIndexes.toList()..sort(),
         },
         SetOptions(merge: true),
       )
@@ -823,10 +838,15 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                     const SizedBox(height: 8),
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 32),
-                      child: LinearProgressIndicator(
-                        value: _totalDurationSec == 0
-                            ? 0
-                            : _currentPositionSec / _totalDurationSec,
+                      child: Slider(
+                        value: _currentPositionSec.toDouble(),
+                        min: 0,
+                        max: _totalDurationSec.toDouble(),
+                        divisions: _totalDurationSec,
+                        label: _formatTime(_currentPositionSec),
+                        onChanged: (value) {
+                          _seekPlaybackPosition(value.round());
+                        },
                       ),
                     ),
                     const SizedBox(height: 16),
@@ -867,12 +887,53 @@ class _VideoLessonPageState extends State<VideoLessonPage>
             const SizedBox(height: 8),
             Text('視聴終了判定: $_completionThresholdSec秒到達'),
             const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: () {
-                unawaited(_advanceTime());
-              },
-              icon: const Icon(Icons.forward_30),
-              label: const Text('30秒進める（開発用）'),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () {
+                    unawaited(_seekForDevelopment(1));
+                  },
+                  icon: const Icon(Icons.add),
+                  label: const Text('1秒進める（開発用）'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    unawaited(_seekForDevelopment(5));
+                  },
+                  icon: const Icon(Icons.add),
+                  label: const Text('5秒進める（開発用）'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    unawaited(_seekForDevelopment(30));
+                  },
+                  icon: const Icon(Icons.forward_30),
+                  label: const Text('30秒進める（開発用）'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    unawaited(_seekForDevelopment(-1));
+                  },
+                  icon: const Icon(Icons.remove),
+                  label: const Text('1秒巻き戻す（開発用）'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    unawaited(_seekForDevelopment(-5));
+                  },
+                  icon: const Icon(Icons.remove),
+                  label: const Text('5秒巻き戻す（開発用）'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    unawaited(_seekForDevelopment(-30));
+                  },
+                  icon: const Icon(Icons.replay_30),
+                  label: const Text('30秒巻き戻す（開発用）'),
+                ),
+              ],
             ),
             const SizedBox(height: 8),
             OutlinedButton.icon(

@@ -628,6 +628,43 @@ void main() {
 
     await tester.tap(find.widgetWithText(FilledButton, '一時停止'));
     await tester.pump();
+
+    final forwardFiveButton = find.widgetWithText(OutlinedButton, '5秒進める（開発用）');
+    await tester.scrollUntilVisible(
+      forwardFiveButton,
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(forwardFiveButton);
+    await tester.pumpAndSettle();
+
+    expect(find.text('現在位置: 00:06', skipOffstage: false), findsOneWidget);
+    expect(find.text('視聴時間: 1秒', skipOffstage: false), findsOneWidget);
+
+    final rewindOneButton = find.widgetWithText(OutlinedButton, '1秒巻き戻す（開発用）');
+    await tester.tap(rewindOneButton);
+    await tester.pumpAndSettle();
+
+    expect(find.text('現在位置: 00:05', skipOffstage: false), findsOneWidget);
+    expect(find.text('視聴時間: 1秒', skipOffstage: false), findsOneWidget);
+
+    await tester.scrollUntilVisible(
+      find.byType(Slider),
+      -500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    final slider = tester.widget<Slider>(find.byType(Slider));
+    slider.onChanged!(30);
+    await tester.pumpAndSettle();
+
+    expect(find.text('現在位置: 00:30', skipOffstage: false), findsOneWidget);
+    expect(find.text('視聴時間: 1秒', skipOffstage: false), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, '再生'));
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.text('現在位置: 00:31', skipOffstage: false), findsOneWidget);
+    expect(find.text('視聴時間: 2秒', skipOffstage: false), findsOneWidget);
   });
 
   testWidgets('Video lesson completes cycle after threshold', (
