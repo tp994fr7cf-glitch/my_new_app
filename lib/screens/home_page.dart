@@ -66,11 +66,13 @@ class StudentHomePage extends StatelessWidget {
     required this.user,
     required this.profile,
     required this.roles,
+    this.enrollmentRecordsStream,
   });
 
   final User user;
   final Map<String, dynamic> profile;
   final List<String> roles;
+  final Stream<List<Map<String, dynamic>>>? enrollmentRecordsStream;
 
   @override
   Widget build(BuildContext context) {
@@ -90,7 +92,10 @@ class StudentHomePage extends StatelessWidget {
           const SizedBox(height: 24),
           _ProfileSummaryCard(user: user, profile: profile, roles: roles),
           const SizedBox(height: 16),
-          _ResumeLearningCard(user: user),
+          _ResumeLearningCard(
+            user: user,
+            enrollmentRecordsStream: enrollmentRecordsStream,
+          ),
           _HomeActionCard(
             icon: Icons.timeline,
             title: '学習記録',
@@ -142,130 +147,161 @@ class StudentHomePage extends StatelessWidget {
   }
 }
 
-class _ResumeLearningCard extends StatelessWidget {
-  const _ResumeLearningCard({required this.user});
+const int _resumeLearningPreviewLimit = 3;
 
-  final User user;
+class _ResumeEnrollment {
+  const _ResumeEnrollment({required this.id, required this.data});
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> _enrollmentStream() {
-    if (Firebase.apps.isEmpty) {
-      return const Stream.empty();
-    }
+  final String id;
+  final Map<String, dynamic> data;
+}
 
-    return FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .collection('enrollments')
-        .where('status', isEqualTo: 'inProgress')
-        .snapshots();
+Stream<List<_ResumeEnrollment>> _enrollmentRecordsStreamFor(User user) {
+  if (Firebase.apps.isEmpty) {
+    return Stream.value(const []);
   }
 
-  Future<void> _saveResumeLearningEvent({
-    required String courseId,
-    required Course course,
-    required CourseLesson lesson,
-    required int lessonNumber,
-  }) async {
-    final now = FieldValue.serverTimestamp();
-    final userRef = FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid);
-    final batch = FirebaseFirestore.instance.batch()
-      ..set(userRef.collection('enrollments').doc(courseId), {
-        'updatedAt': now,
-        'lastLessonNumber': lessonNumber,
-        'lastLessonTitle': lesson.title,
-      }, SetOptions(merge: true))
-      ..set(userRef.collection('learningEvents').doc(), {
-        'userId': user.uid,
-        'type': 'lessonOpened',
-        'courseId': courseId,
-        'courseTitle': course.title,
-        'lessonNumber': lessonNumber,
-        'lessonTitle': lesson.title,
-        'createdAt': now,
-      });
+  return FirebaseFirestore.instance
+      .collection('users')
+      .doc(user.uid)
+      .collection('enrollments')
+      .where('status', isEqualTo: 'inProgress')
+      .snapshots()
+      .map(
+        (snapshot) => snapshot.docs
+            .map((doc) => _ResumeEnrollment(id: doc.id, data: doc.data()))
+            .toList(),
+      );
+}
 
-    await batch.commit();
+Stream<List<_ResumeEnrollment>>? _providedEnrollmentRecordsStream(
+  Stream<List<Map<String, dynamic>>>? stream,
+) {
+  if (stream == null) {
+    return null;
   }
 
-  Future<void> _resumeLearning(
-    BuildContext context,
-    DocumentSnapshot<Map<String, dynamic>> enrollment,
-  ) async {
-    final data = enrollment.data() ?? {};
-    final courseData = data['course'];
-    if (courseData is! Map) {
-      return;
+  return stream.map(
+    (records) => [
+      for (final entry in records.indexed)
+        _ResumeEnrollment(
+          id: entry.$2['courseId'] as String? ?? 'enrollment-${entry.$1}',
+          data: entry.$2,
+        ),
+    ],
+  );
+}
+
+List<_ResumeEnrollment> _sortedEnrollments(List<_ResumeEnrollment> docs) {
+  final sortedDocs = [...docs];
+
+  sortedDocs.sort((a, b) {
+    final aUpdatedAt = a.data['updatedAt'];
+    final bUpdatedAt = b.data['updatedAt'];
+    if (aUpdatedAt is Timestamp && bUpdatedAt is Timestamp) {
+      return bUpdatedAt.compareTo(aUpdatedAt);
     }
+    return 0;
+  });
 
-    final course = Course.fromMap(courseData, id: data['courseId'] as String?);
-    if (course.lessons.isEmpty) {
-      return;
-    }
+  return sortedDocs;
+}
 
-    final savedLessonNumber = (data['lastLessonNumber'] as num?)?.toInt() ?? 1;
-    final lessonNumber = savedLessonNumber.clamp(1, course.lessons.length);
-    final lesson = course.lessons[lessonNumber - 1];
-    final courseId = data['courseId'] as String? ?? course.id ?? enrollment.id;
+Future<void> _saveResumeLearningEvent({
+  required User user,
+  required String courseId,
+  required Course course,
+  required CourseLesson lesson,
+  required int lessonNumber,
+}) async {
+  final now = FieldValue.serverTimestamp();
+  final userRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
+  final batch = FirebaseFirestore.instance.batch()
+    ..set(userRef.collection('enrollments').doc(courseId), {
+      'updatedAt': now,
+      'lastLessonNumber': lessonNumber,
+      'lastLessonTitle': lesson.title,
+    }, SetOptions(merge: true))
+    ..set(userRef.collection('learningEvents').doc(), {
+      'userId': user.uid,
+      'type': 'lessonOpened',
+      'courseId': courseId,
+      'courseTitle': course.title,
+      'lessonNumber': lessonNumber,
+      'lessonTitle': lesson.title,
+      'createdAt': now,
+    });
 
-    try {
-      await _saveResumeLearningEvent(
-        courseId: courseId,
+  await batch.commit();
+}
+
+void _resumeLearningFromEnrollment(
+  BuildContext context, {
+  required User user,
+  required _ResumeEnrollment enrollment,
+}) {
+  final data = enrollment.data;
+  final courseData = data['course'];
+  if (courseData is! Map) {
+    return;
+  }
+
+  final course = Course.fromMap(courseData, id: data['courseId'] as String?);
+  if (course.lessons.isEmpty) {
+    return;
+  }
+
+  final savedLessonNumber = (data['lastLessonNumber'] as num?)?.toInt() ?? 1;
+  final lessonNumber = savedLessonNumber.clamp(1, course.lessons.length);
+  final lesson = course.lessons[lessonNumber - 1];
+  final courseId = data['courseId'] as String? ?? course.id ?? enrollment.id;
+
+  Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => VideoLessonPage(
         course: course,
         lesson: lesson,
         lessonNumber: lessonNumber,
-      );
-    } catch (_) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-          ..clearSnackBars()
-          ..showSnackBar(
-            const SnackBar(content: Text('学習記録の保存に失敗しました。後でもう一度お試しください。')),
-          );
-      }
-    }
-
-    if (!context.mounted) {
-      return;
-    }
-
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => VideoLessonPage(
-          course: course,
-          lesson: lesson,
-          lessonNumber: lessonNumber,
-        ),
       ),
-    );
-  }
+    ),
+  );
 
-  List<QueryDocumentSnapshot<Map<String, dynamic>>> _sortedEnrollments(
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
-  ) {
-    final sortedDocs = [...docs];
+  _saveResumeLearningEvent(
+    user: user,
+    courseId: courseId,
+    course: course,
+    lesson: lesson,
+    lessonNumber: lessonNumber,
+  ).catchError((_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          const SnackBar(content: Text('学習記録の保存に失敗しました。後でもう一度お試しください。')),
+        );
+    }
+  });
+}
 
-    sortedDocs.sort((a, b) {
-      final aUpdatedAt = a.data()['updatedAt'];
-      final bUpdatedAt = b.data()['updatedAt'];
-      if (aUpdatedAt is Timestamp && bUpdatedAt is Timestamp) {
-        return bUpdatedAt.compareTo(aUpdatedAt);
-      }
-      return 0;
-    });
+class _ResumeLearningCard extends StatelessWidget {
+  const _ResumeLearningCard({required this.user, this.enrollmentRecordsStream});
 
-    return sortedDocs;
-  }
+  final User user;
+  final Stream<List<Map<String, dynamic>>>? enrollmentRecordsStream;
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _enrollmentStream(),
+    return StreamBuilder<List<_ResumeEnrollment>>(
+      stream:
+          _providedEnrollmentRecordsStream(enrollmentRecordsStream) ??
+          _enrollmentRecordsStreamFor(user),
       builder: (context, snapshot) {
         final enrollments = snapshot.hasData
-            ? _sortedEnrollments(snapshot.data!.docs)
-            : <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+            ? _sortedEnrollments(snapshot.data!)
+            : <_ResumeEnrollment>[];
+        final previewEnrollments = enrollments
+            .take(_resumeLearningPreviewLimit)
+            .toList();
 
         return Card(
           child: Padding(
@@ -284,21 +320,111 @@ class _ResumeLearningCard extends StatelessWidget {
                   const Text('学習状況を確認しています...')
                 else if (enrollments.isEmpty)
                   const Text('受講中の講座や前回の続きは、ここに表示していきます。')
-                else
-                  for (final enrollment in enrollments) ...[
+                else ...[
+                  for (final enrollment in previewEnrollments) ...[
                     _EnrollmentResumeTile(
                       enrollment: enrollment,
                       onResume: () {
-                        _resumeLearning(context, enrollment);
+                        _resumeLearningFromEnrollment(
+                          context,
+                          user: user,
+                          enrollment: enrollment,
+                        );
                       },
                     ),
                     const SizedBox(height: 8),
                   ],
+                  if (enrollments.length > _resumeLearningPreviewLimit)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: OutlinedButton.icon(
+                        onPressed: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => _AllResumeLearningPage(
+                                user: user,
+                                enrollmentRecordsStream:
+                                    enrollmentRecordsStream,
+                              ),
+                            ),
+                          );
+                        },
+                        icon: const Icon(Icons.list),
+                        label: Text('もっと見る（全${enrollments.length}件）'),
+                      ),
+                    ),
+                ],
               ],
             ),
           ),
         );
       },
+    );
+  }
+}
+
+class _AllResumeLearningPage extends StatelessWidget {
+  const _AllResumeLearningPage({
+    required this.user,
+    this.enrollmentRecordsStream,
+  });
+
+  final User user;
+  final Stream<List<Map<String, dynamic>>>? enrollmentRecordsStream;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('学習中の講座')),
+      body: SafeArea(
+        child: StreamBuilder<List<_ResumeEnrollment>>(
+          stream:
+              _providedEnrollmentRecordsStream(enrollmentRecordsStream) ??
+              _enrollmentRecordsStreamFor(user),
+          builder: (context, snapshot) {
+            final enrollments = snapshot.hasData
+                ? _sortedEnrollments(snapshot.data!)
+                : <_ResumeEnrollment>[];
+
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+
+            if (enrollments.isEmpty) {
+              return const Padding(
+                padding: EdgeInsets.all(24),
+                child: Text('受講中の講座や前回の続きは、ここに表示していきます。'),
+              );
+            }
+
+            return ListView(
+              padding: const EdgeInsets.all(24),
+              children: [
+                const Text(
+                  'すべての学習中講座',
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                Text('全${enrollments.length}件'),
+                const SizedBox(height: 16),
+                for (final enrollment in enrollments) ...[
+                  _EnrollmentResumeTile(
+                    enrollment: enrollment,
+                    onResume: () {
+                      _resumeLearningFromEnrollment(
+                        context,
+                        user: user,
+                        enrollment: enrollment,
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ],
+            );
+          },
+        ),
+      ),
     );
   }
 }
@@ -309,12 +435,12 @@ class _EnrollmentResumeTile extends StatelessWidget {
     required this.onResume,
   });
 
-  final DocumentSnapshot<Map<String, dynamic>> enrollment;
+  final _ResumeEnrollment enrollment;
   final VoidCallback onResume;
 
   @override
   Widget build(BuildContext context) {
-    final data = enrollment.data() ?? {};
+    final data = enrollment.data;
     final courseData = data['course'];
     final courseTitle = courseData is Map
         ? courseData['title'] as String? ?? '受講中の講座'

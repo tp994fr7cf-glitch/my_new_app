@@ -8,11 +8,13 @@ class LearningRecordsPage extends StatefulWidget {
     super.key,
     required this.user,
     this.learningEventsStream,
+    this.lessonViewSessionsStream,
     this.quizAttemptsStream,
   });
 
   final User user;
   final Stream<List<Map<String, dynamic>>>? learningEventsStream;
+  final Stream<List<Map<String, dynamic>>>? lessonViewSessionsStream;
   final Stream<List<Map<String, dynamic>>>? quizAttemptsStream;
 
   @override
@@ -42,6 +44,26 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
         .doc(widget.user.uid)
         .collection('learningEvents')
         .orderBy('createdAt', descending: true)
+        .limit(100)
+        .snapshots()
+        .map((snapshot) => snapshot.docs.map((doc) => doc.data()).toList());
+  }
+
+  Stream<List<Map<String, dynamic>>> _lessonViewSessionsStream() {
+    final providedStream = widget.lessonViewSessionsStream;
+    if (providedStream != null) {
+      return providedStream;
+    }
+
+    if (Firebase.apps.isEmpty) {
+      return Stream.value(const []);
+    }
+
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(widget.user.uid)
+        .collection('lessonViewSessions')
+        .orderBy('lastActivityAt', descending: true)
         .limit(100)
         .snapshots()
         .map((snapshot) => snapshot.docs.map((doc) => doc.data()).toList());
@@ -78,6 +100,24 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
 
     return records.where((record) {
       final timestamp = record[timestampField];
+      if (timestamp is! Timestamp) {
+        return false;
+      }
+      return !timestamp.toDate().isBefore(since);
+    }).toList();
+  }
+
+  List<Map<String, dynamic>> _filterViewRecordsByPeriod(
+    List<Map<String, dynamic>> records,
+  ) {
+    final since = _periodStart();
+    if (since == null) {
+      return records;
+    }
+
+    return records.where((record) {
+      final timestamp =
+          record['completedAt'] ?? record['startedAt'] ?? record['createdAt'];
       if (timestamp is! Timestamp) {
         return false;
       }
@@ -130,9 +170,9 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
             const SizedBox(height: 24),
             switch (_selectedType) {
               _RecordType.views => _ViewRecordsList(
-                recordsStream: _learningEventsStream(),
-                filterRecords: (records) =>
-                    _filterByPeriod(records, 'createdAt'),
+                sessionRecordsStream: _lessonViewSessionsStream(),
+                legacyRecordsStream: _learningEventsStream(),
+                filterRecords: _filterViewRecordsByPeriod,
               ),
               _RecordType.quizzes => _QuizRecordsList(
                 recordsStream: _quizAttemptsStream(),
@@ -225,6 +265,48 @@ class _PeriodFilterChips extends StatelessWidget {
 
 class _ViewRecordsList extends StatelessWidget {
   const _ViewRecordsList({
+    required this.sessionRecordsStream,
+    required this.legacyRecordsStream,
+    required this.filterRecords,
+  });
+
+  final Stream<List<Map<String, dynamic>>> sessionRecordsStream;
+  final Stream<List<Map<String, dynamic>>> legacyRecordsStream;
+  final List<Map<String, dynamic>> Function(List<Map<String, dynamic>> records)
+  filterRecords;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<Map<String, dynamic>>>(
+      stream: sessionRecordsStream,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final records = filterRecords(snapshot.data ?? const []);
+        if (records.isNotEmpty) {
+          return Column(
+            children: [
+              for (final record in records) ...[
+                _ViewSessionRecordCard(record: record),
+                const SizedBox(height: 12),
+              ],
+            ],
+          );
+        }
+
+        return _LegacyViewRecordsList(
+          recordsStream: legacyRecordsStream,
+          filterRecords: filterRecords,
+        );
+      },
+    );
+  }
+}
+
+class _LegacyViewRecordsList extends StatelessWidget {
+  const _LegacyViewRecordsList({
     required this.recordsStream,
     required this.filterRecords,
   });
@@ -328,6 +410,53 @@ class _ViewRecordCard extends StatelessWidget {
             Text('レッスン: ${record['lessonTitle'] as String? ?? '未設定'}'),
             const SizedBox(height: 4),
             Text('日時: ${_formatTimestamp(record['createdAt'])}'),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ViewSessionRecordCard extends StatelessWidget {
+  const _ViewSessionRecordCard({required this.record});
+
+  final Map<String, dynamic> record;
+
+  @override
+  Widget build(BuildContext context) {
+    final lessonNumber = (record['lessonNumber'] as num?)?.toInt() ?? 1;
+    final cycleNumber = (record['cycleNumber'] as num?)?.toInt() ?? 1;
+    final isCompleted = record['status'] == 'completed';
+    final studySeconds = (record['studySeconds'] as num?)?.toInt() ?? 0;
+    final studyMinutes =
+        (record['studyMinutes'] as num?)?.toInt() ??
+        (studySeconds == 0 ? 0 : (studySeconds / 60).ceil());
+    final timestamp = isCompleted ? record['completedAt'] : record['startedAt'];
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              isCompleted
+                  ? 'レッスン$lessonNumber $cycleNumber周目終了'
+                  : 'レッスン$lessonNumber $cycleNumber周目',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(record['courseTitle'] as String? ?? '講座名未設定'),
+            const SizedBox(height: 4),
+            Text('レッスン: ${record['lessonTitle'] as String? ?? '未設定'}'),
+            const SizedBox(height: 4),
+            Text(
+              isCompleted
+                  ? '終了日時: ${_formatTimestamp(timestamp)}'
+                  : '開始日時: ${_formatTimestamp(timestamp)}',
+            ),
+            const SizedBox(height: 4),
+            Text('学習時間: $studyMinutes分'),
           ],
         ),
       ),

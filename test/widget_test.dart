@@ -192,6 +192,48 @@ void main() {
     expect(find.text('レッスン: 全体像'), findsNWidgets(2));
   });
 
+  testWidgets('Learning records page shows lesson cycle sessions', (
+    WidgetTester tester,
+  ) async {
+    final startedAt = Timestamp.fromDate(DateTime.now());
+    final completedAt = Timestamp.fromDate(DateTime.now());
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LearningRecordsPage(
+          user: _FakeUser(),
+          lessonViewSessionsStream: Stream.value([
+            {
+              'courseTitle': 'Flutter入門',
+              'lessonNumber': 1,
+              'lessonTitle': '全体像',
+              'cycleNumber': 1,
+              'status': 'inProgress',
+              'startedAt': startedAt,
+              'studySeconds': 61,
+            },
+            {
+              'courseTitle': 'Flutter入門',
+              'lessonNumber': 1,
+              'lessonTitle': '全体像',
+              'cycleNumber': 2,
+              'status': 'completed',
+              'completedAt': completedAt,
+              'studyMinutes': 2,
+            },
+          ]),
+          learningEventsStream: const Stream.empty(),
+          quizAttemptsStream: const Stream.empty(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('レッスン1 1周目'), findsOneWidget);
+    expect(find.text('レッスン1 2周目終了'), findsOneWidget);
+    expect(find.text('学習時間: 2分'), findsWidgets);
+  });
+
   testWidgets('Student home opens learning records page', (
     WidgetTester tester,
   ) async {
@@ -216,6 +258,53 @@ void main() {
 
     expect(find.text('視聴記録'), findsWidgets);
     expect(find.text('クイズ回答'), findsOneWidget);
+  });
+
+  testWidgets('Student home limits resume courses and opens full list', (
+    WidgetTester tester,
+  ) async {
+    final now = DateTime.now();
+    final enrollments = [
+      _enrollmentData('講座1', now),
+      _enrollmentData('講座2', now.subtract(const Duration(minutes: 1))),
+      _enrollmentData('講座3', now.subtract(const Duration(minutes: 2))),
+      _enrollmentData('講座4', now.subtract(const Duration(minutes: 3))),
+    ];
+    final enrollmentStream = Stream<List<Map<String, dynamic>>>.multi((
+      controller,
+    ) {
+      controller.add(enrollments);
+      controller.close();
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: StudentHomePage(
+          user: _FakeUser(),
+          profile: const {
+            'roles': ['student'],
+            'activeRole': 'student',
+          },
+          roles: const ['student'],
+          enrollmentRecordsStream: enrollmentStream,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('講座1'), findsOneWidget);
+    expect(find.text('講座2'), findsOneWidget);
+    expect(find.text('講座3'), findsOneWidget);
+    expect(find.text('講座4'), findsNothing);
+    expect(find.text('もっと見る（全4件）'), findsOneWidget);
+
+    await tester.drag(find.byType(Scrollable), const Offset(0, -600));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(OutlinedButton, 'もっと見る（全4件）'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('すべての学習中講座'), findsOneWidget);
+    expect(find.text('講座4'), findsOneWidget);
   });
 
   testWidgets('Teacher application page shows application action', (
@@ -494,6 +583,64 @@ void main() {
     await tester.pump();
   });
 
+  testWidgets('Video lesson completes cycle after threshold', (
+    WidgetTester tester,
+  ) async {
+    final course = sampleCourses.first;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: VideoLessonPage(
+          course: course,
+          lesson: course.lessons.first,
+          lessonNumber: 1,
+        ),
+      ),
+    );
+
+    final advanceButton = find.widgetWithText(OutlinedButton, '30秒進める（開発用）');
+    await tester.scrollUntilVisible(
+      advanceButton,
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(advanceButton);
+    await tester.pumpAndSettle();
+    await tester.tap(advanceButton);
+    await tester.pumpAndSettle();
+    await tester.tap(advanceButton);
+    await tester.pumpAndSettle();
+
+    expect(find.text('レッスン1 1周目終了として記録しました。'), findsOneWidget);
+  });
+
+  testWidgets('Video lesson manual completion finishes cycle', (
+    WidgetTester tester,
+  ) async {
+    final course = sampleCourses.first;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: VideoLessonPage(
+          course: course,
+          lesson: course.lessons.first,
+          lessonNumber: 1,
+        ),
+      ),
+    );
+
+    final completionButton = find.widgetWithText(OutlinedButton, '視聴終了として記録');
+    await tester.scrollUntilVisible(
+      completionButton,
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(completionButton);
+    await tester.pumpAndSettle();
+
+    expect(find.text('レッスン1 1周目終了として記録しました。'), findsOneWidget);
+  });
+
   testWidgets('Quiz manage page disables save until quiz is valid', (
     WidgetTester tester,
   ) async {
@@ -579,23 +726,65 @@ void main() {
       ),
     );
 
+    await tester.tap(find.widgetWithText(FilledButton, '再生'));
+    await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       find.text('授業中クイズ'),
       500,
-      scrollable: find.byType(Scrollable),
+      scrollable: find.byType(Scrollable).first,
     );
     expect(find.text('授業中クイズ'), findsOneWidget);
     expect(find.text('Flutterで画面を作るときの基本単位はどれですか？'), findsOneWidget);
 
     await tester.tap(find.text('Widget'));
-    await tester.tap(find.text('回答する'));
+    final answerButton = find.widgetWithText(FilledButton, '回答する');
+    await tester.scrollUntilVisible(
+      answerButton,
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    tester.widget<FilledButton>(answerButton).onPressed!();
     await tester.pumpAndSettle();
 
     expect(find.text('結果: 正解'), findsOneWidget);
     expect(savedEvent?.id, 'sample-flutter-quiz-1');
     expect(savedChoiceIndex, 0);
     expect(savedIsCorrect, isTrue);
+    expect(find.widgetWithText(FilledButton, '回答する'), findsNothing);
+    expect(find.text('この周では回答済みです。'), findsOneWidget);
   });
+}
+
+Map<String, dynamic> _enrollmentData(String courseTitle, DateTime updatedAt) {
+  return {
+    'courseId': courseTitle,
+    'status': 'inProgress',
+    'updatedAt': Timestamp.fromDate(updatedAt),
+    'lastLessonNumber': 1,
+    'lastLessonTitle': 'レッスン1',
+    'course': {
+      'id': courseTitle,
+      'title': courseTitle,
+      'instructorName': '先生',
+      'category': 'テスト',
+      'level': '初級',
+      'duration': '1レッスン',
+      'lessonCount': 1,
+      'rating': 0,
+      'priceLabel': '無料',
+      'description': 'テスト用',
+      'lessons': [
+        {
+          'title': 'レッスン1',
+          'duration': '1分30秒',
+          'mediaType': 'video',
+          'mediaUrl': '',
+          'isPreview': false,
+        },
+      ],
+      'lessonEvents': [],
+    },
+  };
 }
 
 class _FakeUser implements User {
