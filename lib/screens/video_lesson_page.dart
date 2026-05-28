@@ -5,7 +5,14 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
+import '../models/active_learning_lock.dart';
 import '../models/course.dart';
+import '../models/lesson_cycle_display.dart';
+import '../models/lesson_player_view_state.dart';
+import '../models/lesson_segment_boundary.dart';
+import '../models/quiz_answer_key.dart';
+import '../models/watched_range.dart';
+import 'lesson_notes_page.dart';
 
 typedef QuizAnswerSaveOverride =
     Future<void> Function({
@@ -37,6 +44,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   static const int _developmentPlaybackDurationSec = 90;
   static const double _completionRate = 0.92;
   static const Duration _resumeWindow = Duration(hours: 24);
+  static const Duration _activeLearningHeartbeatInterval = Duration(
+    seconds: 15,
+  );
+  static const Duration _activeLearningLockStaleAfter = Duration(seconds: 45);
+  static const String _learningTaskStateDocId = 'current';
+  static const String _activeLearningSessionDocId = 'current';
+  static final String _activeLearningDeviceId =
+      'device-${DateTime.now().microsecondsSinceEpoch}';
 
   int _currentPositionSec = 0;
   int _studySeconds = 0;
@@ -52,12 +67,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   bool _isLoadingLearningState = true;
   Timer? _playbackTimer;
   Timer? _studyTimer;
+  Timer? _activeLearningHeartbeatTimer;
   String? _sessionId;
   String? _segmentId;
+  bool _hasActiveLearningLock = false;
   final Map<String, int> _selectedChoices = {};
   final Map<String, bool> _answerResults = {};
   final Set<String> _answeredQuizEventIds = {};
-  final Set<int> _cycleWatchedSecondIndexes = {};
+  final List<WatchedRange> _cycleWatchedRanges = [];
   String? _message;
 
   Course get course => widget.course;
@@ -66,34 +83,31 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   bool get _isAudioLesson => lesson.mediaType == 'audio';
   int get _totalDurationSec => _developmentPlaybackDurationSec;
-  int get _completionThresholdSec =>
-      (_totalDurationSec * _completionRate).round();
+  int get _completionThresholdSec => calculateCompletionThresholdSec(
+    totalDurationSec: _totalDurationSec,
+    completionRate: _completionRate,
+  );
   bool get _isAtEnd => _currentPositionSec >= _totalDurationSec;
   bool get _hasActiveSession => _sessionId != null && !_sessionCompleted;
   String get _taskKey => '${_courseId()}-$lessonNumber-$_cycleNumber';
   int get _visibleCycleNumber => _displayCycleNumber ?? _cycleNumber;
   IconData get _playButtonIcon {
-    if (_isPlaying) {
-      return Icons.pause;
-    }
-    if (_isAtEnd) {
-      return Icons.replay;
-    }
-    return Icons.play_arrow;
+    return switch (lessonPlayButtonVisual(
+      isPlaying: _isPlaying,
+      isAtEnd: _isAtEnd,
+    )) {
+      LessonPlayButtonVisual.pause => Icons.pause,
+      LessonPlayButtonVisual.replay => Icons.replay,
+      LessonPlayButtonVisual.play => Icons.play_arrow,
+    };
   }
 
-  String get _playButtonLabel {
-    if (_isPreparingSession) {
-      return '準備中';
-    }
-    if (_isPlaying) {
-      return '一時停止';
-    }
-    if (_sessionCompleted || _isAtEnd) {
-      return 'もう一度再生';
-    }
-    return '再生';
-  }
+  String get _playButtonLabel => lessonPlayButtonLabel(
+    isPreparingSession: _isPreparingSession,
+    isPlaying: _isPlaying,
+    isSessionCompleted: _sessionCompleted,
+    isAtEnd: _isAtEnd,
+  );
 
   List<LessonEvent> get _dueQuizEvents {
     if (!_hasActiveSession) {
@@ -122,12 +136,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   void dispose() {
     _playbackTimer?.cancel();
     _studyTimer?.cancel();
+    _activeLearningHeartbeatTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     if (_pendingCompletion && !_sessionCompleted) {
       unawaited(_completeCurrentSegment(updateUi: false));
     } else {
       unawaited(_persistSessionProgress());
     }
+    unawaited(_releaseActiveLearningLock());
     super.dispose();
   }
 
@@ -138,23 +154,19 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         state == AppLifecycleState.detached ||
         state == AppLifecycleState.hidden) {
       _studyTimer?.cancel();
+      _activeLearningHeartbeatTimer?.cancel();
       if (_pendingCompletion && !_sessionCompleted) {
         unawaited(_completeCurrentSegment());
       } else {
         unawaited(_persistSessionProgress());
       }
+      unawaited(_releaseActiveLearningLock());
       return;
     }
 
     if (state == AppLifecycleState.resumed && _hasActiveSession) {
-      _startStudyTimer();
+      unawaited(_resumeActiveLearningAfterLifecycle());
     }
-  }
-
-  String _formatTime(int seconds) {
-    final minutes = seconds ~/ 60;
-    final remainingSeconds = seconds % 60;
-    return '${minutes.toString().padLeft(2, '0')}:${remainingSeconds.toString().padLeft(2, '0')}';
   }
 
   Future<void> _togglePlayback() async {
@@ -177,7 +189,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         _selectedChoices.clear();
         _answerResults.clear();
         _answeredQuizEventIds.clear();
-        _cycleWatchedSecondIndexes.clear();
+        _cycleWatchedRanges.clear();
         _message = null;
       });
     }
@@ -249,8 +261,233 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     return course.id ?? course.title.replaceAll('/', '_');
   }
 
+  DocumentReference<Map<String, dynamic>> _activeLearningLockRef(User user) {
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('activeLearningSession')
+        .doc(_activeLearningSessionDocId);
+  }
+
+  ActiveLearningLockSnapshot? _activeLearningLockSnapshotFromDoc(
+    DocumentSnapshot<Map<String, dynamic>> doc,
+  ) {
+    final data = doc.data();
+    if (data == null) {
+      return null;
+    }
+
+    final lastHeartbeatAt = data['lastHeartbeatAt'];
+    return ActiveLearningLockSnapshot(
+      deviceId: data['deviceId'] as String?,
+      status: data['status'] as String?,
+      lastHeartbeatAt: lastHeartbeatAt is Timestamp
+          ? lastHeartbeatAt.toDate()
+          : null,
+    );
+  }
+
+  Map<String, dynamic> _activeLearningLockData({
+    required String userId,
+    required String sessionId,
+    required String status,
+    required FieldValue now,
+  }) {
+    return {
+      'userId': userId,
+      'deviceId': _activeLearningDeviceId,
+      'sessionId': sessionId,
+      'segmentId': _segmentId ?? '',
+      'courseId': _courseId(),
+      'courseTitle': course.title,
+      'lessonNumber': lessonNumber,
+      'lessonTitle': lesson.title,
+      'cycleNumber': _cycleNumber,
+      'status': status,
+      'lastHeartbeatAt': now,
+      'updatedAt': now,
+    };
+  }
+
+  Future<bool> _acquireActiveLearningLock(User user, String sessionId) async {
+    final lockRef = _activeLearningLockRef(user);
+    final acquired = await FirebaseFirestore.instance.runTransaction<bool>((
+      transaction,
+    ) async {
+      final snapshot = await transaction.get(lockRef);
+      final decision = decideActiveLearningLock(
+        existingLock: _activeLearningLockSnapshotFromDoc(snapshot),
+        currentDeviceId: _activeLearningDeviceId,
+        now: DateTime.now(),
+        staleAfter: _activeLearningLockStaleAfter,
+      );
+      if (!decision.canAcquire) {
+        return false;
+      }
+
+      final now = FieldValue.serverTimestamp();
+      transaction.set(
+        lockRef,
+        _activeLearningLockData(
+          userId: user.uid,
+          sessionId: sessionId,
+          status: 'active',
+          now: now,
+        ),
+        SetOptions(merge: true),
+      );
+      return true;
+    });
+
+    if (acquired) {
+      _hasActiveLearningLock = true;
+      _startActiveLearningHeartbeat();
+    }
+    return acquired;
+  }
+
+  void _startActiveLearningHeartbeat() {
+    _activeLearningHeartbeatTimer?.cancel();
+    _activeLearningHeartbeatTimer = Timer.periodic(
+      _activeLearningHeartbeatInterval,
+      (_) => unawaited(_sendActiveLearningHeartbeat()),
+    );
+  }
+
+  Future<void> _sendActiveLearningHeartbeat() async {
+    final sessionId = _sessionId;
+    if (!_hasActiveLearningLock || sessionId == null || Firebase.apps.isEmpty) {
+      return;
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+
+    final lockRef = _activeLearningLockRef(user);
+    final stillOwnsLock = await FirebaseFirestore.instance.runTransaction<bool>(
+      (transaction) async {
+        final snapshot = await transaction.get(lockRef);
+        final data = snapshot.data();
+        if (data != null &&
+            data['status'] == 'active' &&
+            data['deviceId'] != _activeLearningDeviceId) {
+          return false;
+        }
+
+        final now = FieldValue.serverTimestamp();
+        transaction.set(
+          lockRef,
+          _activeLearningLockData(
+            userId: user.uid,
+            sessionId: sessionId,
+            status: 'active',
+            now: now,
+          ),
+          SetOptions(merge: true),
+        );
+        return true;
+      },
+    );
+
+    if (!stillOwnsLock) {
+      _handleActiveLearningLockLost();
+    }
+  }
+
+  void _handleActiveLearningLockLost() {
+    _hasActiveLearningLock = false;
+    _activeLearningHeartbeatTimer?.cancel();
+    _playbackTimer?.cancel();
+    _studyTimer?.cancel();
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _isPlaying = false;
+      _message = '別の端末で学習が開始されたため、この端末での再生を停止しました。';
+    });
+  }
+
+  Future<void> _releaseActiveLearningLock() async {
+    final sessionId = _sessionId;
+    if (!_hasActiveLearningLock || sessionId == null || Firebase.apps.isEmpty) {
+      return;
+    }
+
+    _hasActiveLearningLock = false;
+    _activeLearningHeartbeatTimer?.cancel();
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+
+    final lockRef = _activeLearningLockRef(user);
+    await FirebaseFirestore.instance.runTransaction<void>((transaction) async {
+      final snapshot = await transaction.get(lockRef);
+      final data = snapshot.data();
+      if (data == null ||
+          data['deviceId'] != _activeLearningDeviceId ||
+          data['sessionId'] != sessionId) {
+        return;
+      }
+
+      final now = FieldValue.serverTimestamp();
+      transaction.set(lockRef, {
+        'status': 'inactive',
+        'lastHeartbeatAt': now,
+        'endedAt': now,
+        'updatedAt': now,
+      }, SetOptions(merge: true));
+    });
+  }
+
+  Future<void> _resumeActiveLearningAfterLifecycle() async {
+    if (Firebase.apps.isEmpty) {
+      _startStudyTimer();
+      return;
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    final sessionId = _sessionId;
+    if (user == null || sessionId == null) {
+      return;
+    }
+
+    final acquired = await _acquireActiveLearningLock(user, sessionId);
+    if (!mounted) {
+      return;
+    }
+    if (acquired) {
+      _startStudyTimer();
+      return;
+    }
+
+    setState(() {
+      _isPlaying = false;
+      _message = '別の端末で学習中のため、この端末では同時に再生できません。';
+    });
+  }
+
   Future<bool> _ensureSession() async {
     if (_hasActiveSession && _segmentId != null) {
+      if (Firebase.apps.isNotEmpty && !_hasActiveLearningLock) {
+        final user = FirebaseAuth.instance.currentUser;
+        final sessionId = _sessionId;
+        if (user != null && sessionId != null) {
+          final acquired = await _acquireActiveLearningLock(user, sessionId);
+          if (!acquired) {
+            if (mounted) {
+              setState(() {
+                _message = '別の端末で学習中のため、この端末では同時に再生できません。';
+              });
+            }
+            return false;
+          }
+        }
+      }
       _startStudyTimer();
       return true;
     }
@@ -272,7 +509,17 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       }
 
       final session = await _loadOrCreateCycleSession(user);
+      final acquired = await _acquireActiveLearningLock(user, session.id);
+      if (!acquired) {
+        if (mounted) {
+          setState(() {
+            _message = '別の端末で学習中のため、この端末では同時に再生できません。';
+          });
+        }
+        return false;
+      }
       await _loadOrCreateSegment(user, session);
+      await _sendActiveLearningHeartbeat();
       await _refreshDisplayedCycleNumber(user);
       _startStudyTimer();
       return true;
@@ -304,7 +551,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _hasPlaybackStarted = true;
     _pendingCompletion = false;
     _answeredQuizEventIds.clear();
-    _cycleWatchedSecondIndexes.clear();
+    _cycleWatchedRanges.clear();
     _startStudyTimer();
   }
 
@@ -331,13 +578,20 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _answeredQuizEventIds
       ..clear()
       ..addAll(answered is List ? answered.whereType<String>() : const []);
-    final watched = data['watchedSecondIndexes'];
-    _cycleWatchedSecondIndexes
+    final watchedRanges = data['watchedRanges'];
+    final legacyWatchedIndexes = data['watchedSecondIndexes'];
+    _cycleWatchedRanges
       ..clear()
       ..addAll(
-        watched is List
-            ? watched.whereType<num>().map((second) => second.toInt())
-            : const <int>[],
+        watchedRanges is List
+            ? watchedRangesFromFirestore(watchedRanges)
+            : watchedIndexesToRanges(
+                legacyWatchedIndexes is List
+                    ? legacyWatchedIndexes.whereType<num>().map(
+                        (second) => second.toInt(),
+                      )
+                    : const <int>[],
+              ),
       );
   }
 
@@ -376,7 +630,17 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       }
 
       _loadSession(session.id, data);
+      final acquired = await _acquireActiveLearningLock(user, session.id);
+      if (!acquired) {
+        if (mounted) {
+          setState(() {
+            _message = '別の端末で学習中のため、この端末では同時に再生できません。';
+          });
+        }
+        return;
+      }
       await _loadOrCreateSegment(user, session);
+      await _sendActiveLearningHeartbeat();
       await _refreshDisplayedCycleNumber(user);
       _startStudyTimer();
     } catch (_) {
@@ -428,20 +692,6 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     return sessions.first;
   }
 
-  Future<QueryDocumentSnapshot<Map<String, dynamic>>?> _latestOverallSegment(
-    User user,
-  ) async {
-    final snapshot = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .collection('lessonViewSegments')
-        .orderBy('lastActivityAt', descending: true)
-        .limit(1)
-        .get();
-
-    return snapshot.docs.isEmpty ? null : snapshot.docs.first;
-  }
-
   Future<void> _refreshDisplayedCycleNumber(User user) async {
     final snapshot = await FirebaseFirestore.instance
         .collection('users')
@@ -451,28 +701,22 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         .where('lessonNumber', isEqualTo: lessonNumber)
         .get();
 
-    final recordsByCycle = <int, List<Map<String, dynamic>>>{};
-    for (final doc in snapshot.docs) {
-      final data = doc.data();
-      final cycleNumber = (data['cycleNumber'] as num?)?.toInt() ?? 1;
-      recordsByCycle.putIfAbsent(cycleNumber, () => []).add(data);
-    }
-
-    final fullyDeletedCycles = recordsByCycle.entries
-        .where(
-          (entry) => entry.value.every((record) => record['isDeleted'] == true),
-        )
-        .map((entry) => entry.key)
-        .toSet();
-    final deletedPreviousCycleCount = fullyDeletedCycles
-        .where((deletedCycle) => deletedCycle < _cycleNumber)
-        .length;
+    final displayCycleNumber = displayedCycleNumber(
+      actualCycleNumber: _cycleNumber,
+      records: snapshot.docs.map((doc) {
+        final data = doc.data();
+        return LessonCycleDisplayRecord(
+          cycleNumber: (data['cycleNumber'] as num?)?.toInt() ?? 1,
+          isDeleted: data['isDeleted'] == true,
+        );
+      }),
+    );
 
     if (!mounted) {
       return;
     }
     setState(() {
-      _displayCycleNumber = _cycleNumber - deletedPreviousCycleCount;
+      _displayCycleNumber = displayCycleNumber;
     });
   }
 
@@ -522,7 +766,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       'totalDurationSec': _totalDurationSec,
       'completionThresholdSec': _completionThresholdSec,
       'answeredQuizEventIds': [],
-      'watchedSecondIndexes': [],
+      'watchedRanges': [],
     });
 
     final created = await newSessionRef.get();
@@ -530,41 +774,165 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     return created;
   }
 
+  LearningTaskSnapshot? _learningTaskSnapshotFromDoc(
+    DocumentSnapshot<Map<String, dynamic>> doc,
+  ) {
+    final data = doc.data();
+    if (data == null) {
+      return null;
+    }
+
+    final sessionId = data['sessionId'];
+    final segmentId = data['segmentId'];
+    if (sessionId is! String || segmentId is! String) {
+      return null;
+    }
+
+    final lastActivityAt = data['lastActivityAt'];
+    return LearningTaskSnapshot(
+      sessionId: sessionId,
+      segmentId: segmentId,
+      lastActivityAt: lastActivityAt is Timestamp
+          ? lastActivityAt.toDate()
+          : null,
+    );
+  }
+
+  ActiveSegmentSnapshot? _activeSegmentSnapshotFromDoc(
+    DocumentSnapshot<Map<String, dynamic>> doc,
+  ) {
+    final data = doc.data();
+    if (data == null) {
+      return null;
+    }
+
+    return ActiveSegmentSnapshot(
+      status: data['status'] as String?,
+      isDeleted: data['isDeleted'] == true,
+    );
+  }
+
+  void _setLearningTaskState(
+    WriteBatch batch,
+    DocumentReference<Map<String, dynamic>> userRef, {
+    required String userId,
+    required String sessionId,
+    required String segmentId,
+    required FieldValue lastActivityAt,
+    required String status,
+  }) {
+    batch.set(
+      userRef.collection('learningTaskState').doc(_learningTaskStateDocId),
+      {
+        'userId': userId,
+        'taskKey': _taskKey,
+        'sessionId': sessionId,
+        'segmentId': segmentId,
+        'courseId': _courseId(),
+        'courseTitle': course.title,
+        'lessonNumber': lessonNumber,
+        'lessonTitle': lesson.title,
+        'cycleNumber': _cycleNumber,
+        'status': status,
+        'lastActivityAt': lastActivityAt,
+        'updatedAt': lastActivityAt,
+      },
+      SetOptions(merge: true),
+    );
+  }
+
+  void _addLearningTaskEvent(
+    WriteBatch batch,
+    DocumentReference<Map<String, dynamic>> userRef, {
+    required String userId,
+    required String sessionId,
+    required String segmentId,
+    required String eventType,
+    required FieldValue occurredAt,
+    SegmentBoundaryReason? boundaryReason,
+  }) {
+    batch.set(userRef.collection('learningTaskEvents').doc(), {
+      'userId': userId,
+      'taskKey': _taskKey,
+      'sessionId': sessionId,
+      'segmentId': segmentId,
+      'courseId': _courseId(),
+      'courseTitle': course.title,
+      'lessonNumber': lessonNumber,
+      'lessonTitle': lesson.title,
+      'cycleNumber': _cycleNumber,
+      'eventType': eventType,
+      if (boundaryReason != null)
+        'boundaryReason': segmentBoundaryReasonName(boundaryReason),
+      'occurredAt': occurredAt,
+    });
+  }
+
   Future<void> _loadOrCreateSegment(
     User user,
     DocumentSnapshot<Map<String, dynamic>> session,
   ) async {
-    final latestOverall = await _latestOverallSegment(user);
     final now = DateTime.now();
-    final segmentsRef = FirebaseFirestore.instance
+    final userRef = FirebaseFirestore.instance
         .collection('users')
-        .doc(user.uid)
-        .collection('lessonViewSegments');
+        .doc(user.uid);
+    final segmentsRef = userRef.collection('lessonViewSegments');
+    final taskStateDoc = await userRef
+        .collection('learningTaskState')
+        .doc(_learningTaskStateDocId)
+        .get();
+    final previousTask = _learningTaskSnapshotFromDoc(taskStateDoc);
+    DocumentSnapshot<Map<String, dynamic>>? activeSegmentDoc;
 
-    if (latestOverall != null) {
-      final latestData = latestOverall.data();
-      final lastActivityAt = latestData['lastActivityAt'];
-      final lastActivityDate = lastActivityAt is Timestamp
-          ? lastActivityAt.toDate()
-          : null;
-      final canResumeSegment =
-          latestData['sessionId'] == session.id &&
-          latestData['status'] == 'inProgress' &&
-          latestData['isDeleted'] != true &&
-          lastActivityDate != null &&
-          now.difference(lastActivityDate) < _resumeWindow;
+    if (previousTask != null && previousTask.sessionId == session.id) {
+      activeSegmentDoc = await segmentsRef.doc(previousTask.segmentId).get();
+    }
 
-      if (canResumeSegment) {
-        _segmentId = latestOverall.id;
-        _studySeconds = (latestData['studySeconds'] as num?)?.toInt() ?? 0;
-        _watchSeconds = (latestData['watchSeconds'] as num?)?.toInt() ?? 0;
-        return;
-      }
+    final decision = decideSegmentBoundary(
+      previousTask: previousTask,
+      activeSegment: activeSegmentDoc == null
+          ? null
+          : _activeSegmentSnapshotFromDoc(activeSegmentDoc),
+      currentSessionId: session.id,
+      now: now,
+      resumeWindow: _resumeWindow,
+    );
+
+    if (decision.shouldResume && activeSegmentDoc != null) {
+      final latestData = activeSegmentDoc.data()!;
+      _segmentId = activeSegmentDoc.id;
+      _studySeconds = (latestData['studySeconds'] as num?)?.toInt() ?? 0;
+      _watchSeconds = (latestData['watchSeconds'] as num?)?.toInt() ?? 0;
+
+      final serverNow = FieldValue.serverTimestamp();
+      final batch = FirebaseFirestore.instance.batch();
+      _setLearningTaskState(
+        batch,
+        userRef,
+        userId: user.uid,
+        sessionId: session.id,
+        segmentId: activeSegmentDoc.id,
+        lastActivityAt: serverNow,
+        status: 'inProgress',
+      );
+      _addLearningTaskEvent(
+        batch,
+        userRef,
+        userId: user.uid,
+        sessionId: session.id,
+        segmentId: activeSegmentDoc.id,
+        eventType: 'segmentResumed',
+        occurredAt: serverNow,
+        boundaryReason: decision.reason,
+      );
+      await batch.commit();
+      return;
     }
 
     final newSegmentRef = segmentsRef.doc();
-    final startedAt = FieldValue.serverTimestamp();
-    await newSegmentRef.set({
+    final serverNow = FieldValue.serverTimestamp();
+    final batch = FirebaseFirestore.instance.batch();
+    batch.set(newSegmentRef, {
       'userId': user.uid,
       'sessionId': session.id,
       'courseId': _courseId(),
@@ -574,14 +942,34 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       'cycleNumber': _cycleNumber,
       'taskKey': _taskKey,
       'status': 'inProgress',
-      'startedAt': startedAt,
-      'lastActivityAt': startedAt,
+      'startedAt': serverNow,
+      'lastActivityAt': serverNow,
       'studySeconds': 0,
       'watchSeconds': 0,
       'startPositionSec': _cycleMaxWatchedPositionSec,
       'endPositionSec': _cycleMaxWatchedPositionSec,
       'isDeleted': false,
     });
+    _setLearningTaskState(
+      batch,
+      userRef,
+      userId: user.uid,
+      sessionId: session.id,
+      segmentId: newSegmentRef.id,
+      lastActivityAt: serverNow,
+      status: 'inProgress',
+    );
+    _addLearningTaskEvent(
+      batch,
+      userRef,
+      userId: user.uid,
+      sessionId: session.id,
+      segmentId: newSegmentRef.id,
+      eventType: 'segmentStarted',
+      occurredAt: serverNow,
+      boundaryReason: decision.reason,
+    );
+    await batch.commit();
     _segmentId = newSegmentRef.id;
     _studySeconds = 0;
     _watchSeconds = 0;
@@ -608,20 +996,18 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
-    for (var second = fromPositionSec; second < toPositionSec; second += 1) {
-      if (second < 0 || second >= _totalDurationSec) {
-        continue;
-      }
-      final isNewWatchSecond = _cycleWatchedSecondIndexes.add(second);
-      if (isNewWatchSecond) {
-        _watchSeconds += 1;
-      }
-    }
-
-    if (_cycleWatchedSecondIndexes.isNotEmpty) {
-      _cycleMaxWatchedPositionSec =
-          _cycleWatchedSecondIndexes.reduce((a, b) => a > b ? a : b) + 1;
-    }
+    final startSec = fromPositionSec.clamp(0, _totalDurationSec).toInt();
+    final endSec = toPositionSec.clamp(0, _totalDurationSec).toInt();
+    final updatedRanges = addWatchedRange(
+      _cycleWatchedRanges,
+      startSec: startSec,
+      endSec: endSec,
+    );
+    _cycleWatchedRanges
+      ..clear()
+      ..addAll(updatedRanges);
+    _watchSeconds = sumWatchedSeconds(_cycleWatchedRanges);
+    _cycleMaxWatchedPositionSec = maxWatchedPositionSec(_cycleWatchedRanges);
   }
 
   Future<void> _persistSessionProgress() async {
@@ -648,7 +1034,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           'pendingCompletion': _pendingCompletion,
           'hasPlaybackStarted': _hasPlaybackStarted,
           'answeredQuizEventIds': _answeredQuizEventIds.toList(),
-          'watchedSecondIndexes': _cycleWatchedSecondIndexes.toList()..sort(),
+          'watchedRanges': watchedRangesToFirestore(_cycleWatchedRanges),
         },
         SetOptions(merge: true),
       )
@@ -662,6 +1048,15 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         },
         SetOptions(merge: true),
       );
+    _setLearningTaskState(
+      batch,
+      userRef,
+      userId: user.uid,
+      sessionId: sessionId,
+      segmentId: segmentId,
+      lastActivityAt: now,
+      status: 'inProgress',
+    );
 
     await batch.commit();
   }
@@ -721,7 +1116,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           'lastActivityAt': now,
           'maxWatchedPositionSec': _cycleMaxWatchedPositionSec,
           'answeredQuizEventIds': _answeredQuizEventIds.toList(),
-          'watchedSecondIndexes': _cycleWatchedSecondIndexes.toList()..sort(),
+          'watchedRanges': watchedRangesToFirestore(_cycleWatchedRanges),
         },
         SetOptions(merge: true),
       )
@@ -737,8 +1132,27 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         },
         SetOptions(merge: true),
       );
+    _setLearningTaskState(
+      batch,
+      userRef,
+      userId: user.uid,
+      sessionId: sessionId,
+      segmentId: segmentId,
+      lastActivityAt: now,
+      status: 'completed',
+    );
+    _addLearningTaskEvent(
+      batch,
+      userRef,
+      userId: user.uid,
+      sessionId: sessionId,
+      segmentId: segmentId,
+      eventType: 'segmentCompleted',
+      occurredAt: now,
+    );
 
     await batch.commit();
+    await _releaseActiveLearningLock();
   }
 
   Future<void> _completeManually() async {
@@ -825,9 +1239,13 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
     final courseId = course.id ?? course.title.replaceAll('/', '_');
     final sessionId = _sessionId;
-    final cycleQuizKey = sessionId == null
-        ? '${courseId}_${lessonNumber}_${_cycleNumber}_${event.id}'
-        : '${sessionId}_${event.id}';
+    final cycleQuizKey = buildCycleQuizKey(
+      courseId: courseId,
+      lessonNumber: lessonNumber,
+      cycleNumber: _cycleNumber,
+      eventId: event.id,
+      sessionId: sessionId,
+    );
     final firestore = FirebaseFirestore.instance;
     await firestore
         .collection('users')
@@ -903,7 +1321,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                     ),
                     const SizedBox(height: 16),
                     Text(
-                      '${_formatTime(_currentPositionSec)} / ${_formatTime(_totalDurationSec)}',
+                      '${formatLessonTime(_currentPositionSec)} / ${formatLessonTime(_totalDurationSec)}',
                       style: const TextStyle(
                         fontSize: 20,
                         fontWeight: FontWeight.bold,
@@ -917,7 +1335,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                         min: 0,
                         max: _totalDurationSec.toDouble(),
                         divisions: _totalDurationSec,
-                        label: _formatTime(_currentPositionSec),
+                        label: formatLessonTime(_currentPositionSec),
                         onChanged: (value) {
                           _seekPlaybackPosition(value.round());
                         },
@@ -949,9 +1367,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
             const SizedBox(height: 8),
             Text('授業形式: ${_isAudioLesson ? '音声のみ' : '動画'}'),
             const SizedBox(height: 8),
-            Text('仮再生時間: ${_formatTime(_totalDurationSec)}'),
+            Text('仮再生時間: ${formatLessonTime(_totalDurationSec)}'),
             const SizedBox(height: 8),
-            Text('現在位置: ${_formatTime(_currentPositionSec)}'),
+            Text('現在位置: ${formatLessonTime(_currentPositionSec)}'),
             const SizedBox(height: 8),
             Text('現在の周回: $cycleLabel'),
             const SizedBox(height: 8),
@@ -1057,13 +1475,20 @@ class _VideoLessonPageState extends State<VideoLessonPage>
             const SizedBox(height: 24),
             const _SectionTitle('学習メモ'),
             const SizedBox(height: 8),
-            const TextField(
-              minLines: 4,
-              maxLines: 8,
-              decoration: InputDecoration(
-                border: OutlineInputBorder(),
-                hintText: 'このレッスンで気づいたことをメモできます。保存機能は後で追加します。',
-              ),
+            OutlinedButton.icon(
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => LessonNotesPage(
+                      course: course,
+                      lesson: lesson,
+                      lessonNumber: lessonNumber,
+                    ),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.note_alt_outlined),
+              label: const Text('レッスンメモを開く'),
             ),
             const SizedBox(height: 24),
             const _SectionTitle('この画面に後で追加する機能'),

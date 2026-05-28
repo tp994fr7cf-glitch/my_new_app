@@ -149,7 +149,9 @@ service cloud.firestore {
           && request.resource.data.pendingCompletion is bool
           && request.resource.data.maxWatchedPositionSec is int
           && request.resource.data.totalDurationSec is int
-          && request.resource.data.completionThresholdSec is int;
+          && request.resource.data.completionThresholdSec is int
+          && (!request.resource.data.keys().hasAny(['watchedRanges'])
+            || request.resource.data.watchedRanges is list);
       }
 
       match /lessonViewSegments/{segmentId} {
@@ -169,6 +171,60 @@ service cloud.firestore {
           && request.resource.data.startPositionSec is int
           && request.resource.data.endPositionSec is int
           && request.resource.data.isDeleted is bool;
+      }
+
+      match /learningTaskState/{stateId} {
+        allow read: if isOwner(userId);
+
+        allow create, update: if isOwner(userId)
+          && stateId == 'current'
+          && request.resource.data.userId == userId
+          && request.resource.data.taskKey is string
+          && request.resource.data.sessionId is string
+          && request.resource.data.segmentId is string
+          && request.resource.data.courseId is string
+          && request.resource.data.courseTitle is string
+          && request.resource.data.lessonNumber is int
+          && request.resource.data.lessonTitle is string
+          && request.resource.data.cycleNumber is int
+          && request.resource.data.status in ['inProgress', 'completed'];
+      }
+
+      match /learningTaskEvents/{eventId} {
+        allow read: if isOwner(userId);
+
+        allow create: if isOwner(userId)
+          && request.resource.data.userId == userId
+          && request.resource.data.taskKey is string
+          && request.resource.data.sessionId is string
+          && request.resource.data.segmentId is string
+          && request.resource.data.courseId is string
+          && request.resource.data.courseTitle is string
+          && request.resource.data.lessonNumber is int
+          && request.resource.data.lessonTitle is string
+          && request.resource.data.cycleNumber is int
+          && request.resource.data.eventType in [
+            'segmentStarted',
+            'segmentResumed',
+            'segmentCompleted'
+          ];
+      }
+
+      match /activeLearningSession/{stateId} {
+        allow read: if isOwner(userId);
+
+        allow create, update: if isOwner(userId)
+          && stateId == 'current'
+          && request.resource.data.userId == userId
+          && request.resource.data.deviceId is string
+          && request.resource.data.sessionId is string
+          && request.resource.data.segmentId is string
+          && request.resource.data.courseId is string
+          && request.resource.data.courseTitle is string
+          && request.resource.data.lessonNumber is int
+          && request.resource.data.lessonTitle is string
+          && request.resource.data.cycleNumber is int
+          && request.resource.data.status in ['active', 'inactive'];
       }
 
       match /quizAttempts/{attemptId} {
@@ -194,6 +250,63 @@ service cloud.firestore {
           && request.resource.data.keyword is string
           && request.resource.data.normalizedKeyword is string;
       }
+
+      match /lessonNoteFolders/{folderId} {
+        allow read: if isOwner(userId);
+
+        allow create, update: if isOwner(userId)
+          && request.resource.data.name is string;
+      }
+
+      match /lessonNotes/{noteId} {
+        allow read: if isOwner(userId);
+
+        allow create, update: if isOwner(userId)
+          && request.resource.data.userId == userId
+          && request.resource.data.authorId == userId
+          && request.resource.data.title is string
+          && request.resource.data.body is string
+          && request.resource.data.folderId is string
+          && request.resource.data.folderName is string
+          && request.resource.data.courseId is string
+          && request.resource.data.courseTitle is string
+          && request.resource.data.lessonNumber is int
+          && request.resource.data.lessonTitle is string
+          && request.resource.data.visibility in ['private', 'public']
+          && request.resource.data.tags is list
+          && request.resource.data.attachmentTypes is list
+          && request.resource.data.hasAudioAttachment is bool
+          && request.resource.data.isCopied is bool
+          && request.resource.data.canPublish is bool
+          && (request.resource.data.visibility == 'private'
+            || (request.resource.data.hasAudioAttachment == false
+              && request.resource.data.isCopied == false
+              && request.resource.data.canPublish == true));
+      }
+    }
+
+    match /publicLessonNotes/{noteId} {
+      allow read: if signedIn();
+
+      allow create, update: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.authorId == request.auth.uid
+        && request.resource.data.noteId == noteId
+        && request.resource.data.title is string
+        && request.resource.data.body is string
+        && request.resource.data.courseId is string
+        && request.resource.data.courseTitle is string
+        && request.resource.data.lessonNumber is int
+        && request.resource.data.lessonTitle is string
+        && request.resource.data.visibility == 'public'
+        && request.resource.data.tags is list
+        && request.resource.data.attachmentTypes is list
+        && request.resource.data.hasAudioAttachment == false
+        && request.resource.data.isCopied == false
+        && request.resource.data.canPublish == true;
+
+      allow delete: if signedIn()
+        && resource.data.authorId == request.auth.uid;
     }
 
     match /courses/{courseId} {
