@@ -8,7 +8,7 @@ import 'package:flutter/material.dart';
 import '../models/course.dart';
 import '../models/lesson_note.dart';
 
-class LessonNotesPage extends StatefulWidget {
+class LessonNotesPage extends StatelessWidget {
   const LessonNotesPage({
     super.key,
     required this.course,
@@ -27,10 +27,46 @@ class LessonNotesPage extends StatefulWidget {
   final Stream<List<LessonNoteFolder>>? foldersStream;
 
   @override
-  State<LessonNotesPage> createState() => _LessonNotesPageState();
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('レッスンメモ')),
+      body: LessonNotesPanel(
+        course: course,
+        lesson: lesson,
+        lessonNumber: lessonNumber,
+        notesStream: notesStream,
+        publicNotesStream: publicNotesStream,
+        foldersStream: foldersStream,
+      ),
+    );
+  }
 }
 
-class _LessonNotesPageState extends State<LessonNotesPage> {
+class LessonNotesPanel extends StatefulWidget {
+  const LessonNotesPanel({
+    super.key,
+    required this.course,
+    required this.lesson,
+    required this.lessonNumber,
+    this.notesStream,
+    this.publicNotesStream,
+    this.foldersStream,
+    this.isEmbedded = false,
+  });
+
+  final Course course;
+  final CourseLesson lesson;
+  final int lessonNumber;
+  final Stream<List<LessonNote>>? notesStream;
+  final Stream<List<LessonNote>>? publicNotesStream;
+  final Stream<List<LessonNoteFolder>>? foldersStream;
+  final bool isEmbedded;
+
+  @override
+  State<LessonNotesPanel> createState() => _LessonNotesPanelState();
+}
+
+class _LessonNotesPanelState extends State<LessonNotesPanel> {
   final TextEditingController _searchController = TextEditingController();
   String _query = '';
   String? _message;
@@ -283,85 +319,121 @@ class _LessonNotesPageState extends State<LessonNotesPage> {
   Widget build(BuildContext context) {
     return DefaultTabController(
       length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('レッスンメモ'),
-          bottom: const TabBar(
-            tabs: [
-              Tab(text: '自分のメモ'),
-              Tab(text: '公開メモ'),
-            ],
-          ),
-        ),
-        body: StreamBuilder<List<LessonNoteFolder>>(
-          stream: _foldersStream(),
-          builder: (context, folderSnapshot) {
-            final folders = folderSnapshot.data ?? const <LessonNoteFolder>[];
-            return Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                  child: TextField(
-                    controller: _searchController,
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      labelText: 'メモを検索',
-                      prefixIcon: Icon(Icons.search),
+      child: widget.isEmbedded
+          ? SizedBox(height: 560, child: _buildPanelContent(context))
+          : _buildPanelContent(context),
+    );
+  }
+
+  Widget _buildPanelContent(BuildContext context) {
+    return Card(
+      margin: widget.isEmbedded ? EdgeInsets.zero : null,
+      child: Padding(
+        padding: widget.isEmbedded
+            ? const EdgeInsets.only(top: 12)
+            : EdgeInsets.zero,
+        child: Column(
+          children: [
+            if (widget.isEmbedded) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.note_alt_outlined,
+                      color: Theme.of(context).colorScheme.primary,
                     ),
-                    onChanged: (value) {
-                      setState(() {
-                        _query = value;
-                      });
-                    },
-                  ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'レッスンメモ',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ],
                 ),
-                if (_message != null)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(_message!),
-                    ),
-                  ),
-                Expanded(
-                  child: TabBarView(
+              ),
+              const SizedBox(height: 8),
+            ],
+            const TabBar(
+              tabs: [
+                Tab(text: '自分のメモ'),
+                Tab(text: '公開メモ'),
+              ],
+            ),
+            Expanded(
+              child: StreamBuilder<List<LessonNoteFolder>>(
+                stream: _foldersStream(),
+                builder: (context, folderSnapshot) {
+                  final folders =
+                      folderSnapshot.data ?? const <LessonNoteFolder>[];
+                  return Column(
                     children: [
-                      _LessonNoteList(
-                        notesStream: _notesStream(),
-                        query: _query,
-                        emptyText: 'このレッスンのメモはまだありません。',
-                        onTap: (note) =>
-                            _openEditor(note: note, folders: folders),
-                        action: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                        child: TextField(
+                          controller: _searchController,
+                          decoration: const InputDecoration(
+                            border: OutlineInputBorder(),
+                            labelText: 'メモを検索',
+                            prefixIcon: Icon(Icons.search),
+                          ),
+                          onChanged: (value) {
+                            setState(() {
+                              _query = value;
+                            });
+                          },
+                        ),
+                      ),
+                      if (_message != null)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(_message!),
+                          ),
+                        ),
+                      Expanded(
+                        child: TabBarView(
                           children: [
-                            FilledButton.icon(
-                              onPressed: () => _openEditor(folders: folders),
-                              icon: const Icon(Icons.note_add),
-                              label: const Text('メモを作成'),
+                            _LessonNoteList(
+                              notesStream: _notesStream(),
+                              query: _query,
+                              emptyText: 'このレッスンのメモはまだありません。',
+                              onTap: (note) =>
+                                  _openEditor(note: note, folders: folders),
+                              action: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  FilledButton.icon(
+                                    onPressed: () =>
+                                        _openEditor(folders: folders),
+                                    icon: const Icon(Icons.note_add),
+                                    label: const Text('メモを作成'),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  OutlinedButton.icon(
+                                    onPressed: _createFolder,
+                                    icon: const Icon(Icons.create_new_folder),
+                                    label: const Text('フォルダを作成'),
+                                  ),
+                                ],
+                              ),
                             ),
-                            const SizedBox(height: 8),
-                            OutlinedButton.icon(
-                              onPressed: _createFolder,
-                              icon: const Icon(Icons.create_new_folder),
-                              label: const Text('フォルダを作成'),
+                            _LessonNoteList(
+                              notesStream: _publicNotesStream(),
+                              query: _query,
+                              emptyText: '公開メモはまだありません。',
+                              onTap: null,
+                              action: const Text('コピー・評価・お気に入りは後で追加します。'),
                             ),
                           ],
                         ),
                       ),
-                      _LessonNoteList(
-                        notesStream: _publicNotesStream(),
-                        query: _query,
-                        emptyText: '公開メモはまだありません。',
-                        onTap: null,
-                        action: const Text('コピー・評価・お気に入りは後で追加します。'),
-                      ),
                     ],
-                  ),
-                ),
-              ],
-            );
-          },
+                  );
+                },
+              ),
+            ),
+          ],
         ),
       ),
     );

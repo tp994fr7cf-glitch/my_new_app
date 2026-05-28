@@ -21,7 +21,9 @@ void main() {
   );
   const lesson = CourseLesson(title: '一次方程式の基本', duration: '1分30秒');
 
-  testWidgets('Video lesson page opens lesson notes page', (tester) async {
+  testWidgets('Video lesson page expands notes without navigation', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       const MaterialApp(
         home: VideoLessonPage(course: course, lesson: lesson, lessonNumber: 1),
@@ -34,7 +36,9 @@ void main() {
 
     expect(find.text('レッスンメモ'), findsOneWidget);
     expect(find.text('自分のメモ'), findsWidgets);
-    expect(find.text('公開メモ'), findsOneWidget);
+    expect(find.text('公開メモ'), findsWidgets);
+    expect(find.text('動画視聴', skipOffstage: false), findsOneWidget);
+    expect(find.text('レッスンメモを閉じる'), findsOneWidget);
   });
 
   testWidgets('Lesson notes page shows private and public notes', (

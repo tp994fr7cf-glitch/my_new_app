@@ -65,6 +65,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   bool _hasPlaybackStarted = false;
   bool _pendingCompletion = false;
   bool _isLoadingLearningState = true;
+  bool _isLessonNotesOpen = false;
   Timer? _playbackTimer;
   Timer? _studyTimer;
   Timer? _activeLearningHeartbeatTimer;
@@ -1482,19 +1483,26 @@ class _VideoLessonPageState extends State<VideoLessonPage>
             const SizedBox(height: 8),
             OutlinedButton.icon(
               onPressed: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => LessonNotesPage(
-                      course: course,
-                      lesson: lesson,
-                      lessonNumber: lessonNumber,
-                    ),
-                  ),
-                );
+                setState(() {
+                  _isLessonNotesOpen = !_isLessonNotesOpen;
+                });
               },
-              icon: const Icon(Icons.note_alt_outlined),
-              label: const Text('レッスンメモを開く'),
+              icon: Icon(
+                _isLessonNotesOpen
+                    ? Icons.keyboard_arrow_up
+                    : Icons.note_alt_outlined,
+              ),
+              label: Text(_isLessonNotesOpen ? 'レッスンメモを閉じる' : 'レッスンメモを開く'),
             ),
+            if (_isLessonNotesOpen) ...[
+              const SizedBox(height: 12),
+              LessonNotesPanel(
+                course: course,
+                lesson: lesson,
+                lessonNumber: lessonNumber,
+                isEmbedded: true,
+              ),
+            ],
             const SizedBox(height: 24),
             const _SectionTitle('この画面に後で追加する機能'),
             const SizedBox(height: 8),
