@@ -41,6 +41,34 @@ void main() {
     expect(find.text('レッスンメモを閉じる'), findsOneWidget);
   });
 
+  testWidgets('Embedded notes editor opens without navigation', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: VideoLessonPage(course: course, lesson: lesson, lessonNumber: 1),
+      ),
+    );
+
+    await tester.scrollUntilVisible(find.text('レッスンメモを開く'), 500);
+    await tester.tap(find.text('レッスンメモを開く'));
+    await tester.pumpAndSettle();
+
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, -300));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('メモを作成'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('タイトル'), findsOneWidget);
+    expect(find.text('本文'), findsOneWidget);
+    expect(find.text('動画視聴', skipOffstage: false), findsOneWidget);
+    expect(find.byType(BackButton), findsNothing);
+
+    await tester.tap(find.byTooltip('メモ一覧に戻る'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('メモを検索'), findsOneWidget);
+    expect(find.text('レッスンメモを閉じる', skipOffstage: false), findsOneWidget);
+  });
+
   testWidgets('Lesson notes page shows private and public notes', (
     tester,
   ) async {
@@ -134,5 +162,30 @@ void main() {
       find.widgetWithText(SwitchListTile, '受講者と先生に公開する'),
     );
     expect(switchTile.onChanged, isNull);
+  });
+
+  testWidgets('Embedded notes folder dialog can be cancelled safely', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: VideoLessonPage(course: course, lesson: lesson, lessonNumber: 1),
+      ),
+    );
+    await tester.scrollUntilVisible(find.text('レッスンメモを開く'), 500);
+    await tester.tap(find.text('レッスンメモを開く'));
+    await tester.pumpAndSettle();
+
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, -500));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('フォルダを作成'));
+    await tester.pumpAndSettle();
+    expect(find.text('フォルダ名'), findsOneWidget);
+
+    await tester.tap(find.text('キャンセル'));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('レッスンメモを閉じる', skipOffstage: false), findsOneWidget);
   });
 }
