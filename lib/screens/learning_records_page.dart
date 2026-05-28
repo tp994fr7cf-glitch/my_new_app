@@ -3,6 +3,11 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
+import '../models/course.dart';
+import '../models/lesson_note.dart';
+import '../models/lesson_question.dart';
+import 'lesson_notes_page.dart';
+
 class LearningRecordsPage extends StatefulWidget {
   const LearningRecordsPage({
     super.key,
@@ -10,24 +15,29 @@ class LearningRecordsPage extends StatefulWidget {
     this.learningEventsStream,
     this.lessonViewSegmentsStream,
     this.quizAttemptsStream,
+    this.lessonNotesStream,
+    this.lessonQuestionsStream,
   });
 
   final User user;
   final Stream<List<Map<String, dynamic>>>? learningEventsStream;
   final Stream<List<Map<String, dynamic>>>? lessonViewSegmentsStream;
   final Stream<List<Map<String, dynamic>>>? quizAttemptsStream;
+  final Stream<List<LessonNote>>? lessonNotesStream;
+  final Stream<List<LessonQuestion>>? lessonQuestionsStream;
 
   @override
   State<LearningRecordsPage> createState() => _LearningRecordsPageState();
 }
 
-enum _RecordType { views, quizzes, comments }
+enum _RecordType { views, quizzes, notes, comments }
 
 enum _PeriodFilter { all, today, sevenDays, thirtyDays }
 
 class _LearningRecordsPageState extends State<LearningRecordsPage> {
   _RecordType _selectedType = _RecordType.views;
   _PeriodFilter _selectedPeriod = _PeriodFilter.all;
+  String _query = '';
 
   Stream<List<Map<String, dynamic>>> _learningEventsStream() {
     final providedStream = widget.learningEventsStream;
@@ -91,6 +101,52 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
         .limit(100)
         .snapshots()
         .map((snapshot) => snapshot.docs.map((doc) => doc.data()).toList());
+  }
+
+  Stream<List<LessonNote>> _lessonNotesStream() {
+    final providedStream = widget.lessonNotesStream;
+    if (providedStream != null) {
+      return providedStream;
+    }
+    if (Firebase.apps.isEmpty) {
+      return Stream.value(const []);
+    }
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(widget.user.uid)
+        .collection('lessonNotes')
+        .orderBy('updatedAt', descending: true)
+        .limit(100)
+        .snapshots()
+        .map((snapshot) {
+          return snapshot.docs
+              .map(LessonNote.fromFirestore)
+              .where((note) => !note.isDeleted)
+              .toList();
+        });
+  }
+
+  Stream<List<LessonQuestion>> _lessonQuestionsStream() {
+    final providedStream = widget.lessonQuestionsStream;
+    if (providedStream != null) {
+      return providedStream;
+    }
+    if (Firebase.apps.isEmpty) {
+      return Stream.value(const []);
+    }
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(widget.user.uid)
+        .collection('lessonQuestions')
+        .orderBy('updatedAt', descending: true)
+        .limit(100)
+        .snapshots()
+        .map((snapshot) {
+          return snapshot.docs
+              .map(LessonQuestion.fromFirestore)
+              .where((question) => !question.isDeleted)
+              .toList();
+        });
   }
 
   List<Map<String, dynamic>> _filterByPeriod(
@@ -171,6 +227,19 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
                 });
               },
             ),
+            const SizedBox(height: 16),
+            TextField(
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                labelText: '講座名・レッスン名・本文などで検索',
+                prefixIcon: Icon(Icons.search),
+              ),
+              onChanged: (value) {
+                setState(() {
+                  _query = value;
+                });
+              },
+            ),
             const SizedBox(height: 24),
             switch (_selectedType) {
               _RecordType.views => _ViewRecordsList(
@@ -184,12 +253,53 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
                 filterRecords: (records) =>
                     _filterByPeriod(records, 'answeredAt'),
               ),
-              _RecordType.comments => const _FutureCommentsCard(),
+              _RecordType.notes => _LessonNoteRecordsList(
+                notesStream: _lessonNotesStream(),
+                filterNotes: _filterNotes,
+              ),
+              _RecordType.comments => _LessonQuestionRecordsList(
+                questionsStream: _lessonQuestionsStream(),
+                filterQuestions: _filterQuestions,
+              ),
             },
           ],
         ),
       ),
     );
+  }
+
+  List<LessonNote> _filterNotes(List<LessonNote> notes) {
+    final since = _periodStart();
+    final query = _query.trim().toLowerCase();
+    return notes.where((note) {
+      if (since != null) {
+        final updatedAt = note.updatedAt ?? note.createdAt;
+        if (updatedAt == null || updatedAt.toDate().isBefore(since)) {
+          return false;
+        }
+      }
+      if (query.isEmpty) {
+        return true;
+      }
+      return lessonNoteMatchesQuery(note, query);
+    }).toList();
+  }
+
+  List<LessonQuestion> _filterQuestions(List<LessonQuestion> questions) {
+    final since = _periodStart();
+    final query = _query.trim().toLowerCase();
+    return questions.where((question) {
+      if (since != null) {
+        final updatedAt = question.updatedAt ?? question.createdAt;
+        if (updatedAt == null || updatedAt.toDate().isBefore(since)) {
+          return false;
+        }
+      }
+      if (query.isEmpty) {
+        return true;
+      }
+      return lessonQuestionMatchesQuery(question, query);
+    }).toList();
   }
 }
 
@@ -217,6 +327,11 @@ class _RecordTypeSelector extends StatelessWidget {
           label: const Text('クイズ回答'),
           selected: selectedType == _RecordType.quizzes,
           onSelected: (_) => onSelected(_RecordType.quizzes),
+        ),
+        ChoiceChip(
+          label: const Text('レッスンメモ'),
+          selected: selectedType == _RecordType.notes,
+          onSelected: (_) => onSelected(_RecordType.notes),
         ),
         ChoiceChip(
           label: const Text('質問コメント'),
@@ -468,6 +583,180 @@ class _QuizRecordsList extends StatelessWidget {
   }
 }
 
+class _LessonNoteRecordsList extends StatelessWidget {
+  const _LessonNoteRecordsList({
+    required this.notesStream,
+    required this.filterNotes,
+  });
+
+  final Stream<List<LessonNote>> notesStream;
+  final List<LessonNote> Function(List<LessonNote> notes) filterNotes;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<LessonNote>>(
+      stream: notesStream,
+      builder: (context, snapshot) {
+        final notes = filterNotes(snapshot.data ?? const []);
+        if (notes.isEmpty) {
+          return const _EmptyRecordCard(message: 'この期間のレッスンメモはまだありません。');
+        }
+        return Column(
+          children: [
+            for (final note in notes) ...[
+              _LessonNoteRecordCard(note: note),
+              const SizedBox(height: 12),
+            ],
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _LessonQuestionRecordsList extends StatelessWidget {
+  const _LessonQuestionRecordsList({
+    required this.questionsStream,
+    required this.filterQuestions,
+  });
+
+  final Stream<List<LessonQuestion>> questionsStream;
+  final List<LessonQuestion> Function(List<LessonQuestion> questions)
+  filterQuestions;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<LessonQuestion>>(
+      stream: questionsStream,
+      builder: (context, snapshot) {
+        final questions = filterQuestions(snapshot.data ?? const []);
+        if (questions.isEmpty) {
+          return const _EmptyRecordCard(message: 'この期間の質問コメントはまだありません。');
+        }
+        return Column(
+          children: [
+            for (final question in questions) ...[
+              _LessonQuestionRecordCard(question: question),
+              const SizedBox(height: 12),
+            ],
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _LessonNoteRecordCard extends StatelessWidget {
+  const _LessonNoteRecordCard({required this.note});
+
+  final LessonNote note;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              note.title.isEmpty ? '無題のメモ' : note.title,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '${note.courseTitle} / レッスン${note.lessonNumber}: ${note.lessonTitle}',
+            ),
+            const SizedBox(height: 4),
+            Text(note.isPublic ? '公開メモ' : '非公開メモ'),
+            const SizedBox(height: 4),
+            Text('更新日: ${_formatTimestamp(note.updatedAt ?? note.createdAt)}'),
+            if (note.body.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(note.body),
+            ],
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => LessonNotesPage(
+                        course: _courseFromNote(note),
+                        lesson: CourseLesson(
+                          title: note.lessonTitle,
+                          duration: '1分30秒',
+                        ),
+                        lessonNumber: note.lessonNumber,
+                      ),
+                    ),
+                  );
+                },
+                child: const Text('メモを開いて編集'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LessonQuestionRecordCard extends StatelessWidget {
+  const _LessonQuestionRecordCard({required this.question});
+
+  final LessonQuestion question;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              question.title.isEmpty ? '無題の質問' : question.title,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '${question.courseTitle} / レッスン${question.lessonNumber}: ${question.lessonTitle}',
+            ),
+            const SizedBox(height: 4),
+            Text(question.isPublic ? '公開質問' : '先生にだけ公開'),
+            const SizedBox(height: 4),
+            Text(
+              '更新日: ${_formatTimestamp(question.updatedAt ?? question.createdAt)}',
+            ),
+            if (question.body.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(question.body),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+Course _courseFromNote(LessonNote note) {
+  return Course(
+    id: note.courseId,
+    title: note.courseTitle,
+    instructorName: '',
+    category: '',
+    level: '',
+    duration: '',
+    lessonCount: note.lessonNumber,
+    rating: 0,
+    priceLabel: '',
+    description: '',
+    lessons: [CourseLesson(title: note.lessonTitle, duration: '1分30秒')],
+  );
+}
+
 class _ViewRecordCard extends StatelessWidget {
   const _ViewRecordCard({required this.record});
 
@@ -603,20 +892,6 @@ class _QuizRecordCard extends StatelessWidget {
             Text('回答日時: ${_formatTimestamp(record['answeredAt'])}'),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _FutureCommentsCard extends StatelessWidget {
-  const _FutureCommentsCard();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Card(
-      child: Padding(
-        padding: EdgeInsets.all(16),
-        child: Text('質問コメント記録は、質問コメント機能の実装後にここへ表示します。'),
       ),
     );
   }

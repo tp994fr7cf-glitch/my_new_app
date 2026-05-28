@@ -5,6 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:my_new_app/main.dart';
 import 'package:my_new_app/models/course.dart';
+import 'package:my_new_app/models/lesson_note.dart';
+import 'package:my_new_app/models/lesson_question.dart';
 import 'package:my_new_app/screens/course_detail_page.dart';
 import 'package:my_new_app/screens/course_list_page.dart';
 import 'package:my_new_app/screens/home_page.dart';
@@ -158,7 +160,7 @@ void main() {
     await tester.tap(find.text('質問コメント'));
     await tester.pumpAndSettle();
 
-    expect(find.text('質問コメント記録は、質問コメント機能の実装後にここへ表示します。'), findsOneWidget);
+    expect(find.text('この期間の質問コメントはまだありません。'), findsOneWidget);
   });
 
   testWidgets('Learning records page keeps repeated course views', (
@@ -190,6 +192,71 @@ void main() {
 
     expect(find.text('Flutter入門'), findsNWidgets(2));
     expect(find.text('レッスン: 全体像'), findsNWidgets(2));
+  });
+
+  testWidgets('Learning records page shows notes and questions', (
+    WidgetTester tester,
+  ) async {
+    final now = Timestamp.fromDate(DateTime.now());
+    final note = LessonNote(
+      id: 'note-a',
+      authorId: 'user-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式',
+      title: '移項メモ',
+      body: '両辺に同じ計算',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.private,
+      tags: const [],
+      attachmentTypes: const [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      updatedAt: now,
+    );
+    final question = LessonQuestion(
+      id: 'question-a',
+      authorId: 'user-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式',
+      title: '移項の質問',
+      body: 'なぜ符号が変わりますか？',
+      visibility: LessonQuestionVisibility.teacherOnly,
+      target: LessonQuestionTarget.teacher,
+      attachmentTypes: const [],
+      updatedAt: now,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LearningRecordsPage(
+          user: _FakeUser(),
+          lessonViewSegmentsStream: const Stream.empty(),
+          learningEventsStream: const Stream.empty(),
+          quizAttemptsStream: const Stream.empty(),
+          lessonNotesStream: Stream.value([note]),
+          lessonQuestionsStream: Stream.value([question]),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('レッスンメモ'));
+    await tester.pumpAndSettle();
+    expect(find.text('移項メモ'), findsOneWidget);
+    expect(find.text('非公開メモ'), findsOneWidget);
+
+    await tester.tap(find.text('質問コメント'));
+    await tester.pumpAndSettle();
+    expect(find.text('移項の質問'), findsOneWidget);
+    expect(find.text('先生にだけ公開'), findsOneWidget);
   });
 
   testWidgets('Learning records page shows lesson cycle sessions', (

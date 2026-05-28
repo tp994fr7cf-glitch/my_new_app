@@ -59,5 +59,56 @@ void main() {
       expect(lessonNoteMatchesQuery(note, '重要'), isTrue);
       expect(lessonNoteMatchesQuery(note, '英語'), isFalse);
     });
+
+    test('sorts public notes by popularity score', () {
+      const copiedOften = LessonNote(
+        id: 'copy',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: 'コピーされるメモ',
+        body: '',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.public,
+        tags: [],
+        attachmentTypes: [],
+        hasAudioAttachment: false,
+        isCopied: false,
+        canPublish: true,
+        copyCount: 20,
+      );
+      const ratedHighly = LessonNote(
+        id: 'rating',
+        authorId: 'user-b',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '高評価メモ',
+        body: '',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.public,
+        tags: [],
+        attachmentTypes: [],
+        hasAudioAttachment: false,
+        isCopied: false,
+        canPublish: true,
+        ratingAverage: 5,
+        ratingCount: 1,
+      );
+
+      final sorted = sortPublicLessonNotes([
+        copiedOften,
+        ratedHighly,
+      ], LessonNotePublicSort.popular);
+
+      expect(sorted.first.id, 'rating');
+    });
   });
 }

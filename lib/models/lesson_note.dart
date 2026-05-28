@@ -2,11 +2,15 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 enum LessonNoteVisibility { private, public }
 
+enum LessonNotePublicSort { newest, popular }
+
 const String lessonNoteVisibilityPrivate = 'private';
 const String lessonNoteVisibilityPublic = 'public';
 const String lessonNoteAttachmentPdf = 'pdf';
 const String lessonNoteAttachmentImage = 'image';
 const String lessonNoteAttachmentAudio = 'audio';
+const String lessonNoteModerationVisible = 'visible';
+const String lessonNoteModerationHiddenByTeacher = 'hiddenByTeacher';
 
 class LessonNoteFolder {
   const LessonNoteFolder({
@@ -14,12 +18,16 @@ class LessonNoteFolder {
     required this.name,
     this.createdAt,
     this.updatedAt,
+    this.isDeleted = false,
+    this.deletedAt,
   });
 
   final String? id;
   final String name;
   final Timestamp? createdAt;
   final Timestamp? updatedAt;
+  final bool isDeleted;
+  final Timestamp? deletedAt;
 
   factory LessonNoteFolder.fromFirestore(
     DocumentSnapshot<Map<String, dynamic>> doc,
@@ -30,6 +38,8 @@ class LessonNoteFolder {
       name: data['name'] as String? ?? '',
       createdAt: data['createdAt'] as Timestamp?,
       updatedAt: data['updatedAt'] as Timestamp?,
+      isDeleted: data['isDeleted'] == true,
+      deletedAt: data['deletedAt'] as Timestamp?,
     );
   }
 }
@@ -61,6 +71,9 @@ class LessonNote {
     this.ratingAverage = 0,
     this.ratingCount = 0,
     this.copyCount = 0,
+    this.isDeleted = false,
+    this.deletedAt,
+    this.moderationStatus = lessonNoteModerationVisible,
   });
 
   final String? id;
@@ -88,8 +101,14 @@ class LessonNote {
   final double ratingAverage;
   final int ratingCount;
   final int copyCount;
+  final bool isDeleted;
+  final Timestamp? deletedAt;
+  final String moderationStatus;
 
   bool get isPublic => visibility == LessonNoteVisibility.public;
+  bool get isTeacherHidden =>
+      moderationStatus == lessonNoteModerationHiddenByTeacher;
+  bool get isPubliclyVisible => isPublic && !isDeleted && !isTeacherHidden;
 
   factory LessonNote.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     return LessonNote.fromMap(doc.data() ?? {}, id: doc.id);
@@ -129,6 +148,10 @@ class LessonNote {
       ratingAverage: (data['ratingAverage'] as num?)?.toDouble() ?? 0,
       ratingCount: (data['ratingCount'] as num?)?.toInt() ?? 0,
       copyCount: (data['copyCount'] as num?)?.toInt() ?? 0,
+      isDeleted: data['isDeleted'] == true,
+      deletedAt: data['deletedAt'] as Timestamp?,
+      moderationStatus:
+          data['moderationStatus'] as String? ?? lessonNoteModerationVisible,
     );
   }
 }
@@ -177,6 +200,37 @@ List<LessonNote> sortLessonNotesByUpdatedAt(List<LessonNote> notes) {
         b.updatedAt?.toDate() ?? DateTime.fromMillisecondsSinceEpoch(0);
     return bUpdatedAt.compareTo(aUpdatedAt);
   });
+}
+
+List<LessonNote> sortPublicLessonNotes(
+  List<LessonNote> notes,
+  LessonNotePublicSort sort,
+) {
+  final visibleNotes = notes.where((note) => !note.isDeleted).toList();
+  return switch (sort) {
+    LessonNotePublicSort.newest => sortLessonNotesByUpdatedAt(visibleNotes),
+    LessonNotePublicSort.popular =>
+      visibleNotes..sort((a, b) {
+        final popularityCompare = _lessonNotePopularityScore(
+          b,
+        ).compareTo(_lessonNotePopularityScore(a));
+        if (popularityCompare != 0) {
+          return popularityCompare;
+        }
+        final aUpdatedAt =
+            a.updatedAt?.toDate() ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final bUpdatedAt =
+            b.updatedAt?.toDate() ?? DateTime.fromMillisecondsSinceEpoch(0);
+        return bUpdatedAt.compareTo(aUpdatedAt);
+      }),
+  };
+}
+
+int _lessonNotePopularityScore(LessonNote note) {
+  return (note.ratingAverage * 100).round() +
+      note.ratingCount * 10 +
+      note.favoriteCount * 5 +
+      note.copyCount * 20;
 }
 
 List<String> _stringList(Object? value) {

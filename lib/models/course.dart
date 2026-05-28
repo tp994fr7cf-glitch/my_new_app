@@ -15,10 +15,12 @@ class Course {
     required this.description,
     required this.lessons,
     this.lessonEvents = const [],
+    this.instructorId,
   });
 
   final String? id;
   final String? courseCode;
+  final String? instructorId;
   final String title;
   final String instructorName;
   final String category;
@@ -42,6 +44,7 @@ class Course {
     return Course(
       id: id ?? data['id'] as String?,
       courseCode: data['courseCode'] as String?,
+      instructorId: data['instructorId'] as String?,
       title: data['title'] as String? ?? '',
       instructorName: data['instructorName'] as String? ?? '',
       category: data['category'] as String? ?? '',
@@ -70,6 +73,7 @@ class Course {
     return {
       'title': title,
       if (courseCode != null) 'courseCode': courseCode,
+      if (instructorId != null) 'instructorId': instructorId,
       'instructorName': instructorName,
       'category': category,
       'level': level,

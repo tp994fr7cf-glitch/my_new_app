@@ -82,6 +82,12 @@ service cloud.firestore {
         && request.resource.data.lessonCount is int;
     }
 
+    function isCourseInstructor(courseId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/courses/$(courseId))
+        && get(/databases/$(database)/documents/courses/$(courseId)).data.instructorId == request.auth.uid;
+    }
+
     match /users/{userId} {
       allow read: if isOwner(userId);
 
@@ -255,7 +261,9 @@ service cloud.firestore {
         allow read: if isOwner(userId);
 
         allow create, update: if isOwner(userId)
-          && request.resource.data.name is string;
+          && request.resource.data.name is string
+          && (!request.resource.data.keys().hasAny(['isDeleted'])
+            || request.resource.data.isDeleted is bool);
       }
 
       match /lessonNotes/{noteId} {
@@ -278,10 +286,45 @@ service cloud.firestore {
           && request.resource.data.hasAudioAttachment is bool
           && request.resource.data.isCopied is bool
           && request.resource.data.canPublish is bool
+          && (!request.resource.data.keys().hasAny(['isDeleted'])
+            || request.resource.data.isDeleted is bool)
+          && (!request.resource.data.keys().hasAny(['moderationStatus'])
+            || request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'])
           && (request.resource.data.visibility == 'private'
             || (request.resource.data.hasAudioAttachment == false
               && request.resource.data.isCopied == false
               && request.resource.data.canPublish == true));
+      }
+
+      match /lessonQuestions/{questionId} {
+        allow read: if isOwner(userId);
+
+        allow create, update: if isOwner(userId)
+          && request.resource.data.userId == userId
+          && request.resource.data.authorId == userId
+          && request.resource.data.courseId is string
+          && request.resource.data.courseTitle is string
+          && request.resource.data.lessonNumber is int
+          && request.resource.data.lessonTitle is string
+          && request.resource.data.title is string
+          && request.resource.data.body is string
+          && request.resource.data.visibility in ['teacherOnly', 'public']
+          && request.resource.data.target in ['teacher', 'everyone']
+          && request.resource.data.attachmentTypes is list
+          && request.resource.data.isDeleted is bool
+          && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
+      }
+
+      match /lessonQuestionAnswers/{answerId} {
+        allow read: if isOwner(userId);
+
+        allow create, update: if isOwner(userId)
+          && request.resource.data.authorId == userId
+          && request.resource.data.questionId is string
+          && request.resource.data.body is string
+          && request.resource.data.attachmentTypes is list
+          && request.resource.data.isDeleted is bool
+          && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
       }
     }
 
@@ -303,10 +346,92 @@ service cloud.firestore {
         && request.resource.data.attachmentTypes is list
         && request.resource.data.hasAudioAttachment == false
         && request.resource.data.isCopied == false
-        && request.resource.data.canPublish == true;
+        && request.resource.data.canPublish == true
+        && (!request.resource.data.keys().hasAny(['isDeleted'])
+          || request.resource.data.isDeleted is bool)
+        && (!request.resource.data.keys().hasAny(['moderationStatus'])
+          || request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher']);
+
+      allow update: if signedIn()
+        && isCourseInstructor(resource.data.courseId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'moderationStatus',
+          'moderatedAt'
+        ])
+        && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
 
       allow delete: if signedIn()
         && resource.data.authorId == request.auth.uid;
+    }
+
+    match /publicLessonQuestions/{questionId} {
+      allow read: if signedIn();
+
+      allow create, update: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.authorId == request.auth.uid
+        && request.resource.data.questionId == questionId
+        && request.resource.data.courseId is string
+        && request.resource.data.courseTitle is string
+        && request.resource.data.lessonNumber is int
+        && request.resource.data.lessonTitle is string
+        && request.resource.data.body is string
+        && request.resource.data.visibility == 'public'
+        && request.resource.data.target in ['teacher', 'everyone']
+        && request.resource.data.attachmentTypes is list
+        && request.resource.data.isDeleted is bool
+        && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
+
+      allow update: if signedIn()
+        && isCourseInstructor(resource.data.courseId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'moderationStatus',
+          'moderatedAt'
+        ])
+        && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
+
+      allow delete: if signedIn()
+        && resource.data.authorId == request.auth.uid;
+    }
+
+    match /publicLessonQuestionAnswers/{answerId} {
+      allow read: if signedIn();
+
+      allow create, update: if signedIn()
+        && request.resource.data.authorId == request.auth.uid
+        && request.resource.data.answerId == answerId
+        && request.resource.data.questionId is string
+        && (!request.resource.data.keys().hasAny(['parentCommentId'])
+          || request.resource.data.parentCommentId is string)
+        && (!request.resource.data.keys().hasAny(['parentCommentType'])
+          || request.resource.data.parentCommentType in ['question', 'answer'])
+        && request.resource.data.courseId is string
+        && request.resource.data.courseTitle is string
+        && request.resource.data.lessonNumber is int
+        && request.resource.data.lessonTitle is string
+        && request.resource.data.body is string
+        && request.resource.data.attachmentTypes is list
+        && request.resource.data.isDeleted is bool
+        && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
+
+      allow update: if signedIn()
+        && isCourseInstructor(resource.data.courseId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'moderationStatus',
+          'moderatedAt'
+        ])
+        && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
+    }
+
+    match /lessonInteractionSettings/{settingId} {
+      allow read: if signedIn();
+
+      allow create, update: if signedIn()
+        && request.resource.data.courseId is string
+        && isCourseInstructor(request.resource.data.courseId)
+        && request.resource.data.lessonNumber is int
+        && request.resource.data.lessonNotesPublicEnabled is bool
+        && request.resource.data.lessonQuestionsPublicEnabled is bool;
     }
 
     match /courses/{courseId} {

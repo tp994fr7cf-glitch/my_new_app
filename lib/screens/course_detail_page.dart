@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
+import 'teacher_interaction_manage_page.dart';
 import 'teacher_lesson_manage_page.dart';
 import 'video_lesson_page.dart';
 
@@ -225,6 +226,14 @@ class CourseDetailPage extends StatelessWidget {
                     ),
                   );
                 },
+                onManageInteractions: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          TeacherInteractionManagePage(course: course),
+                    ),
+                  );
+                },
                 onPreview: () => _previewLesson(context),
               )
             else
@@ -274,11 +283,13 @@ class _TeacherActionButtons extends StatelessWidget {
   const _TeacherActionButtons({
     required this.onEditCourse,
     required this.onManageLessons,
+    required this.onManageInteractions,
     required this.onPreview,
   });
 
   final VoidCallback onEditCourse;
   final VoidCallback onManageLessons;
+  final VoidCallback onManageInteractions;
   final VoidCallback onPreview;
 
   @override
@@ -296,6 +307,12 @@ class _TeacherActionButtons extends StatelessWidget {
           onPressed: onManageLessons,
           icon: const Icon(Icons.playlist_add_check),
           label: const Text('レッスンを管理'),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: onManageInteractions,
+          icon: const Icon(Icons.forum_outlined),
+          label: const Text('公開メモ・質問を管理'),
         ),
         const SizedBox(height: 8),
         OutlinedButton.icon(

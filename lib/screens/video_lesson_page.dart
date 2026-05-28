@@ -12,6 +12,7 @@ import '../models/lesson_player_view_state.dart';
 import '../models/lesson_segment_boundary.dart';
 import '../models/quiz_answer_key.dart';
 import '../models/watched_range.dart';
+import 'lesson_questions_page.dart';
 import 'lesson_notes_page.dart';
 
 typedef QuizAnswerSaveOverride =
@@ -66,6 +67,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   bool _pendingCompletion = false;
   bool _isLoadingLearningState = true;
   bool _isLessonNotesOpen = false;
+  bool _isLessonQuestionsOpen = false;
   Timer? _playbackTimer;
   Timer? _studyTimer;
   Timer? _activeLearningHeartbeatTimer;
@@ -1497,6 +1499,31 @@ class _VideoLessonPageState extends State<VideoLessonPage>
             if (_isLessonNotesOpen) ...[
               const SizedBox(height: 12),
               LessonNotesPanel(
+                course: course,
+                lesson: lesson,
+                lessonNumber: lessonNumber,
+                isEmbedded: true,
+              ),
+            ],
+            const SizedBox(height: 24),
+            const _SectionTitle('質問コメント'),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: () {
+                setState(() {
+                  _isLessonQuestionsOpen = !_isLessonQuestionsOpen;
+                });
+              },
+              icon: Icon(
+                _isLessonQuestionsOpen
+                    ? Icons.keyboard_arrow_up
+                    : Icons.question_answer_outlined,
+              ),
+              label: Text(_isLessonQuestionsOpen ? '質問コメントを閉じる' : '質問コメントを開く'),
+            ),
+            if (_isLessonQuestionsOpen) ...[
+              const SizedBox(height: 12),
+              LessonQuestionsPanel(
                 course: course,
                 lesson: lesson,
                 lessonNumber: lessonNumber,

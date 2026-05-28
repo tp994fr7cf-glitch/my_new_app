@@ -73,6 +73,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   LessonNote? _editingNote;
   List<LessonNoteFolder> _editingFolders = const [];
   bool _isEditingNote = false;
+  LessonNotePublicSort _publicSort = LessonNotePublicSort.newest;
 
   String get _courseId =>
       widget.course.id ?? widget.course.title.replaceAll('/', '_');
@@ -103,7 +104,10 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         .snapshots()
         .map((snapshot) {
           final folders =
-              snapshot.docs.map(LessonNoteFolder.fromFirestore).toList()
+              snapshot.docs
+                  .map(LessonNoteFolder.fromFirestore)
+                  .where((folder) => !folder.isDeleted)
+                  .toList()
                 ..sort((a, b) => a.name.compareTo(b.name));
           return folders;
         });
@@ -131,7 +135,10 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         .snapshots()
         .map((snapshot) {
           return sortLessonNotesByUpdatedAt(
-            snapshot.docs.map(LessonNote.fromFirestore).toList(),
+            snapshot.docs
+                .map(LessonNote.fromFirestore)
+                .where((note) => !note.isDeleted)
+                .toList(),
           );
         });
   }
@@ -151,10 +158,56 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         .where('lessonNumber', isEqualTo: widget.lessonNumber)
         .snapshots()
         .map((snapshot) {
-          return sortLessonNotesByUpdatedAt(
-            snapshot.docs.map(LessonNote.fromFirestore).toList(),
+          return sortPublicLessonNotes(
+            snapshot.docs
+                .map(LessonNote.fromFirestore)
+                .where((note) => note.isPubliclyVisible)
+                .toList(),
+            _publicSort,
           );
         });
+  }
+
+  Stream<bool> _notePublicPlatformEnabledStream() {
+    if (Firebase.apps.isEmpty) {
+      return Stream.value(true);
+    }
+    return FirebaseFirestore.instance
+        .collection('lessonInteractionSettings')
+        .doc('${_courseId}_${widget.lessonNumber}')
+        .snapshots()
+        .map((snapshot) {
+          final data = snapshot.data();
+          return data == null || data['lessonNotesPublicEnabled'] != false;
+        });
+  }
+
+  Future<bool> _isNotePublicPlatformEnabled() async {
+    if (Firebase.apps.isEmpty) {
+      return true;
+    }
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('lessonInteractionSettings')
+          .doc('${_courseId}_${widget.lessonNumber}')
+          .get();
+      final data = snapshot.data();
+      return data == null || data['lessonNotesPublicEnabled'] != false;
+    } on FirebaseException {
+      return true;
+    }
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _message = message;
+    });
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _createFolder() async {
@@ -216,95 +269,235 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
     );
   }
 
-  Future<void> _saveNote(_LessonNoteDraft draft) async {
+  Future<bool> _saveNote(_LessonNoteDraft draft) async {
     if (Firebase.apps.isEmpty) {
-      if (mounted) {
-        setState(() {
-          _message = 'メモ保存にはログインとFirebase設定が必要です。';
-        });
+      _showMessage('メモ保存にはログインとFirebase設定が必要です。');
+      return false;
+    }
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      _showMessage('メモ保存にはログインが必要です。');
+      return false;
+    }
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final userRef = firestore.collection('users').doc(user.uid);
+      final noteRef = draft.noteId == null
+          ? userRef.collection('lessonNotes').doc()
+          : userRef.collection('lessonNotes').doc(draft.noteId);
+      final noteId = noteRef.id;
+      final visibility = draft.visibility == LessonNoteVisibility.public
+          ? lessonNoteVisibilityPublic
+          : lessonNoteVisibilityPrivate;
+      final now = FieldValue.serverTimestamp();
+      final authorName = user.displayName ?? user.email ?? '学習者';
+      final canPublish = canPublishLessonNote(
+        hasAudioAttachment: draft.attachmentTypes.contains(
+          lessonNoteAttachmentAudio,
+        ),
+        isCopied: draft.isCopied,
+        canPublish: draft.canPublish,
+      );
+      final platformEnabled = await _isNotePublicPlatformEnabled();
+      final savedVisibility = canPublish && platformEnabled
+          ? visibility
+          : lessonNoteVisibilityPrivate;
+      final data = {
+        'userId': user.uid,
+        'authorId': user.uid,
+        'authorName': authorName,
+        'title': draft.title,
+        'body': draft.body,
+        'folderId': draft.folderId,
+        'folderName': draft.folderName,
+        'courseId': _courseId,
+        'courseTitle': widget.course.title,
+        'lessonNumber': widget.lessonNumber,
+        'lessonTitle': widget.lesson.title,
+        'visibility': savedVisibility,
+        'tags': draft.tags,
+        'attachmentTypes': draft.attachmentTypes,
+        'hasAudioAttachment': draft.attachmentTypes.contains(
+          lessonNoteAttachmentAudio,
+        ),
+        'sourceNoteId': draft.sourceNoteId,
+        'sourceAuthorId': draft.sourceAuthorId,
+        'isCopied': draft.isCopied,
+        'canPublish': draft.canPublish,
+        'isDeleted': false,
+        'moderationStatus': lessonNoteModerationVisible,
+        'updatedAt': now,
+        if (draft.noteId == null) 'createdAt': now,
+      };
+
+      final batch = firestore.batch()
+        ..set(noteRef, data, SetOptions(merge: true));
+      final publicRef = firestore.collection('publicLessonNotes').doc(noteId);
+      if (savedVisibility == lessonNoteVisibilityPublic) {
+        final publicSnapshot = await publicRef.get();
+        final publicModerationStatus =
+            publicSnapshot.data()?['moderationStatus'] as String? ??
+            lessonNoteModerationVisible;
+        batch.set(publicRef, {
+          ...data,
+          'noteId': noteId,
+          'moderationStatus': publicModerationStatus,
+          'favoriteCount': 0,
+          'ratingAverage': 0,
+          'ratingCount': 0,
+          'copyCount': 0,
+        }, SetOptions(merge: true));
+      } else if (draft.wasPublic) {
+        batch.delete(publicRef);
       }
+
+      await batch.commit();
+      _showMessage(
+        canPublish && platformEnabled ||
+                visibility == lessonNoteVisibilityPrivate
+            ? 'メモを保存しました。'
+            : platformEnabled
+            ? '音声添付またはコピー元メモは公開できないため、非公開で保存しました。'
+            : '先生により公開メモ機能が非公開化されているため、非公開で保存しました。',
+      );
+      return true;
+    } on FirebaseException catch (error) {
+      _showMessage(error.message ?? 'メモの作成に失敗しました。');
+      return false;
+    } catch (error) {
+      _showMessage('メモの作成に失敗しました: $error');
+      return false;
+    }
+  }
+
+  Future<void> _deleteNote(LessonNote note) async {
+    if (Firebase.apps.isEmpty || note.id == null) {
       return;
     }
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
-      if (mounted) {
-        setState(() {
-          _message = 'メモ保存にはログインが必要です。';
-        });
-      }
       return;
     }
-
     final firestore = FirebaseFirestore.instance;
-    final userRef = firestore.collection('users').doc(user.uid);
-    final noteRef = draft.noteId == null
-        ? userRef.collection('lessonNotes').doc()
-        : userRef.collection('lessonNotes').doc(draft.noteId);
-    final noteId = noteRef.id;
-    final visibility = draft.visibility == LessonNoteVisibility.public
-        ? lessonNoteVisibilityPublic
-        : lessonNoteVisibilityPrivate;
-    final now = FieldValue.serverTimestamp();
-    final authorName = user.displayName ?? user.email ?? '学習者';
-    final canPublish = canPublishLessonNote(
-      hasAudioAttachment: draft.attachmentTypes.contains(
-        lessonNoteAttachmentAudio,
-      ),
-      isCopied: draft.isCopied,
-      canPublish: draft.canPublish,
-    );
-    final savedVisibility = canPublish
-        ? visibility
-        : lessonNoteVisibilityPrivate;
-    final data = {
-      'userId': user.uid,
-      'authorId': user.uid,
-      'authorName': authorName,
-      'title': draft.title,
-      'body': draft.body,
-      'folderId': draft.folderId,
-      'folderName': draft.folderName,
-      'courseId': _courseId,
-      'courseTitle': widget.course.title,
-      'lessonNumber': widget.lessonNumber,
-      'lessonTitle': widget.lesson.title,
-      'visibility': savedVisibility,
-      'tags': draft.tags,
-      'attachmentTypes': draft.attachmentTypes,
-      'hasAudioAttachment': draft.attachmentTypes.contains(
-        lessonNoteAttachmentAudio,
-      ),
-      'sourceNoteId': draft.sourceNoteId,
-      'sourceAuthorId': draft.sourceAuthorId,
-      'isCopied': draft.isCopied,
-      'canPublish': draft.canPublish,
-      'updatedAt': now,
-      if (draft.noteId == null) 'createdAt': now,
-    };
-
     final batch = firestore.batch()
-      ..set(noteRef, data, SetOptions(merge: true));
-    final publicRef = firestore.collection('publicLessonNotes').doc(noteId);
-    if (savedVisibility == lessonNoteVisibilityPublic) {
-      batch.set(publicRef, {
-        ...data,
-        'noteId': noteId,
-        'favoriteCount': 0,
-        'ratingAverage': 0,
-        'ratingCount': 0,
-        'copyCount': 0,
-      }, SetOptions(merge: true));
-    } else if (draft.wasPublic) {
-      batch.delete(publicRef);
-    }
-
+      ..set(
+        firestore
+            .collection('users')
+            .doc(user.uid)
+            .collection('lessonNotes')
+            .doc(note.id),
+        {
+          'isDeleted': true,
+          'deletedAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      )
+      ..delete(firestore.collection('publicLessonNotes').doc(note.id));
     await batch.commit();
-    if (mounted) {
-      setState(() {
-        _message = canPublish || visibility == lessonNoteVisibilityPrivate
-            ? 'メモを保存しました。'
-            : '音声添付またはコピー元メモは公開できないため、非公開で保存しました。';
-      });
+  }
+
+  Future<void> _deleteFolder(
+    LessonNoteFolder folder,
+    _FolderDeleteMode mode,
+  ) async {
+    if (Firebase.apps.isEmpty || folder.id == null) {
+      return;
+    }
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+    final firestore = FirebaseFirestore.instance;
+    final notesSnapshot = await firestore
+        .collection('users')
+        .doc(user.uid)
+        .collection('lessonNotes')
+        .where('folderId', isEqualTo: folder.id)
+        .get();
+    final batch = firestore.batch()
+      ..set(
+        firestore
+            .collection('users')
+            .doc(user.uid)
+            .collection('lessonNoteFolders')
+            .doc(folder.id),
+        {
+          'isDeleted': true,
+          'deletedAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
+    for (final noteDoc in notesSnapshot.docs) {
+      if (mode == _FolderDeleteMode.deleteNotes) {
+        batch.set(noteDoc.reference, {
+          'isDeleted': true,
+          'deletedAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+        batch.delete(firestore.collection('publicLessonNotes').doc(noteDoc.id));
+      } else {
+        batch.set(noteDoc.reference, {
+          'folderId': '',
+          'folderName': '',
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      }
+    }
+    await batch.commit();
+  }
+
+  Future<void> _confirmDeleteNote(LessonNote note) async {
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('メモを削除'),
+        content: Text('「${note.title.isEmpty ? '無題のメモ' : note.title}」を削除しますか？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('削除'),
+          ),
+        ],
+      ),
+    );
+    if (shouldDelete == true) {
+      await _deleteNote(note);
+    }
+  }
+
+  Future<void> _confirmDeleteFolder(LessonNoteFolder folder) async {
+    final mode = await showDialog<_FolderDeleteMode>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('フォルダを削除'),
+        content: Text('「${folder.name}」内のメモをどう扱いますか？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('キャンセル'),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_FolderDeleteMode.moveNotes),
+            child: const Text('メモは残す'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_FolderDeleteMode.deleteNotes),
+            child: const Text('メモも削除'),
+          ),
+        ],
+      ),
+    );
+    if (mode != null) {
+      await _deleteFolder(folder, mode);
     }
   }
 
@@ -420,10 +613,13 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
                             children: [
                               _LessonNoteList(
                                 notesStream: _notesStream(),
+                                folders: folders,
                                 query: _query,
                                 emptyText: 'このレッスンのメモはまだありません。',
                                 onTap: (note) =>
                                     _openEditor(note: note, folders: folders),
+                                onDeleteNote: _confirmDeleteNote,
+                                onDeleteFolder: _confirmDeleteFolder,
                                 action: Column(
                                   crossAxisAlignment:
                                       CrossAxisAlignment.stretch,
@@ -448,7 +644,47 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
                                 query: _query,
                                 emptyText: '公開メモはまだありません。',
                                 onTap: null,
-                                action: const Text('コピー・評価・お気に入りは後で追加します。'),
+                                action: StreamBuilder<bool>(
+                                  stream: _notePublicPlatformEnabledStream(),
+                                  builder: (context, platformSnapshot) {
+                                    final enabled =
+                                        platformSnapshot.data ?? true;
+                                    return Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      children: [
+                                        SegmentedButton<LessonNotePublicSort>(
+                                          segments: const [
+                                            ButtonSegment(
+                                              value:
+                                                  LessonNotePublicSort.newest,
+                                              label: Text('新しい順'),
+                                            ),
+                                            ButtonSegment(
+                                              value:
+                                                  LessonNotePublicSort.popular,
+                                              label: Text('人気順'),
+                                            ),
+                                          ],
+                                          selected: {_publicSort},
+                                          onSelectionChanged: (selection) {
+                                            setState(() {
+                                              _publicSort = selection.first;
+                                            });
+                                          },
+                                        ),
+                                        if (!enabled) ...[
+                                          const SizedBox(height: 8),
+                                          const Text(
+                                            '先生により、このレッスンの公開メモ欄は非公開化されています。',
+                                          ),
+                                        ],
+                                        const SizedBox(height: 8),
+                                        const Text('コピー・評価・お気に入りは後で追加します。'),
+                                      ],
+                                    );
+                                  },
+                                ),
                               ),
                             ],
                           ),
@@ -505,6 +741,8 @@ class _CreateFolderDialogState extends State<_CreateFolderDialog> {
   }
 }
 
+enum _FolderDeleteMode { moveNotes, deleteNotes }
+
 class _LessonNoteList extends StatelessWidget {
   const _LessonNoteList({
     required this.notesStream,
@@ -512,13 +750,19 @@ class _LessonNoteList extends StatelessWidget {
     required this.emptyText,
     required this.action,
     required this.onTap,
+    this.folders = const [],
+    this.onDeleteNote,
+    this.onDeleteFolder,
   });
 
   final Stream<List<LessonNote>> notesStream;
+  final List<LessonNoteFolder> folders;
   final String query;
   final String emptyText;
   final Widget action;
   final ValueChanged<LessonNote>? onTap;
+  final ValueChanged<LessonNote>? onDeleteNote;
+  final ValueChanged<LessonNoteFolder>? onDeleteFolder;
 
   @override
   Widget build(BuildContext context) {
@@ -535,21 +779,150 @@ class _LessonNoteList extends StatelessWidget {
             const SizedBox(height: 16),
             if (notes.isEmpty)
               Text(emptyText)
-            else
+            else if (folders.isEmpty)
               for (final note in notes)
-                _LessonNoteCard(note: note, onTap: onTap),
+                _LessonNoteCard(
+                  note: note,
+                  onTap: onTap,
+                  onDelete: onDeleteNote,
+                )
+            else
+              ..._buildFolderSections(notes),
           ],
         );
       },
     );
   }
+
+  List<Widget> _buildFolderSections(List<LessonNote> notes) {
+    final widgets = <Widget>[];
+    final notesByFolder = <String, List<LessonNote>>{};
+    for (final note in notes) {
+      notesByFolder.putIfAbsent(note.folderId, () => []).add(note);
+    }
+
+    for (final folder in folders) {
+      final folderNotes = notesByFolder.remove(folder.id ?? '') ?? const [];
+      widgets.add(
+        _LessonNoteFolderTile(
+          folder: folder,
+          notes: folderNotes,
+          onTapNote: onTap,
+          onDeleteNote: onDeleteNote,
+          onDeleteFolder: onDeleteFolder,
+        ),
+      );
+      widgets.add(const SizedBox(height: 8));
+    }
+
+    final unfiledNotes = notesByFolder.remove('') ?? const [];
+    if (unfiledNotes.isNotEmpty) {
+      widgets.add(
+        _LessonNoteUnfiledSection(
+          notes: unfiledNotes,
+          onTapNote: onTap,
+          onDeleteNote: onDeleteNote,
+        ),
+      );
+    }
+    for (final folderNotes in notesByFolder.values) {
+      for (final note in folderNotes) {
+        widgets.add(
+          _LessonNoteCard(note: note, onTap: onTap, onDelete: onDeleteNote),
+        );
+      }
+    }
+    return widgets;
+  }
+}
+
+class _LessonNoteFolderTile extends StatelessWidget {
+  const _LessonNoteFolderTile({
+    required this.folder,
+    required this.notes,
+    required this.onTapNote,
+    required this.onDeleteNote,
+    required this.onDeleteFolder,
+  });
+
+  final LessonNoteFolder folder;
+  final List<LessonNote> notes;
+  final ValueChanged<LessonNote>? onTapNote;
+  final ValueChanged<LessonNote>? onDeleteNote;
+  final ValueChanged<LessonNoteFolder>? onDeleteFolder;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: ExpansionTile(
+        leading: const Icon(Icons.folder),
+        title: Text(folder.name),
+        subtitle: Text('${notes.length}件のメモ'),
+        trailing: IconButton(
+          onPressed: onDeleteFolder == null
+              ? null
+              : () => onDeleteFolder!(folder),
+          icon: const Icon(Icons.delete_outline),
+          tooltip: 'フォルダを削除',
+        ),
+        children: [
+          if (notes.isEmpty)
+            const ListTile(title: Text('このフォルダにはメモがありません。'))
+          else
+            for (final note in notes)
+              _LessonNoteCard(
+                note: note,
+                onTap: onTapNote,
+                onDelete: onDeleteNote,
+              ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LessonNoteUnfiledSection extends StatelessWidget {
+  const _LessonNoteUnfiledSection({
+    required this.notes,
+    required this.onTapNote,
+    required this.onDeleteNote,
+  });
+
+  final List<LessonNote> notes;
+  final ValueChanged<LessonNote>? onTapNote;
+  final ValueChanged<LessonNote>? onDeleteNote;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: ExpansionTile(
+        initiallyExpanded: true,
+        leading: const Icon(Icons.note_outlined),
+        title: const Text('フォルダなし'),
+        subtitle: Text('${notes.length}件のメモ'),
+        children: [
+          for (final note in notes)
+            _LessonNoteCard(
+              note: note,
+              onTap: onTapNote,
+              onDelete: onDeleteNote,
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 class _LessonNoteCard extends StatelessWidget {
-  const _LessonNoteCard({required this.note, required this.onTap});
+  const _LessonNoteCard({
+    required this.note,
+    required this.onTap,
+    this.onDelete,
+  });
 
   final LessonNote note;
   final ValueChanged<LessonNote>? onTap;
+  final ValueChanged<LessonNote>? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -557,6 +930,13 @@ class _LessonNoteCard extends StatelessWidget {
       child: ListTile(
         onTap: onTap == null ? null : () => onTap!(note),
         title: Text(note.title.isEmpty ? '無題のメモ' : note.title),
+        trailing: onDelete == null
+            ? null
+            : IconButton(
+                onPressed: () => onDelete!(note),
+                icon: const Icon(Icons.delete_outline),
+                tooltip: 'メモを削除',
+              ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -592,7 +972,7 @@ class _LessonNoteEditorPage extends StatefulWidget {
   final int lessonNumber;
   final List<LessonNoteFolder> folders;
   final LessonNote? note;
-  final Future<void> Function(_LessonNoteDraft draft) onSave;
+  final Future<bool> Function(_LessonNoteDraft draft) onSave;
   final bool isEmbedded;
   final VoidCallback? onCancel;
   final VoidCallback? onSaved;
@@ -651,7 +1031,7 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
         break;
       }
     }
-    await widget.onSave(
+    final saved = await widget.onSave(
       _LessonNoteDraft(
         noteId: widget.note?.id,
         title: _titleController.text.trim(),
@@ -674,6 +1054,9 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
     setState(() {
       _isSaving = false;
     });
+    if (!saved) {
+      return;
+    }
     if (widget.isEmbedded) {
       widget.onSaved?.call();
       return;
@@ -784,8 +1167,8 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
         const SizedBox(height: 16),
         FilledButton.icon(
           onPressed: _isSaving ? null : _save,
-          icon: const Icon(Icons.save),
-          label: const Text('保存'),
+          icon: Icon(widget.note == null ? Icons.add : Icons.save),
+          label: Text(widget.note == null ? '作成' : '保存'),
         ),
       ],
     );

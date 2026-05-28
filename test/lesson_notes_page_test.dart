@@ -59,6 +59,9 @@ void main() {
 
     expect(find.text('タイトル'), findsOneWidget);
     expect(find.text('本文'), findsOneWidget);
+    await tester.drag(find.byType(ListView).last, const Offset(0, -700));
+    await tester.pumpAndSettle();
+    expect(find.text('作成'), findsOneWidget);
     expect(find.text('動画視聴', skipOffstage: false), findsOneWidget);
     expect(find.byType(BackButton), findsNothing);
 
@@ -135,6 +138,52 @@ void main() {
     expect(find.text('コピー・評価・お気に入りは後で追加します。'), findsOneWidget);
   });
 
+  testWidgets('Lesson notes page groups notes under folders', (tester) async {
+    const folder = LessonNoteFolder(id: 'folder-a', name: '復習フォルダ');
+    const folderNote = LessonNote(
+      id: 'folder-note',
+      authorId: 'user-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: 'フォルダ内メモ',
+      body: 'フォルダから開く',
+      folderId: 'folder-a',
+      folderName: '復習フォルダ',
+      visibility: LessonNoteVisibility.private,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LessonNotesPage(
+          course: course,
+          lesson: lesson,
+          lessonNumber: 1,
+          notesStream: Stream.value([folderNote]),
+          publicNotesStream: Stream.value(const []),
+          foldersStream: Stream.value(const [folder]),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('復習フォルダ'), findsOneWidget);
+    expect(find.text('1件のメモ'), findsOneWidget);
+    expect(find.text('フォルダ内メモ'), findsNothing);
+
+    await tester.tap(find.text('復習フォルダ'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('フォルダ内メモ'), findsOneWidget);
+  });
+
   testWidgets('Audio attachments disable public note publishing', (
     tester,
   ) async {
@@ -186,6 +235,6 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
-    expect(find.text('レッスンメモを閉じる', skipOffstage: false), findsOneWidget);
+    expect(find.text('自分のメモ', skipOffstage: false), findsWidgets);
   });
 }
