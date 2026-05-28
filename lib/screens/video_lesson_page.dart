@@ -998,6 +998,11 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
     final startSec = fromPositionSec.clamp(0, _totalDurationSec).toInt();
     final endSec = toPositionSec.clamp(0, _totalDurationSec).toInt();
+    final addedWatchSeconds = watchedSecondsAddedByRange(
+      _cycleWatchedRanges,
+      startSec: startSec,
+      endSec: endSec,
+    );
     final updatedRanges = addWatchedRange(
       _cycleWatchedRanges,
       startSec: startSec,
@@ -1006,7 +1011,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _cycleWatchedRanges
       ..clear()
       ..addAll(updatedRanges);
-    _watchSeconds = sumWatchedSeconds(_cycleWatchedRanges);
+    _watchSeconds += addedWatchSeconds;
     _cycleMaxWatchedPositionSec = maxWatchedPositionSec(_cycleWatchedRanges);
   }
 

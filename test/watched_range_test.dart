@@ -44,5 +44,22 @@ void main() {
       expect(ranges.single.startSec, 30);
       expect(ranges.single.endSec, 31);
     });
+
+    test('reports only newly watched seconds for a later segment', () {
+      const existingRanges = [WatchedRange(startSec: 0, endSec: 30)];
+
+      expect(
+        watchedSecondsAddedByRange(existingRanges, startSec: 30, endSec: 31),
+        1,
+      );
+      expect(
+        watchedSecondsAddedByRange(existingRanges, startSec: 10, endSec: 20),
+        0,
+      );
+      expect(
+        watchedSecondsAddedByRange(existingRanges, startSec: 20, endSec: 40),
+        10,
+      );
+    });
   });
 }

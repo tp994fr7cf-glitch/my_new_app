@@ -62,6 +62,18 @@ int sumWatchedSeconds(List<WatchedRange> ranges) {
   ).fold(0, (total, range) => total + range.durationSec);
 }
 
+int watchedSecondsAddedByRange(
+  List<WatchedRange> ranges, {
+  required int startSec,
+  required int endSec,
+}) {
+  final beforeSeconds = sumWatchedSeconds(ranges);
+  final afterSeconds = sumWatchedSeconds(
+    addWatchedRange(ranges, startSec: startSec, endSec: endSec),
+  );
+  return afterSeconds - beforeSeconds;
+}
+
 int maxWatchedPositionSec(List<WatchedRange> ranges) {
   final merged = mergeWatchedRanges(ranges);
   if (merged.isEmpty) {
