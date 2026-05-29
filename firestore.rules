@@ -331,26 +331,42 @@ service cloud.firestore {
     match /publicLessonNotes/{noteId} {
       allow read: if signedIn();
 
-      allow create, update: if signedIn()
-        && request.resource.data.userId == request.auth.uid
-        && request.resource.data.authorId == request.auth.uid
-        && request.resource.data.noteId == noteId
-        && request.resource.data.title is string
-        && request.resource.data.body is string
-        && request.resource.data.courseId is string
-        && request.resource.data.courseTitle is string
-        && request.resource.data.lessonNumber is int
-        && request.resource.data.lessonTitle is string
-        && request.resource.data.visibility == 'public'
-        && request.resource.data.tags is list
-        && request.resource.data.attachmentTypes is list
-        && request.resource.data.hasAudioAttachment == false
-        && request.resource.data.isCopied == false
-        && request.resource.data.canPublish == true
-        && (!request.resource.data.keys().hasAny(['isDeleted'])
-          || request.resource.data.isDeleted is bool)
+      function validPublicLessonNoteOwnerWrite() {
+        return request.resource.data.userId == request.auth.uid
+          && request.resource.data.authorId == request.auth.uid
+          && request.resource.data.noteId == noteId
+          && request.resource.data.title is string
+          && request.resource.data.body is string
+          && request.resource.data.courseId is string
+          && request.resource.data.courseTitle is string
+          && request.resource.data.lessonNumber is int
+          && request.resource.data.lessonTitle is string
+          && request.resource.data.visibility == 'public'
+          && request.resource.data.tags is list
+          && request.resource.data.attachmentTypes is list
+          && request.resource.data.hasAudioAttachment == false
+          && request.resource.data.isCopied == false
+          && request.resource.data.canPublish == true
+          && (!request.resource.data.keys().hasAny(['isDeleted'])
+            || request.resource.data.isDeleted is bool)
+          && (!request.resource.data.keys().hasAny(['moderationStatus'])
+            || request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher']);
+      }
+
+      allow create: if signedIn()
+        && validPublicLessonNoteOwnerWrite()
         && (!request.resource.data.keys().hasAny(['moderationStatus'])
-          || request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher']);
+          || request.resource.data.moderationStatus == 'visible');
+
+      allow update: if signedIn()
+        && validPublicLessonNoteOwnerWrite()
+        && resource.data.authorId == request.auth.uid
+        && ((!resource.data.keys().hasAny(['moderationStatus'])
+          && (!request.resource.data.keys().hasAny(['moderationStatus'])
+            || request.resource.data.moderationStatus == 'visible'))
+          || (resource.data.keys().hasAny(['moderationStatus'])
+            && request.resource.data.keys().hasAny(['moderationStatus'])
+            && request.resource.data.moderationStatus == resource.data.moderationStatus));
 
       allow update: if signedIn()
         && isCourseInstructor(resource.data.courseId)
@@ -361,7 +377,9 @@ service cloud.firestore {
         && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
 
       allow delete: if signedIn()
-        && resource.data.authorId == request.auth.uid;
+        && resource.data.authorId == request.auth.uid
+        && (!resource.data.keys().hasAny(['moderationStatus'])
+          || resource.data.moderationStatus != 'hiddenByTeacher');
     }
 
     match /publicLessonQuestions/{questionId} {

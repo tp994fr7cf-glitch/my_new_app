@@ -60,6 +60,32 @@ void main() {
       expect(lessonNoteMatchesQuery(note, '英語'), isFalse);
     });
 
+    test('hides public notes moderated by teacher', () {
+      const note = LessonNote(
+        id: 'note-a',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '公開メモ',
+        body: '両辺に同じ計算をする',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.public,
+        tags: [],
+        attachmentTypes: [],
+        hasAudioAttachment: false,
+        isCopied: false,
+        canPublish: true,
+        moderationStatus: lessonNoteModerationHiddenByTeacher,
+      );
+
+      expect(note.isTeacherHidden, isTrue);
+      expect(note.isPubliclyVisible, isFalse);
+    });
+
     test('sorts public notes by popularity score', () {
       const copiedOften = LessonNote(
         id: 'copy',

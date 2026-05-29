@@ -291,6 +291,18 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       final savedVisibility = canPublish && platformEnabled
           ? visibility
           : lessonNoteVisibilityPrivate;
+      final publicRef = firestore.collection('publicLessonNotes').doc(noteId);
+      final publicSnapshot = draft.wasPublic ? await publicRef.get() : null;
+      final publicModerationStatus =
+          publicSnapshot?.data()?['moderationStatus'] as String? ??
+          lessonNoteModerationVisible;
+      if (publicModerationStatus == lessonNoteModerationHiddenByTeacher &&
+          savedVisibility == lessonNoteVisibilityPrivate) {
+        _showMessage(
+          '先生により非公開化されたメモは、先生が公開化するまで公開設定を変更できません。',
+        );
+        return false;
+      }
       final data = {
         'userId': user.uid,
         'authorId': user.uid,
@@ -321,12 +333,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
 
       final batch = firestore.batch()
         ..set(noteRef, data, SetOptions(merge: true));
-      final publicRef = firestore.collection('publicLessonNotes').doc(noteId);
       if (savedVisibility == lessonNoteVisibilityPublic) {
-        final publicSnapshot = await publicRef.get();
-        final publicModerationStatus =
-            publicSnapshot.data()?['moderationStatus'] as String? ??
-            lessonNoteModerationVisible;
         batch.set(publicRef, {
           ...data,
           'noteId': noteId,
@@ -368,6 +375,17 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       return;
     }
     final firestore = FirebaseFirestore.instance;
+    final publicRef = firestore.collection('publicLessonNotes').doc(note.id);
+    if (note.isPublic) {
+      final publicSnapshot = await publicRef.get();
+      final publicModerationStatus =
+          publicSnapshot.data()?['moderationStatus'] as String? ??
+          lessonNoteModerationVisible;
+      if (publicModerationStatus == lessonNoteModerationHiddenByTeacher) {
+        _showMessage('先生により非公開化されたメモは、先生が公開化するまで削除できません。');
+        return;
+      }
+    }
     final batch = firestore.batch()
       ..set(
         firestore
@@ -382,7 +400,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         },
         SetOptions(merge: true),
       )
-      ..delete(firestore.collection('publicLessonNotes').doc(note.id));
+      ..delete(publicRef);
     await batch.commit();
   }
 
