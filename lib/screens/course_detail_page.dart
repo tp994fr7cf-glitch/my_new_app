@@ -109,6 +109,7 @@ class CourseDetailPage extends StatelessWidget {
           course: course,
           lesson: course.lessons.first,
           lessonNumber: 1,
+          isTeacherPreview: true,
         ),
       ),
     );

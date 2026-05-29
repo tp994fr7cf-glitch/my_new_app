@@ -19,6 +19,7 @@ class LessonQuestionsPanel extends StatefulWidget {
     this.questionsStream,
     this.publicQuestionsStream,
     this.isEmbedded = false,
+    this.isTeacherPreview = false,
   });
 
   final Course course;
@@ -27,6 +28,7 @@ class LessonQuestionsPanel extends StatefulWidget {
   final Stream<List<LessonQuestion>>? questionsStream;
   final Stream<List<LessonQuestion>>? publicQuestionsStream;
   final bool isEmbedded;
+  final bool isTeacherPreview;
 
   @override
   State<LessonQuestionsPanel> createState() => _LessonQuestionsPanelState();
@@ -469,6 +471,9 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
   }
 
   Widget _buildContent() {
+    if (widget.isTeacherPreview) {
+      return _buildTeacherPreviewQuestionList();
+    }
     final selectedQuestion = _selectedQuestion;
     if (selectedQuestion != null) {
       return _LessonQuestionDetail(
@@ -501,6 +506,79 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
       );
     }
     return _buildQuestionList();
+  }
+
+  Widget _buildTeacherPreviewQuestionList() {
+    return Column(
+      children: [
+        if (widget.isEmbedded) ...[
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.question_answer_outlined,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Text('公開質問', style: Theme.of(context).textTheme.titleMedium),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 16),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text('先生プレビュー中は、自分の質問や回答を表示・投稿しません。'),
+          ),
+        ),
+        Expanded(
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: TextField(
+                  controller: _queryController,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    labelText: '公開質問を検索',
+                    prefixIcon: Icon(Icons.search),
+                  ),
+                  onChanged: (value) => setState(() => _query = value),
+                ),
+              ),
+              Expanded(
+                child: StreamBuilder<bool>(
+                  stream: _questionPublicPlatformEnabledStream(),
+                  builder: (context, platformSnapshot) {
+                    final enabled = platformSnapshot.data ?? true;
+                    if (!enabled) {
+                      return const Padding(
+                        padding: EdgeInsets.all(16),
+                        child: Text('先生により、このレッスンの公開質問欄は非公開化されています。'),
+                      );
+                    }
+                    return _QuestionList(
+                      questionsStream: _publicQuestionsStream(),
+                      query: _query,
+                      currentUserId: null,
+                      isCurrentUserTeacher: false,
+                      action: const Text('公開質問の閲覧のみできます。'),
+                      emptyText: '公開質問はまだありません。',
+                      onTap: null,
+                      onDelete: null,
+                      onEdit: null,
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _buildQuestionList() {

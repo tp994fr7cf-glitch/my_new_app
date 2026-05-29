@@ -53,6 +53,7 @@ class LessonNotesPanel extends StatefulWidget {
     this.publicNotesStream,
     this.foldersStream,
     this.isEmbedded = false,
+    this.isTeacherPreview = false,
   });
 
   final Course course;
@@ -62,6 +63,7 @@ class LessonNotesPanel extends StatefulWidget {
   final Stream<List<LessonNote>>? publicNotesStream;
   final Stream<List<LessonNoteFolder>>? foldersStream;
   final bool isEmbedded;
+  final bool isTeacherPreview;
 
   @override
   State<LessonNotesPanel> createState() => _LessonNotesPanelState();
@@ -298,6 +300,8 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       final publicSnapshot = draft.wasPublic ? await publicRef.get() : null;
       final publicData = publicSnapshot?.data();
       final hasPublicMirror = publicSnapshot?.exists ?? false;
+      final nextHasPublicMirror =
+          savedVisibility == lessonNoteVisibilityPublic || hasPublicMirror;
       final publicModerationStatus =
           publicData?['moderationStatus'] as String? ??
           lessonNoteModerationVisible;
@@ -323,6 +327,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         'sourceAuthorId': draft.sourceAuthorId,
         'isCopied': draft.isCopied,
         'canPublish': draft.canPublish,
+        'hasPublicMirror': nextHasPublicMirror,
         'isDeleted': false,
         'moderationStatus': lessonNoteModerationVisible,
         'updatedAt': now,
@@ -387,7 +392,10 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
     }
     final firestore = FirebaseFirestore.instance;
     final publicRef = firestore.collection('publicLessonNotes').doc(note.id);
-    final publicSnapshot = await publicRef.get();
+    final publicSnapshot = await _publicNoteSnapshotForDelete(
+      publicRef,
+      hasPublicMirror: note.hasPublicMirror,
+    );
     final now = FieldValue.serverTimestamp();
     final batch = firestore.batch()
       ..set(
@@ -403,7 +411,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         },
         SetOptions(merge: true),
       );
-    if (publicSnapshot.exists) {
+    if (publicSnapshot?.exists ?? false) {
       batch.set(publicRef, {
         'studentVisibility': lessonNoteVisibilityPrivate,
         'isDeleted': true,
@@ -412,6 +420,23 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       }, SetOptions(merge: true));
     }
     await batch.commit();
+  }
+
+  Future<DocumentSnapshot<Map<String, dynamic>>?> _publicNoteSnapshotForDelete(
+    DocumentReference<Map<String, dynamic>> publicRef, {
+    required bool hasPublicMirror,
+  }) async {
+    if (!hasPublicMirror) {
+      return null;
+    }
+    try {
+      return await publicRef.get();
+    } on FirebaseException catch (error) {
+      if (error.code == 'permission-denied') {
+        return null;
+      }
+      rethrow;
+    }
   }
 
   Future<void> _deleteFolder(
@@ -448,16 +473,20 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       );
     for (final noteDoc in notesSnapshot.docs) {
       if (mode == _FolderDeleteMode.deleteNotes) {
+        final note = LessonNote.fromFirestore(noteDoc);
         final publicRef = firestore
             .collection('publicLessonNotes')
             .doc(noteDoc.id);
-        final publicSnapshot = await publicRef.get();
+        final publicSnapshot = await _publicNoteSnapshotForDelete(
+          publicRef,
+          hasPublicMirror: note.hasPublicMirror,
+        );
         batch.set(noteDoc.reference, {
           'isDeleted': true,
           'deletedAt': FieldValue.serverTimestamp(),
           'updatedAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
-        if (publicSnapshot.exists) {
+        if (publicSnapshot?.exists ?? false) {
           batch.set(publicRef, {
             'studentVisibility': lessonNoteVisibilityPrivate,
             'isDeleted': true,
@@ -530,11 +559,74 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.isTeacherPreview) {
+      return widget.isEmbedded
+          ? SizedBox(height: 420, child: _buildTeacherPreviewContent(context))
+          : _buildTeacherPreviewContent(context);
+    }
     return DefaultTabController(
       length: 2,
       child: widget.isEmbedded
           ? SizedBox(height: 560, child: _buildPanelContent(context))
           : _buildPanelContent(context),
+    );
+  }
+
+  Widget _buildTeacherPreviewContent(BuildContext context) {
+    return Card(
+      margin: widget.isEmbedded ? EdgeInsets.zero : null,
+      child: Padding(
+        padding: widget.isEmbedded
+            ? const EdgeInsets.only(top: 12)
+            : EdgeInsets.zero,
+        child: Column(
+          children: [
+            if (widget.isEmbedded) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.note_alt_outlined,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '公開メモ',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('先生プレビュー中は、自分のメモを表示・作成しません。'),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: TextField(
+                controller: _searchController,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  labelText: '公開メモを検索',
+                  prefixIcon: Icon(Icons.search),
+                ),
+                onChanged: (value) {
+                  setState(() {
+                    _query = value;
+                  });
+                },
+              ),
+            ),
+            Expanded(child: _buildPublicNotesTab()),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1072,7 +1164,7 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
         sourceAuthorId: widget.note?.sourceAuthorId,
         isCopied: widget.note?.isCopied ?? false,
         canPublish: widget.note?.canPublish ?? true,
-        wasPublic: widget.note?.isPublic ?? false,
+        wasPublic: widget.note?.hasPublicMirror ?? false,
       ),
     );
     if (!mounted) {

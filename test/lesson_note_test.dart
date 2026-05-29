@@ -174,6 +174,23 @@ void main() {
       expect(note.isPubliclyVisible, isTrue);
     });
 
+    test('tracks whether a note can have a public mirror', () {
+      final privateNote = LessonNote.fromMap({
+        'visibility': lessonNoteVisibilityPrivate,
+      });
+      final publicNote = LessonNote.fromMap({
+        'visibility': lessonNoteVisibilityPublic,
+      });
+      final previouslyPublicNote = LessonNote.fromMap({
+        'visibility': lessonNoteVisibilityPrivate,
+        'hasPublicMirror': true,
+      });
+
+      expect(privateNote.hasPublicMirror, isFalse);
+      expect(publicNote.hasPublicMirror, isTrue);
+      expect(previouslyPublicNote.hasPublicMirror, isTrue);
+    });
+
     test('sorts public notes by popularity score', () {
       const copiedOften = LessonNote(
         id: 'copy',

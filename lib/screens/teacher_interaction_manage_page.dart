@@ -154,26 +154,15 @@ class TeacherInteractionManagePage extends StatelessWidget {
                 return Column(
                   children: [
                     for (final note in notes)
-                      Card(
-                        child: ListTile(
-                          title: Text(
-                            note.title.isEmpty ? '無題のメモ' : note.title,
-                          ),
-                          subtitle: Text(
-                            '${note.authorName} / レッスン${note.lessonNumber}: ${note.lessonTitle}'
-                            '${note.isTeacherHidden ? ' / 非公開化済み' : ''}'
-                            '${note.isStudentPublic ? '' : ' / 学習者が非公開'}',
-                          ),
-                          trailing: TextButton(
-                            onPressed: () => _setPublicModeration(
-                              collectionPath: 'publicLessonNotes',
-                              documentId: note.id,
-                              moderationStatus: note.isTeacherHidden
-                                  ? lessonNoteModerationVisible
-                                  : lessonNoteModerationHiddenByTeacher,
-                            ),
-                            child: Text(note.isTeacherHidden ? '公開化' : '非公開化'),
-                          ),
+                      _PublicNoteCard(
+                        note: note,
+                        onTap: () => _showNoteDetails(context, note),
+                        onToggleModeration: () => _setPublicModeration(
+                          collectionPath: 'publicLessonNotes',
+                          documentId: note.id,
+                          moderationStatus: note.isTeacherHidden
+                              ? lessonNoteModerationVisible
+                              : lessonNoteModerationHiddenByTeacher,
                         ),
                       ),
                   ],
@@ -196,28 +185,15 @@ class TeacherInteractionManagePage extends StatelessWidget {
                 return Column(
                   children: [
                     for (final question in questions)
-                      Card(
-                        child: ListTile(
-                          title: Text(
-                            question.title.isEmpty ? '無題の質問' : question.title,
-                          ),
-                          subtitle: Text(
-                            '${question.authorName} / レッスン${question.lessonNumber}: ${question.lessonTitle}'
-                            '${question.isTeacherHidden ? ' / 非公開化済み' : ''}'
-                            '${question.isStudentPublic ? '' : ' / 学習者が非公開'}',
-                          ),
-                          trailing: TextButton(
-                            onPressed: () => _setPublicModeration(
-                              collectionPath: 'publicLessonQuestions',
-                              documentId: question.id,
-                              moderationStatus: question.isTeacherHidden
-                                  ? lessonNoteModerationVisible
-                                  : lessonNoteModerationHiddenByTeacher,
-                            ),
-                            child: Text(
-                              question.isTeacherHidden ? '公開化' : '非公開化',
-                            ),
-                          ),
+                      _PublicQuestionCard(
+                        question: question,
+                        onTap: () => _showQuestionDetails(context, question),
+                        onToggleModeration: () => _setPublicModeration(
+                          collectionPath: 'publicLessonQuestions',
+                          documentId: question.id,
+                          moderationStatus: question.isTeacherHidden
+                              ? lessonNoteModerationVisible
+                              : lessonNoteModerationHiddenByTeacher,
                         ),
                       ),
                   ],
@@ -229,6 +205,293 @@ class TeacherInteractionManagePage extends StatelessWidget {
       ),
     );
   }
+
+  Future<void> _showNoteDetails(BuildContext context, LessonNote note) {
+    return showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(_noteTitle(note)),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _DetailRow(label: '投稿者', value: _authorName(note.authorName)),
+                _DetailRow(
+                  label: 'レッスン',
+                  value: 'レッスン${note.lessonNumber}: ${note.lessonTitle}',
+                ),
+                _DetailRow(label: '状態', value: _statusText(note)),
+                const SizedBox(height: 16),
+                _DetailSection(
+                  title: '本文',
+                  body: note.body.isEmpty ? '本文はありません。' : note.body,
+                ),
+                if (note.tags.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  _DetailSection(title: 'タグ', body: note.tags.join(' / ')),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('閉じる'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _showQuestionDetails(
+    BuildContext context,
+    LessonQuestion question,
+  ) {
+    return showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(_questionHeadline(question)),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _DetailRow(
+                  label: '投稿者',
+                  value: _authorName(question.authorName),
+                ),
+                _DetailRow(
+                  label: 'レッスン',
+                  value:
+                      'レッスン${question.lessonNumber}: ${question.lessonTitle}',
+                ),
+                _DetailRow(label: '状態', value: _statusText(question)),
+                const SizedBox(height: 16),
+                _DetailSection(
+                  title: '質問本文',
+                  body: question.body.isEmpty ? '本文はありません。' : question.body,
+                ),
+                if ((question.quotedNoteTitle ?? '').isNotEmpty ||
+                    (question.quotedNoteBody ?? '').isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  _DetailSection(
+                    title: '引用メモ',
+                    body: [
+                      if ((question.quotedNoteTitle ?? '').isNotEmpty)
+                        question.quotedNoteTitle!,
+                      if ((question.quotedNoteBody ?? '').isNotEmpty)
+                        question.quotedNoteBody!,
+                    ].join('\n'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('閉じる'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _PublicNoteCard extends StatelessWidget {
+  const _PublicNoteCard({
+    required this.note,
+    required this.onTap,
+    required this.onToggleModeration,
+  });
+
+  final LessonNote note;
+  final VoidCallback onTap;
+  final VoidCallback onToggleModeration;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: ListTile(
+        onTap: onTap,
+        title: Text(_noteTitle(note)),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (note.body.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(_previewText(note.body)),
+            ],
+            const SizedBox(height: 8),
+            Text(
+              '${_authorName(note.authorName)} / '
+              'レッスン${note.lessonNumber}: ${note.lessonTitle}',
+            ),
+            const SizedBox(height: 8),
+            _StatusWrap(labels: _statusLabels(note)),
+          ],
+        ),
+        trailing: TextButton(
+          onPressed: onToggleModeration,
+          child: Text(note.isTeacherHidden ? '公開化' : '非公開化'),
+        ),
+      ),
+    );
+  }
+}
+
+class _PublicQuestionCard extends StatelessWidget {
+  const _PublicQuestionCard({
+    required this.question,
+    required this.onTap,
+    required this.onToggleModeration,
+  });
+
+  final LessonQuestion question;
+  final VoidCallback onTap;
+  final VoidCallback onToggleModeration;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: ListTile(
+        onTap: onTap,
+        title: Text(_questionHeadline(question)),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 8),
+            Text(
+              '${_authorName(question.authorName)} / '
+              'レッスン${question.lessonNumber}: ${question.lessonTitle}',
+            ),
+            if ((question.quotedNoteTitle ?? '').isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text('引用メモ: ${question.quotedNoteTitle}'),
+            ],
+            const SizedBox(height: 8),
+            _StatusWrap(labels: _statusLabels(question)),
+          ],
+        ),
+        trailing: TextButton(
+          onPressed: onToggleModeration,
+          child: Text(question.isTeacherHidden ? '公開化' : '非公開化'),
+        ),
+      ),
+    );
+  }
+}
+
+class _StatusWrap extends StatelessWidget {
+  const _StatusWrap({required this.labels});
+
+  final List<String> labels;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 4,
+      children: [
+        for (final label in labels)
+          Chip(
+            label: Text(label),
+            visualDensity: VisualDensity.compact,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+      ],
+    );
+  }
+}
+
+class _DetailRow extends StatelessWidget {
+  const _DetailRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text('$label: $value'),
+    );
+  }
+}
+
+class _DetailSection extends StatelessWidget {
+  const _DetailSection({required this.title, required this.body});
+
+  final String title;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        SelectableText(body),
+      ],
+    );
+  }
+}
+
+String _noteTitle(LessonNote note) {
+  final title = note.title.trim();
+  return title.isEmpty ? '無題のメモ' : title;
+}
+
+String _questionHeadline(LessonQuestion question) {
+  return _previewText(question.body, fallback: '本文のない質問');
+}
+
+String _previewText(
+  String text, {
+  String fallback = '本文はありません。',
+  int maxLength = 80,
+}) {
+  final normalized = text.trim().replaceAll(RegExp(r'\s+'), ' ');
+  if (normalized.isEmpty) {
+    return fallback;
+  }
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return '${normalized.substring(0, maxLength)}...';
+}
+
+String _authorName(String authorName) {
+  final trimmed = authorName.trim();
+  return trimmed.isEmpty ? '投稿者不明' : trimmed;
+}
+
+List<String> _statusLabels(Object item) {
+  final isTeacherHidden = item is LessonNote
+      ? item.isTeacherHidden
+      : item is LessonQuestion
+      ? item.isTeacherHidden
+      : false;
+  final isStudentPublic = item is LessonNote
+      ? item.isStudentPublic
+      : item is LessonQuestion
+      ? item.isStudentPublic
+      : true;
+
+  return [
+    if (isTeacherHidden) '先生が非公開化済み' else '公開中',
+    if (!isStudentPublic) '学習者が非公開',
+  ];
+}
+
+String _statusText(Object item) {
+  return _statusLabels(item).join(' / ');
 }
 
 class _LessonSettingCard extends StatelessWidget {

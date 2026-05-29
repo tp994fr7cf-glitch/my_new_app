@@ -74,6 +74,7 @@ class LessonNote {
     this.sourceAuthorId,
     required this.isCopied,
     required this.canPublish,
+    this.hasPublicMirror = false,
     this.createdAt,
     this.updatedAt,
     this.favoriteCount = 0,
@@ -105,6 +106,7 @@ class LessonNote {
   final String? sourceAuthorId;
   final bool isCopied;
   final bool canPublish;
+  final bool hasPublicMirror;
   final Timestamp? createdAt;
   final Timestamp? updatedAt;
   final int favoriteCount;
@@ -160,6 +162,9 @@ class LessonNote {
       sourceAuthorId: data['sourceAuthorId'] as String?,
       isCopied: data['isCopied'] == true,
       canPublish: data['canPublish'] != false,
+      hasPublicMirror:
+          data['hasPublicMirror'] == true ||
+          visibilityText == lessonNoteVisibilityPublic,
       createdAt: data['createdAt'] as Timestamp?,
       updatedAt: data['updatedAt'] as Timestamp?,
       favoriteCount: (data['favoriteCount'] as num?)?.toInt() ?? 0,

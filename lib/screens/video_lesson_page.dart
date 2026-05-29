@@ -28,12 +28,14 @@ class VideoLessonPage extends StatefulWidget {
     required this.course,
     required this.lesson,
     required this.lessonNumber,
+    this.isTeacherPreview = false,
     this.onQuizAnswerSaveOverride,
   });
 
   final Course course;
   final CourseLesson lesson;
   final int lessonNumber;
+  final bool isTeacherPreview;
   final QuizAnswerSaveOverride? onQuizAnswerSaveOverride;
 
   @override
@@ -85,6 +87,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   int get lessonNumber => widget.lessonNumber;
 
   bool get _isAudioLesson => lesson.mediaType == 'audio';
+  bool get _isTeacherPreview => widget.isTeacherPreview;
   int get _totalDurationSec => _developmentPlaybackDurationSec;
   int get _completionThresholdSec => calculateCompletionThresholdSec(
     totalDurationSec: _totalDurationSec,
@@ -113,6 +116,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   );
 
   List<LessonEvent> get _dueQuizEvents {
+    if (_isTeacherPreview) {
+      return const [];
+    }
     if (!_hasActiveSession) {
       return const [];
     }
@@ -129,7 +135,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _isLoadingLearningState = Firebase.apps.isNotEmpty;
+    _isLoadingLearningState = Firebase.apps.isNotEmpty && !_isTeacherPreview;
     if (_isLoadingLearningState) {
       unawaited(_resumeLearningTimeOnOpen());
     }
@@ -141,12 +147,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _studyTimer?.cancel();
     _activeLearningHeartbeatTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
-    if (_pendingCompletion && !_sessionCompleted) {
-      unawaited(_completeCurrentSegment(updateUi: false));
-    } else {
-      unawaited(_persistSessionProgress());
+    if (!_isTeacherPreview) {
+      if (_pendingCompletion && !_sessionCompleted) {
+        unawaited(_completeCurrentSegment(updateUi: false));
+      } else {
+        unawaited(_persistSessionProgress());
+      }
+      unawaited(_releaseActiveLearningLock());
     }
-    unawaited(_releaseActiveLearningLock());
     super.dispose();
   }
 
@@ -158,6 +166,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         state == AppLifecycleState.hidden) {
       _studyTimer?.cancel();
       _activeLearningHeartbeatTimer?.cancel();
+      if (_isTeacherPreview) {
+        return;
+      }
       if (_pendingCompletion && !_sessionCompleted) {
         unawaited(_completeCurrentSegment());
       } else {
@@ -167,7 +178,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
-    if (state == AppLifecycleState.resumed && _hasActiveSession) {
+    if (!_isTeacherPreview &&
+        state == AppLifecycleState.resumed &&
+        _hasActiveSession) {
       unawaited(_resumeActiveLearningAfterLifecycle());
     }
   }
@@ -221,14 +234,21 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           _currentPositionSec += 1;
         }
         _addWatchProgress(previousPositionSec, _currentPositionSec);
-        if (_currentPositionSec >= _completionThresholdSec &&
+        if (_isTeacherPreview && _currentPositionSec >= _totalDurationSec) {
+          _isPlaying = false;
+          _playbackTimer?.cancel();
+        }
+        if (!_isTeacherPreview &&
+            _currentPositionSec >= _completionThresholdSec &&
             !_pendingCompletion) {
           _setCompletionPendingState();
           shouldPersistPending = true;
         }
       });
       if (shouldPersistPending) {
-        unawaited(_persistSessionProgress());
+        if (!_isTeacherPreview) {
+          unawaited(_persistSessionProgress());
+        }
       }
     });
   }
@@ -245,7 +265,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       _currentPositionSec = positionSec.clamp(0, _totalDurationSec).toInt();
       _message = null;
     });
-    unawaited(_persistSessionProgress());
+    if (!_isTeacherPreview) {
+      unawaited(_persistSessionProgress());
+    }
   }
 
   Future<void> _seekForDevelopment(int deltaSeconds) async {
@@ -475,6 +497,10 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   }
 
   Future<bool> _ensureSession() async {
+    if (_isTeacherPreview) {
+      _startTeacherPreviewSession();
+      return true;
+    }
     if (_hasActiveSession && _segmentId != null) {
       if (Firebase.apps.isNotEmpty && !_hasActiveLearningLock) {
         final user = FirebaseAuth.instance.currentUser;
@@ -540,6 +566,24 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         });
       }
     }
+  }
+
+  void _startTeacherPreviewSession() {
+    if (_hasActiveSession && _segmentId != null) {
+      return;
+    }
+    _sessionId = 'teacher-preview';
+    _segmentId = 'teacher-preview-segment';
+    _cycleNumber = 1;
+    _displayCycleNumber = 1;
+    _sessionCompleted = false;
+    _studySeconds = 0;
+    _watchSeconds = 0;
+    _cycleMaxWatchedPositionSec = 0;
+    _hasPlaybackStarted = true;
+    _pendingCompletion = false;
+    _answeredQuizEventIds.clear();
+    _cycleWatchedRanges.clear();
   }
 
   void _startLocalSession() {
@@ -1164,6 +1208,12 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   }
 
   Future<void> _completeManually() async {
+    if (_isTeacherPreview) {
+      setState(() {
+        _message = '先生プレビュー中は学習記録を保存しません。';
+      });
+      return;
+    }
     final prepared = await _ensureSession();
     if (!prepared || !mounted) {
       return;
@@ -1172,6 +1222,12 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   }
 
   Future<void> _submitAnswer(LessonEvent event) async {
+    if (_isTeacherPreview) {
+      setState(() {
+        _message = '先生プレビュー中はクイズ回答を保存しません。';
+      });
+      return;
+    }
     if (_answeredQuizEventIds.contains(event.id)) {
       setState(() {
         _message = 'この周では回答済みです。';
@@ -1370,6 +1426,22 @@ class _VideoLessonPageState extends State<VideoLessonPage>
               'レッスン$lessonNumber: ${lesson.title}',
               style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
             ),
+            if (_isTeacherPreview) ...[
+              const SizedBox(height: 12),
+              Card(
+                color: Theme.of(context).colorScheme.secondaryContainer,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(
+                    '先生プレビュー中です。講座内容と公開欄だけを確認でき、'
+                    '自分のメモ・質問投稿・学習記録は使いません。',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSecondaryContainer,
+                    ),
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 8),
             Text('再生時間: ${lesson.duration}'),
             const SizedBox(height: 8),
@@ -1378,14 +1450,16 @@ class _VideoLessonPageState extends State<VideoLessonPage>
             Text('仮再生時間: ${formatLessonTime(_totalDurationSec)}'),
             const SizedBox(height: 8),
             Text('現在位置: ${formatLessonTime(_currentPositionSec)}'),
-            const SizedBox(height: 8),
-            Text('現在の周回: $cycleLabel'),
-            const SizedBox(height: 8),
-            Text('学習時間: $studySecondsLabel'),
-            const SizedBox(height: 8),
-            Text('視聴時間: $watchSecondsLabel'),
-            const SizedBox(height: 8),
-            Text('視聴終了判定: $_completionThresholdSec秒到達'),
+            if (!_isTeacherPreview) ...[
+              const SizedBox(height: 8),
+              Text('現在の周回: $cycleLabel'),
+              const SizedBox(height: 8),
+              Text('学習時間: $studySecondsLabel'),
+              const SizedBox(height: 8),
+              Text('視聴時間: $watchSecondsLabel'),
+              const SizedBox(height: 8),
+              Text('視聴終了判定: $_completionThresholdSec秒到達'),
+            ],
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
@@ -1435,16 +1509,18 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: _sessionCompleted
-                  ? null
-                  : () {
-                      unawaited(_completeManually());
-                    },
-              icon: const Icon(Icons.check_circle_outline),
-              label: const Text('視聴終了として記録'),
-            ),
+            if (!_isTeacherPreview) ...[
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: _sessionCompleted
+                    ? null
+                    : () {
+                        unawaited(_completeManually());
+                      },
+                icon: const Icon(Icons.check_circle_outline),
+                label: const Text('視聴終了として記録'),
+              ),
+            ],
             if (lesson.mediaUrl.isNotEmpty) ...[
               const SizedBox(height: 8),
               Text('仮URL: ${lesson.mediaUrl}'),
@@ -1503,6 +1579,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                 lesson: lesson,
                 lessonNumber: lessonNumber,
                 isEmbedded: true,
+                isTeacherPreview: _isTeacherPreview,
               ),
             ],
             const SizedBox(height: 24),
@@ -1528,6 +1605,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                 lesson: lesson,
                 lessonNumber: lessonNumber,
                 isEmbedded: true,
+                isTeacherPreview: _isTeacherPreview,
               ),
             ],
             const SizedBox(height: 24),
