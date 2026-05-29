@@ -66,6 +66,7 @@ class LessonNote {
     required this.folderId,
     required this.folderName,
     required this.visibility,
+    this.studentVisibility,
     required this.tags,
     required this.attachmentTypes,
     required this.hasAudioAttachment,
@@ -96,6 +97,7 @@ class LessonNote {
   final String folderId;
   final String folderName;
   final LessonNoteVisibility visibility;
+  final LessonNoteVisibility? studentVisibility;
   final List<String> tags;
   final List<String> attachmentTypes;
   final bool hasAudioAttachment;
@@ -114,9 +116,12 @@ class LessonNote {
   final String moderationStatus;
 
   bool get isPublic => visibility == LessonNoteVisibility.public;
+  bool get isStudentPublic =>
+      (studentVisibility ?? visibility) == LessonNoteVisibility.public;
   bool get isTeacherHidden =>
       moderationStatus == lessonNoteModerationHiddenByTeacher;
-  bool get isPubliclyVisible => isPublic && !isDeleted && !isTeacherHidden;
+  bool get isPubliclyVisible =>
+      isStudentPublic && !isDeleted && !isTeacherHidden;
 
   factory LessonNote.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     return LessonNote.fromMap(doc.data() ?? {}, id: doc.id);
@@ -125,6 +130,8 @@ class LessonNote {
   factory LessonNote.fromMap(Map data, {String? id}) {
     final visibilityText =
         data['visibility'] as String? ?? lessonNoteVisibilityPrivate;
+    final studentVisibilityText =
+        data['studentVisibility'] as String? ?? visibilityText;
     final attachmentData = data['attachmentTypes'];
     return LessonNote(
       id: id ?? data['id'] as String?,
@@ -139,6 +146,9 @@ class LessonNote {
       folderId: data['folderId'] as String? ?? '',
       folderName: data['folderName'] as String? ?? '',
       visibility: visibilityText == lessonNoteVisibilityPublic
+          ? LessonNoteVisibility.public
+          : LessonNoteVisibility.private,
+      studentVisibility: studentVisibilityText == lessonNoteVisibilityPublic
           ? LessonNoteVisibility.public
           : LessonNoteVisibility.private,
       tags: parseStringList(data['tags']),

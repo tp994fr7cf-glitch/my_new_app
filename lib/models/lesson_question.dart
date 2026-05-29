@@ -27,6 +27,7 @@ class LessonQuestion {
     required this.title,
     required this.body,
     required this.visibility,
+    this.studentVisibility,
     required this.target,
     required this.attachmentTypes,
     this.quotedNoteId,
@@ -52,6 +53,7 @@ class LessonQuestion {
   final String title;
   final String body;
   final LessonQuestionVisibility visibility;
+  final LessonQuestionVisibility? studentVisibility;
   final LessonQuestionTarget target;
   final List<String> attachmentTypes;
   final String? quotedNoteId;
@@ -66,8 +68,12 @@ class LessonQuestion {
   final int answerCount;
 
   bool get isPublic => visibility == LessonQuestionVisibility.public;
+  bool get isStudentPublic =>
+      (studentVisibility ?? visibility) == LessonQuestionVisibility.public;
   bool get isTeacherHidden =>
       moderationStatus == lessonInteractionModerationHiddenByTeacher;
+  bool get isPubliclyVisible =>
+      isStudentPublic && !isDeleted && !isTeacherHidden;
 
   factory LessonQuestion.fromFirestore(
     DocumentSnapshot<Map<String, dynamic>> doc,
@@ -78,6 +84,8 @@ class LessonQuestion {
   factory LessonQuestion.fromMap(Map data, {String? id}) {
     final visibilityText =
         data['visibility'] as String? ?? lessonQuestionVisibilityTeacherOnly;
+    final studentVisibilityText =
+        data['studentVisibility'] as String? ?? visibilityText;
     final targetText = data['target'] as String? ?? lessonQuestionTargetTeacher;
     return LessonQuestion(
       id: id ?? data['id'] as String?,
@@ -91,6 +99,10 @@ class LessonQuestion {
       title: data['title'] as String? ?? '',
       body: data['body'] as String? ?? '',
       visibility: visibilityText == lessonQuestionVisibilityPublic
+          ? LessonQuestionVisibility.public
+          : LessonQuestionVisibility.teacherOnly,
+      studentVisibility:
+          studentVisibilityText == lessonQuestionVisibilityPublic
           ? LessonQuestionVisibility.public
           : LessonQuestionVisibility.teacherOnly,
       target: targetText == lessonQuestionTargetEveryone

@@ -96,15 +96,15 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
         .collection('publicLessonQuestions')
         .where('courseId', isEqualTo: _courseId)
         .where('lessonNumber', isEqualTo: widget.lessonNumber)
+        .where('studentVisibility', isEqualTo: lessonQuestionVisibilityPublic)
+        .where('moderationStatus', isEqualTo: lessonNoteModerationVisible)
+        .where('isDeleted', isEqualTo: false)
         .snapshots()
         .map((snapshot) {
           return sortLessonQuestionsByUpdatedAt(
             snapshot.docs
                 .map(LessonQuestion.fromFirestore)
-                .where(
-                  (question) =>
-                      !question.isDeleted && !question.isTeacherHidden,
-                )
+                .where((question) => question.isPubliclyVisible)
                 .toList(),
           );
         });
@@ -126,6 +126,9 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
         .collection('publicLessonNotes')
         .where('courseId', isEqualTo: _courseId)
         .where('lessonNumber', isEqualTo: widget.lessonNumber)
+        .where('studentVisibility', isEqualTo: lessonNoteVisibilityPublic)
+        .where('moderationStatus', isEqualTo: lessonNoteModerationVisible)
+        .where('isDeleted', isEqualTo: false)
         .snapshots()
         .map((snapshot) {
           return sortLessonNotesByUpdatedAt(
@@ -143,6 +146,25 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
       lessonNumber: widget.lessonNumber,
       fieldName: LessonInteractionService.lessonQuestionsPublicEnabledField,
     );
+  }
+
+  Future<bool> _isPublicQuestionVisible(String questionId) async {
+    if (Firebase.apps.isEmpty) {
+      return false;
+    }
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('publicLessonQuestions')
+          .doc(questionId)
+          .get();
+      final data = snapshot.data();
+      return data != null &&
+          data['studentVisibility'] == lessonQuestionVisibilityPublic &&
+          data['moderationStatus'] == lessonNoteModerationVisible &&
+          data['isDeleted'] != true;
+    } on FirebaseException {
+      return false;
+    }
   }
 
   void _showMessage(String message) {
@@ -222,18 +244,26 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
       final publicRef = firestore
           .collection('publicLessonQuestions')
           .doc(questionId);
-      if (visibility == lessonQuestionVisibilityPublic) {
-        final publicSnapshot = await publicRef.get();
-        final publicModerationStatus =
-            publicSnapshot.data()?['moderationStatus'] as String? ??
-            lessonNoteModerationVisible;
+      final publicSnapshot = draft.questionId == null
+          ? null
+          : await publicRef.get();
+      final publicData = publicSnapshot?.data();
+      final hasPublicMirror = publicSnapshot?.exists ?? false;
+      final publicModerationStatus =
+          publicData?['moderationStatus'] as String? ??
+          lessonNoteModerationVisible;
+      if (visibility == lessonQuestionVisibilityPublic || hasPublicMirror) {
         batch.set(publicRef, {
           ...data,
           'questionId': questionId,
+          'interactionSettingId': _lessonInteractionService.settingDocumentId(
+            courseId: _courseId,
+            lessonNumber: widget.lessonNumber,
+          ),
+          'visibility': lessonQuestionVisibilityPublic,
+          'studentVisibility': visibility,
           'moderationStatus': publicModerationStatus,
         }, SetOptions(merge: true));
-      } else if (draft.wasPublic) {
-        batch.delete(publicRef);
       }
       await batch.commit();
       if (mounted) {
@@ -265,6 +295,11 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
       return;
     }
     final firestore = FirebaseFirestore.instance;
+    final publicRef = firestore
+        .collection('publicLessonQuestions')
+        .doc(question.id);
+    final publicSnapshot = await publicRef.get();
+    final now = FieldValue.serverTimestamp();
     final batch = firestore.batch()
       ..set(
         firestore
@@ -274,12 +309,19 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
             .doc(question.id),
         {
           'isDeleted': true,
-          'deletedAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
+          'deletedAt': now,
+          'updatedAt': now,
         },
         SetOptions(merge: true),
-      )
-      ..delete(firestore.collection('publicLessonQuestions').doc(question.id));
+      );
+    if (publicSnapshot.exists) {
+      batch.set(publicRef, {
+        'studentVisibility': lessonQuestionVisibilityTeacherOnly,
+        'isDeleted': true,
+        'deletedAt': now,
+        'updatedAt': now,
+      }, SetOptions(merge: true));
+    }
     await batch.commit();
   }
 
@@ -360,7 +402,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
       'updatedAt': now,
     };
     final batch = firestore.batch()..set(answerRef, data);
-    if (question.isPublic) {
+    if (question.isPublic &&
+        await _isPublicQuestionVisible(question.id!)) {
       batch.set(
         firestore.collection('publicLessonQuestionAnswers').doc(answerRef.id),
         {...data, 'answerId': answerRef.id},
@@ -397,11 +440,13 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
         SetOptions(merge: true),
       );
     if (question.isPublic) {
-      batch.set(
-        firestore.collection('publicLessonQuestionAnswers').doc(answer.id),
-        deletedData,
-        SetOptions(merge: true),
-      );
+      final publicAnswerRef = firestore
+          .collection('publicLessonQuestionAnswers')
+          .doc(answer.id);
+      final publicAnswerSnapshot = await publicAnswerRef.get();
+      if (publicAnswerSnapshot.exists) {
+        batch.set(publicAnswerRef, deletedData, SetOptions(merge: true));
+      }
     }
     await batch.commit();
   }

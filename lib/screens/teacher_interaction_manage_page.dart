@@ -161,7 +161,8 @@ class TeacherInteractionManagePage extends StatelessWidget {
                           ),
                           subtitle: Text(
                             '${note.authorName} / レッスン${note.lessonNumber}: ${note.lessonTitle}'
-                            '${note.isTeacherHidden ? ' / 非公開化済み' : ''}',
+                            '${note.isTeacherHidden ? ' / 非公開化済み' : ''}'
+                            '${note.isStudentPublic ? '' : ' / 学習者が非公開'}',
                           ),
                           trailing: TextButton(
                             onPressed: () => _setPublicModeration(
@@ -202,7 +203,8 @@ class TeacherInteractionManagePage extends StatelessWidget {
                           ),
                           subtitle: Text(
                             '${question.authorName} / レッスン${question.lessonNumber}: ${question.lessonTitle}'
-                            '${question.isTeacherHidden ? ' / 非公開化済み' : ''}',
+                            '${question.isTeacherHidden ? ' / 非公開化済み' : ''}'
+                            '${question.isStudentPublic ? '' : ' / 学習者が非公開'}',
                           ),
                           trailing: TextButton(
                             onPressed: () => _setPublicModeration(

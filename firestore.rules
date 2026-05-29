@@ -88,6 +88,18 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/courses/$(courseId)).data.instructorId == request.auth.uid;
     }
 
+    function lessonNotesPublicEnabled(settingId) {
+      return settingId is string
+        && (!exists(/databases/$(database)/documents/lessonInteractionSettings/$(settingId))
+          || get(/databases/$(database)/documents/lessonInteractionSettings/$(settingId)).data.lessonNotesPublicEnabled != false);
+    }
+
+    function lessonQuestionsPublicEnabled(settingId) {
+      return settingId is string
+        && (!exists(/databases/$(database)/documents/lessonInteractionSettings/$(settingId))
+          || get(/databases/$(database)/documents/lessonInteractionSettings/$(settingId)).data.lessonQuestionsPublicEnabled != false);
+    }
+
     match /users/{userId} {
       allow read: if isOwner(userId);
 
@@ -329,7 +341,13 @@ service cloud.firestore {
     }
 
     match /publicLessonNotes/{noteId} {
-      allow read: if signedIn();
+      allow read: if signedIn()
+        && (resource.data.authorId == request.auth.uid
+          || isCourseInstructor(resource.data.courseId)
+          || (resource.data.studentVisibility == 'public'
+            && resource.data.moderationStatus == 'visible'
+            && resource.data.isDeleted == false
+            && lessonNotesPublicEnabled(resource.data.interactionSettingId)));
 
       function validPublicLessonNoteOwnerWrite() {
         return request.resource.data.userId == request.auth.uid
@@ -339,9 +357,11 @@ service cloud.firestore {
           && request.resource.data.body is string
           && request.resource.data.courseId is string
           && request.resource.data.courseTitle is string
+          && request.resource.data.interactionSettingId is string
           && request.resource.data.lessonNumber is int
           && request.resource.data.lessonTitle is string
           && request.resource.data.visibility == 'public'
+          && request.resource.data.studentVisibility in ['private', 'public']
           && request.resource.data.tags is list
           && request.resource.data.attachmentTypes is list
           && request.resource.data.hasAudioAttachment == false
@@ -355,6 +375,7 @@ service cloud.firestore {
 
       allow create: if signedIn()
         && validPublicLessonNoteOwnerWrite()
+        && request.resource.data.studentVisibility == 'public'
         && (!request.resource.data.keys().hasAny(['moderationStatus'])
           || request.resource.data.moderationStatus == 'visible');
 
@@ -367,6 +388,17 @@ service cloud.firestore {
           || (resource.data.keys().hasAny(['moderationStatus'])
             && request.resource.data.keys().hasAny(['moderationStatus'])
             && request.resource.data.moderationStatus == resource.data.moderationStatus));
+
+      allow update: if signedIn()
+        && resource.data.authorId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'studentVisibility',
+          'isDeleted',
+          'deletedAt',
+          'updatedAt'
+        ])
+        && request.resource.data.studentVisibility == 'private'
+        && request.resource.data.isDeleted == true;
 
       allow update: if signedIn()
         && isCourseInstructor(resource.data.courseId)
@@ -383,22 +415,52 @@ service cloud.firestore {
     }
 
     match /publicLessonQuestions/{questionId} {
-      allow read: if signedIn();
+      allow read: if signedIn()
+        && (resource.data.authorId == request.auth.uid
+          || isCourseInstructor(resource.data.courseId)
+          || (resource.data.studentVisibility == 'public'
+            && resource.data.moderationStatus == 'visible'
+            && resource.data.isDeleted == false
+            && lessonQuestionsPublicEnabled(resource.data.interactionSettingId)));
 
-      allow create, update: if signedIn()
-        && request.resource.data.userId == request.auth.uid
-        && request.resource.data.authorId == request.auth.uid
-        && request.resource.data.questionId == questionId
-        && request.resource.data.courseId is string
-        && request.resource.data.courseTitle is string
-        && request.resource.data.lessonNumber is int
-        && request.resource.data.lessonTitle is string
-        && request.resource.data.body is string
-        && request.resource.data.visibility == 'public'
-        && request.resource.data.target in ['teacher', 'everyone']
-        && request.resource.data.attachmentTypes is list
-        && request.resource.data.isDeleted is bool
-        && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
+      function validPublicLessonQuestionOwnerWrite() {
+        return request.resource.data.userId == request.auth.uid
+          && request.resource.data.authorId == request.auth.uid
+          && request.resource.data.questionId == questionId
+          && request.resource.data.courseId is string
+          && request.resource.data.courseTitle is string
+          && request.resource.data.interactionSettingId is string
+          && request.resource.data.lessonNumber is int
+          && request.resource.data.lessonTitle is string
+          && request.resource.data.body is string
+          && request.resource.data.visibility == 'public'
+          && request.resource.data.studentVisibility in ['teacherOnly', 'public']
+          && request.resource.data.target in ['teacher', 'everyone']
+          && request.resource.data.attachmentTypes is list
+          && request.resource.data.isDeleted is bool
+          && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
+      }
+
+      allow create: if signedIn()
+        && validPublicLessonQuestionOwnerWrite()
+        && request.resource.data.studentVisibility == 'public'
+        && request.resource.data.moderationStatus == 'visible';
+
+      allow update: if signedIn()
+        && validPublicLessonQuestionOwnerWrite()
+        && resource.data.authorId == request.auth.uid
+        && request.resource.data.moderationStatus == resource.data.moderationStatus;
+
+      allow update: if signedIn()
+        && resource.data.authorId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'studentVisibility',
+          'isDeleted',
+          'deletedAt',
+          'updatedAt'
+        ])
+        && request.resource.data.studentVisibility == 'teacherOnly'
+        && request.resource.data.isDeleted == true;
 
       allow update: if signedIn()
         && isCourseInstructor(resource.data.courseId)
@@ -409,11 +471,40 @@ service cloud.firestore {
         && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
 
       allow delete: if signedIn()
-        && resource.data.authorId == request.auth.uid;
+        && resource.data.authorId == request.auth.uid
+        && resource.data.moderationStatus != 'hiddenByTeacher';
     }
 
     match /publicLessonQuestionAnswers/{answerId} {
-      allow read: if signedIn();
+      function publicParentQuestionVisible() {
+        return exists(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId))
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.studentVisibility == 'public'
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.moderationStatus == 'visible'
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.isDeleted == false
+          && lessonQuestionsPublicEnabled(get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.interactionSettingId);
+      }
+
+      function isPublicParentQuestionAuthor() {
+        return exists(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId))
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.authorId == request.auth.uid;
+      }
+
+      allow read: if signedIn()
+        && (resource.data.authorId == request.auth.uid
+          || isPublicParentQuestionAuthor()
+          || isCourseInstructor(resource.data.courseId)
+          || (publicParentQuestionVisible()
+            && resource.data.moderationStatus == 'visible'
+            && resource.data.isDeleted == false));
+
+      allow update: if signedIn()
+        && resource.data.authorId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'isDeleted',
+          'deletedAt',
+          'updatedAt'
+        ])
+        && request.resource.data.isDeleted == true;
 
       allow create, update: if signedIn()
         && request.resource.data.authorId == request.auth.uid
@@ -430,7 +521,12 @@ service cloud.firestore {
         && request.resource.data.body is string
         && request.resource.data.attachmentTypes is list
         && request.resource.data.isDeleted is bool
-        && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
+        && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher']
+        && exists(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId))
+        && get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.studentVisibility == 'public'
+        && get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.moderationStatus == 'visible'
+        && get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.isDeleted == false
+        && lessonQuestionsPublicEnabled(get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.interactionSettingId);
 
       allow update: if signedIn()
         && isCourseInstructor(resource.data.courseId)

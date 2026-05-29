@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:my_new_app/models/comment_identity.dart';
+import 'package:my_new_app/models/lesson_interaction_constants.dart';
 import 'package:my_new_app/models/lesson_question.dart';
 
 void main() {
@@ -47,6 +48,68 @@ void main() {
         ).color,
         firstStudent.color,
       );
+    });
+
+    test('hides public questions moderated by teacher', () {
+      const question = LessonQuestion(
+        id: 'question-a',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '公開質問',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: [],
+        moderationStatus: lessonInteractionModerationHiddenByTeacher,
+      );
+
+      expect(question.isTeacherHidden, isTrue);
+      expect(question.isPubliclyVisible, isFalse);
+    });
+
+    test('keeps student-private public question hidden when teacher visible', () {
+      const question = LessonQuestion(
+        id: 'question-a',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '公開後に先生だけへ戻した質問',
+        visibility: LessonQuestionVisibility.public,
+        studentVisibility: LessonQuestionVisibility.teacherOnly,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: [],
+      );
+
+      expect(question.isTeacherHidden, isFalse);
+      expect(question.isStudentPublic, isFalse);
+      expect(question.isPubliclyVisible, isFalse);
+    });
+
+    test('treats missing studentVisibility as existing visibility', () {
+      final question = LessonQuestion.fromMap({
+        'authorId': 'user-a',
+        'authorName': '学習者',
+        'courseId': 'course-a',
+        'courseTitle': '数学',
+        'lessonNumber': 1,
+        'lessonTitle': '一次方程式',
+        'title': '',
+        'body': 'studentVisibility 追加前の質問',
+        'visibility': lessonQuestionVisibilityPublic,
+        'target': lessonQuestionTargetEveryone,
+        'attachmentTypes': <String>[],
+      });
+
+      expect(question.isStudentPublic, isTrue);
+      expect(question.isPubliclyVisible, isTrue);
     });
 
     test('sorts questions by updatedAt descending', () {

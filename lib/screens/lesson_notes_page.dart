@@ -158,6 +158,9 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         .collection('publicLessonNotes')
         .where('courseId', isEqualTo: _courseId)
         .where('lessonNumber', isEqualTo: widget.lessonNumber)
+        .where('studentVisibility', isEqualTo: lessonNoteVisibilityPublic)
+        .where('moderationStatus', isEqualTo: lessonNoteModerationVisible)
+        .where('isDeleted', isEqualTo: false)
         .snapshots()
         .map((snapshot) {
           return sortPublicLessonNotes(
@@ -292,17 +295,14 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
           ? visibility
           : lessonNoteVisibilityPrivate;
       final publicRef = firestore.collection('publicLessonNotes').doc(noteId);
-      final publicSnapshot = draft.wasPublic ? await publicRef.get() : null;
+      final publicSnapshot = draft.noteId == null
+          ? null
+          : await publicRef.get();
+      final publicData = publicSnapshot?.data();
+      final hasPublicMirror = publicSnapshot?.exists ?? false;
       final publicModerationStatus =
-          publicSnapshot?.data()?['moderationStatus'] as String? ??
+          publicData?['moderationStatus'] as String? ??
           lessonNoteModerationVisible;
-      if (publicModerationStatus == lessonNoteModerationHiddenByTeacher &&
-          savedVisibility == lessonNoteVisibilityPrivate) {
-        _showMessage(
-          '先生により非公開化されたメモは、先生が公開化するまで公開設定を変更できません。',
-        );
-        return false;
-      }
       final data = {
         'userId': user.uid,
         'authorId': user.uid,
@@ -333,18 +333,23 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
 
       final batch = firestore.batch()
         ..set(noteRef, data, SetOptions(merge: true));
-      if (savedVisibility == lessonNoteVisibilityPublic) {
+      if (savedVisibility == lessonNoteVisibilityPublic || hasPublicMirror) {
         batch.set(publicRef, {
           ...data,
           'noteId': noteId,
+          'interactionSettingId': _lessonInteractionService.settingDocumentId(
+            courseId: _courseId,
+            lessonNumber: widget.lessonNumber,
+          ),
+          'visibility': lessonNoteVisibilityPublic,
+          'studentVisibility': savedVisibility,
           'moderationStatus': publicModerationStatus,
-          'favoriteCount': 0,
-          'ratingAverage': 0,
-          'ratingCount': 0,
-          'copyCount': 0,
+          'favoriteCount': (publicData?['favoriteCount'] as num?)?.toInt() ?? 0,
+          'ratingAverage':
+              (publicData?['ratingAverage'] as num?)?.toDouble() ?? 0,
+          'ratingCount': (publicData?['ratingCount'] as num?)?.toInt() ?? 0,
+          'copyCount': (publicData?['copyCount'] as num?)?.toInt() ?? 0,
         }, SetOptions(merge: true));
-      } else if (draft.wasPublic) {
-        batch.delete(publicRef);
       }
 
       await batch.commit();
@@ -376,16 +381,8 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
     }
     final firestore = FirebaseFirestore.instance;
     final publicRef = firestore.collection('publicLessonNotes').doc(note.id);
-    if (note.isPublic) {
-      final publicSnapshot = await publicRef.get();
-      final publicModerationStatus =
-          publicSnapshot.data()?['moderationStatus'] as String? ??
-          lessonNoteModerationVisible;
-      if (publicModerationStatus == lessonNoteModerationHiddenByTeacher) {
-        _showMessage('先生により非公開化されたメモは、先生が公開化するまで削除できません。');
-        return;
-      }
-    }
+    final publicSnapshot = await publicRef.get();
+    final now = FieldValue.serverTimestamp();
     final batch = firestore.batch()
       ..set(
         firestore
@@ -395,12 +392,19 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
             .doc(note.id),
         {
           'isDeleted': true,
-          'deletedAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
+          'deletedAt': now,
+          'updatedAt': now,
         },
         SetOptions(merge: true),
-      )
-      ..delete(publicRef);
+      );
+    if (publicSnapshot.exists) {
+      batch.set(publicRef, {
+        'studentVisibility': lessonNoteVisibilityPrivate,
+        'isDeleted': true,
+        'deletedAt': now,
+        'updatedAt': now,
+      }, SetOptions(merge: true));
+    }
     await batch.commit();
   }
 
@@ -438,12 +442,23 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       );
     for (final noteDoc in notesSnapshot.docs) {
       if (mode == _FolderDeleteMode.deleteNotes) {
+        final publicRef = firestore
+            .collection('publicLessonNotes')
+            .doc(noteDoc.id);
+        final publicSnapshot = await publicRef.get();
         batch.set(noteDoc.reference, {
           'isDeleted': true,
           'deletedAt': FieldValue.serverTimestamp(),
           'updatedAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
-        batch.delete(firestore.collection('publicLessonNotes').doc(noteDoc.id));
+        if (publicSnapshot.exists) {
+          batch.set(publicRef, {
+            'studentVisibility': lessonNoteVisibilityPrivate,
+            'isDeleted': true,
+            'deletedAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+        }
       } else {
         batch.set(noteDoc.reference, {
           'folderId': '',
@@ -645,53 +660,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
                                   ],
                                 ),
                               ),
-                              _LessonNoteList(
-                                notesStream: _publicNotesStream(),
-                                query: _query,
-                                emptyText: '公開メモはまだありません。',
-                                onTap: null,
-                                action: StreamBuilder<bool>(
-                                  stream: _notePublicPlatformEnabledStream(),
-                                  builder: (context, platformSnapshot) {
-                                    final enabled =
-                                        platformSnapshot.data ?? true;
-                                    return Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.stretch,
-                                      children: [
-                                        SegmentedButton<LessonNotePublicSort>(
-                                          segments: const [
-                                            ButtonSegment(
-                                              value:
-                                                  LessonNotePublicSort.newest,
-                                              label: Text('新しい順'),
-                                            ),
-                                            ButtonSegment(
-                                              value:
-                                                  LessonNotePublicSort.popular,
-                                              label: Text('人気順'),
-                                            ),
-                                          ],
-                                          selected: {_publicSort},
-                                          onSelectionChanged: (selection) {
-                                            setState(() {
-                                              _publicSort = selection.first;
-                                            });
-                                          },
-                                        ),
-                                        if (!enabled) ...[
-                                          const SizedBox(height: 8),
-                                          const Text(
-                                            '先生により、このレッスンの公開メモ欄は非公開化されています。',
-                                          ),
-                                        ],
-                                        const SizedBox(height: 8),
-                                        const Text('コピー・評価・お気に入りは後で追加します。'),
-                                      ],
-                                    );
-                                  },
-                                ),
-                              ),
+                              _buildPublicNotesTab(),
                             ],
                           ),
                         ),
@@ -704,6 +673,52 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildPublicNotesTab() {
+    return StreamBuilder<bool>(
+      stream: _notePublicPlatformEnabledStream(),
+      builder: (context, platformSnapshot) {
+        final enabled = platformSnapshot.data == true;
+        return _LessonNoteList(
+          notesStream: enabled ? _publicNotesStream() : Stream.value(const []),
+          query: _query,
+          emptyText: enabled ? '公開メモはまだありません。' : '公開メモ欄は非公開化されています。',
+          onTap: null,
+          action: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SegmentedButton<LessonNotePublicSort>(
+                segments: const [
+                  ButtonSegment(
+                    value: LessonNotePublicSort.newest,
+                    label: Text('新しい順'),
+                  ),
+                  ButtonSegment(
+                    value: LessonNotePublicSort.popular,
+                    label: Text('人気順'),
+                  ),
+                ],
+                selected: {_publicSort},
+                onSelectionChanged: enabled
+                    ? (selection) {
+                        setState(() {
+                          _publicSort = selection.first;
+                        });
+                      }
+                    : null,
+              ),
+              if (!enabled) ...[
+                const SizedBox(height: 8),
+                const Text('先生により、このレッスンの公開メモ欄は非公開化されています。'),
+              ],
+              const SizedBox(height: 8),
+              const Text('コピー・評価・お気に入りは後で追加します。'),
+            ],
+          ),
+        );
+      },
     );
   }
 }
