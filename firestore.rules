@@ -298,6 +298,8 @@ service cloud.firestore {
           && request.resource.data.hasAudioAttachment is bool
           && request.resource.data.isCopied is bool
           && request.resource.data.canPublish is bool
+          && (request.resource.data.visibility == 'private'
+            || request.resource.data.canPublish == true)
           && (!request.resource.data.keys().hasAny(['isDeleted'])
             || request.resource.data.isDeleted is bool)
           && (!request.resource.data.keys().hasAny(['moderationStatus'])

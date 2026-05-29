@@ -295,9 +295,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
           ? visibility
           : lessonNoteVisibilityPrivate;
       final publicRef = firestore.collection('publicLessonNotes').doc(noteId);
-      final publicSnapshot = draft.noteId == null
-          ? null
-          : await publicRef.get();
+      final publicSnapshot = draft.wasPublic ? await publicRef.get() : null;
       final publicData = publicSnapshot?.data();
       final hasPublicMirror = publicSnapshot?.exists ?? false;
       final publicModerationStatus =
@@ -333,7 +331,8 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
 
       final batch = firestore.batch()
         ..set(noteRef, data, SetOptions(merge: true));
-      if (savedVisibility == lessonNoteVisibilityPublic || hasPublicMirror) {
+      if (savedVisibility == lessonNoteVisibilityPublic ||
+          (hasPublicMirror && canPublish)) {
         batch.set(publicRef, {
           ...data,
           'noteId': noteId,
@@ -349,6 +348,13 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
               (publicData?['ratingAverage'] as num?)?.toDouble() ?? 0,
           'ratingCount': (publicData?['ratingCount'] as num?)?.toInt() ?? 0,
           'copyCount': (publicData?['copyCount'] as num?)?.toInt() ?? 0,
+        }, SetOptions(merge: true));
+      } else if (hasPublicMirror) {
+        batch.set(publicRef, {
+          'studentVisibility': lessonNoteVisibilityPrivate,
+          'isDeleted': true,
+          'deletedAt': now,
+          'updatedAt': now,
         }, SetOptions(merge: true));
       }
 

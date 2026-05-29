@@ -18,8 +18,8 @@ class UserProfileGate extends StatelessWidget {
         .collection('users')
         .doc(user.uid);
 
-    return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      future: userDoc.get(),
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: userDoc.snapshots(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Scaffold(

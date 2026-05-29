@@ -2,8 +2,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import 'user_profile_gate.dart';
-
 class RoleSwitchPage extends StatefulWidget {
   const RoleSwitchPage({super.key, required this.user, required this.roles});
 
@@ -58,10 +56,7 @@ class _RoleSwitchPageState extends State<RoleSwitchPage> {
           }, SetOptions(merge: true));
 
       if (mounted) {
-        Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (_) => UserProfileGate(user: widget.user)),
-          (route) => false,
-        );
+        Navigator.of(context).pop();
       }
     } on FirebaseException catch (error) {
       setState(() {

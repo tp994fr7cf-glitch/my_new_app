@@ -34,6 +34,43 @@ void main() {
       );
     });
 
+    test('keeps audio notes private while allowing edits', () {
+      const note = LessonNote(
+        id: 'audio-note',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '音声つきメモ',
+        body: 'あとで音声を確認する',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.private,
+        tags: [],
+        attachmentTypes: [lessonNoteAttachmentAudio],
+        hasAudioAttachment: true,
+        isCopied: false,
+        canPublish: false,
+      );
+
+      expect(note.isPublic, isFalse);
+      expect(note.hasAudioAttachment, isTrue);
+      expect(note.canPublish, isFalse);
+    });
+
+    test('blocks public mirror writes for audio notes', () {
+      expect(
+        canPublishLessonNote(
+          hasAudioAttachment: true,
+          isCopied: false,
+          canPublish: false,
+        ),
+        isFalse,
+      );
+    });
+
     test('matches notes by title body course lesson folder and tags', () {
       const note = LessonNote(
         id: 'note-a',
