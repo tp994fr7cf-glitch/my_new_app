@@ -112,6 +112,20 @@ void main() {
       expect(question.isPubliclyVisible, isTrue);
     });
 
+    test('parses author role for teacher-created questions', () {
+      final explicitTeacher = LessonQuestion.fromMap({
+        'authorRole': 'teacher',
+      });
+      final legacyTeacher = LessonQuestion.fromMap({
+        'authorDisplayName': '先生',
+      });
+      final student = LessonQuestion.fromMap({});
+
+      expect(explicitTeacher.authorRole, 'teacher');
+      expect(legacyTeacher.authorRole, 'teacher');
+      expect(student.authorRole, 'student');
+    });
+
     test('sorts questions by updatedAt descending', () {
       final older = LessonQuestion(
         id: 'older',

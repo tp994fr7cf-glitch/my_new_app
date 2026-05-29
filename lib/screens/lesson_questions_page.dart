@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -40,6 +42,9 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
   String? _message;
   LessonQuestion? _editingQuestion;
   LessonQuestion? _selectedQuestion;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>?
+  _profileSubscription;
+  bool _activeRoleIsTeacher = false;
   final LessonInteractionService _lessonInteractionService =
       const LessonInteractionService();
 
@@ -49,10 +54,42 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
       Firebase.apps.isEmpty ? null : FirebaseAuth.instance.currentUser?.uid;
 
   bool get _isCurrentUserTeacher =>
-      _currentUserId != null && widget.course.instructorId == _currentUserId;
+      _activeRoleIsTeacher &&
+      _currentUserId != null &&
+      widget.course.instructorId == _currentUserId;
+
+  @override
+  void initState() {
+    super.initState();
+    _listenToActiveRole();
+  }
+
+  void _listenToActiveRole() {
+    if (Firebase.apps.isEmpty) {
+      return;
+    }
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+    _profileSubscription = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .snapshots()
+        .listen((snapshot) {
+          final activeRole = snapshot.data()?['activeRole'];
+          if (!mounted) {
+            return;
+          }
+          setState(() {
+            _activeRoleIsTeacher = activeRole == 'teacher';
+          });
+        });
+  }
 
   @override
   void dispose() {
+    _profileSubscription?.cancel();
     _queryController.dispose();
     super.dispose();
   }
@@ -81,9 +118,15 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
             snapshot.docs
                 .map(LessonQuestion.fromFirestore)
                 .where((question) => !question.isDeleted)
+                .where(_matchesActiveRole)
                 .toList(),
           );
         });
+  }
+
+  bool _matchesActiveRole(LessonQuestion question) {
+    final activeRole = _activeRoleIsTeacher ? 'teacher' : 'student';
+    return question.authorRole == activeRole;
   }
 
   Stream<List<LessonQuestion>> _publicQuestionsStream() {
@@ -218,6 +261,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
         'authorId': user.uid,
         'authorName': user.displayName ?? user.email ?? '学習者',
         'authorDisplayName': _isCurrentUserTeacher ? '先生' : null,
+        'authorRole': _isCurrentUserTeacher ? 'teacher' : 'student',
         'courseId': _courseId,
         'courseTitle': widget.course.title,
         'lessonNumber': widget.lessonNumber,

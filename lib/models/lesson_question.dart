@@ -20,6 +20,7 @@ class LessonQuestion {
     required this.authorId,
     required this.authorName,
     this.authorDisplayName,
+    this.authorRole = 'student',
     required this.courseId,
     required this.courseTitle,
     required this.lessonNumber,
@@ -46,6 +47,7 @@ class LessonQuestion {
   final String authorId;
   final String authorName;
   final String? authorDisplayName;
+  final String authorRole;
   final String courseId;
   final String courseTitle;
   final int lessonNumber;
@@ -92,6 +94,9 @@ class LessonQuestion {
       authorId: data['authorId'] as String? ?? data['userId'] as String? ?? '',
       authorName: data['authorName'] as String? ?? '',
       authorDisplayName: data['authorDisplayName'] as String?,
+      authorRole:
+          data['authorRole'] as String? ??
+          (data['authorDisplayName'] == '先生' ? 'teacher' : 'student'),
       courseId: data['courseId'] as String? ?? '',
       courseTitle: data['courseTitle'] as String? ?? '',
       lessonNumber: (data['lessonNumber'] as num?)?.toInt() ?? 1,

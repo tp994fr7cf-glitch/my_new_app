@@ -65,10 +65,15 @@ service cloud.firestore {
         && validTeacherApplication();
     }
 
-    function isTeacher() {
+    function hasActiveTeacherRole() {
       return signedIn()
         && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.roles.hasAny(['teacher']);
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.roles.hasAny(['teacher'])
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.activeRole == 'teacher';
+    }
+
+    function isTeacher() {
+      return hasActiveTeacherRole();
     }
 
     function canUpdateOwnTeacherCourse() {
@@ -83,7 +88,7 @@ service cloud.firestore {
     }
 
     function isCourseInstructor(courseId) {
-      return signedIn()
+      return hasActiveTeacherRole()
         && exists(/databases/$(database)/documents/courses/$(courseId))
         && get(/databases/$(database)/documents/courses/$(courseId)).data.instructorId == request.auth.uid;
     }
@@ -418,7 +423,10 @@ service cloud.firestore {
 
     match /publicLessonQuestions/{questionId} {
       allow read: if signedIn()
-        && (resource.data.authorId == request.auth.uid
+        && ((resource.data.authorId == request.auth.uid
+            && (!resource.data.keys().hasAny(['authorDisplayName'])
+              || resource.data.authorDisplayName != '先生'
+              || hasActiveTeacherRole()))
           || isCourseInstructor(resource.data.courseId)
           || (resource.data.studentVisibility == 'public'
             && resource.data.moderationStatus == 'visible'
@@ -488,11 +496,18 @@ service cloud.firestore {
 
       function isPublicParentQuestionAuthor() {
         return exists(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId))
-          && get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.authorId == request.auth.uid;
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.authorId == request.auth.uid
+          && (get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.authorRole != 'teacher'
+            || hasActiveTeacherRole())
+          && (!get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.keys().hasAny(['authorDisplayName'])
+            || get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.authorDisplayName != '先生'
+            || hasActiveTeacherRole());
       }
 
       allow read: if signedIn()
-        && (resource.data.authorId == request.auth.uid
+        && ((resource.data.authorId == request.auth.uid
+            && (resource.data.authorRole != 'teacher'
+              || hasActiveTeacherRole()))
           || isPublicParentQuestionAuthor()
           || isCourseInstructor(resource.data.courseId)
           || (publicParentQuestionVisible()
@@ -553,7 +568,7 @@ service cloud.firestore {
     match /courses/{courseId} {
       allow read: if signedIn() && resource.data.status == 'published';
 
-      allow read: if signedIn()
+      allow read: if hasActiveTeacherRole()
         && resource.data.instructorId == request.auth.uid;
 
       allow create, update: if signedIn()
