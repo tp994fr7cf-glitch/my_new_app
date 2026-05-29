@@ -261,7 +261,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   }
 
   String _courseId() {
-    return course.id ?? course.title.replaceAll('/', '_');
+    return course.storageId;
   }
 
   DocumentReference<Map<String, dynamic>> _activeLearningLockRef(User user) {
@@ -1245,7 +1245,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
-    final courseId = course.id ?? course.title.replaceAll('/', '_');
+    final courseId = course.storageId;
     final sessionId = _sessionId;
     final cycleQuizKey = buildCycleQuizKey(
       courseId: courseId,

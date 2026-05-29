@@ -17,7 +17,7 @@ class CourseDetailPage extends StatelessWidget {
   final Course course;
   final bool isTeacherMode;
 
-  String get _courseId => course.id ?? course.title.replaceAll('/', '_');
+  String get _courseId => course.storageId;
 
   Future<void> _saveLearningProgress({
     required CourseLesson lesson,

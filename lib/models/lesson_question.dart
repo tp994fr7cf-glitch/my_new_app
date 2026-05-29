@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-import 'lesson_note.dart';
+import '../utils/firestore_parsing.dart';
+import 'lesson_interaction_constants.dart';
 
 enum LessonQuestionVisibility { teacherOnly, public }
 
@@ -36,7 +37,7 @@ class LessonQuestion {
     this.status = lessonQuestionStatusOpen,
     this.isDeleted = false,
     this.deletedAt,
-    this.moderationStatus = lessonNoteModerationVisible,
+    this.moderationStatus = lessonInteractionModerationVisible,
     this.answerCount = 0,
   });
 
@@ -66,7 +67,7 @@ class LessonQuestion {
 
   bool get isPublic => visibility == LessonQuestionVisibility.public;
   bool get isTeacherHidden =>
-      moderationStatus == lessonNoteModerationHiddenByTeacher;
+      moderationStatus == lessonInteractionModerationHiddenByTeacher;
 
   factory LessonQuestion.fromFirestore(
     DocumentSnapshot<Map<String, dynamic>> doc,
@@ -95,7 +96,7 @@ class LessonQuestion {
       target: targetText == lessonQuestionTargetEveryone
           ? LessonQuestionTarget.everyone
           : LessonQuestionTarget.teacher,
-      attachmentTypes: _stringList(data['attachmentTypes']),
+      attachmentTypes: parseStringList(data['attachmentTypes']),
       quotedNoteId: data['quotedNoteId'] as String?,
       quotedNoteTitle: data['quotedNoteTitle'] as String?,
       quotedNoteBody: data['quotedNoteBody'] as String?,
@@ -105,7 +106,8 @@ class LessonQuestion {
       isDeleted: data['isDeleted'] == true,
       deletedAt: data['deletedAt'] as Timestamp?,
       moderationStatus:
-          data['moderationStatus'] as String? ?? lessonNoteModerationVisible,
+          data['moderationStatus'] as String? ??
+          lessonInteractionModerationVisible,
       answerCount: (data['answerCount'] as num?)?.toInt() ?? 0,
     );
   }
@@ -133,7 +135,7 @@ class LessonQuestionAnswer {
     this.updatedAt,
     this.isDeleted = false,
     this.deletedAt,
-    this.moderationStatus = lessonNoteModerationVisible,
+    this.moderationStatus = lessonInteractionModerationVisible,
   });
 
   final String? id;
@@ -170,7 +172,7 @@ class LessonQuestionAnswer {
       authorDisplayName: data['authorDisplayName'] as String?,
       authorRole: data['authorRole'] as String? ?? 'student',
       body: data['body'] as String? ?? '',
-      attachmentTypes: _stringList(data['attachmentTypes']),
+      attachmentTypes: parseStringList(data['attachmentTypes']),
       parentCommentId: data['parentCommentId'] as String?,
       parentCommentType: data['parentCommentType'] as String?,
       replyToAuthorId: data['replyToAuthorId'] as String?,
@@ -184,7 +186,8 @@ class LessonQuestionAnswer {
       isDeleted: data['isDeleted'] == true,
       deletedAt: data['deletedAt'] as Timestamp?,
       moderationStatus:
-          data['moderationStatus'] as String? ?? lessonNoteModerationVisible,
+          data['moderationStatus'] as String? ??
+          lessonInteractionModerationVisible,
     );
   }
 }
@@ -206,18 +209,5 @@ bool lessonQuestionMatchesQuery(LessonQuestion question, String query) {
 List<LessonQuestion> sortLessonQuestionsByUpdatedAt(
   List<LessonQuestion> questions,
 ) {
-  return [...questions]..sort((a, b) {
-    final aUpdatedAt =
-        a.updatedAt?.toDate() ?? DateTime.fromMillisecondsSinceEpoch(0);
-    final bUpdatedAt =
-        b.updatedAt?.toDate() ?? DateTime.fromMillisecondsSinceEpoch(0);
-    return bUpdatedAt.compareTo(aUpdatedAt);
-  });
-}
-
-List<String> _stringList(Object? value) {
-  if (value is! List) {
-    return const [];
-  }
-  return value.whereType<String>().toList();
+  return sortByUpdatedAt(questions, (question) => question.updatedAt);
 }

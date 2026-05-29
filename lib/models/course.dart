@@ -33,6 +33,8 @@ class Course {
   final List<CourseLesson> lessons;
   final List<LessonEvent> lessonEvents;
 
+  String get storageId => id ?? title.replaceAll('/', '_');
+
   factory Course.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     return Course.fromMap(doc.data() ?? {}, id: doc.id);
   }

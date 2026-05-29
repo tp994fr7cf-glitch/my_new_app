@@ -1,5 +1,12 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../utils/firestore_parsing.dart';
+import 'lesson_interaction_constants.dart';
+export 'lesson_interaction_constants.dart'
+    show
+        lessonInteractionModerationHiddenByTeacher,
+        lessonInteractionModerationVisible;
+
 enum LessonNoteVisibility { private, public }
 
 enum LessonNotePublicSort { newest, popular }
@@ -9,8 +16,9 @@ const String lessonNoteVisibilityPublic = 'public';
 const String lessonNoteAttachmentPdf = 'pdf';
 const String lessonNoteAttachmentImage = 'image';
 const String lessonNoteAttachmentAudio = 'audio';
-const String lessonNoteModerationVisible = 'visible';
-const String lessonNoteModerationHiddenByTeacher = 'hiddenByTeacher';
+const String lessonNoteModerationVisible = lessonInteractionModerationVisible;
+const String lessonNoteModerationHiddenByTeacher =
+    lessonInteractionModerationHiddenByTeacher;
 
 class LessonNoteFolder {
   const LessonNoteFolder({
@@ -133,11 +141,11 @@ class LessonNote {
       visibility: visibilityText == lessonNoteVisibilityPublic
           ? LessonNoteVisibility.public
           : LessonNoteVisibility.private,
-      tags: _stringList(data['tags']),
-      attachmentTypes: _stringList(attachmentData),
+      tags: parseStringList(data['tags']),
+      attachmentTypes: parseStringList(attachmentData),
       hasAudioAttachment:
           data['hasAudioAttachment'] == true ||
-          _stringList(attachmentData).contains(lessonNoteAttachmentAudio),
+          parseStringList(attachmentData).contains(lessonNoteAttachmentAudio),
       sourceNoteId: data['sourceNoteId'] as String?,
       sourceAuthorId: data['sourceAuthorId'] as String?,
       isCopied: data['isCopied'] == true,
@@ -193,13 +201,7 @@ bool lessonNoteMatchesQuery(LessonNote note, String query) {
 }
 
 List<LessonNote> sortLessonNotesByUpdatedAt(List<LessonNote> notes) {
-  return [...notes]..sort((a, b) {
-    final aUpdatedAt =
-        a.updatedAt?.toDate() ?? DateTime.fromMillisecondsSinceEpoch(0);
-    final bUpdatedAt =
-        b.updatedAt?.toDate() ?? DateTime.fromMillisecondsSinceEpoch(0);
-    return bUpdatedAt.compareTo(aUpdatedAt);
-  });
+  return sortByUpdatedAt(notes, (note) => note.updatedAt);
 }
 
 List<LessonNote> sortPublicLessonNotes(
@@ -217,11 +219,9 @@ List<LessonNote> sortPublicLessonNotes(
         if (popularityCompare != 0) {
           return popularityCompare;
         }
-        final aUpdatedAt =
-            a.updatedAt?.toDate() ?? DateTime.fromMillisecondsSinceEpoch(0);
-        final bUpdatedAt =
-            b.updatedAt?.toDate() ?? DateTime.fromMillisecondsSinceEpoch(0);
-        return bUpdatedAt.compareTo(aUpdatedAt);
+        return timestampOrEpoch(b.updatedAt).compareTo(
+          timestampOrEpoch(a.updatedAt),
+        );
       }),
   };
 }
@@ -233,9 +233,3 @@ int _lessonNotePopularityScore(LessonNote note) {
       note.copyCount * 20;
 }
 
-List<String> _stringList(Object? value) {
-  if (value is! List) {
-    return const [];
-  }
-  return value.whereType<String>().toList();
-}

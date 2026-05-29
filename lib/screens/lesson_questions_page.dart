@@ -7,6 +7,8 @@ import '../models/comment_identity.dart';
 import '../models/course.dart';
 import '../models/lesson_note.dart';
 import '../models/lesson_question.dart';
+import '../services/lesson_interaction_service.dart';
+import '../utils/firestore_parsing.dart';
 
 class LessonQuestionsPanel extends StatefulWidget {
   const LessonQuestionsPanel({
@@ -36,9 +38,10 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
   String? _message;
   LessonQuestion? _editingQuestion;
   LessonQuestion? _selectedQuestion;
+  final LessonInteractionService _lessonInteractionService =
+      const LessonInteractionService();
 
-  String get _courseId =>
-      widget.course.id ?? widget.course.title.replaceAll('/', '_');
+  String get _courseId => widget.course.storageId;
 
   String? get _currentUserId =>
       Firebase.apps.isEmpty ? null : FirebaseAuth.instance.currentUser?.uid;
@@ -108,17 +111,11 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
   }
 
   Stream<bool> _questionPublicPlatformEnabledStream() {
-    if (Firebase.apps.isEmpty) {
-      return Stream.value(true);
-    }
-    return FirebaseFirestore.instance
-        .collection('lessonInteractionSettings')
-        .doc('${_courseId}_${widget.lessonNumber}')
-        .snapshots()
-        .map((snapshot) {
-          final data = snapshot.data();
-          return data == null || data['lessonQuestionsPublicEnabled'] != false;
-        });
+    return _lessonInteractionService.publicFeatureEnabledStream(
+      courseId: _courseId,
+      lessonNumber: widget.lessonNumber,
+      fieldName: LessonInteractionService.lessonQuestionsPublicEnabledField,
+    );
   }
 
   Stream<List<LessonNote>> _quotableNotesStream() {
@@ -141,19 +138,11 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
   }
 
   Future<bool> _isQuestionPublicPlatformEnabled() async {
-    if (Firebase.apps.isEmpty) {
-      return true;
-    }
-    try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('lessonInteractionSettings')
-          .doc('${_courseId}_${widget.lessonNumber}')
-          .get();
-      final data = snapshot.data();
-      return data == null || data['lessonQuestionsPublicEnabled'] != false;
-    } on FirebaseException {
-      return true;
-    }
+    return _lessonInteractionService.isPublicFeatureEnabled(
+      courseId: _courseId,
+      lessonNumber: widget.lessonNumber,
+      fieldName: LessonInteractionService.lessonQuestionsPublicEnabledField,
+    );
   }
 
   void _showMessage(String message) {
@@ -220,11 +209,13 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
         'quotedNoteTitle': draft.quotedNoteTitle,
         'quotedNoteBody': draft.quotedNoteBody,
         'status': lessonQuestionStatusOpen,
-        'answerCount': 0,
         'isDeleted': false,
         'moderationStatus': lessonNoteModerationVisible,
         'updatedAt': now,
-        if (draft.questionId == null) 'createdAt': now,
+        if (draft.questionId == null) ...{
+          'answerCount': 0,
+          'createdAt': now,
+        },
       };
       final batch = firestore.batch()
         ..set(questionRef, data, SetOptions(merge: true));
@@ -315,11 +306,9 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
           .where((answer) => !answer.isDeleted)
           .toList();
       answers.sort((a, b) {
-        final aCreatedAt =
-            a.createdAt?.toDate() ?? DateTime.fromMillisecondsSinceEpoch(0);
-        final bCreatedAt =
-            b.createdAt?.toDate() ?? DateTime.fromMillisecondsSinceEpoch(0);
-        return aCreatedAt.compareTo(bCreatedAt);
+        return timestampOrEpoch(a.createdAt).compareTo(
+          timestampOrEpoch(b.createdAt),
+        );
       });
       return answers;
     });
@@ -380,7 +369,10 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
     await batch.commit();
   }
 
-  Future<void> _deleteAnswer(LessonQuestionAnswer answer) async {
+  Future<void> _deleteAnswer(
+    LessonQuestion question,
+    LessonQuestionAnswer answer,
+  ) async {
     if (Firebase.apps.isEmpty || answer.id == null) {
       return;
     }
@@ -389,6 +381,11 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
       return;
     }
     final firestore = FirebaseFirestore.instance;
+    final deletedData = {
+      'isDeleted': true,
+      'deletedAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
     final batch = firestore.batch()
       ..set(
         firestore
@@ -396,22 +393,16 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
             .doc(user.uid)
             .collection('lessonQuestionAnswers')
             .doc(answer.id),
-        {
-          'isDeleted': true,
-          'deletedAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      )
-      ..set(
-        firestore.collection('publicLessonQuestionAnswers').doc(answer.id),
-        {
-          'isDeleted': true,
-          'deletedAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
-        },
+        deletedData,
         SetOptions(merge: true),
       );
+    if (question.isPublic) {
+      batch.set(
+        firestore.collection('publicLessonQuestionAnswers').doc(answer.id),
+        deletedData,
+        SetOptions(merge: true),
+      );
+    }
     await batch.commit();
   }
 
@@ -449,7 +440,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
             setState(() => _selectedQuestion = null);
           }
         },
-        onDeleteAnswer: _deleteAnswer,
+        onDeleteAnswer: (answer) => _deleteAnswer(selectedQuestion, answer),
       );
     }
     final editingQuestion = _editingQuestion;

@@ -5,13 +5,15 @@ import 'package:flutter/material.dart';
 import '../models/course.dart';
 import '../models/lesson_note.dart';
 import '../models/lesson_question.dart';
+import '../services/lesson_interaction_service.dart';
 
 class TeacherInteractionManagePage extends StatelessWidget {
   const TeacherInteractionManagePage({super.key, required this.course});
 
   final Course course;
+  static const _lessonInteractionService = LessonInteractionService();
 
-  String get _courseId => course.id ?? course.title.replaceAll('/', '_');
+  String get _courseId => course.storageId;
 
   Future<void> _setPlatformEnabled({
     required int lessonNumber,
@@ -23,7 +25,12 @@ class TeacherInteractionManagePage extends StatelessWidget {
     }
     await FirebaseFirestore.instance
         .collection('lessonInteractionSettings')
-        .doc('${_courseId}_$lessonNumber')
+        .doc(
+          _lessonInteractionService.settingDocumentId(
+            courseId: _courseId,
+            lessonNumber: lessonNumber,
+          ),
+        )
         .set({
           'courseId': _courseId,
           'lessonNumber': lessonNumber,
@@ -34,36 +41,16 @@ class TeacherInteractionManagePage extends StatelessWidget {
         }, SetOptions(merge: true));
   }
 
-  Future<void> _setPublicNoteModeration(
-    LessonNote note,
-    String moderationStatus,
-  ) async {
-    if (Firebase.apps.isEmpty || note.id == null) {
-      return;
-    }
-    await FirebaseFirestore.instance
-        .collection('publicLessonNotes')
-        .doc(note.id)
-        .set({
-          'moderationStatus': moderationStatus,
-          'moderatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-  }
-
-  Future<void> _setPublicQuestionModeration(
-    LessonQuestion question,
-    String moderationStatus,
-  ) async {
-    if (Firebase.apps.isEmpty || question.id == null) {
-      return;
-    }
-    await FirebaseFirestore.instance
-        .collection('publicLessonQuestions')
-        .doc(question.id)
-        .set({
-          'moderationStatus': moderationStatus,
-          'moderatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
+  Future<void> _setPublicModeration({
+    required String collectionPath,
+    required String? documentId,
+    required String moderationStatus,
+  }) async {
+    await _lessonInteractionService.setPublicModeration(
+      collectionPath: collectionPath,
+      documentId: documentId,
+      moderationStatus: moderationStatus,
+    );
   }
 
   Stream<List<LessonNote>> _publicNotesStream() {
@@ -177,9 +164,10 @@ class TeacherInteractionManagePage extends StatelessWidget {
                             '${note.isTeacherHidden ? ' / 非公開化済み' : ''}',
                           ),
                           trailing: TextButton(
-                            onPressed: () => _setPublicNoteModeration(
-                              note,
-                              note.isTeacherHidden
+                            onPressed: () => _setPublicModeration(
+                              collectionPath: 'publicLessonNotes',
+                              documentId: note.id,
+                              moderationStatus: note.isTeacherHidden
                                   ? lessonNoteModerationVisible
                                   : lessonNoteModerationHiddenByTeacher,
                             ),
@@ -217,9 +205,10 @@ class TeacherInteractionManagePage extends StatelessWidget {
                             '${question.isTeacherHidden ? ' / 非公開化済み' : ''}',
                           ),
                           trailing: TextButton(
-                            onPressed: () => _setPublicQuestionModeration(
-                              question,
-                              question.isTeacherHidden
+                            onPressed: () => _setPublicModeration(
+                              collectionPath: 'publicLessonQuestions',
+                              documentId: question.id,
+                              moderationStatus: question.isTeacherHidden
                                   ? lessonNoteModerationVisible
                                   : lessonNoteModerationHiddenByTeacher,
                             ),

@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import '../models/course.dart';
 import '../models/lesson_note.dart';
+import '../services/lesson_interaction_service.dart';
 
 class LessonNotesPage extends StatelessWidget {
   const LessonNotesPage({
@@ -74,9 +75,10 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   List<LessonNoteFolder> _editingFolders = const [];
   bool _isEditingNote = false;
   LessonNotePublicSort _publicSort = LessonNotePublicSort.newest;
+  final LessonInteractionService _lessonInteractionService =
+      const LessonInteractionService();
 
-  String get _courseId =>
-      widget.course.id ?? widget.course.title.replaceAll('/', '_');
+  String get _courseId => widget.course.storageId;
 
   @override
   void dispose() {
@@ -169,33 +171,19 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   }
 
   Stream<bool> _notePublicPlatformEnabledStream() {
-    if (Firebase.apps.isEmpty) {
-      return Stream.value(true);
-    }
-    return FirebaseFirestore.instance
-        .collection('lessonInteractionSettings')
-        .doc('${_courseId}_${widget.lessonNumber}')
-        .snapshots()
-        .map((snapshot) {
-          final data = snapshot.data();
-          return data == null || data['lessonNotesPublicEnabled'] != false;
-        });
+    return _lessonInteractionService.publicFeatureEnabledStream(
+      courseId: _courseId,
+      lessonNumber: widget.lessonNumber,
+      fieldName: LessonInteractionService.lessonNotesPublicEnabledField,
+    );
   }
 
   Future<bool> _isNotePublicPlatformEnabled() async {
-    if (Firebase.apps.isEmpty) {
-      return true;
-    }
-    try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('lessonInteractionSettings')
-          .doc('${_courseId}_${widget.lessonNumber}')
-          .get();
-      final data = snapshot.data();
-      return data == null || data['lessonNotesPublicEnabled'] != false;
-    } on FirebaseException {
-      return true;
-    }
+    return _lessonInteractionService.isPublicFeatureEnabled(
+      courseId: _courseId,
+      lessonNumber: widget.lessonNumber,
+      fieldName: LessonInteractionService.lessonNotesPublicEnabledField,
+    );
   }
 
   void _showMessage(String message) {

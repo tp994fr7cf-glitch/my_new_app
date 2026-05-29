@@ -1,3 +1,4 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:my_new_app/models/comment_identity.dart';
 import 'package:my_new_app/models/lesson_question.dart';
@@ -46,6 +47,41 @@ void main() {
         ).color,
         firstStudent.color,
       );
+    });
+
+    test('sorts questions by updatedAt descending', () {
+      final older = LessonQuestion(
+        id: 'older',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '古い質問',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: const [],
+        updatedAt: Timestamp.fromDate(DateTime(2026)),
+      );
+      final newer = LessonQuestion(
+        id: 'newer',
+        authorId: 'user-b',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '新しい質問',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: const [],
+        updatedAt: Timestamp.fromDate(DateTime(2026, 1, 2)),
+      );
+
+      expect(sortLessonQuestionsByUpdatedAt([older, newer]).first.id, 'newer');
     });
   });
 }
