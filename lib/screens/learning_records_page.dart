@@ -17,6 +17,7 @@ class LearningRecordsPage extends StatefulWidget {
     this.quizAttemptsStream,
     this.lessonNotesStream,
     this.lessonQuestionsStream,
+    this.lessonQuestionAnswersStream,
   });
 
   final User user;
@@ -25,6 +26,7 @@ class LearningRecordsPage extends StatefulWidget {
   final Stream<List<Map<String, dynamic>>>? quizAttemptsStream;
   final Stream<List<LessonNote>>? lessonNotesStream;
   final Stream<List<LessonQuestion>>? lessonQuestionsStream;
+  final Stream<List<LessonQuestionAnswer>>? lessonQuestionAnswersStream;
 
   @override
   State<LearningRecordsPage> createState() => _LearningRecordsPageState();
@@ -149,6 +151,29 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
         });
   }
 
+  Stream<List<LessonQuestionAnswer>> _lessonQuestionAnswersStream() {
+    final providedStream = widget.lessonQuestionAnswersStream;
+    if (providedStream != null) {
+      return providedStream;
+    }
+    if (Firebase.apps.isEmpty) {
+      return Stream.value(const []);
+    }
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(widget.user.uid)
+        .collection('lessonQuestionAnswers')
+        .orderBy('updatedAt', descending: true)
+        .limit(100)
+        .snapshots()
+        .map((snapshot) {
+          return snapshot.docs
+              .map(LessonQuestionAnswer.fromFirestore)
+              .where((answer) => !answer.isDeleted)
+              .toList();
+        });
+  }
+
   List<Map<String, dynamic>> _filterByPeriod(
     List<Map<String, dynamic>> records,
     String timestampField,
@@ -259,7 +284,9 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
               ),
               _RecordType.comments => _LessonQuestionRecordsList(
                 questionsStream: _lessonQuestionsStream(),
+                answersStream: _lessonQuestionAnswersStream(),
                 filterQuestions: _filterQuestions,
+                filterAnswers: _filterAnswers,
               ),
             },
           ],
@@ -299,6 +326,23 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
         return true;
       }
       return lessonQuestionMatchesQuery(question, query);
+    }).toList();
+  }
+
+  List<LessonQuestionAnswer> _filterAnswers(List<LessonQuestionAnswer> answers) {
+    final since = _periodStart();
+    final query = _query.trim().toLowerCase();
+    return answers.where((answer) {
+      if (since != null) {
+        final updatedAt = answer.updatedAt ?? answer.createdAt;
+        if (updatedAt == null || updatedAt.toDate().isBefore(since)) {
+          return false;
+        }
+      }
+      if (query.isEmpty) {
+        return true;
+      }
+      return lessonQuestionAnswerMatchesQuery(answer, query);
     }).toList();
   }
 }
@@ -617,29 +661,44 @@ class _LessonNoteRecordsList extends StatelessWidget {
 class _LessonQuestionRecordsList extends StatelessWidget {
   const _LessonQuestionRecordsList({
     required this.questionsStream,
+    required this.answersStream,
     required this.filterQuestions,
+    required this.filterAnswers,
   });
 
   final Stream<List<LessonQuestion>> questionsStream;
+  final Stream<List<LessonQuestionAnswer>> answersStream;
   final List<LessonQuestion> Function(List<LessonQuestion> questions)
   filterQuestions;
+  final List<LessonQuestionAnswer> Function(List<LessonQuestionAnswer> answers)
+  filterAnswers;
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<List<LessonQuestion>>(
       stream: questionsStream,
-      builder: (context, snapshot) {
-        final questions = filterQuestions(snapshot.data ?? const []);
-        if (questions.isEmpty) {
-          return const _EmptyRecordCard(message: 'この期間の質問コメントはまだありません。');
-        }
-        return Column(
-          children: [
-            for (final question in questions) ...[
-              _LessonQuestionRecordCard(question: question),
-              const SizedBox(height: 12),
-            ],
-          ],
+      builder: (context, questionSnapshot) {
+        return StreamBuilder<List<LessonQuestionAnswer>>(
+          stream: answersStream,
+          builder: (context, answerSnapshot) {
+            final questions = filterQuestions(questionSnapshot.data ?? const []);
+            final answers = filterAnswers(answerSnapshot.data ?? const []);
+            if (questions.isEmpty && answers.isEmpty) {
+              return const _EmptyRecordCard(message: 'この期間の質問コメントはまだありません。');
+            }
+            return Column(
+              children: [
+                for (final question in questions) ...[
+                  _LessonQuestionRecordCard(question: question),
+                  const SizedBox(height: 12),
+                ],
+                for (final answer in answers) ...[
+                  _LessonAnswerRecordCard(answer: answer),
+                  const SizedBox(height: 12),
+                ],
+              ],
+            );
+          },
         );
       },
     );
@@ -739,6 +798,135 @@ class _LessonQuestionRecordCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _LessonAnswerRecordCard extends StatelessWidget {
+  const _LessonAnswerRecordCard({required this.answer});
+
+  final LessonQuestionAnswer answer;
+
+  Future<LessonQuestion?> _loadParentQuestion() async {
+    if (Firebase.apps.isEmpty || answer.questionId.isEmpty) {
+      return null;
+    }
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('publicLessonQuestions')
+          .doc(answer.questionId)
+          .get();
+      if (!snapshot.exists) {
+        return null;
+      }
+      final question = LessonQuestion.fromFirestore(snapshot);
+      return question.isDeleted ? null : question;
+    } on FirebaseException {
+      return null;
+    }
+  }
+
+  Future<void> _showDetails(BuildContext context) {
+    return showDialog<void>(
+      context: context,
+      builder: (context) {
+        return FutureBuilder<LessonQuestion?>(
+          future: _loadParentQuestion(),
+          builder: (context, snapshot) {
+            final parentQuestion = snapshot.data;
+            return AlertDialog(
+              title: const Text('回答コメントの記録'),
+              content: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'あなたの回答',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    SelectableText(answer.body),
+                    const SizedBox(height: 16),
+                    const Text(
+                      '返信先の控え',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    SelectableText(_replyPreviewText(answer)),
+                    const SizedBox(height: 16),
+                    const Text(
+                      '元の質問',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    if (snapshot.connectionState == ConnectionState.waiting)
+                      const Text('確認中です...')
+                    else if (parentQuestion == null)
+                      const Text('元の質問は削除済み、または現在は表示できません。')
+                    else
+                      SelectableText(parentQuestion.body),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('閉じる'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('回答コメント', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            Text(
+              '${answer.courseTitle} / レッスン${answer.lessonNumber}: ${answer.lessonTitle}',
+            ),
+            const SizedBox(height: 4),
+            Text('投稿日: ${_formatTimestamp(answer.createdAt ?? answer.updatedAt)}'),
+            const SizedBox(height: 8),
+            Text(answer.body),
+            const SizedBox(height: 8),
+            Text('返信先: ${_replyPreviewText(answer)}'),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: () => _showDetails(context),
+                child: const Text('詳しく見る'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _replyPreviewText(LessonQuestionAnswer answer) {
+  final displayName = answer.replyToDisplayName?.trim();
+  final bodyPreview = answer.replyToBodyPreview?.trim();
+  if ((displayName ?? '').isEmpty && (bodyPreview ?? '').isEmpty) {
+    return '返信先の控えはありません。';
+  }
+  if ((displayName ?? '').isEmpty) {
+    return bodyPreview!;
+  }
+  if ((bodyPreview ?? '').isEmpty) {
+    return '$displayName への返信';
+  }
+  return '$displayName の「$bodyPreview」への返信';
 }
 
 Course _courseFromNote(LessonNote note) {

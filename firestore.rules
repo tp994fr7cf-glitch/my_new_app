@@ -318,7 +318,7 @@ service cloud.firestore {
       match /lessonQuestions/{questionId} {
         allow read: if isOwner(userId);
 
-        allow create, update: if isOwner(userId)
+        allow create: if isOwner(userId)
           && request.resource.data.userId == userId
           && request.resource.data.authorId == userId
           && request.resource.data.courseId is string
@@ -332,6 +332,21 @@ service cloud.firestore {
           && request.resource.data.attachmentTypes is list
           && request.resource.data.isDeleted is bool
           && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
+
+        allow update: if isOwner(userId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'body',
+            'updatedAt'
+          ])
+          && request.resource.data.body is string;
+
+        allow update: if isOwner(userId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'isDeleted',
+            'deletedAt',
+            'updatedAt'
+          ])
+          && request.resource.data.isDeleted == true;
       }
 
       match /lessonQuestionAnswers/{answerId} {
@@ -457,9 +472,12 @@ service cloud.firestore {
         && request.resource.data.moderationStatus == 'visible';
 
       allow update: if signedIn()
-        && validPublicLessonQuestionOwnerWrite()
         && resource.data.authorId == request.auth.uid
-        && request.resource.data.moderationStatus == resource.data.moderationStatus;
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'body',
+          'updatedAt'
+        ])
+        && request.resource.data.body is string;
 
       allow update: if signedIn()
         && resource.data.authorId == request.auth.uid
@@ -494,6 +512,15 @@ service cloud.firestore {
           && lessonQuestionsPublicEnabled(get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.interactionSettingId);
       }
 
+      function publicParentQuestionAllowsLearnerAnswers(questionId) {
+        return exists(/databases/$(database)/documents/publicLessonQuestions/$(questionId))
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.studentVisibility == 'public'
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.moderationStatus == 'visible'
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.isDeleted == false
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.target == 'everyone'
+          && lessonQuestionsPublicEnabled(get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.interactionSettingId);
+      }
+
       function isPublicParentQuestionAuthor() {
         return exists(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId))
           && get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.authorId == request.auth.uid
@@ -511,6 +538,7 @@ service cloud.firestore {
           || isPublicParentQuestionAuthor()
           || isCourseInstructor(resource.data.courseId)
           || (publicParentQuestionVisible()
+            && get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.target == 'everyone'
             && resource.data.moderationStatus == 'visible'
             && resource.data.isDeleted == false));
 
@@ -543,7 +571,8 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.studentVisibility == 'public'
         && get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.moderationStatus == 'visible'
         && get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.isDeleted == false
-        && lessonQuestionsPublicEnabled(get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.interactionSettingId);
+        && (publicParentQuestionAllowsLearnerAnswers(request.resource.data.questionId)
+          || isCourseInstructor(get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.courseId));
 
       allow update: if signedIn()
         && isCourseInstructor(resource.data.courseId)

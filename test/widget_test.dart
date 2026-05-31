@@ -243,6 +243,7 @@ void main() {
           quizAttemptsStream: const Stream.empty(),
           lessonNotesStream: Stream.value([note]),
           lessonQuestionsStream: Stream.value([question]),
+          lessonQuestionAnswersStream: const Stream.empty(),
         ),
       ),
     );
@@ -257,6 +258,56 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('移項の質問'), findsOneWidget);
     expect(find.text('先生にだけ公開'), findsOneWidget);
+  });
+
+  testWidgets('Learning records page shows answer record previews', (
+    WidgetTester tester,
+  ) async {
+    final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
+    final answer = LessonQuestionAnswer(
+      id: 'answer-a',
+      questionId: 'question-a',
+      authorId: 'user-a',
+      authorName: '学習者',
+      authorRole: 'student',
+      courseId: 'course-a',
+      courseTitle: '数学',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式',
+      body: '両辺に同じ計算をするからです。',
+      attachmentTypes: const [],
+      replyToDisplayName: '学習者2',
+      replyToBodyPreview: 'なぜ符号が変わりますか？',
+      createdAt: now,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LearningRecordsPage(
+          user: _FakeUser(),
+          lessonViewSegmentsStream: const Stream.empty(),
+          learningEventsStream: const Stream.empty(),
+          quizAttemptsStream: const Stream.empty(),
+          lessonNotesStream: const Stream.empty(),
+          lessonQuestionsStream: const Stream.empty(),
+          lessonQuestionAnswersStream: Stream.value([answer]),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('質問コメント'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('回答コメント'), findsOneWidget);
+    expect(find.text('両辺に同じ計算をするからです。'), findsOneWidget);
+    expect(find.text('返信先: 学習者2 の「なぜ符号が変わりますか？」への返信'), findsOneWidget);
+
+    await tester.tap(find.text('詳しく見る'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('回答コメントの記録'), findsOneWidget);
+    expect(find.text('元の質問は削除済み、または現在は表示できません。'), findsOneWidget);
   });
 
   testWidgets('Learning records page shows lesson cycle sessions', (

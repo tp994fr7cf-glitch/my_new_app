@@ -22,6 +22,8 @@ class LessonQuestionsPanel extends StatefulWidget {
     this.publicQuestionsStream,
     this.isEmbedded = false,
     this.isTeacherPreview = false,
+    this.initialEditingQuestion,
+    this.initialSelectedQuestion,
   });
 
   final Course course;
@@ -31,6 +33,8 @@ class LessonQuestionsPanel extends StatefulWidget {
   final Stream<List<LessonQuestion>>? publicQuestionsStream;
   final bool isEmbedded;
   final bool isTeacherPreview;
+  final LessonQuestion? initialEditingQuestion;
+  final LessonQuestion? initialSelectedQuestion;
 
   @override
   State<LessonQuestionsPanel> createState() => _LessonQuestionsPanelState();
@@ -61,6 +65,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
   @override
   void initState() {
     super.initState();
+    _editingQuestion = widget.initialEditingQuestion;
+    _selectedQuestion = widget.initialSelectedQuestion;
     _listenToActiveRole();
   }
 
@@ -129,6 +135,12 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
     return question.authorRole == activeRole;
   }
 
+  String get _interactionSettingId =>
+      _lessonInteractionService.settingDocumentId(
+        courseId: _courseId,
+        lessonNumber: widget.lessonNumber,
+      );
+
   Stream<List<LessonQuestion>> _publicQuestionsStream() {
     final provided = widget.publicQuestionsStream;
     if (provided != null) {
@@ -141,11 +153,15 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
         .collection('publicLessonQuestions')
         .where('courseId', isEqualTo: _courseId)
         .where('lessonNumber', isEqualTo: widget.lessonNumber)
+        .where('interactionSettingId', isEqualTo: _interactionSettingId)
         .where('studentVisibility', isEqualTo: lessonQuestionVisibilityPublic)
         .where('moderationStatus', isEqualTo: lessonNoteModerationVisible)
         .where('isDeleted', isEqualTo: false)
-        .snapshots()
+        .snapshots(includeMetadataChanges: true)
         .map((snapshot) {
+          if (snapshot.metadata.isFromCache) {
+            return const <LessonQuestion>[];
+          }
           return sortLessonQuestionsByUpdatedAt(
             snapshot.docs
                 .map(LessonQuestion.fromFirestore)
@@ -248,10 +264,37 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
                 .collection('lessonQuestions')
                 .doc(draft.questionId);
       final questionId = questionRef.id;
+      if (draft.questionId != null) {
+        final now = FieldValue.serverTimestamp();
+        final updateData = {
+          'body': draft.body,
+          'updatedAt': now,
+        };
+        final batch = firestore.batch()
+          ..set(questionRef, updateData, SetOptions(merge: true));
+        final publicRef = firestore
+            .collection('publicLessonQuestions')
+            .doc(questionId);
+        final publicSnapshot = await publicRef.get();
+        if (publicSnapshot.exists) {
+          batch.set(publicRef, updateData, SetOptions(merge: true));
+        }
+        await batch.commit();
+        if (mounted) {
+          setState(() {
+            _editingQuestion = null;
+          });
+        }
+        _showMessage('質問本文を更新しました。');
+        return true;
+      }
       final platformEnabled = await _isQuestionPublicPlatformEnabled();
       final requestedPublic =
           draft.target == LessonQuestionTarget.everyone ||
           draft.visibility == LessonQuestionVisibility.public;
+      final target = draft.target == LessonQuestionTarget.everyone
+          ? lessonQuestionTargetEveryone
+          : lessonQuestionTargetTeacher;
       final visibility = requestedPublic && platformEnabled
           ? lessonQuestionVisibilityPublic
           : lessonQuestionVisibilityTeacherOnly;
@@ -269,9 +312,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
         'title': '',
         'body': draft.body,
         'visibility': visibility,
-        'target': draft.target == LessonQuestionTarget.everyone
-            ? lessonQuestionTargetEveryone
-            : lessonQuestionTargetTeacher,
+        'studentVisibility': visibility,
+        'target': target,
         'attachmentTypes': draft.attachmentTypes,
         'quotedNoteId': draft.quotedNoteId,
         'quotedNoteTitle': draft.quotedNoteTitle,
@@ -302,10 +344,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
         batch.set(publicRef, {
           ...data,
           'questionId': questionId,
-          'interactionSettingId': _lessonInteractionService.settingDocumentId(
-            courseId: _courseId,
-            lessonNumber: widget.lessonNumber,
-          ),
+          'interactionSettingId': _interactionSettingId,
           'visibility': lessonQuestionVisibilityPublic,
           'studentVisibility': visibility,
           'moderationStatus': publicModerationStatus,
@@ -372,7 +411,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
   }
 
   Stream<List<LessonQuestionAnswer>> _answersStream(LessonQuestion question) {
-    if (Firebase.apps.isEmpty || question.id == null) {
+    if (Firebase.apps.isEmpty || question.id == null || question.isDeleted) {
       return Stream.value(const []);
     }
     final user = FirebaseAuth.instance.currentUser;
@@ -383,12 +422,17 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
         ? FirebaseFirestore.instance
               .collection('publicLessonQuestionAnswers')
               .where('questionId', isEqualTo: question.id)
+              .where('moderationStatus', isEqualTo: lessonNoteModerationVisible)
+              .where('isDeleted', isEqualTo: false)
         : FirebaseFirestore.instance
               .collection('users')
               .doc(user.uid)
               .collection('lessonQuestionAnswers')
               .where('questionId', isEqualTo: question.id);
-    return query.snapshots().map((snapshot) {
+    return query.snapshots(includeMetadataChanges: true).map((snapshot) {
+      if (question.isPublic && snapshot.metadata.isFromCache) {
+        return const <LessonQuestionAnswer>[];
+      }
       final answers = snapshot.docs
           .map(LessonQuestionAnswer.fromFirestore)
           .where((answer) => !answer.isDeleted)
@@ -406,7 +450,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
     LessonQuestion question,
     _LessonQuestionAnswerDraft draft,
   ) async {
-    if (Firebase.apps.isEmpty ||
+    if (!_canCurrentUserAnswerQuestion(question) ||
+        Firebase.apps.isEmpty ||
         question.id == null ||
         draft.body.trim().isEmpty) {
       return;
@@ -458,6 +503,48 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
     await batch.commit();
   }
 
+  bool _canCurrentUserAnswerQuestion(LessonQuestion question) {
+    if (_isCurrentUserTeacher) {
+      return true;
+    }
+    return question.isPubliclyVisible &&
+        question.target == LessonQuestionTarget.everyone;
+  }
+
+  Stream<LessonQuestion> _selectedQuestionStream(LessonQuestion question) {
+    if (Firebase.apps.isEmpty || question.id == null) {
+      return Stream.value(question);
+    }
+    final user = FirebaseAuth.instance.currentUser;
+    if (question.isPublic) {
+      return FirebaseFirestore.instance
+          .collection('publicLessonQuestions')
+          .doc(question.id)
+          .snapshots()
+          .map((snapshot) {
+            if (!snapshot.exists) {
+              return question;
+            }
+            return LessonQuestion.fromFirestore(snapshot);
+          });
+    }
+    if (user == null || user.uid != question.authorId) {
+      return Stream.value(question);
+    }
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('lessonQuestions')
+        .doc(question.id)
+        .snapshots()
+        .map((snapshot) {
+          if (!snapshot.exists) {
+            return question;
+          }
+          return LessonQuestion.fromFirestore(snapshot);
+        });
+  }
+
   Future<void> _deleteAnswer(
     LessonQuestion question,
     LessonQuestionAnswer answer,
@@ -499,6 +586,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
 
   @override
   Widget build(BuildContext context) {
+    final height = widget.isTeacherPreview ? 420.0 : 560.0;
     final content = DefaultTabController(
       length: 2,
       child: Card(
@@ -511,7 +599,9 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
         ),
       ),
     );
-    return widget.isEmbedded ? SizedBox(height: 560, child: content) : content;
+    return widget.isEmbedded
+        ? SizedBox(height: height, child: content)
+        : content;
   }
 
   Widget _buildContent() {
@@ -520,21 +610,33 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
     }
     final selectedQuestion = _selectedQuestion;
     if (selectedQuestion != null) {
-      return _LessonQuestionDetail(
-        question: selectedQuestion,
-        answersStream: _answersStream(selectedQuestion),
-        quotableNotesStream: _quotableNotesStream(),
-        currentUserId: _currentUserId,
-        isCurrentUserTeacher: _isCurrentUserTeacher,
-        onBack: () => setState(() => _selectedQuestion = null),
-        onSaveAnswer: (draft) => _saveAnswer(selectedQuestion, draft),
-        onDeleteQuestion: () async {
-          await _deleteQuestion(selectedQuestion);
-          if (mounted) {
-            setState(() => _selectedQuestion = null);
+      return StreamBuilder<LessonQuestion>(
+        stream: _selectedQuestionStream(selectedQuestion),
+        builder: (context, snapshot) {
+          final currentQuestion = snapshot.data ?? selectedQuestion;
+          if (currentQuestion.isDeleted) {
+            return _DeletedQuestionNotice(
+              onBack: () => setState(() => _selectedQuestion = null),
+            );
           }
+          return _LessonQuestionDetail(
+            question: currentQuestion,
+            answersStream: _answersStream(currentQuestion),
+            quotableNotesStream: _quotableNotesStream(),
+            currentUserId: _currentUserId,
+            isCurrentUserTeacher: _isCurrentUserTeacher,
+            canAnswer: _canCurrentUserAnswerQuestion(currentQuestion),
+            onBack: () => setState(() => _selectedQuestion = null),
+            onSaveAnswer: (draft) => _saveAnswer(currentQuestion, draft),
+            onDeleteQuestion: () async {
+              await _deleteQuestion(currentQuestion);
+              if (mounted) {
+                setState(() => _selectedQuestion = null);
+              }
+            },
+            onDeleteAnswer: (answer) => _deleteAnswer(currentQuestion, answer),
+          );
         },
-        onDeleteAnswer: (answer) => _deleteAnswer(selectedQuestion, answer),
       );
     }
     final editingQuestion = _editingQuestion;
@@ -787,7 +889,9 @@ class _QuestionList extends StatelessWidget {
                   authorId: question.authorId,
                   authorName: question.authorName,
                   authorDisplayName: question.authorDisplayName,
-                  authorRole: 'student',
+                  authorRole: question.authorRole,
+                  createdAt: question.createdAt,
+                  scopeLabel: _questionScopeLabel(question),
                   attachmentTypes: question.attachmentTypes,
                   quotedNoteTitle: question.quotedNoteTitle,
                   quotedNoteBody: question.quotedNoteBody,
@@ -805,12 +909,49 @@ class _QuestionList extends StatelessWidget {
   }
 }
 
+class _DeletedQuestionNotice extends StatelessWidget {
+  const _DeletedQuestionNotice({required this.onBack});
+
+  final VoidCallback onBack;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Row(
+            children: [
+              IconButton(
+                onPressed: onBack,
+                icon: const Icon(Icons.arrow_back),
+                tooltip: '質問一覧に戻る',
+              ),
+              Text('質問詳細', style: Theme.of(context).textTheme.titleMedium),
+            ],
+          ),
+        ),
+        const Expanded(
+          child: Center(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Text('この質問は削除済みのため、コメント欄では表示できません。'),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _CommentBubble extends StatelessWidget {
   const _CommentBubble({
     required this.body,
     required this.authorId,
     required this.authorName,
     required this.authorRole,
+    required this.createdAt,
+    required this.scopeLabel,
     required this.attachmentTypes,
     required this.isOwner,
     required this.isTeacher,
@@ -830,6 +971,8 @@ class _CommentBubble extends StatelessWidget {
   final String authorName;
   final String? authorDisplayName;
   final String authorRole;
+  final Timestamp? createdAt;
+  final String scopeLabel;
   final List<String> attachmentTypes;
   final String? quotedNoteTitle;
   final String? quotedNoteBody;
@@ -850,6 +993,12 @@ class _CommentBubble extends StatelessWidget {
       authorDisplayName: authorDisplayName,
       authorRole: authorRole,
     );
+    final displayName = _commentDisplayName(
+      identity: identity,
+      isOwner: isOwner,
+      authorRole: authorRole,
+    );
+    final createdAtText = _formatCommentTimestamp(createdAt);
     final canOperate = isOwner || isTeacher || onReply != null;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
@@ -865,104 +1014,135 @@ class _CommentBubble extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           Expanded(
-            child: Stack(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                Padding(
-                  padding: const EdgeInsets.only(top: 18, right: 32),
-                  child: InkWell(
-                    onTap: onTap,
-                    borderRadius: BorderRadius.circular(16),
-                    child: Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.surfaceContainerHighest,
+                Stack(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 18, right: 32),
+                      child: InkWell(
+                        onTap: onTap,
                         borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (replyToDisplayName != null) ...[
-                            _ReplyLine(
-                              displayName: replyToDisplayName!,
-                              bodyPreview: replyToBodyPreview ?? '',
-                            ),
-                            const SizedBox(height: 8),
-                          ],
-                          Text(body.isEmpty ? '本文なし' : body),
-                          if (attachmentTypes.isNotEmpty ||
-                              (quotedNoteTitle ?? '').isNotEmpty) ...[
-                            const SizedBox(height: 8),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: [
-                                for (final type in attachmentTypes)
-                                  _AttachmentPreviewChip(
-                                    label: type == lessonNoteAttachmentPdf
-                                        ? 'PDF'
-                                        : '画像',
-                                    detail: 'アップロード機能追加後に表示します。',
-                                  ),
-                                if ((quotedNoteTitle ?? '').isNotEmpty)
-                                  _AttachmentPreviewChip(
-                                    label: 'レッスンメモ',
-                                    detail:
-                                        '${quotedNoteTitle ?? '無題のメモ'}\n${quotedNoteBody ?? ''}',
-                                  ),
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (replyToDisplayName != null) ...[
+                                _ReplyLine(
+                                  displayName: replyToDisplayName!,
+                                  bodyPreview: replyToBodyPreview ?? '',
+                                ),
+                                const SizedBox(height: 8),
                               ],
+                              Text(body.isEmpty ? '本文なし' : body),
+                              if (attachmentTypes.isNotEmpty ||
+                                  (quotedNoteTitle ?? '').isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: [
+                                    for (final type in attachmentTypes)
+                                      _AttachmentPreviewChip(
+                                        label: type == lessonNoteAttachmentPdf
+                                            ? 'PDF'
+                                            : '画像',
+                                        detail: 'アップロード機能追加後に表示します。',
+                                      ),
+                                    if ((quotedNoteTitle ?? '').isNotEmpty)
+                                      _AttachmentPreviewChip(
+                                        label: 'レッスンメモ',
+                                        detail:
+                                            '${quotedNoteTitle ?? '無題のメモ'}\n${quotedNoteBody ?? ''}',
+                                      ),
+                                  ],
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: 0,
+                      right: 40,
+                      top: 0,
+                      child: Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              displayName,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.labelMedium,
                             ),
-                          ],
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            createdAtText,
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
+                          ),
                         ],
                       ),
                     ),
+                    if (canOperate)
+                      Positioned(
+                        right: 0,
+                        top: 10,
+                        child: PopupMenuButton<_CommentAction>(
+                          tooltip: 'コメント操作',
+                          onSelected: (action) {
+                            switch (action) {
+                              case _CommentAction.reply:
+                                onReply?.call();
+                              case _CommentAction.edit:
+                                onEdit?.call();
+                              case _CommentAction.delete:
+                                onDelete?.call();
+                            }
+                          },
+                          itemBuilder: (context) => [
+                            if (onReply != null)
+                              const PopupMenuItem(
+                                value: _CommentAction.reply,
+                                child: Text('返信'),
+                              ),
+                            if (isOwner && onEdit != null)
+                              const PopupMenuItem(
+                                value: _CommentAction.edit,
+                                child: Text('編集'),
+                              ),
+                            if ((isOwner || isTeacher) && onDelete != null)
+                              const PopupMenuItem(
+                                value: _CommentAction.delete,
+                                child: Text('削除'),
+                              ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  scopeLabel,
+                  textAlign: TextAlign.right,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
                 ),
-                Positioned(
-                  left: 0,
-                  top: 0,
-                  child: Text(
-                    identity.displayName,
-                    style: Theme.of(context).textTheme.labelMedium,
-                  ),
-                ),
-                if (canOperate)
-                  Positioned(
-                    right: 0,
-                    top: 10,
-                    child: PopupMenuButton<_CommentAction>(
-                      tooltip: 'コメント操作',
-                      onSelected: (action) {
-                        switch (action) {
-                          case _CommentAction.reply:
-                            onReply?.call();
-                          case _CommentAction.edit:
-                            onEdit?.call();
-                          case _CommentAction.delete:
-                            onDelete?.call();
-                        }
-                      },
-                      itemBuilder: (context) => [
-                        if (onReply != null)
-                          const PopupMenuItem(
-                            value: _CommentAction.reply,
-                            child: Text('返信'),
-                          ),
-                        if (isOwner && onEdit != null)
-                          const PopupMenuItem(
-                            value: _CommentAction.edit,
-                            child: Text('編集'),
-                          ),
-                        if ((isOwner || isTeacher) && onDelete != null)
-                          const PopupMenuItem(
-                            value: _CommentAction.delete,
-                            child: Text('削除'),
-                          ),
-                      ],
-                    ),
-                  ),
               ],
             ),
           ),
@@ -973,6 +1153,39 @@ class _CommentBubble extends StatelessWidget {
 }
 
 enum _CommentAction { reply, edit, delete }
+
+String _commentDisplayName({
+  required CommentIdentity identity,
+  required bool isOwner,
+  required String authorRole,
+}) {
+  if (!isOwner) {
+    return identity.displayName;
+  }
+  if (authorRole == 'teacher') {
+    return 'あなた（＝先生）';
+  }
+  return 'あなた';
+}
+
+String _formatCommentTimestamp(Timestamp? timestamp) {
+  if (timestamp == null) {
+    return '投稿直後';
+  }
+  final dateTime = timestamp.toDate().toLocal();
+  final hour = dateTime.hour.toString().padLeft(2, '0');
+  final minute = dateTime.minute.toString().padLeft(2, '0');
+  return '${dateTime.month}/${dateTime.day} $hour:$minute';
+}
+
+String _questionScopeLabel(LessonQuestion question) {
+  final visibility = question.isPubliclyVisible ? '学習者にも公開' : '先生だけ表示';
+  final learnersCanAnswer =
+      question.isPubliclyVisible &&
+      question.target == LessonQuestionTarget.everyone;
+  final answerScope = learnersCanAnswer ? '全員が回答可' : '先生だけ回答可';
+  return '$visibility / $answerScope';
+}
 
 class _ReplyLine extends StatelessWidget {
   const _ReplyLine({required this.displayName, required this.bodyPreview});
@@ -1104,6 +1317,7 @@ class _LessonQuestionDetail extends StatefulWidget {
     required this.quotableNotesStream,
     required this.currentUserId,
     required this.isCurrentUserTeacher,
+    required this.canAnswer,
     required this.onBack,
     required this.onSaveAnswer,
     required this.onDeleteQuestion,
@@ -1115,6 +1329,7 @@ class _LessonQuestionDetail extends StatefulWidget {
   final Stream<List<LessonNote>> quotableNotesStream;
   final String? currentUserId;
   final bool isCurrentUserTeacher;
+  final bool canAnswer;
   final VoidCallback onBack;
   final Future<void> Function(_LessonQuestionAnswerDraft draft) onSaveAnswer;
   final Future<void> Function() onDeleteQuestion;
@@ -1143,6 +1358,9 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
   }
 
   Future<void> _saveAnswer() async {
+    if (!widget.canAnswer) {
+      return;
+    }
     setState(() => _isSaving = true);
     await widget.onSaveAnswer(
       _LessonQuestionAnswerDraft(
@@ -1168,6 +1386,9 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
   }
 
   void _setQuestionReplyTarget() {
+    if (!widget.canAnswer) {
+      return;
+    }
     setState(() {
       _replyParentId = widget.question.id;
       _replyParentType = 'question';
@@ -1178,6 +1399,9 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
   }
 
   void _setAnswerReplyTarget(LessonQuestionAnswer answer) {
+    if (!widget.canAnswer) {
+      return;
+    }
     setState(() {
       _replyParentId = answer.id;
       _replyParentType = 'answer';
@@ -1225,13 +1449,15 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                 authorId: question.authorId,
                 authorName: question.authorName,
                 authorDisplayName: question.authorDisplayName,
-                authorRole: 'student',
+                authorRole: question.authorRole,
+                createdAt: question.createdAt,
+                scopeLabel: _questionScopeLabel(question),
                 attachmentTypes: question.attachmentTypes,
                 quotedNoteTitle: question.quotedNoteTitle,
                 quotedNoteBody: question.quotedNoteBody,
                 isOwner: widget.currentUserId == question.authorId,
                 isTeacher: widget.isCurrentUserTeacher,
-                onReply: _setQuestionReplyTarget,
+                onReply: widget.canAnswer ? _setQuestionReplyTarget : null,
                 onDelete: widget.currentUserId == question.authorId
                     ? widget.onDeleteQuestion
                     : null,
@@ -1259,6 +1485,8 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                           authorName: answer.authorName,
                           authorDisplayName: answer.authorDisplayName,
                           authorRole: answer.authorRole,
+                          createdAt: answer.createdAt,
+                          scopeLabel: _questionScopeLabel(question),
                           attachmentTypes: answer.attachmentTypes,
                           quotedNoteTitle: answer.quotedNoteTitle,
                           quotedNoteBody: answer.quotedNoteBody,
@@ -1266,7 +1494,9 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                           replyToBodyPreview: answer.replyToBodyPreview,
                           isOwner: widget.currentUserId == answer.authorId,
                           isTeacher: widget.isCurrentUserTeacher,
-                          onReply: () => _setAnswerReplyTarget(answer),
+                          onReply: widget.canAnswer
+                              ? () => _setAnswerReplyTarget(answer)
+                              : null,
                           onDelete: widget.currentUserId == answer.authorId
                               ? () => widget.onDeleteAnswer(answer)
                               : null,
@@ -1276,67 +1506,72 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                 },
               ),
               const SizedBox(height: 16),
-              if (_replyToDisplayName != null) ...[
-                _ReplyTargetPreview(
-                  displayName: _replyToDisplayName!,
-                  bodyPreview: _replyToBodyPreview ?? '',
-                  onClear: () => setState(_clearReplyTarget),
+              if (widget.canAnswer) ...[
+                if (_replyToDisplayName != null) ...[
+                  _ReplyTargetPreview(
+                    displayName: _replyToDisplayName!,
+                    bodyPreview: _replyToBodyPreview ?? '',
+                    onClear: () => setState(_clearReplyTarget),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                StreamBuilder<List<LessonNote>>(
+                  stream: widget.quotableNotesStream,
+                  builder: (context, snapshot) {
+                    final notes = snapshot.data ?? const <LessonNote>[];
+                    return DropdownButtonFormField<String>(
+                      initialValue: _quotedNoteId,
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        labelText: '引用する公開メモ',
+                      ),
+                      items: [
+                        const DropdownMenuItem(
+                          value: '',
+                          child: Text('引用なし'),
+                        ),
+                        for (final note in notes)
+                          DropdownMenuItem(
+                            value: note.id ?? '',
+                            child: Text(
+                              note.title.isEmpty ? '無題のメモ' : note.title,
+                            ),
+                          ),
+                      ],
+                      onChanged: (value) {
+                        LessonNote? selectedNote;
+                        for (final note in notes) {
+                          if (note.id == value) {
+                            selectedNote = note;
+                            break;
+                          }
+                        }
+                        setState(() {
+                          _quotedNoteId = value ?? '';
+                          _quotedNoteTitle = selectedNote?.title ?? '';
+                          _quotedNoteBody = selectedNote?.body ?? '';
+                        });
+                      },
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _answerController,
+                  minLines: 3,
+                  maxLines: 6,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    labelText: '回答コメントを書く',
+                  ),
                 ),
                 const SizedBox(height: 8),
-              ],
-              StreamBuilder<List<LessonNote>>(
-                stream: widget.quotableNotesStream,
-                builder: (context, snapshot) {
-                  final notes = snapshot.data ?? const <LessonNote>[];
-                  return DropdownButtonFormField<String>(
-                    initialValue: _quotedNoteId,
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      labelText: '引用する公開メモ',
-                    ),
-                    items: [
-                      const DropdownMenuItem(value: '', child: Text('引用なし')),
-                      for (final note in notes)
-                        DropdownMenuItem(
-                          value: note.id ?? '',
-                          child: Text(
-                            note.title.isEmpty ? '無題のメモ' : note.title,
-                          ),
-                        ),
-                    ],
-                    onChanged: (value) {
-                      LessonNote? selectedNote;
-                      for (final note in notes) {
-                        if (note.id == value) {
-                          selectedNote = note;
-                          break;
-                        }
-                      }
-                      setState(() {
-                        _quotedNoteId = value ?? '';
-                        _quotedNoteTitle = selectedNote?.title ?? '';
-                        _quotedNoteBody = selectedNote?.body ?? '';
-                      });
-                    },
-                  );
-                },
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _answerController,
-                minLines: 3,
-                maxLines: 6,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  labelText: '回答コメントを書く',
+                FilledButton.icon(
+                  onPressed: _isSaving ? null : _saveAnswer,
+                  icon: const Icon(Icons.reply),
+                  label: const Text('回答を投稿'),
                 ),
-              ),
-              const SizedBox(height: 8),
-              FilledButton.icon(
-                onPressed: _isSaving ? null : _saveAnswer,
-                icon: const Icon(Icons.reply),
-                label: const Text('回答を投稿'),
-              ),
+              ],
             ],
           ),
         ),
@@ -1397,6 +1632,8 @@ class _LessonQuestionEditorState extends State<_LessonQuestionEditor> {
     super.dispose();
   }
 
+  bool get _isEditing => widget.question?.id != null;
+
   Future<void> _save() async {
     setState(() => _isSaving = true);
     final saved = await widget.onSave(
@@ -1422,6 +1659,7 @@ class _LessonQuestionEditorState extends State<_LessonQuestionEditor> {
 
   @override
   Widget build(BuildContext context) {
+    final isEditing = _isEditing;
     return Column(
       children: [
         Padding(
@@ -1458,103 +1696,113 @@ class _LessonQuestionEditorState extends State<_LessonQuestionEditor> {
                 ),
               ),
               const SizedBox(height: 12),
-              SegmentedButton<LessonQuestionTarget>(
-                segments: const [
-                  ButtonSegment(
-                    value: LessonQuestionTarget.teacher,
-                    label: Text('先生に質問'),
-                  ),
-                  ButtonSegment(
-                    value: LessonQuestionTarget.everyone,
-                    label: Text('全員に質問'),
-                  ),
-                ],
-                selected: {_target},
-                onSelectionChanged: (selection) {
-                  setState(() {
-                    _target = selection.first;
-                    if (_target == LessonQuestionTarget.everyone) {
-                      _visibility = LessonQuestionVisibility.public;
-                    }
-                  });
-                },
-              ),
-              const SizedBox(height: 12),
-              SwitchListTile(
-                title: const Text('他の学習者にも公開する'),
-                subtitle: const Text('オフの場合は先生にだけ公開されます。'),
-                value: _visibility == LessonQuestionVisibility.public,
-                onChanged: _target == LessonQuestionTarget.everyone
-                    ? null
-                    : (value) {
+              if (isEditing) ...[
+                _LockedQuestionSettings(
+                  visibility: _visibility,
+                  target: _target,
+                ),
+              ] else ...[
+                SegmentedButton<LessonQuestionTarget>(
+                  segments: const [
+                    ButtonSegment(
+                      value: LessonQuestionTarget.teacher,
+                      label: Text('先生に質問'),
+                    ),
+                    ButtonSegment(
+                      value: LessonQuestionTarget.everyone,
+                      label: Text('全員に質問'),
+                    ),
+                  ],
+                  selected: {_target},
+                  onSelectionChanged: (selection) {
+                    setState(() {
+                      _target = selection.first;
+                      if (_target == LessonQuestionTarget.everyone) {
+                        _visibility = LessonQuestionVisibility.public;
+                      }
+                    });
+                  },
+                ),
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  title: const Text('他の学習者にも公開する'),
+                  subtitle: const Text('オフの場合は先生にだけ公開されます。'),
+                  value: _visibility == LessonQuestionVisibility.public,
+                  onChanged: _target == LessonQuestionTarget.everyone
+                      ? null
+                      : (value) {
+                          setState(() {
+                            _visibility = value
+                                ? LessonQuestionVisibility.public
+                                : LessonQuestionVisibility.teacherOnly;
+                          });
+                        },
+                ),
+                const SizedBox(height: 12),
+                StreamBuilder<List<LessonNote>>(
+                  stream: widget.quotableNotesStream,
+                  builder: (context, snapshot) {
+                    final notes = snapshot.data ?? const <LessonNote>[];
+                    return DropdownButtonFormField<String>(
+                      initialValue: _quotedNoteId,
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        labelText: '引用する公開メモ',
+                      ),
+                      items: [
+                        const DropdownMenuItem(
+                          value: '',
+                          child: Text('引用なし'),
+                        ),
+                        for (final note in notes)
+                          DropdownMenuItem(
+                            value: note.id ?? '',
+                            child: Text(
+                              note.title.isEmpty ? '無題のメモ' : note.title,
+                            ),
+                          ),
+                      ],
+                      onChanged: (value) {
+                        LessonNote? selectedNote;
+                        for (final note in notes) {
+                          if (note.id == value) {
+                            selectedNote = note;
+                            break;
+                          }
+                        }
                         setState(() {
-                          _visibility = value
-                              ? LessonQuestionVisibility.public
-                              : LessonQuestionVisibility.teacherOnly;
+                          _quotedNoteId = value ?? '';
+                          _quotedNoteTitle = selectedNote?.title ?? '';
+                          _quotedNoteBody = selectedNote?.body ?? '';
                         });
                       },
-              ),
-              const SizedBox(height: 12),
-              StreamBuilder<List<LessonNote>>(
-                stream: widget.quotableNotesStream,
-                builder: (context, snapshot) {
-                  final notes = snapshot.data ?? const <LessonNote>[];
-                  return DropdownButtonFormField<String>(
-                    initialValue: _quotedNoteId,
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      labelText: '引用する公開メモ',
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
+                const Text('添付予定タイプ'),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    _QuestionAttachmentChip(
+                      label: 'PDF',
+                      value: lessonNoteAttachmentPdf,
+                      selected: _attachmentTypes.contains(
+                        lessonNoteAttachmentPdf,
+                      ),
+                      onSelected: _toggleAttachment,
                     ),
-                    items: [
-                      const DropdownMenuItem(value: '', child: Text('引用なし')),
-                      for (final note in notes)
-                        DropdownMenuItem(
-                          value: note.id ?? '',
-                          child: Text(
-                            note.title.isEmpty ? '無題のメモ' : note.title,
-                          ),
-                        ),
-                    ],
-                    onChanged: (value) {
-                      LessonNote? selectedNote;
-                      for (final note in notes) {
-                        if (note.id == value) {
-                          selectedNote = note;
-                          break;
-                        }
-                      }
-                      setState(() {
-                        _quotedNoteId = value ?? '';
-                        _quotedNoteTitle = selectedNote?.title ?? '';
-                        _quotedNoteBody = selectedNote?.body ?? '';
-                      });
-                    },
-                  );
-                },
-              ),
-              const SizedBox(height: 12),
-              const Text('添付予定タイプ'),
-              Wrap(
-                spacing: 8,
-                children: [
-                  _QuestionAttachmentChip(
-                    label: 'PDF',
-                    value: lessonNoteAttachmentPdf,
-                    selected: _attachmentTypes.contains(
-                      lessonNoteAttachmentPdf,
+                    _QuestionAttachmentChip(
+                      label: '画像',
+                      value: lessonNoteAttachmentImage,
+                      selected: _attachmentTypes.contains(
+                        lessonNoteAttachmentImage,
+                      ),
+                      onSelected: _toggleAttachment,
                     ),
-                    onSelected: _toggleAttachment,
-                  ),
-                  _QuestionAttachmentChip(
-                    label: '画像',
-                    value: lessonNoteAttachmentImage,
-                    selected: _attachmentTypes.contains(
-                      lessonNoteAttachmentImage,
-                    ),
-                    onSelected: _toggleAttachment,
-                  ),
-                ],
-              ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 16),
               FilledButton.icon(
                 onPressed: _isSaving ? null : _save,
@@ -1578,6 +1826,43 @@ class _LessonQuestionEditorState extends State<_LessonQuestionEditor> {
         _attachmentTypes.remove(value);
       }
     });
+  }
+}
+
+class _LockedQuestionSettings extends StatelessWidget {
+  const _LockedQuestionSettings({
+    required this.visibility,
+    required this.target,
+  });
+
+  final LessonQuestionVisibility visibility;
+  final LessonQuestionTarget target;
+
+  @override
+  Widget build(BuildContext context) {
+    final visibilityText = visibility == LessonQuestionVisibility.public
+        ? '学習者にも公開'
+        : '先生だけ表示';
+    final targetText = target == LessonQuestionTarget.everyone
+        ? '全員に質問'
+        : '先生に質問';
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '公開範囲と宛先は投稿後に変更できません。',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text('公開範囲: $visibilityText'),
+            Text('宛先: $targetText'),
+          ],
+        ),
+      ),
+    );
   }
 }
 

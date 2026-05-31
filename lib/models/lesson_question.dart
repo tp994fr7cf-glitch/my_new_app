@@ -138,6 +138,10 @@ class LessonQuestionAnswer {
     required this.authorName,
     this.authorDisplayName,
     required this.authorRole,
+    this.courseId = '',
+    this.courseTitle = '',
+    this.lessonNumber = 1,
+    this.lessonTitle = '',
     required this.body,
     required this.attachmentTypes,
     this.parentCommentId,
@@ -161,6 +165,10 @@ class LessonQuestionAnswer {
   final String authorName;
   final String? authorDisplayName;
   final String authorRole;
+  final String courseId;
+  final String courseTitle;
+  final int lessonNumber;
+  final String lessonTitle;
   final String body;
   final List<String> attachmentTypes;
   final String? parentCommentId;
@@ -188,6 +196,10 @@ class LessonQuestionAnswer {
       authorName: data['authorName'] as String? ?? '',
       authorDisplayName: data['authorDisplayName'] as String?,
       authorRole: data['authorRole'] as String? ?? 'student',
+      courseId: data['courseId'] as String? ?? '',
+      courseTitle: data['courseTitle'] as String? ?? '',
+      lessonNumber: (data['lessonNumber'] as num?)?.toInt() ?? 1,
+      lessonTitle: data['lessonTitle'] as String? ?? '',
       body: data['body'] as String? ?? '',
       attachmentTypes: parseStringList(data['attachmentTypes']),
       parentCommentId: data['parentCommentId'] as String?,
@@ -220,6 +232,23 @@ bool lessonQuestionMatchesQuery(LessonQuestion question, String query) {
     question.lessonTitle,
     question.quotedNoteTitle ?? '',
     question.quotedNoteBody ?? '',
+  ].any((value) => value.toLowerCase().contains(normalized));
+}
+
+bool lessonQuestionAnswerMatchesQuery(
+  LessonQuestionAnswer answer,
+  String query,
+) {
+  final normalized = query.trim().toLowerCase();
+  if (normalized.isEmpty) {
+    return true;
+  }
+  return [
+    answer.body,
+    answer.replyToDisplayName ?? '',
+    answer.replyToBodyPreview ?? '',
+    answer.quotedNoteTitle ?? '',
+    answer.quotedNoteBody ?? '',
   ].any((value) => value.toLowerCase().contains(normalized));
 }
 
