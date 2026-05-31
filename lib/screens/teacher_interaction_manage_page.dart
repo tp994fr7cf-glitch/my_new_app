@@ -485,8 +485,9 @@ List<String> _statusLabels(Object item) {
       : true;
 
   return [
-    if (isTeacherHidden) '先生が非公開化済み' else '公開中',
-    if (!isStudentPublic) '学習者が非公開',
+    if (isTeacherHidden) '先生が非公開化済み',
+    if (!isTeacherHidden && isStudentPublic) '学習者にも公開中',
+    if (!isStudentPublic) '先生だけ表示',
   ];
 }
 
