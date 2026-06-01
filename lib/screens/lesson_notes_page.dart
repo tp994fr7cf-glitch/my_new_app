@@ -7,7 +7,9 @@ import 'package:flutter/material.dart';
 
 import '../models/course.dart';
 import '../models/lesson_note.dart';
+import '../models/public_user_profile.dart';
 import '../services/lesson_interaction_service.dart';
+import 'public_user_profile_page.dart';
 
 class LessonNotesPage extends StatelessWidget {
   const LessonNotesPage({
@@ -81,6 +83,12 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       const LessonInteractionService();
 
   String get _courseId => widget.course.storageId;
+
+  String get _interactionSettingId =>
+      _lessonInteractionService.settingDocumentId(
+        courseId: _courseId,
+        lessonNumber: widget.lessonNumber,
+      );
 
   @override
   void dispose() {
@@ -160,11 +168,15 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         .collection('publicLessonNotes')
         .where('courseId', isEqualTo: _courseId)
         .where('lessonNumber', isEqualTo: widget.lessonNumber)
+        .where('interactionSettingId', isEqualTo: _interactionSettingId)
         .where('studentVisibility', isEqualTo: lessonNoteVisibilityPublic)
         .where('moderationStatus', isEqualTo: lessonNoteModerationVisible)
         .where('isDeleted', isEqualTo: false)
-        .snapshots()
+        .snapshots(includeMetadataChanges: true)
         .map((snapshot) {
+          if (snapshot.metadata.isFromCache) {
+            return const <LessonNote>[];
+          }
           return sortPublicLessonNotes(
             snapshot.docs
                 .map(LessonNote.fromFirestore)
@@ -293,7 +305,10 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         canPublish: draft.canPublish,
       );
       final platformEnabled = await _isNotePublicPlatformEnabled();
-      final savedVisibility = canPublish && platformEnabled
+      final isPublicLocked = draft.wasPublic && canPublish;
+      final savedVisibility = isPublicLocked
+          ? lessonNoteVisibilityPublic
+          : canPublish && platformEnabled
           ? visibility
           : lessonNoteVisibilityPrivate;
       final publicRef = firestore.collection('publicLessonNotes').doc(noteId);
@@ -348,6 +363,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
           'visibility': lessonNoteVisibilityPublic,
           'studentVisibility': savedVisibility,
           'moderationStatus': publicModerationStatus,
+          'publicPublishedAt': publicData?['publicPublishedAt'] ?? now,
           'favoriteCount': (publicData?['favoriteCount'] as num?)?.toInt() ?? 0,
           'ratingAverage':
               (publicData?['ratingAverage'] as num?)?.toDouble() ?? 0,
@@ -365,7 +381,8 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
 
       await batch.commit();
       _showMessage(
-        canPublish && platformEnabled ||
+        isPublicLocked ||
+                canPublish && platformEnabled ||
                 visibility == lessonNoteVisibilityPrivate
             ? 'メモを保存しました。'
             : platformEnabled
@@ -404,11 +421,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
             .doc(user.uid)
             .collection('lessonNotes')
             .doc(note.id),
-        {
-          'isDeleted': true,
-          'deletedAt': now,
-          'updatedAt': now,
-        },
+        {'isDeleted': true, 'deletedAt': now, 'updatedAt': now},
         SetOptions(merge: true),
       );
     if (publicSnapshot?.exists ?? false) {
@@ -783,7 +796,14 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
           notesStream: enabled ? _publicNotesStream() : Stream.value(const []),
           query: _query,
           emptyText: enabled ? '公開メモはまだありません。' : '公開メモ欄は非公開化されています。',
-          onTap: null,
+          onTap: (note) {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => _PublicLessonNoteDetailPage(note: note),
+              ),
+            );
+          },
+          showAuthor: true,
           action: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -870,6 +890,7 @@ class _LessonNoteList extends StatelessWidget {
     required this.action,
     required this.onTap,
     this.folders = const [],
+    this.showAuthor = false,
     this.onDeleteNote,
     this.onDeleteFolder,
   });
@@ -880,6 +901,7 @@ class _LessonNoteList extends StatelessWidget {
   final String emptyText;
   final Widget action;
   final ValueChanged<LessonNote>? onTap;
+  final bool showAuthor;
   final ValueChanged<LessonNote>? onDeleteNote;
   final ValueChanged<LessonNoteFolder>? onDeleteFolder;
 
@@ -903,6 +925,7 @@ class _LessonNoteList extends StatelessWidget {
                 _LessonNoteCard(
                   note: note,
                   onTap: onTap,
+                  showAuthor: showAuthor,
                   onDelete: onDeleteNote,
                 )
             else
@@ -947,7 +970,12 @@ class _LessonNoteList extends StatelessWidget {
     for (final folderNotes in notesByFolder.values) {
       for (final note in folderNotes) {
         widgets.add(
-          _LessonNoteCard(note: note, onTap: onTap, onDelete: onDeleteNote),
+          _LessonNoteCard(
+            note: note,
+            onTap: onTap,
+            showAuthor: showAuthor,
+            onDelete: onDeleteNote,
+          ),
         );
       }
     }
@@ -1036,15 +1064,20 @@ class _LessonNoteCard extends StatelessWidget {
   const _LessonNoteCard({
     required this.note,
     required this.onTap,
+    this.showAuthor = false,
     this.onDelete,
   });
 
   final LessonNote note;
   final ValueChanged<LessonNote>? onTap;
+  final bool showAuthor;
   final ValueChanged<LessonNote>? onDelete;
 
   @override
   Widget build(BuildContext context) {
+    if (showAuthor) {
+      return _PublicLessonNoteCard(note: note, onTap: onTap);
+    }
     return Card(
       child: ListTile(
         onTap: onTap == null ? null : () => onTap!(note),
@@ -1071,6 +1104,219 @@ class _LessonNoteCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _PublicLessonNoteCard extends StatelessWidget {
+  const _PublicLessonNoteCard({required this.note, required this.onTap});
+
+  final LessonNote note;
+  final ValueChanged<LessonNote>? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<PublicUserProfile>(
+      stream: publicUserProfileStream(
+        userId: note.authorId,
+        role: publicUserProfileRoleStudent,
+        fallbackDisplayName: note.authorName,
+      ),
+      builder: (context, snapshot) {
+        final profile =
+            snapshot.data ??
+            fallbackPublicUserProfile(
+              userId: note.authorId,
+              role: publicUserProfileRoleStudent,
+              displayName: note.authorName,
+            );
+        return Card(
+          child: InkWell(
+            onTap: onTap == null ? null : () => onTap!(note),
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: () {
+                      showPublicUserProfilePreview(
+                        context: context,
+                        userId: note.authorId,
+                        role: publicUserProfileRoleStudent,
+                        fallbackDisplayName: note.authorName,
+                        isOwner: false,
+                      );
+                    },
+                    child: PublicProfileAvatar(profile: profile),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                profile.displayName,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.labelMedium,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              _formatPublicNoteTimestamp(note),
+                              style: Theme.of(context).textTheme.labelSmall
+                                  ?.copyWith(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSurfaceVariant,
+                                  ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                note.title.isEmpty ? '無題のメモ' : note.title,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(note.body.isEmpty ? '本文なし' : note.body),
+                              if (note.tags.isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                Text(note.tags.map((tag) => '#$tag').join(' ')),
+                              ],
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Text(
+                            '学習者にも公開',
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _PublicLessonNoteDetailPage extends StatelessWidget {
+  const _PublicLessonNoteDetailPage({required this.note});
+
+  final LessonNote note;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('公開メモ')),
+      body: SafeArea(
+        child: StreamBuilder<PublicUserProfile>(
+          stream: publicUserProfileStream(
+            userId: note.authorId,
+            role: publicUserProfileRoleStudent,
+            fallbackDisplayName: note.authorName,
+          ),
+          builder: (context, snapshot) {
+            final profile =
+                snapshot.data ??
+                fallbackPublicUserProfile(
+                  userId: note.authorId,
+                  role: publicUserProfileRoleStudent,
+                  displayName: note.authorName,
+                );
+            return ListView(
+              padding: const EdgeInsets.all(24),
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    PublicProfileAvatar(profile: profile),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            profile.displayName,
+                            style: Theme.of(context).textTheme.labelMedium,
+                          ),
+                          Text(
+                            _formatPublicNoteTimestamp(note),
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  note.title.isEmpty ? '無題のメモ' : note.title,
+                  style: Theme.of(context).textTheme.headlineSmall,
+                ),
+                const SizedBox(height: 16),
+                Text(note.body.isEmpty ? '本文なし' : note.body),
+                if (note.tags.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Text(note.tags.map((tag) => '#$tag').join(' ')),
+                ],
+                if (note.attachmentTypes.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Text('添付予定: ${note.attachmentTypes.join(', ')}'),
+                ],
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+String _formatPublicNoteTimestamp(LessonNote note) {
+  final timestamp = note.publicPublishedAt ?? note.createdAt ?? note.updatedAt;
+  if (timestamp == null) {
+    return '公開日時不明';
+  }
+  final dateTime = timestamp.toDate().toLocal();
+  final hour = dateTime.hour.toString().padLeft(2, '0');
+  final minute = dateTime.minute.toString().padLeft(2, '0');
+  return '${dateTime.month}/${dateTime.day} $hour:$minute';
 }
 
 class _LessonNoteEditorPage extends StatefulWidget {
@@ -1139,6 +1385,10 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
     canPublish: widget.note?.canPublish ?? true,
   );
 
+  bool get _isPublicLocked => widget.note?.hasPublicMirror == true;
+
+  bool get _canChangeVisibility => _canPublish && !_isPublicLocked;
+
   Future<void> _save() async {
     setState(() {
       _isSaving = true;
@@ -1157,7 +1407,11 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
         body: _bodyController.text.trim(),
         folderId: selectedFolder?.id ?? '',
         folderName: selectedFolder?.name ?? '',
-        visibility: _canPublish ? _visibility : LessonNoteVisibility.private,
+        visibility: _isPublicLocked
+            ? LessonNoteVisibility.public
+            : _canPublish
+            ? _visibility
+            : LessonNoteVisibility.private,
         tags: parseLessonNoteTags(_tagsController.text),
         attachmentTypes: _attachmentTypes.toList()..sort(),
         sourceNoteId: widget.note?.sourceNoteId,
@@ -1261,7 +1515,7 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
               label: '音声',
               value: lessonNoteAttachmentAudio,
               selected: _hasAudioAttachment,
-              onSelected: _toggleAttachment,
+              onSelected: _isPublicLocked ? null : _toggleAttachment,
             ),
           ],
         ),
@@ -1271,9 +1525,15 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
         ],
         SwitchListTile(
           title: const Text('受講者と先生に公開する'),
-          subtitle: const Text('公開メモは同じ講座・レッスンのユーザーが閲覧できます。'),
-          value: _visibility == LessonNoteVisibility.public && _canPublish,
-          onChanged: !_canPublish
+          subtitle: Text(
+            _isPublicLocked
+                ? '一度公開したメモは後から非公開に戻せません。本文などは編集できます。'
+                : '公開メモは同じ講座・レッスンのユーザーが閲覧できます。',
+          ),
+          value:
+              (_visibility == LessonNoteVisibility.public || _isPublicLocked) &&
+              _canPublish,
+          onChanged: !_canChangeVisibility
               ? null
               : (value) {
                   setState(() {
@@ -1322,6 +1582,9 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
   void _toggleAttachment(String value, bool selected) {
     setState(() {
       if (selected) {
+        if (_isPublicLocked && value == lessonNoteAttachmentAudio) {
+          return;
+        }
         _attachmentTypes.add(value);
         if (value == lessonNoteAttachmentAudio) {
           _visibility = LessonNoteVisibility.private;
@@ -1344,14 +1607,16 @@ class _AttachmentChip extends StatelessWidget {
   final String label;
   final String value;
   final bool selected;
-  final void Function(String value, bool selected) onSelected;
+  final void Function(String value, bool selected)? onSelected;
 
   @override
   Widget build(BuildContext context) {
     return FilterChip(
       label: Text(label),
       selected: selected,
-      onSelected: (selected) => onSelected(value, selected),
+      onSelected: onSelected == null
+          ? null
+          : (selected) => onSelected!(value, selected),
     );
   }
 }

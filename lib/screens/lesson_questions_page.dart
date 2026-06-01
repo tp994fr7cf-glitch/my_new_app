@@ -9,8 +9,10 @@ import '../models/comment_identity.dart';
 import '../models/course.dart';
 import '../models/lesson_note.dart';
 import '../models/lesson_question.dart';
+import '../models/public_user_profile.dart';
 import '../services/lesson_interaction_service.dart';
 import '../utils/firestore_parsing.dart';
+import 'public_user_profile_page.dart';
 
 class LessonQuestionsPanel extends StatefulWidget {
   const LessonQuestionsPanel({
@@ -189,11 +191,15 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
         .collection('publicLessonNotes')
         .where('courseId', isEqualTo: _courseId)
         .where('lessonNumber', isEqualTo: widget.lessonNumber)
+        .where('interactionSettingId', isEqualTo: _interactionSettingId)
         .where('studentVisibility', isEqualTo: lessonNoteVisibilityPublic)
         .where('moderationStatus', isEqualTo: lessonNoteModerationVisible)
         .where('isDeleted', isEqualTo: false)
-        .snapshots()
+        .snapshots(includeMetadataChanges: true)
         .map((snapshot) {
+          if (snapshot.metadata.isFromCache) {
+            return const <LessonNote>[];
+          }
           return sortLessonNotesByUpdatedAt(
             snapshot.docs
                 .map(LessonNote.fromFirestore)
@@ -988,11 +994,41 @@ class _CommentBubble extends StatelessWidget {
       authorDisplayName: authorDisplayName,
       authorRole: authorRole,
     );
-    final displayName = _commentDisplayName(
-      identity: identity,
-      isOwner: isOwner,
-      authorRole: authorRole,
+    final profileRole = authorRole == publicUserProfileRoleTeacher
+        ? publicUserProfileRoleTeacher
+        : publicUserProfileRoleStudent;
+    return StreamBuilder<PublicUserProfile>(
+      stream: publicUserProfileStream(
+        userId: authorId,
+        role: profileRole,
+        fallbackDisplayName: identity.displayName,
+      ),
+      builder: (context, snapshot) {
+        final publicProfile =
+            snapshot.data ??
+            fallbackPublicUserProfile(
+              userId: authorId,
+              role: profileRole,
+              displayName: identity.displayName,
+            );
+        return _buildBubble(
+          context: context,
+          profile: publicProfile,
+          displayName: _commentDisplayName(
+            profile: publicProfile,
+            isOwner: isOwner,
+            authorRole: authorRole,
+          ),
+        );
+      },
     );
+  }
+
+  Widget _buildBubble({
+    required BuildContext context,
+    required PublicUserProfile profile,
+    required String displayName,
+  }) {
     final createdAtText = _formatCommentTimestamp(createdAt);
     final canOperate = isOwner || isTeacher || onReply != null;
     return Padding(
@@ -1000,12 +1036,18 @@ class _CommentBubble extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          CircleAvatar(
-            backgroundColor: identity.color,
-            child: Text(
-              identity.displayName,
-              style: const TextStyle(color: Colors.white),
-            ),
+          InkWell(
+            customBorder: const CircleBorder(),
+            onTap: () {
+              showPublicUserProfilePreview(
+                context: context,
+                userId: authorId,
+                role: profile.role,
+                fallbackDisplayName: profile.displayName,
+                isOwner: isOwner,
+              );
+            },
+            child: PublicProfileAvatar(profile: profile),
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -1150,12 +1192,12 @@ class _CommentBubble extends StatelessWidget {
 enum _CommentAction { reply, edit, delete }
 
 String _commentDisplayName({
-  required CommentIdentity identity,
+  required PublicUserProfile profile,
   required bool isOwner,
   required String authorRole,
 }) {
   if (!isOwner) {
-    return identity.displayName;
+    return profile.displayName;
   }
   if (authorRole == 'teacher') {
     return 'あなた（＝先生）';

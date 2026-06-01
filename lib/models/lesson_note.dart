@@ -77,6 +77,7 @@ class LessonNote {
     this.hasPublicMirror = false,
     this.createdAt,
     this.updatedAt,
+    this.publicPublishedAt,
     this.favoriteCount = 0,
     this.ratingAverage = 0,
     this.ratingCount = 0,
@@ -109,6 +110,7 @@ class LessonNote {
   final bool hasPublicMirror;
   final Timestamp? createdAt;
   final Timestamp? updatedAt;
+  final Timestamp? publicPublishedAt;
   final int favoriteCount;
   final double ratingAverage;
   final int ratingCount;
@@ -167,6 +169,7 @@ class LessonNote {
           visibilityText == lessonNoteVisibilityPublic,
       createdAt: data['createdAt'] as Timestamp?,
       updatedAt: data['updatedAt'] as Timestamp?,
+      publicPublishedAt: data['publicPublishedAt'] as Timestamp?,
       favoriteCount: (data['favoriteCount'] as num?)?.toInt() ?? 0,
       ratingAverage: (data['ratingAverage'] as num?)?.toDouble() ?? 0,
       ratingCount: (data['ratingCount'] as num?)?.toInt() ?? 0,
@@ -234,9 +237,9 @@ List<LessonNote> sortPublicLessonNotes(
         if (popularityCompare != 0) {
           return popularityCompare;
         }
-        return timestampOrEpoch(b.updatedAt).compareTo(
-          timestampOrEpoch(a.updatedAt),
-        );
+        return timestampOrEpoch(
+          b.updatedAt,
+        ).compareTo(timestampOrEpoch(a.updatedAt));
       }),
   };
 }
@@ -247,4 +250,3 @@ int _lessonNotePopularityScore(LessonNote note) {
       note.favoriteCount * 5 +
       note.copyCount * 20;
 }
-

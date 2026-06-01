@@ -4,9 +4,11 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
+import '../models/public_user_profile.dart';
 import 'course_create_page.dart';
 import 'course_list_page.dart';
 import 'learning_records_page.dart';
+import 'public_user_profile_page.dart';
 import 'role_switch_page.dart';
 import 'teacher_application_page.dart';
 import 'teacher_course_list_page.dart';
@@ -685,36 +687,91 @@ class _ProfileSummaryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final activeRole = profile['activeRole'] as String? ?? roles.first;
+    final publicProfileRole = activeRole == publicUserProfileRoleTeacher
+        ? publicUserProfileRoleTeacher
+        : publicUserProfileRoleStudent;
     final intendedUse = profile['intendedUse'] as String?;
     final teacherApplicationStatus =
         profile['teacherApplicationStatus'] as String?;
     final organizationApplicationStatus =
         profile['organizationApplicationStatus'] as String?;
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'アカウント情報',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 12),
-            Text('名前: ${user.displayName ?? '未設定'}'),
-            Text('メール: ${user.email ?? '未設定'}'),
-            Text('電話番号: ${user.phoneNumber ?? '未設定'}'),
-            Text('現在の立場: ${_roleLabel(activeRole)}'),
-            Text('持っている権限: ${roles.map(_roleLabel).join(' / ')}'),
-            Text('利用目的: ${_intendedUseLabel(intendedUse)}'),
-            Text('先生申請: ${_applicationStatusLabel(teacherApplicationStatus)}'),
-            Text(
-              '組織申請: ${_applicationStatusLabel(organizationApplicationStatus)}',
-            ),
-          ],
-        ),
+    return StreamBuilder<PublicUserProfile>(
+      stream: publicUserProfileStream(
+        userId: user.uid,
+        role: publicProfileRole,
+        fallbackDisplayName: user.displayName,
       ),
+      builder: (context, snapshot) {
+        final publicProfile =
+            snapshot.data ??
+            fallbackPublicUserProfile(
+              userId: user.uid,
+              role: publicProfileRole,
+              displayName: user.displayName,
+            );
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    PublicProfileAvatar(profile: publicProfile, radius: 28),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'プロフィール',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text(publicProfile.displayName),
+                          Text('現在の立場: ${_roleLabel(activeRole)}'),
+                        ],
+                      ),
+                    ),
+                    OutlinedButton(
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => EditPublicUserProfilePage(
+                              userId: user.uid,
+                              role: publicProfileRole,
+                              initialProfile: publicProfile,
+                            ),
+                          ),
+                        );
+                      },
+                      child: const Text('編集'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  publicProfile.bio.isEmpty
+                      ? '自己紹介はまだありません。'
+                      : publicProfile.bio,
+                ),
+                const Divider(height: 24),
+                Text('持っている権限: ${roles.map(_roleLabel).join(' / ')}'),
+                Text('利用目的: ${_intendedUseLabel(intendedUse)}'),
+                Text(
+                  '先生申請: ${_applicationStatusLabel(teacherApplicationStatus)}',
+                ),
+                Text(
+                  '組織申請: ${_applicationStatusLabel(organizationApplicationStatus)}',
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

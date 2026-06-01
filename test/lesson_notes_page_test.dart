@@ -1,3 +1,4 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:my_new_app/models/course.dart';
@@ -94,7 +95,7 @@ void main() {
       isCopied: false,
       canPublish: true,
     );
-    const publicNote = LessonNote(
+    final publicNote = LessonNote(
       id: 'public-note',
       authorId: 'user-b',
       authorName: '他の学習者',
@@ -112,6 +113,7 @@ void main() {
       hasAudioAttachment: false,
       isCopied: false,
       canPublish: true,
+      publicPublishedAt: Timestamp.fromDate(DateTime(2026, 6, 2, 9, 15)),
     );
 
     await tester.pumpWidget(
@@ -134,8 +136,17 @@ void main() {
     await tester.tap(find.text('公開メモ'));
     await tester.pumpAndSettle();
 
+    expect(find.text('他の学習者'), findsOneWidget);
+    expect(find.text('6/2 09:15'), findsOneWidget);
     expect(find.text('両辺に同じ計算をする'), findsOneWidget);
     expect(find.text('コピー・評価・お気に入りは後で追加します。'), findsOneWidget);
+
+    await tester.tap(find.text('両辺に同じ計算をする'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('公開メモ'), findsWidgets);
+    expect(find.text('他の学習者'), findsOneWidget);
+    expect(find.text('両辺に同じ計算をする'), findsOneWidget);
   });
 
   testWidgets('Lesson notes page groups notes under folders', (tester) async {
@@ -210,6 +221,57 @@ void main() {
     final switchTile = tester.widget<SwitchListTile>(
       find.widgetWithText(SwitchListTile, '受講者と先生に公開する'),
     );
+    expect(switchTile.onChanged, isNull);
+  });
+
+  testWidgets('Published notes keep visibility locked while editing', (
+    tester,
+  ) async {
+    const publicNote = LessonNote(
+      id: 'locked-public-note',
+      authorId: 'user-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '公開済みメモ',
+      body: '一度公開した内容です。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.public,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      hasPublicMirror: true,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LessonNotesPage(
+          course: course,
+          lesson: lesson,
+          lessonNumber: 1,
+          notesStream: Stream.value(const [publicNote]),
+          publicNotesStream: Stream.value(const []),
+          foldersStream: Stream.value(const []),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('公開済みメモ'));
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(ListView).last, const Offset(0, -700));
+    await tester.pumpAndSettle();
+
+    expect(find.text('一度公開したメモは後から非公開に戻せません。本文などは編集できます。'), findsOneWidget);
+    final switchTile = tester.widget<SwitchListTile>(
+      find.widgetWithText(SwitchListTile, '受講者と先生に公開する'),
+    );
+    expect(switchTile.value, isTrue);
     expect(switchTile.onChanged, isNull);
   });
 

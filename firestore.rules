@@ -105,6 +105,41 @@ service cloud.firestore {
           || get(/databases/$(database)/documents/lessonInteractionSettings/$(settingId)).data.lessonQuestionsPublicEnabled != false);
     }
 
+    function validPublicUserProfile(profileId) {
+      return request.resource.data.keys().hasOnly([
+          'userId',
+          'role',
+          'displayName',
+          'avatarColorName',
+          'bio',
+          'updatedAt'
+        ])
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.role in ['student', 'teacher']
+        && profileId == request.auth.uid + '_' + request.resource.data.role
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 40
+        && request.resource.data.avatarColorName in [
+          'blue',
+          'green',
+          'orange',
+          'purple',
+          'pink',
+          'teal',
+          'brown',
+          'indigo'
+        ]
+        && request.resource.data.bio is string
+        && request.resource.data.bio.size() <= 160;
+    }
+
+    match /publicUserProfiles/{profileId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn()
+        && validPublicUserProfile(profileId);
+    }
+
     match /users/{userId} {
       allow read: if isOwner(userId);
 
@@ -286,33 +321,46 @@ service cloud.firestore {
       match /lessonNotes/{noteId} {
         allow read: if isOwner(userId);
 
-        allow create, update: if isOwner(userId)
-          && request.resource.data.userId == userId
-          && request.resource.data.authorId == userId
-          && request.resource.data.title is string
-          && request.resource.data.body is string
-          && request.resource.data.folderId is string
-          && request.resource.data.folderName is string
-          && request.resource.data.courseId is string
-          && request.resource.data.courseTitle is string
-          && request.resource.data.lessonNumber is int
-          && request.resource.data.lessonTitle is string
-          && request.resource.data.visibility in ['private', 'public']
-          && request.resource.data.tags is list
-          && request.resource.data.attachmentTypes is list
-          && request.resource.data.hasAudioAttachment is bool
-          && request.resource.data.isCopied is bool
-          && request.resource.data.canPublish is bool
-          && (request.resource.data.visibility == 'private'
-            || request.resource.data.canPublish == true)
-          && (!request.resource.data.keys().hasAny(['isDeleted'])
-            || request.resource.data.isDeleted is bool)
-          && (!request.resource.data.keys().hasAny(['moderationStatus'])
-            || request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'])
-          && (request.resource.data.visibility == 'private'
-            || (request.resource.data.hasAudioAttachment == false
-              && request.resource.data.isCopied == false
-              && request.resource.data.canPublish == true));
+        function validLessonNoteOwnerWrite() {
+          return request.resource.data.userId == userId
+            && request.resource.data.authorId == userId
+            && request.resource.data.title is string
+            && request.resource.data.body is string
+            && request.resource.data.folderId is string
+            && request.resource.data.folderName is string
+            && request.resource.data.courseId is string
+            && request.resource.data.courseTitle is string
+            && request.resource.data.lessonNumber is int
+            && request.resource.data.lessonTitle is string
+            && request.resource.data.visibility in ['private', 'public']
+            && request.resource.data.tags is list
+            && request.resource.data.attachmentTypes is list
+            && request.resource.data.hasAudioAttachment is bool
+            && request.resource.data.isCopied is bool
+            && request.resource.data.canPublish is bool
+            && (request.resource.data.visibility == 'private'
+              || request.resource.data.canPublish == true)
+            && (!request.resource.data.keys().hasAny(['isDeleted'])
+              || request.resource.data.isDeleted is bool)
+            && (!request.resource.data.keys().hasAny(['moderationStatus'])
+              || request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'])
+            && (request.resource.data.visibility == 'private'
+              || (request.resource.data.hasAudioAttachment == false
+                && request.resource.data.isCopied == false
+                && request.resource.data.canPublish == true));
+        }
+
+        allow create: if isOwner(userId)
+          && validLessonNoteOwnerWrite();
+
+        allow update: if isOwner(userId)
+          && validLessonNoteOwnerWrite()
+          && ((!resource.data.keys().hasAny(['hasPublicMirror'])
+              && resource.data.visibility != 'public')
+            || (resource.data.hasPublicMirror != true
+              && resource.data.visibility != 'public')
+            || request.resource.data.visibility == 'public'
+            || request.resource.data.isDeleted == true);
       }
 
       match /lessonQuestions/{questionId} {
@@ -391,6 +439,8 @@ service cloud.firestore {
           && request.resource.data.canPublish == true
           && (!request.resource.data.keys().hasAny(['isDeleted'])
             || request.resource.data.isDeleted is bool)
+          && (!request.resource.data.keys().hasAny(['publicPublishedAt'])
+            || request.resource.data.publicPublishedAt is timestamp)
           && (!request.resource.data.keys().hasAny(['moderationStatus'])
             || request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher']);
       }
@@ -404,6 +454,7 @@ service cloud.firestore {
       allow update: if signedIn()
         && validPublicLessonNoteOwnerWrite()
         && resource.data.authorId == request.auth.uid
+        && request.resource.data.studentVisibility == 'public'
         && ((!resource.data.keys().hasAny(['moderationStatus'])
           && (!request.resource.data.keys().hasAny(['moderationStatus'])
             || request.resource.data.moderationStatus == 'visible'))
