@@ -20,6 +20,7 @@ class LessonQuestionsPanel extends StatefulWidget {
     required this.lessonNumber,
     this.questionsStream,
     this.publicQuestionsStream,
+    this.answersStream,
     this.isEmbedded = false,
     this.isTeacherPreview = false,
     this.initialEditingQuestion,
@@ -31,6 +32,7 @@ class LessonQuestionsPanel extends StatefulWidget {
   final int lessonNumber;
   final Stream<List<LessonQuestion>>? questionsStream;
   final Stream<List<LessonQuestion>>? publicQuestionsStream;
+  final Stream<List<LessonQuestionAnswer>>? answersStream;
   final bool isEmbedded;
   final bool isTeacherPreview;
   final LessonQuestion? initialEditingQuestion;
@@ -266,10 +268,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
       final questionId = questionRef.id;
       if (draft.questionId != null) {
         final now = FieldValue.serverTimestamp();
-        final updateData = {
-          'body': draft.body,
-          'updatedAt': now,
-        };
+        final updateData = {'body': draft.body, 'updatedAt': now};
         final batch = firestore.batch()
           ..set(questionRef, updateData, SetOptions(merge: true));
         final publicRef = firestore
@@ -322,10 +321,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
         'isDeleted': false,
         'moderationStatus': lessonNoteModerationVisible,
         'updatedAt': now,
-        if (draft.questionId == null) ...{
-          'answerCount': 0,
-          'createdAt': now,
-        },
+        if (draft.questionId == null) ...{'answerCount': 0, 'createdAt': now},
       };
       final batch = firestore.batch()
         ..set(questionRef, data, SetOptions(merge: true));
@@ -392,11 +388,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
             .doc(user.uid)
             .collection('lessonQuestions')
             .doc(question.id),
-        {
-          'isDeleted': true,
-          'deletedAt': now,
-          'updatedAt': now,
-        },
+        {'isDeleted': true, 'deletedAt': now, 'updatedAt': now},
         SetOptions(merge: true),
       );
     if (publicSnapshot.exists) {
@@ -411,6 +403,10 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
   }
 
   Stream<List<LessonQuestionAnswer>> _answersStream(LessonQuestion question) {
+    final provided = widget.answersStream;
+    if (provided != null) {
+      return provided;
+    }
     if (Firebase.apps.isEmpty || question.id == null || question.isDeleted) {
       return Stream.value(const []);
     }
@@ -438,9 +434,9 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
           .where((answer) => !answer.isDeleted)
           .toList();
       answers.sort((a, b) {
-        return timestampOrEpoch(a.createdAt).compareTo(
-          timestampOrEpoch(b.createdAt),
-        );
+        return timestampOrEpoch(
+          a.createdAt,
+        ).compareTo(timestampOrEpoch(b.createdAt));
       });
       return answers;
     });
@@ -493,8 +489,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
       'updatedAt': now,
     };
     final batch = firestore.batch()..set(answerRef, data);
-    if (question.isPublic &&
-        await _isPublicQuestionVisible(question.id!)) {
+    if (question.isPublic && await _isPublicQuestionVisible(question.id!)) {
       batch.set(
         firestore.collection('publicLessonQuestionAnswers').doc(answerRef.id),
         {...data, 'answerId': answerRef.id},
@@ -1349,6 +1344,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
   String? _replyToAuthorId;
   String? _replyToDisplayName;
   String? _replyToBodyPreview;
+  final Set<String> _expandedAnswerIds = {};
   bool _isSaving = false;
 
   @override
@@ -1473,33 +1469,37 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                 builder: (context, snapshot) {
                   final answers =
                       snapshot.data ?? const <LessonQuestionAnswer>[];
-                  if (answers.isEmpty) {
+                  final answerThreads = _buildAnswerThreads(
+                    question: question,
+                    answers: answers,
+                  );
+                  if (answerThreads.isEmpty) {
                     return const Text('回答コメントはまだありません。');
                   }
                   return Column(
                     children: [
-                      for (final answer in answers)
-                        _CommentBubble(
-                          body: answer.body,
-                          authorId: answer.authorId,
-                          authorName: answer.authorName,
-                          authorDisplayName: answer.authorDisplayName,
-                          authorRole: answer.authorRole,
-                          createdAt: answer.createdAt,
+                      for (final thread in answerThreads)
+                        _AnswerThreadView(
+                          thread: thread,
                           scopeLabel: _questionScopeLabel(question),
-                          attachmentTypes: answer.attachmentTypes,
-                          quotedNoteTitle: answer.quotedNoteTitle,
-                          quotedNoteBody: answer.quotedNoteBody,
-                          replyToDisplayName: answer.replyToDisplayName,
-                          replyToBodyPreview: answer.replyToBodyPreview,
-                          isOwner: widget.currentUserId == answer.authorId,
-                          isTeacher: widget.isCurrentUserTeacher,
-                          onReply: widget.canAnswer
-                              ? () => _setAnswerReplyTarget(answer)
-                              : null,
-                          onDelete: widget.currentUserId == answer.authorId
-                              ? () => widget.onDeleteAnswer(answer)
-                              : null,
+                          currentUserId: widget.currentUserId,
+                          isCurrentUserTeacher: widget.isCurrentUserTeacher,
+                          canAnswer: widget.canAnswer,
+                          isExpanded:
+                              thread.root.id != null &&
+                              _expandedAnswerIds.contains(thread.root.id),
+                          onToggle: thread.root.id == null
+                              ? null
+                              : () {
+                                  setState(() {
+                                    final id = thread.root.id!;
+                                    if (!_expandedAnswerIds.add(id)) {
+                                      _expandedAnswerIds.remove(id);
+                                    }
+                                  });
+                                },
+                          onReply: _setAnswerReplyTarget,
+                          onDeleteAnswer: widget.onDeleteAnswer,
                         ),
                     ],
                   );
@@ -1526,10 +1526,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                         labelText: '引用する公開メモ',
                       ),
                       items: [
-                        const DropdownMenuItem(
-                          value: '',
-                          child: Text('引用なし'),
-                        ),
+                        const DropdownMenuItem(value: '', child: Text('引用なし')),
                         for (final note in notes)
                           DropdownMenuItem(
                             value: note.id ?? '',
@@ -1577,6 +1574,192 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
         ),
       ],
     );
+  }
+}
+
+class _AnswerThreadView extends StatelessWidget {
+  const _AnswerThreadView({
+    required this.thread,
+    required this.scopeLabel,
+    required this.currentUserId,
+    required this.isCurrentUserTeacher,
+    required this.canAnswer,
+    required this.isExpanded,
+    required this.onToggle,
+    required this.onReply,
+    required this.onDeleteAnswer,
+  });
+
+  final _AnswerThread thread;
+  final String scopeLabel;
+  final String? currentUserId;
+  final bool isCurrentUserTeacher;
+  final bool canAnswer;
+  final bool isExpanded;
+  final VoidCallback? onToggle;
+  final void Function(LessonQuestionAnswer answer) onReply;
+  final Future<void> Function(LessonQuestionAnswer answer) onDeleteAnswer;
+
+  @override
+  Widget build(BuildContext context) {
+    final root = thread.root;
+    final replies = thread.replies;
+    final replyCount = replies.length;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _CommentBubble(
+          body: root.body,
+          authorId: root.authorId,
+          authorName: root.authorName,
+          authorDisplayName: root.authorDisplayName,
+          authorRole: root.authorRole,
+          createdAt: root.createdAt,
+          scopeLabel: scopeLabel,
+          attachmentTypes: root.attachmentTypes,
+          quotedNoteTitle: root.quotedNoteTitle,
+          quotedNoteBody: root.quotedNoteBody,
+          replyToDisplayName: root.replyToDisplayName,
+          replyToBodyPreview: root.replyToBodyPreview,
+          isOwner: currentUserId == root.authorId,
+          isTeacher: isCurrentUserTeacher,
+          onTap: replyCount > 0 ? onToggle : null,
+          onReply: canAnswer ? () => onReply(root) : null,
+          onDelete: currentUserId == root.authorId
+              ? () => onDeleteAnswer(root)
+              : null,
+        ),
+        if (replyCount > 0) ...[
+          Padding(
+            padding: const EdgeInsets.only(left: 48),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: onToggle,
+                style: TextButton.styleFrom(
+                  minimumSize: const Size(0, 32),
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                ),
+                icon: Icon(
+                  isExpanded ? Icons.expand_less : Icons.expand_more,
+                  size: 18,
+                ),
+                label: Text(
+                  isExpanded ? '返信 $replyCount件を隠す' : '返信 $replyCount件を表示',
+                ),
+              ),
+            ),
+          ),
+          if (isExpanded)
+            Padding(
+              padding: const EdgeInsets.only(left: 28),
+              child: Column(
+                children: [
+                  for (final reply in replies)
+                    _CommentBubble(
+                      body: reply.body,
+                      authorId: reply.authorId,
+                      authorName: reply.authorName,
+                      authorDisplayName: reply.authorDisplayName,
+                      authorRole: reply.authorRole,
+                      createdAt: reply.createdAt,
+                      scopeLabel: scopeLabel,
+                      attachmentTypes: reply.attachmentTypes,
+                      quotedNoteTitle: reply.quotedNoteTitle,
+                      quotedNoteBody: reply.quotedNoteBody,
+                      replyToDisplayName: reply.replyToDisplayName,
+                      replyToBodyPreview: reply.replyToBodyPreview,
+                      isOwner: currentUserId == reply.authorId,
+                      isTeacher: isCurrentUserTeacher,
+                      onReply: canAnswer ? () => onReply(reply) : null,
+                      onDelete: currentUserId == reply.authorId
+                          ? () => onDeleteAnswer(reply)
+                          : null,
+                    ),
+                ],
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+}
+
+class _AnswerThread {
+  const _AnswerThread({required this.root, required this.replies});
+
+  final LessonQuestionAnswer root;
+  final List<LessonQuestionAnswer> replies;
+}
+
+List<_AnswerThread> _buildAnswerThreads({
+  required LessonQuestion question,
+  required List<LessonQuestionAnswer> answers,
+}) {
+  final answersById = {
+    for (final answer in answers)
+      if (answer.id != null) answer.id!: answer,
+  };
+  final directAnswers = answers
+      .where((answer) => _isDirectAnswerToQuestion(answer, question))
+      .toList();
+  final repliesByRootId = <String, List<LessonQuestionAnswer>>{};
+
+  for (final answer in answers) {
+    if (_isDirectAnswerToQuestion(answer, question)) {
+      continue;
+    }
+    final rootId = _rootAnswerIdFor(
+      answer: answer,
+      question: question,
+      answersById: answersById,
+    );
+    if (rootId == null) {
+      continue;
+    }
+    repliesByRootId.putIfAbsent(rootId, () => []).add(answer);
+  }
+
+  return [
+    for (final root in directAnswers)
+      _AnswerThread(root: root, replies: repliesByRootId[root.id] ?? const []),
+  ];
+}
+
+bool _isDirectAnswerToQuestion(
+  LessonQuestionAnswer answer,
+  LessonQuestion question,
+) {
+  if (answer.parentCommentType == 'answer') {
+    return false;
+  }
+  return answer.parentCommentId == null ||
+      answer.parentCommentId == question.id ||
+      answer.parentCommentType == 'question';
+}
+
+String? _rootAnswerIdFor({
+  required LessonQuestionAnswer answer,
+  required LessonQuestion question,
+  required Map<String, LessonQuestionAnswer> answersById,
+}) {
+  var current = answer;
+  final visitedIds = <String>{};
+  while (true) {
+    if (_isDirectAnswerToQuestion(current, question)) {
+      return current.id;
+    }
+    final parentId = current.parentCommentId;
+    if (parentId == null || !visitedIds.add(parentId)) {
+      return null;
+    }
+    final parent = answersById[parentId];
+    if (parent == null) {
+      return null;
+    }
+    current = parent;
   }
 }
 
@@ -1750,10 +1933,7 @@ class _LessonQuestionEditorState extends State<_LessonQuestionEditor> {
                         labelText: '引用する公開メモ',
                       ),
                       items: [
-                        const DropdownMenuItem(
-                          value: '',
-                          child: Text('引用なし'),
-                        ),
+                        const DropdownMenuItem(value: '', child: Text('引用なし')),
                         for (final note in notes)
                           DropdownMenuItem(
                             value: note.id ?? '',

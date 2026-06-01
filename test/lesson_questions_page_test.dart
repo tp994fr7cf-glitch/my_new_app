@@ -239,4 +239,112 @@ void main() {
     expect(find.text('この質問は削除済みのため、コメント欄では表示できません。'), findsOneWidget);
     expect(find.text(answer.body), findsNothing);
   });
+
+  testWidgets('Answer replies are grouped under their direct answer', (
+    tester,
+  ) async {
+    const question = LessonQuestion(
+      id: 'question-thread',
+      authorId: 'student-a',
+      authorName: 'Aさん',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '',
+      body: '親質問です。',
+      visibility: LessonQuestionVisibility.public,
+      target: LessonQuestionTarget.everyone,
+      attachmentTypes: [],
+    );
+    final answers = [
+      LessonQuestionAnswer(
+        id: 'answer-b',
+        questionId: 'question-thread',
+        authorId: 'student-b',
+        authorName: 'Bさん',
+        authorRole: 'student',
+        body: 'Bさんの直接回答です。',
+        attachmentTypes: const [],
+        parentCommentId: 'question-thread',
+        parentCommentType: 'question',
+        replyToDisplayName: 'Aさん',
+        replyToBodyPreview: '親質問です。',
+        createdAt: Timestamp.fromDate(DateTime(2026, 5, 30, 8)),
+      ),
+      LessonQuestionAnswer(
+        id: 'answer-c',
+        questionId: 'question-thread',
+        authorId: 'student-c',
+        authorName: 'Cさん',
+        authorRole: 'student',
+        body: 'CさんからBさんへの返信です。',
+        attachmentTypes: const [],
+        parentCommentId: 'answer-b',
+        parentCommentType: 'answer',
+        replyToDisplayName: 'Bさん',
+        replyToBodyPreview: 'Bさんの直接回答です。',
+        createdAt: Timestamp.fromDate(DateTime(2026, 5, 30, 8, 5)),
+      ),
+      LessonQuestionAnswer(
+        id: 'answer-d',
+        questionId: 'question-thread',
+        authorId: 'student-d',
+        authorName: 'Dさん',
+        authorRole: 'student',
+        body: 'DさんからCさんへの返信です。',
+        attachmentTypes: const [],
+        parentCommentId: 'answer-c',
+        parentCommentType: 'answer',
+        replyToDisplayName: 'Cさん',
+        replyToBodyPreview: 'CさんからBさんへの返信です。',
+        createdAt: Timestamp.fromDate(DateTime(2026, 5, 30, 8, 10)),
+      ),
+      LessonQuestionAnswer(
+        id: 'answer-e',
+        questionId: 'question-thread',
+        authorId: 'student-e',
+        authorName: 'Eさん',
+        authorRole: 'student',
+        body: 'Eさんの別の直接回答です。',
+        attachmentTypes: const [],
+        parentCommentId: 'question-thread',
+        parentCommentType: 'question',
+        replyToDisplayName: 'Aさん',
+        replyToBodyPreview: '親質問です。',
+        createdAt: Timestamp.fromDate(DateTime(2026, 5, 30, 8, 15)),
+      ),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonQuestionsPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            initialSelectedQuestion: question,
+            questionsStream: Stream.value(const []),
+            publicQuestionsStream: Stream.value(const []),
+            answersStream: Stream.value(answers),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Bさんの直接回答です。'), findsOneWidget);
+    expect(find.text('Eさんの別の直接回答です。'), findsOneWidget);
+    expect(find.text('返信 2件を表示'), findsOneWidget);
+    expect(find.text('CさんからBさんへの返信です。'), findsNothing);
+    expect(find.text('DさんからCさんへの返信です。'), findsNothing);
+
+    await tester.tap(find.text('返信 2件を表示'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('CさんからBさんへの返信です。'), findsOneWidget);
+    expect(find.text('DさんからCさんへの返信です。'), findsOneWidget);
+    expect(find.textContaining('Bさん への返信'), findsOneWidget);
+    expect(find.textContaining('Cさん への返信'), findsOneWidget);
+  });
 }
