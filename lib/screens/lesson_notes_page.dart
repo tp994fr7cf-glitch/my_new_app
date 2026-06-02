@@ -9,6 +9,7 @@ import '../models/course.dart';
 import '../models/lesson_note.dart';
 import '../models/public_user_profile.dart';
 import '../services/lesson_interaction_service.dart';
+import 'lesson_questions_page.dart';
 import 'public_user_profile_page.dart';
 
 class LessonNotesPage extends StatelessWidget {
@@ -342,6 +343,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         'sourceAuthorId': draft.sourceAuthorId,
         'isCopied': draft.isCopied,
         'canPublish': draft.canPublish,
+        'allowsQuestionCitation': draft.allowsQuestionCitation,
         'hasPublicMirror': nextHasPublicMirror,
         'isDeleted': false,
         'moderationStatus': lessonNoteModerationVisible,
@@ -799,7 +801,13 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
           onTap: (note) {
             Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => _PublicLessonNoteDetailPage(note: note),
+                builder: (_) => _PublicLessonNoteDetailPage(
+                  note: note,
+                  course: widget.course,
+                  lesson: widget.lesson,
+                  lessonNumber: widget.lessonNumber,
+                  canCreateQuestion: !widget.isTeacherPreview,
+                ),
               ),
             );
           },
@@ -1231,9 +1239,19 @@ class _PublicLessonNoteCard extends StatelessWidget {
 }
 
 class _PublicLessonNoteDetailPage extends StatelessWidget {
-  const _PublicLessonNoteDetailPage({required this.note});
+  const _PublicLessonNoteDetailPage({
+    required this.note,
+    required this.course,
+    required this.lesson,
+    required this.lessonNumber,
+    required this.canCreateQuestion,
+  });
 
   final LessonNote note;
+  final Course course;
+  final CourseLesson lesson;
+  final int lessonNumber;
+  final bool canCreateQuestion;
 
   @override
   Widget build(BuildContext context) {
@@ -1299,9 +1317,59 @@ class _PublicLessonNoteDetailPage extends StatelessWidget {
                   const SizedBox(height: 16),
                   Text('添付予定: ${note.attachmentTypes.join(', ')}'),
                 ],
+                const SizedBox(height: 24),
+                if (canCreateQuestion && note.allowsQuestionCitation) ...[
+                  FilledButton.icon(
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => _QuotedLessonQuestionPage(
+                            course: course,
+                            lesson: lesson,
+                            lessonNumber: lessonNumber,
+                            quotedNote: note,
+                          ),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.add_comment),
+                    label: const Text('このメモを引用して質問する'),
+                  ),
+                ] else if (canCreateQuestion) ...[
+                  const Text('このメモの作成者は引用を許可していません。'),
+                ],
               ],
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+class _QuotedLessonQuestionPage extends StatelessWidget {
+  const _QuotedLessonQuestionPage({
+    required this.course,
+    required this.lesson,
+    required this.lessonNumber,
+    required this.quotedNote,
+  });
+
+  final Course course;
+  final CourseLesson lesson;
+  final int lessonNumber;
+  final LessonNote quotedNote;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('質問コメント')),
+      body: SafeArea(
+        child: LessonQuestionsPanel(
+          course: course,
+          lesson: lesson,
+          lessonNumber: lessonNumber,
+          initialQuotedNote: quotedNote,
         ),
       ),
     );
@@ -1353,6 +1421,7 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
   String _folderId = '';
   LessonNoteVisibility _visibility = LessonNoteVisibility.private;
   final Set<String> _attachmentTypes = {};
+  bool _allowsQuestionCitation = false;
   bool _isSaving = false;
 
   @override
@@ -1367,6 +1436,7 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
     _folderId = note?.folderId ?? '';
     _visibility = note?.visibility ?? LessonNoteVisibility.private;
     _attachmentTypes.addAll(note?.attachmentTypes ?? const []);
+    _allowsQuestionCitation = note?.allowsQuestionCitation ?? false;
   }
 
   @override
@@ -1418,6 +1488,7 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
         sourceAuthorId: widget.note?.sourceAuthorId,
         isCopied: widget.note?.isCopied ?? false,
         canPublish: widget.note?.canPublish ?? true,
+        allowsQuestionCitation: _allowsQuestionCitation,
         wasPublic: widget.note?.hasPublicMirror ?? false,
       ),
     );
@@ -1543,6 +1614,22 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
                   });
                 },
         ),
+        SwitchListTile(
+          title: const Text('質問での引用を許可する'),
+          subtitle: Text(
+            _allowsQuestionCitation
+                ? '一度許可した引用は後から取り消せません。'
+                : '許可すると、他の学習者がこの公開メモを引用して質問できます。',
+          ),
+          value: _allowsQuestionCitation,
+          onChanged: !_canPublish || _allowsQuestionCitation
+              ? null
+              : (value) {
+                  setState(() {
+                    _allowsQuestionCitation = value;
+                  });
+                },
+        ),
         const SizedBox(height: 16),
         FilledButton.icon(
           onPressed: _isSaving ? null : _save,
@@ -1635,6 +1722,7 @@ class _LessonNoteDraft {
     required this.sourceAuthorId,
     required this.isCopied,
     required this.canPublish,
+    required this.allowsQuestionCitation,
     required this.wasPublic,
   });
 
@@ -1650,5 +1738,6 @@ class _LessonNoteDraft {
   final String? sourceAuthorId;
   final bool isCopied;
   final bool canPublish;
+  final bool allowsQuestionCitation;
   final bool wasPublic;
 }

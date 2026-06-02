@@ -105,6 +105,53 @@ service cloud.firestore {
           || get(/databases/$(database)/documents/lessonInteractionSettings/$(settingId)).data.lessonQuestionsPublicEnabled != false);
     }
 
+    function allowsQuestionCitationOnPublicNote(noteId, courseId, lessonNumber) {
+      return noteId is string
+        && exists(/databases/$(database)/documents/publicLessonNotes/$(noteId))
+        && get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.courseId == courseId
+        && get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.lessonNumber == lessonNumber
+        && get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.studentVisibility == 'public'
+        && get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.moderationStatus == 'visible'
+        && get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.isDeleted == false
+        && get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.allowsQuestionCitation == true
+        && lessonNotesPublicEnabled(get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.interactionSettingId);
+    }
+
+    function noQuotedNoteFields() {
+      return (!request.resource.data.keys().hasAny(['quotedNoteId'])
+          || request.resource.data.quotedNoteId == null)
+        && (!request.resource.data.keys().hasAny(['quotedNoteTitle'])
+          || request.resource.data.quotedNoteTitle == null)
+        && (!request.resource.data.keys().hasAny(['quotedNoteBody'])
+          || request.resource.data.quotedNoteBody == null);
+    }
+
+    function quotedNoteSnapshotMatches(noteId) {
+      return ((get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.title is string
+            && get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.title.size() > 0
+            && request.resource.data.quotedNoteTitle == get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.title)
+          || (get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.title == ''
+            && (!request.resource.data.keys().hasAny(['quotedNoteTitle'])
+              || request.resource.data.quotedNoteTitle == null)))
+        && ((get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.body is string
+            && get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.body.size() > 0
+            && request.resource.data.quotedNoteBody == get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.body)
+          || (get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.body == ''
+            && (!request.resource.data.keys().hasAny(['quotedNoteBody'])
+              || request.resource.data.quotedNoteBody == null)));
+    }
+
+    function validQuotedNoteCitation(courseId, lessonNumber) {
+      return noQuotedNoteFields()
+        || (request.resource.data.quotedNoteId is string
+          && allowsQuestionCitationOnPublicNote(
+            request.resource.data.quotedNoteId,
+            courseId,
+            lessonNumber
+          )
+          && quotedNoteSnapshotMatches(request.resource.data.quotedNoteId));
+    }
+
     function validPublicUserProfile(profileId) {
       return request.resource.data.keys().hasOnly([
           'userId',
@@ -338,6 +385,7 @@ service cloud.firestore {
             && request.resource.data.hasAudioAttachment is bool
             && request.resource.data.isCopied is bool
             && request.resource.data.canPublish is bool
+            && request.resource.data.allowsQuestionCitation is bool
             && (request.resource.data.visibility == 'private'
               || request.resource.data.canPublish == true)
             && (!request.resource.data.keys().hasAny(['isDeleted'])
@@ -355,6 +403,9 @@ service cloud.firestore {
 
         allow update: if isOwner(userId)
           && validLessonNoteOwnerWrite()
+          && (!resource.data.keys().hasAny(['allowsQuestionCitation'])
+            || resource.data.allowsQuestionCitation != true
+            || request.resource.data.allowsQuestionCitation == true)
           && ((!resource.data.keys().hasAny(['hasPublicMirror'])
               && resource.data.visibility != 'public')
             || (resource.data.hasPublicMirror != true
@@ -379,7 +430,11 @@ service cloud.firestore {
           && request.resource.data.target in ['teacher', 'everyone']
           && request.resource.data.attachmentTypes is list
           && request.resource.data.isDeleted is bool
-          && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
+          && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher']
+          && validQuotedNoteCitation(
+            request.resource.data.courseId,
+            request.resource.data.lessonNumber
+          );
 
         allow update: if isOwner(userId)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
@@ -400,13 +455,27 @@ service cloud.firestore {
       match /lessonQuestionAnswers/{answerId} {
         allow read: if isOwner(userId);
 
-        allow create, update: if isOwner(userId)
+        allow create: if isOwner(userId)
           && request.resource.data.authorId == userId
           && request.resource.data.questionId is string
+          && request.resource.data.courseId is string
+          && request.resource.data.lessonNumber is int
           && request.resource.data.body is string
           && request.resource.data.attachmentTypes is list
           && request.resource.data.isDeleted is bool
-          && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
+          && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher']
+          && validQuotedNoteCitation(
+            request.resource.data.courseId,
+            request.resource.data.lessonNumber
+          );
+
+        allow update: if isOwner(userId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'isDeleted',
+            'deletedAt',
+            'updatedAt'
+          ])
+          && request.resource.data.isDeleted == true;
       }
     }
 
@@ -434,6 +503,7 @@ service cloud.firestore {
           && request.resource.data.studentVisibility in ['private', 'public']
           && request.resource.data.tags is list
           && request.resource.data.attachmentTypes is list
+          && request.resource.data.allowsQuestionCitation is bool
           && request.resource.data.hasAudioAttachment == false
           && request.resource.data.isCopied == false
           && request.resource.data.canPublish == true
@@ -454,6 +524,9 @@ service cloud.firestore {
       allow update: if signedIn()
         && validPublicLessonNoteOwnerWrite()
         && resource.data.authorId == request.auth.uid
+        && (!resource.data.keys().hasAny(['allowsQuestionCitation'])
+          || resource.data.allowsQuestionCitation != true
+          || request.resource.data.allowsQuestionCitation == true)
         && request.resource.data.studentVisibility == 'public'
         && ((!resource.data.keys().hasAny(['moderationStatus'])
           && (!request.resource.data.keys().hasAny(['moderationStatus'])
@@ -514,7 +587,11 @@ service cloud.firestore {
           && request.resource.data.target in ['teacher', 'everyone']
           && request.resource.data.attachmentTypes is list
           && request.resource.data.isDeleted is bool
-          && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
+          && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher']
+          && validQuotedNoteCitation(
+            request.resource.data.courseId,
+            request.resource.data.lessonNumber
+          );
       }
 
       allow create: if signedIn()
@@ -618,6 +695,10 @@ service cloud.firestore {
         && request.resource.data.attachmentTypes is list
         && request.resource.data.isDeleted is bool
         && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher']
+        && validQuotedNoteCitation(
+          request.resource.data.courseId,
+          request.resource.data.lessonNumber
+        )
         && exists(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId))
         && get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.studentVisibility == 'public'
         && get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.moderationStatus == 'visible'

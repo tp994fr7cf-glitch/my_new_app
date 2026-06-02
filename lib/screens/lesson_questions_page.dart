@@ -23,10 +23,13 @@ class LessonQuestionsPanel extends StatefulWidget {
     this.questionsStream,
     this.publicQuestionsStream,
     this.answersStream,
+    this.quotableNotesStream,
     this.isEmbedded = false,
     this.isTeacherPreview = false,
     this.initialEditingQuestion,
     this.initialSelectedQuestion,
+    this.initialQuotedNote,
+    this.initialHighlightedAnswerId,
   });
 
   final Course course;
@@ -35,10 +38,13 @@ class LessonQuestionsPanel extends StatefulWidget {
   final Stream<List<LessonQuestion>>? questionsStream;
   final Stream<List<LessonQuestion>>? publicQuestionsStream;
   final Stream<List<LessonQuestionAnswer>>? answersStream;
+  final Stream<List<LessonNote>>? quotableNotesStream;
   final bool isEmbedded;
   final bool isTeacherPreview;
   final LessonQuestion? initialEditingQuestion;
   final LessonQuestion? initialSelectedQuestion;
+  final LessonNote? initialQuotedNote;
+  final String? initialHighlightedAnswerId;
 
   @override
   State<LessonQuestionsPanel> createState() => _LessonQuestionsPanelState();
@@ -69,7 +75,9 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
   @override
   void initState() {
     super.initState();
-    _editingQuestion = widget.initialEditingQuestion;
+    _editingQuestion =
+        widget.initialEditingQuestion ??
+        _initialQuestionDraftForQuotedNote(widget.initialQuotedNote);
     _selectedQuestion = widget.initialSelectedQuestion;
     _listenToActiveRole();
   }
@@ -184,6 +192,10 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
   }
 
   Stream<List<LessonNote>> _quotableNotesStream() {
+    final provided = widget.quotableNotesStream;
+    if (provided != null) {
+      return provided.map(_quotablePublicNotes);
+    }
     if (Firebase.apps.isEmpty) {
       return Stream.value(const []);
     }
@@ -195,16 +207,14 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
         .where('studentVisibility', isEqualTo: lessonNoteVisibilityPublic)
         .where('moderationStatus', isEqualTo: lessonNoteModerationVisible)
         .where('isDeleted', isEqualTo: false)
+        .where('allowsQuestionCitation', isEqualTo: true)
         .snapshots(includeMetadataChanges: true)
         .map((snapshot) {
           if (snapshot.metadata.isFromCache) {
             return const <LessonNote>[];
           }
           return sortLessonNotesByUpdatedAt(
-            snapshot.docs
-                .map(LessonNote.fromFirestore)
-                .where((note) => note.isPubliclyVisible)
-                .toList(),
+            _quotablePublicNotes(snapshot.docs.map(LessonNote.fromFirestore)),
           );
         });
   }
@@ -627,6 +637,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
             currentUserId: _currentUserId,
             isCurrentUserTeacher: _isCurrentUserTeacher,
             canAnswer: _canCurrentUserAnswerQuestion(currentQuestion),
+            highlightedAnswerId: widget.initialHighlightedAnswerId,
             onBack: () => setState(() => _selectedQuestion = null),
             onSaveAnswer: (draft) => _saveAnswer(currentQuestion, draft),
             onDeleteQuestion: () async {
@@ -650,6 +661,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
         onCancel: () => setState(() => _editingQuestion = null),
         onSave: _saveQuestion,
         quotableNotesStream: _quotableNotesStream(),
+        initialQuotedNote: widget.initialQuotedNote,
       );
     }
     return _buildQuestionList();
@@ -894,6 +906,7 @@ class _QuestionList extends StatelessWidget {
                   createdAt: question.createdAt,
                   scopeLabel: _questionScopeLabel(question),
                   attachmentTypes: question.attachmentTypes,
+                  quotedNoteId: question.quotedNoteId,
                   quotedNoteTitle: question.quotedNoteTitle,
                   quotedNoteBody: question.quotedNoteBody,
                   isOwner: currentUserId == question.authorId,
@@ -957,10 +970,12 @@ class _CommentBubble extends StatelessWidget {
     required this.isOwner,
     required this.isTeacher,
     this.authorDisplayName,
+    this.quotedNoteId,
     this.quotedNoteTitle,
     this.quotedNoteBody,
     this.replyToDisplayName,
     this.replyToBodyPreview,
+    this.isHighlighted = false,
     this.onTap,
     this.onReply,
     this.onEdit,
@@ -975,10 +990,12 @@ class _CommentBubble extends StatelessWidget {
   final Timestamp? createdAt;
   final String scopeLabel;
   final List<String> attachmentTypes;
+  final String? quotedNoteId;
   final String? quotedNoteTitle;
   final String? quotedNoteBody;
   final String? replyToDisplayName;
   final String? replyToBodyPreview;
+  final bool isHighlighted;
   final bool isOwner;
   final bool isTeacher;
   final VoidCallback? onTap;
@@ -1065,9 +1082,18 @@ class _CommentBubble extends StatelessWidget {
                           width: double.infinity,
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.surfaceContainerHighest,
+                            color: isHighlighted
+                                ? Theme.of(context).colorScheme.primaryContainer
+                                : Theme.of(
+                                    context,
+                                  ).colorScheme.surfaceContainerHighest,
+                            border: isHighlighted
+                                ? Border.all(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.primary,
+                                  )
+                                : null,
                             borderRadius: BorderRadius.circular(16),
                           ),
                           child: Column(
@@ -1096,10 +1122,10 @@ class _CommentBubble extends StatelessWidget {
                                         detail: 'アップロード機能追加後に表示します。',
                                       ),
                                     if ((quotedNoteTitle ?? '').isNotEmpty)
-                                      _AttachmentPreviewChip(
-                                        label: 'レッスンメモ',
-                                        detail:
-                                            '${quotedNoteTitle ?? '無題のメモ'}\n${quotedNoteBody ?? ''}',
+                                      _QuotedNotePreviewChip(
+                                        quotedNoteId: quotedNoteId,
+                                        title: quotedNoteTitle ?? '無題のメモ',
+                                        body: quotedNoteBody ?? '',
                                       ),
                                   ],
                                 ),
@@ -1224,6 +1250,37 @@ String _questionScopeLabel(LessonQuestion question) {
   return '$visibility / $answerScope';
 }
 
+List<LessonNote> _quotablePublicNotes(Iterable<LessonNote> notes) {
+  return sortLessonNotesByUpdatedAt(
+    notes
+        .where((note) => note.isPubliclyVisible)
+        .where((note) => note.allowsQuestionCitation)
+        .toList(),
+  );
+}
+
+LessonQuestion? _initialQuestionDraftForQuotedNote(LessonNote? note) {
+  if (note == null) {
+    return null;
+  }
+  return LessonQuestion(
+    authorId: '',
+    authorName: '',
+    courseId: note.courseId,
+    courseTitle: note.courseTitle,
+    lessonNumber: note.lessonNumber,
+    lessonTitle: note.lessonTitle,
+    title: '',
+    body: '',
+    visibility: LessonQuestionVisibility.teacherOnly,
+    target: LessonQuestionTarget.teacher,
+    attachmentTypes: const [],
+    quotedNoteId: note.id,
+    quotedNoteTitle: note.title,
+    quotedNoteBody: note.body,
+  );
+}
+
 class _ReplyLine extends StatelessWidget {
   const _ReplyLine({required this.displayName, required this.bodyPreview});
 
@@ -1303,6 +1360,77 @@ class _AttachmentPreviewChip extends StatelessWidget {
   }
 }
 
+class _QuotedNotePreviewChip extends StatelessWidget {
+  const _QuotedNotePreviewChip({
+    required this.quotedNoteId,
+    required this.title,
+    required this.body,
+  });
+
+  final String? quotedNoteId;
+  final String title;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) {
+    final chip = _AttachmentPreviewChip(
+      label: 'レッスンメモ',
+      detail: '$title\n$body',
+    );
+    if (Firebase.apps.isEmpty ||
+        quotedNoteId == null ||
+        quotedNoteId!.isEmpty) {
+      return chip;
+    }
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('publicLessonNotes')
+          .doc(quotedNoteId)
+          .snapshots(),
+      builder: (context, snapshot) {
+        final data = snapshot.data?.data();
+        final isUnavailable = snapshot.data == null && !snapshot.hasError
+            ? false
+            : quotedNoteUnavailableForQuestion(
+                data,
+                exists: snapshot.data?.exists == true,
+                hasError: snapshot.hasError,
+              );
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            chip,
+            if (isUnavailable)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  '引用元メモは削除されたか、現在は表示できません。',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+bool quotedNoteUnavailableForQuestion(
+  Map<String, dynamic>? data, {
+  required bool exists,
+  required bool hasError,
+}) {
+  if (hasError || !exists) {
+    return true;
+  }
+  return data?['isDeleted'] == true ||
+      data?['studentVisibility'] != lessonNoteVisibilityPublic ||
+      data?['moderationStatus'] != lessonNoteModerationVisible;
+}
+
 class _AttachmentPreviewPage extends StatelessWidget {
   const _AttachmentPreviewPage({required this.title, required this.detail});
 
@@ -1355,6 +1483,7 @@ class _LessonQuestionDetail extends StatefulWidget {
     required this.currentUserId,
     required this.isCurrentUserTeacher,
     required this.canAnswer,
+    required this.highlightedAnswerId,
     required this.onBack,
     required this.onSaveAnswer,
     required this.onDeleteQuestion,
@@ -1367,6 +1496,7 @@ class _LessonQuestionDetail extends StatefulWidget {
   final String? currentUserId;
   final bool isCurrentUserTeacher;
   final bool canAnswer;
+  final String? highlightedAnswerId;
   final VoidCallback onBack;
   final Future<void> Function(_LessonQuestionAnswerDraft draft) onSaveAnswer;
   final Future<void> Function() onDeleteQuestion;
@@ -1387,6 +1517,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
   String? _replyToDisplayName;
   String? _replyToBodyPreview;
   final Set<String> _expandedAnswerIds = {};
+  bool _expandedInitialHighlightedAnswer = false;
   bool _isSaving = false;
 
   @override
@@ -1491,6 +1622,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                 createdAt: question.createdAt,
                 scopeLabel: _questionScopeLabel(question),
                 attachmentTypes: question.attachmentTypes,
+                quotedNoteId: question.quotedNoteId,
                 quotedNoteTitle: question.quotedNoteTitle,
                 quotedNoteBody: question.quotedNoteBody,
                 isOwner: widget.currentUserId == question.authorId,
@@ -1515,6 +1647,15 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                     question: question,
                     answers: answers,
                   );
+                  final highlightedRootId = _rootAnswerIdForHighlightedAnswer(
+                    answerThreads,
+                    widget.highlightedAnswerId,
+                  );
+                  if (!_expandedInitialHighlightedAnswer &&
+                      highlightedRootId != null) {
+                    _expandedAnswerIds.add(highlightedRootId);
+                    _expandedInitialHighlightedAnswer = true;
+                  }
                   if (answerThreads.isEmpty) {
                     return const Text('回答コメントはまだありません。');
                   }
@@ -1542,6 +1683,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                                 },
                           onReply: _setAnswerReplyTarget,
                           onDeleteAnswer: widget.onDeleteAnswer,
+                          highlightedAnswerId: widget.highlightedAnswerId,
                         ),
                     ],
                   );
@@ -1630,6 +1772,7 @@ class _AnswerThreadView extends StatelessWidget {
     required this.onToggle,
     required this.onReply,
     required this.onDeleteAnswer,
+    this.highlightedAnswerId,
   });
 
   final _AnswerThread thread;
@@ -1641,6 +1784,7 @@ class _AnswerThreadView extends StatelessWidget {
   final VoidCallback? onToggle;
   final void Function(LessonQuestionAnswer answer) onReply;
   final Future<void> Function(LessonQuestionAnswer answer) onDeleteAnswer;
+  final String? highlightedAnswerId;
 
   @override
   Widget build(BuildContext context) {
@@ -1660,9 +1804,11 @@ class _AnswerThreadView extends StatelessWidget {
           scopeLabel: scopeLabel,
           attachmentTypes: root.attachmentTypes,
           quotedNoteTitle: root.quotedNoteTitle,
+          quotedNoteId: root.quotedNoteId,
           quotedNoteBody: root.quotedNoteBody,
           replyToDisplayName: root.replyToDisplayName,
           replyToBodyPreview: root.replyToBodyPreview,
+          isHighlighted: root.id == highlightedAnswerId,
           isOwner: currentUserId == root.authorId,
           isTeacher: isCurrentUserTeacher,
           onTap: replyCount > 0 ? onToggle : null,
@@ -1710,9 +1856,11 @@ class _AnswerThreadView extends StatelessWidget {
                       scopeLabel: scopeLabel,
                       attachmentTypes: reply.attachmentTypes,
                       quotedNoteTitle: reply.quotedNoteTitle,
+                      quotedNoteId: reply.quotedNoteId,
                       quotedNoteBody: reply.quotedNoteBody,
                       replyToDisplayName: reply.replyToDisplayName,
                       replyToBodyPreview: reply.replyToBodyPreview,
+                      isHighlighted: reply.id == highlightedAnswerId,
                       isOwner: currentUserId == reply.authorId,
                       isTeacher: isCurrentUserTeacher,
                       onReply: canAnswer ? () => onReply(reply) : null,
@@ -1734,6 +1882,26 @@ class _AnswerThread {
 
   final LessonQuestionAnswer root;
   final List<LessonQuestionAnswer> replies;
+}
+
+String? _rootAnswerIdForHighlightedAnswer(
+  List<_AnswerThread> threads,
+  String? highlightedAnswerId,
+) {
+  if (highlightedAnswerId == null || highlightedAnswerId.isEmpty) {
+    return null;
+  }
+  for (final thread in threads) {
+    if (thread.root.id == highlightedAnswerId) {
+      return thread.root.id;
+    }
+    for (final reply in thread.replies) {
+      if (reply.id == highlightedAnswerId) {
+        return thread.root.id;
+      }
+    }
+  }
+  return null;
 }
 
 List<_AnswerThread> _buildAnswerThreads({
@@ -1814,6 +1982,7 @@ class _LessonQuestionEditor extends StatefulWidget {
     required this.onCancel,
     required this.onSave,
     required this.quotableNotesStream,
+    this.initialQuotedNote,
   });
 
   final LessonQuestion? question;
@@ -1823,6 +1992,7 @@ class _LessonQuestionEditor extends StatefulWidget {
   final VoidCallback onCancel;
   final Future<bool> Function(_LessonQuestionDraft draft) onSave;
   final Stream<List<LessonNote>> quotableNotesStream;
+  final LessonNote? initialQuotedNote;
 
   @override
   State<_LessonQuestionEditor> createState() => _LessonQuestionEditorState();
@@ -1858,6 +2028,23 @@ class _LessonQuestionEditorState extends State<_LessonQuestionEditor> {
   }
 
   bool get _isEditing => widget.question?.id != null;
+
+  List<LessonNote> _notesWithInitialQuotedNote(List<LessonNote> notes) {
+    final initialNote = widget.initialQuotedNote;
+    if (initialNote == null) {
+      return notes;
+    }
+    final initialNoteId = initialNote.id;
+    if (initialNoteId == null || _quotedNoteId != initialNoteId) {
+      return notes;
+    }
+    for (final note in notes) {
+      if (note.id == initialNoteId) {
+        return notes;
+      }
+    }
+    return [initialNote, ...notes];
+  }
 
   Future<void> _save() async {
     setState(() => _isSaving = true);
@@ -1967,7 +2154,9 @@ class _LessonQuestionEditorState extends State<_LessonQuestionEditor> {
                 StreamBuilder<List<LessonNote>>(
                   stream: widget.quotableNotesStream,
                   builder: (context, snapshot) {
-                    final notes = snapshot.data ?? const <LessonNote>[];
+                    final notes = _notesWithInitialQuotedNote(
+                      snapshot.data ?? const <LessonNote>[],
+                    );
                     return DropdownButtonFormField<String>(
                       initialValue: _quotedNoteId,
                       decoration: const InputDecoration(

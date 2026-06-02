@@ -7,6 +7,7 @@ import '../models/course.dart';
 import '../models/lesson_note.dart';
 import '../models/lesson_question.dart';
 import 'lesson_notes_page.dart';
+import 'lesson_questions_page.dart';
 
 class LearningRecordsPage extends StatefulWidget {
   const LearningRecordsPage({
@@ -287,6 +288,7 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
                 answersStream: _lessonQuestionAnswersStream(),
                 filterQuestions: _filterQuestions,
                 filterAnswers: _filterAnswers,
+                user: widget.user,
               ),
             },
           ],
@@ -329,7 +331,9 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
     }).toList();
   }
 
-  List<LessonQuestionAnswer> _filterAnswers(List<LessonQuestionAnswer> answers) {
+  List<LessonQuestionAnswer> _filterAnswers(
+    List<LessonQuestionAnswer> answers,
+  ) {
     final since = _periodStart();
     final query = _query.trim().toLowerCase();
     return answers.where((answer) {
@@ -664,6 +668,7 @@ class _LessonQuestionRecordsList extends StatelessWidget {
     required this.answersStream,
     required this.filterQuestions,
     required this.filterAnswers,
+    required this.user,
   });
 
   final Stream<List<LessonQuestion>> questionsStream;
@@ -672,6 +677,7 @@ class _LessonQuestionRecordsList extends StatelessWidget {
   filterQuestions;
   final List<LessonQuestionAnswer> Function(List<LessonQuestionAnswer> answers)
   filterAnswers;
+  final User user;
 
   @override
   Widget build(BuildContext context) {
@@ -681,7 +687,9 @@ class _LessonQuestionRecordsList extends StatelessWidget {
         return StreamBuilder<List<LessonQuestionAnswer>>(
           stream: answersStream,
           builder: (context, answerSnapshot) {
-            final questions = filterQuestions(questionSnapshot.data ?? const []);
+            final allQuestions =
+                questionSnapshot.data ?? const <LessonQuestion>[];
+            final questions = filterQuestions(allQuestions);
             final answers = filterAnswers(answerSnapshot.data ?? const []);
             if (questions.isEmpty && answers.isEmpty) {
               return const _EmptyRecordCard(message: 'この期間の質問コメントはまだありません。');
@@ -689,11 +697,24 @@ class _LessonQuestionRecordsList extends StatelessWidget {
             return Column(
               children: [
                 for (final question in questions) ...[
-                  _LessonQuestionRecordCard(question: question),
+                  _LessonQuestionRecordCard(
+                    question: question,
+                    questions: allQuestions,
+                    answers: answers,
+                  ),
                   const SizedBox(height: 12),
                 ],
                 for (final answer in answers) ...[
-                  _LessonAnswerRecordCard(answer: answer),
+                  _LessonAnswerRecordCard(
+                    answer: answer,
+                    user: user,
+                    parentQuestion: _parentQuestionForAnswer(
+                      answer,
+                      allQuestions,
+                    ),
+                    questions: allQuestions,
+                    answers: answers,
+                  ),
                   const SizedBox(height: 12),
                 ],
               ],
@@ -703,6 +724,18 @@ class _LessonQuestionRecordsList extends StatelessWidget {
       },
     );
   }
+}
+
+LessonQuestion? _parentQuestionForAnswer(
+  LessonQuestionAnswer answer,
+  List<LessonQuestion> questions,
+) {
+  for (final question in questions) {
+    if (question.id == answer.questionId && !question.isDeleted) {
+      return question;
+    }
+  }
+  return null;
 }
 
 class _LessonNoteRecordCard extends StatelessWidget {
@@ -763,56 +796,219 @@ class _LessonNoteRecordCard extends StatelessWidget {
 }
 
 class _LessonQuestionRecordCard extends StatelessWidget {
-  const _LessonQuestionRecordCard({required this.question});
+  const _LessonQuestionRecordCard({
+    required this.question,
+    required this.questions,
+    required this.answers,
+  });
 
   final LessonQuestion question;
+  final List<LessonQuestion> questions;
+  final List<LessonQuestionAnswer> answers;
+
+  bool get _canOpenQuestionThread => _canOpenQuestionFromRecord(question);
+
+  void _openQuestionThread(BuildContext context) {
+    if (!_canOpenQuestionThread) {
+      return;
+    }
+    _openQuestionThreadPage(
+      context: context,
+      question: question,
+      questions: questions,
+      answers: answers,
+    );
+  }
+
+  Future<void> _showDetails(BuildContext context) {
+    return showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('質問コメントの記録'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'あなたの質問',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                SelectableText(
+                  question.body.isEmpty ? '本文はありません。' : question.body,
+                ),
+                if ((question.quotedNoteTitle ?? '').isNotEmpty ||
+                    (question.quotedNoteBody ?? '').isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  const Text(
+                    '引用メモ',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  SelectableText(_quotedNotePreviewText(question)),
+                ],
+                const SizedBox(height: 16),
+                const Text(
+                  '公開範囲',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                Text(question.isPublic ? '公開質問' : '先生にだけ公開'),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('閉じる'),
+            ),
+          ],
+        );
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              question.title.isEmpty ? '無題の質問' : question.title,
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              '${question.courseTitle} / レッスン${question.lessonNumber}: ${question.lessonTitle}',
-            ),
-            const SizedBox(height: 4),
-            Text(question.isPublic ? '公開質問' : '先生にだけ公開'),
-            const SizedBox(height: 4),
-            Text(
-              '更新日: ${_formatTimestamp(question.updatedAt ?? question.createdAt)}',
-            ),
-            if (question.body.isNotEmpty) ...[
+      child: InkWell(
+        key: ValueKey('question-record-open-${question.id ?? question.body}'),
+        onTap: _canOpenQuestionThread
+            ? () => _openQuestionThread(context)
+            : null,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                '質問コメント',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '${question.courseTitle} / レッスン${question.lessonNumber}: ${question.lessonTitle}',
+              ),
+              const SizedBox(height: 4),
+              Text(question.isPublic ? '公開質問' : '先生にだけ公開'),
+              const SizedBox(height: 4),
+              Text(
+                '更新日: ${_formatTimestamp(question.updatedAt ?? question.createdAt)}',
+              ),
+              if (question.body.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(question.body),
+              ],
+              if ((question.quotedNoteTitle ?? '').isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text('引用メモ: ${question.quotedNoteTitle}'),
+              ],
               const SizedBox(height: 8),
-              Text(question.body),
+              Row(
+                children: [
+                  if (_canOpenQuestionThread) const Text('タップしてコメント欄を開けます。'),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () => _showDetails(context),
+                    child: const Text('詳しく見る'),
+                  ),
+                ],
+              ),
             ],
-          ],
+          ),
         ),
       ),
     );
   }
 }
 
-class _LessonAnswerRecordCard extends StatelessWidget {
-  const _LessonAnswerRecordCard({required this.answer});
+class _LessonAnswerRecordCard extends StatefulWidget {
+  const _LessonAnswerRecordCard({
+    required this.answer,
+    required this.user,
+    required this.questions,
+    required this.answers,
+    this.parentQuestion,
+  });
 
   final LessonQuestionAnswer answer;
+  final User user;
+  final List<LessonQuestion> questions;
+  final List<LessonQuestionAnswer> answers;
+  final LessonQuestion? parentQuestion;
+
+  @override
+  State<_LessonAnswerRecordCard> createState() =>
+      _LessonAnswerRecordCardState();
+}
+
+class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
+  late Future<LessonQuestion?> _parentQuestionFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _parentQuestionFuture = _loadParentQuestion();
+  }
+
+  @override
+  void didUpdateWidget(covariant _LessonAnswerRecordCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.answer.questionId != widget.answer.questionId ||
+        oldWidget.parentQuestion != widget.parentQuestion) {
+      _parentQuestionFuture = _loadParentQuestion();
+    }
+  }
+
+  bool _canOpenQuestionThreadFor(LessonQuestion? question) {
+    return question != null &&
+        _canOpenQuestionFromRecord(question) &&
+        _canOpenAnswerFromRecord(widget.answer);
+  }
+
+  void _openQuestionThread(
+    BuildContext context,
+    LessonQuestion? parentQuestion,
+  ) {
+    final question = parentQuestion;
+    if (question == null || !_canOpenQuestionThreadFor(question)) {
+      return;
+    }
+    _openQuestionThreadPage(
+      context: context,
+      question: question,
+      questions: widget.questions,
+      answers: widget.answers,
+      highlightedAnswerId: widget.answer.id,
+    );
+  }
 
   Future<LessonQuestion?> _loadParentQuestion() async {
-    if (Firebase.apps.isEmpty || answer.questionId.isEmpty) {
+    final alreadyLoadedQuestion = widget.parentQuestion;
+    if (alreadyLoadedQuestion != null) {
+      return alreadyLoadedQuestion;
+    }
+    if (Firebase.apps.isEmpty || widget.answer.questionId.isEmpty) {
       return null;
     }
     try {
+      final privateSnapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(widget.user.uid)
+          .collection('lessonQuestions')
+          .doc(widget.answer.questionId)
+          .get();
+      if (privateSnapshot.exists) {
+        final question = LessonQuestion.fromFirestore(privateSnapshot);
+        if (!question.isDeleted) {
+          return question;
+        }
+      }
       final snapshot = await FirebaseFirestore.instance
           .collection('publicLessonQuestions')
-          .doc(answer.questionId)
+          .doc(widget.answer.questionId)
           .get();
       if (!snapshot.exists) {
         return null;
@@ -829,7 +1025,7 @@ class _LessonAnswerRecordCard extends StatelessWidget {
       context: context,
       builder: (context) {
         return FutureBuilder<LessonQuestion?>(
-          future: _loadParentQuestion(),
+          future: _parentQuestionFuture,
           builder: (context, snapshot) {
             final parentQuestion = snapshot.data;
             return AlertDialog(
@@ -844,14 +1040,14 @@ class _LessonAnswerRecordCard extends StatelessWidget {
                       style: TextStyle(fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 8),
-                    SelectableText(answer.body),
+                    SelectableText(widget.answer.body),
                     const SizedBox(height: 16),
                     const Text(
                       '返信先の控え',
                       style: TextStyle(fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 8),
-                    SelectableText(_replyPreviewText(answer)),
+                    SelectableText(_replyPreviewText(widget.answer)),
                     const SizedBox(height: 16),
                     const Text(
                       '元の質問',
@@ -882,36 +1078,130 @@ class _LessonAnswerRecordCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('回答コメント', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 4),
-            Text(
-              '${answer.courseTitle} / レッスン${answer.lessonNumber}: ${answer.lessonTitle}',
+    return FutureBuilder<LessonQuestion?>(
+      future: _parentQuestionFuture,
+      builder: (context, snapshot) {
+        final loadedParentQuestion = snapshot.data;
+        final canOpenQuestionThread = _canOpenQuestionThreadFor(
+          loadedParentQuestion,
+        );
+        return Card(
+          child: InkWell(
+            key: ValueKey(
+              'answer-record-open-${widget.answer.id ?? widget.answer.body}',
             ),
-            const SizedBox(height: 4),
-            Text('投稿日: ${_formatTimestamp(answer.createdAt ?? answer.updatedAt)}'),
-            const SizedBox(height: 8),
-            Text(answer.body),
-            const SizedBox(height: 8),
-            Text('返信先: ${_replyPreviewText(answer)}'),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton(
-                onPressed: () => _showDetails(context),
-                child: const Text('詳しく見る'),
+            onTap: canOpenQuestionThread
+                ? () => _openQuestionThread(context, loadedParentQuestion)
+                : null,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '回答コメント',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${widget.answer.courseTitle} / レッスン${widget.answer.lessonNumber}: ${widget.answer.lessonTitle}',
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '投稿日: ${_formatTimestamp(widget.answer.createdAt ?? widget.answer.updatedAt)}',
+                  ),
+                  const SizedBox(height: 8),
+                  Text(widget.answer.body),
+                  const SizedBox(height: 8),
+                  Text('返信先: ${_replyPreviewText(widget.answer)}'),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      if (canOpenQuestionThread) const Text('タップしてコメント欄を開けます。'),
+                      const Spacer(),
+                      TextButton(
+                        key: ValueKey(
+                          'answer-record-details-${widget.answer.id ?? widget.answer.body}',
+                        ),
+                        onPressed: () => _showDetails(context),
+                        child: const Text('詳しく見る'),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
+}
+
+bool _canOpenQuestionFromRecord(LessonQuestion question) {
+  return !question.isDeleted && !question.isTeacherHidden;
+}
+
+bool _canOpenAnswerFromRecord(LessonQuestionAnswer answer) {
+  return !answer.isDeleted &&
+      answer.moderationStatus != lessonInteractionModerationHiddenByTeacher;
+}
+
+void _openQuestionThreadPage({
+  required BuildContext context,
+  required LessonQuestion question,
+  required List<LessonQuestion> questions,
+  required List<LessonQuestionAnswer> answers,
+  String? highlightedAnswerId,
+}) {
+  final useRecordStreams = Firebase.apps.isEmpty;
+  Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => Scaffold(
+        appBar: AppBar(title: const Text('質問コメント')),
+        body: SafeArea(
+          child: LessonQuestionsPanel(
+            course: _courseFromQuestion(question),
+            lesson: CourseLesson(
+              title: question.lessonTitle,
+              duration: '1分30秒',
+            ),
+            lessonNumber: question.lessonNumber,
+            initialSelectedQuestion: question,
+            questionsStream: useRecordStreams ? Stream.value(questions) : null,
+            publicQuestionsStream: useRecordStreams
+                ? Stream.value(const <LessonQuestion>[])
+                : null,
+            answersStream: useRecordStreams
+                ? Stream.value(
+                    answers
+                        .where((answer) => answer.questionId == question.id)
+                        .where(_canOpenAnswerFromRecord)
+                        .toList(),
+                  )
+                : null,
+            initialHighlightedAnswerId: highlightedAnswerId,
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+Course _courseFromQuestion(LessonQuestion question) {
+  return Course(
+    id: question.courseId,
+    title: question.courseTitle,
+    instructorName: '',
+    category: '',
+    level: '',
+    duration: '',
+    lessonCount: question.lessonNumber,
+    rating: 0,
+    priceLabel: '',
+    description: '',
+    lessons: [CourseLesson(title: question.lessonTitle, duration: '1分30秒')],
+  );
 }
 
 String _replyPreviewText(LessonQuestionAnswer answer) {
@@ -927,6 +1217,21 @@ String _replyPreviewText(LessonQuestionAnswer answer) {
     return '$displayName への返信';
   }
   return '$displayName の「$bodyPreview」への返信';
+}
+
+String _quotedNotePreviewText(LessonQuestion question) {
+  final title = question.quotedNoteTitle?.trim();
+  final body = question.quotedNoteBody?.trim();
+  if ((title ?? '').isEmpty && (body ?? '').isEmpty) {
+    return '引用メモはありません。';
+  }
+  if ((title ?? '').isEmpty) {
+    return body!;
+  }
+  if ((body ?? '').isEmpty) {
+    return title!;
+  }
+  return '$title\n$body';
 }
 
 Course _courseFromNote(LessonNote note) {

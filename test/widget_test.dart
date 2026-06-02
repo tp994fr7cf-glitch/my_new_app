@@ -231,6 +231,8 @@ void main() {
       visibility: LessonQuestionVisibility.teacherOnly,
       target: LessonQuestionTarget.teacher,
       attachmentTypes: const [],
+      quotedNoteTitle: '移項メモ',
+      quotedNoteBody: '両辺に同じ計算',
       updatedAt: now,
     );
 
@@ -256,14 +258,48 @@ void main() {
 
     await tester.tap(find.text('質問コメント'));
     await tester.pumpAndSettle();
-    expect(find.text('移項の質問'), findsOneWidget);
+    expect(find.text('質問コメント'), findsWidgets);
+    expect(find.text('移項の質問'), findsNothing);
+    expect(find.text('なぜ符号が変わりますか？'), findsOneWidget);
+    expect(find.text('引用メモ: 移項メモ'), findsOneWidget);
     expect(find.text('先生にだけ公開'), findsOneWidget);
+
+    await tester.tap(find.text('詳しく見る'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('質問コメントの記録'), findsOneWidget);
+    expect(find.text('あなたの質問'), findsOneWidget);
+    expect(find.text('引用メモ'), findsOneWidget);
+    expect(find.text('移項メモ\n両辺に同じ計算'), findsOneWidget);
+
+    await tester.tap(find.text('閉じる'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('なぜ符号が変わりますか？'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('質問詳細'), findsOneWidget);
+    expect(find.text('回答コメントはまだありません。'), findsOneWidget);
   });
 
   testWidgets('Learning records page shows answer record previews', (
     WidgetTester tester,
   ) async {
     final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
+    final question = LessonQuestion(
+      id: 'question-a',
+      authorId: 'user-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式',
+      title: '',
+      body: 'なぜ符号が変わりますか？',
+      visibility: LessonQuestionVisibility.teacherOnly,
+      target: LessonQuestionTarget.teacher,
+      attachmentTypes: const [],
+      updatedAt: now,
+    );
     final answer = LessonQuestionAnswer(
       id: 'answer-a',
       questionId: 'question-a',
@@ -289,7 +325,7 @@ void main() {
           learningEventsStream: const Stream.empty(),
           quizAttemptsStream: const Stream.empty(),
           lessonNotesStream: const Stream.empty(),
-          lessonQuestionsStream: const Stream.empty(),
+          lessonQuestionsStream: Stream.value([question]),
           lessonQuestionAnswersStream: Stream.value([answer]),
         ),
       ),
@@ -303,11 +339,134 @@ void main() {
     expect(find.text('両辺に同じ計算をするからです。'), findsOneWidget);
     expect(find.text('返信先: 学習者2 の「なぜ符号が変わりますか？」への返信'), findsOneWidget);
 
-    await tester.tap(find.text('詳しく見る'));
+    final answerRecord = find.byKey(
+      const ValueKey('answer-record-open-answer-a'),
+    );
+    await tester.ensureVisible(answerRecord);
+    await tester.pumpAndSettle();
+    await tester.tap(answerRecord);
     await tester.pumpAndSettle();
 
-    expect(find.text('回答コメントの記録'), findsOneWidget);
-    expect(find.text('元の質問は削除済み、または現在は表示できません。'), findsOneWidget);
+    expect(find.text('質問詳細'), findsOneWidget);
+    expect(find.text('回答コメント'), findsOneWidget);
+    expect(find.text('両辺に同じ計算をするからです。'), findsOneWidget);
+    expect(find.text('なぜ符号が変わりますか？'), findsWidgets);
+  });
+
+  testWidgets('Learning records keep hidden questions as static records', (
+    WidgetTester tester,
+  ) async {
+    final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
+    final question = LessonQuestion(
+      id: 'question-hidden',
+      authorId: 'user-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式',
+      title: '',
+      body: '先生が非公開化した質問です。',
+      visibility: LessonQuestionVisibility.public,
+      target: LessonQuestionTarget.everyone,
+      attachmentTypes: const [],
+      moderationStatus: lessonInteractionModerationHiddenByTeacher,
+      updatedAt: now,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LearningRecordsPage(
+          user: _FakeUser(),
+          lessonViewSegmentsStream: const Stream.empty(),
+          learningEventsStream: const Stream.empty(),
+          quizAttemptsStream: const Stream.empty(),
+          lessonNotesStream: const Stream.empty(),
+          lessonQuestionsStream: Stream.value([question]),
+          lessonQuestionAnswersStream: const Stream.empty(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('質問コメント'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('先生が非公開化した質問です。'), findsOneWidget);
+    expect(find.text('タップしてコメント欄を開けます。'), findsNothing);
+
+    await tester.tap(find.text('先生が非公開化した質問です。'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('質問詳細'), findsNothing);
+    expect(find.text('先生が非公開化した質問です。'), findsOneWidget);
+  });
+
+  testWidgets('Learning records keep hidden answers as static records', (
+    WidgetTester tester,
+  ) async {
+    final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
+    final question = LessonQuestion(
+      id: 'question-a',
+      authorId: 'user-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式',
+      title: '',
+      body: '親質問は表示できます。',
+      visibility: LessonQuestionVisibility.teacherOnly,
+      target: LessonQuestionTarget.teacher,
+      attachmentTypes: const [],
+      updatedAt: now,
+    );
+    final answer = LessonQuestionAnswer(
+      id: 'answer-hidden',
+      questionId: 'question-a',
+      authorId: 'user-a',
+      authorName: '学習者',
+      authorRole: 'student',
+      courseId: 'course-a',
+      courseTitle: '数学',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式',
+      body: '先生が非公開化した回答です。',
+      attachmentTypes: const [],
+      moderationStatus: lessonInteractionModerationHiddenByTeacher,
+      createdAt: now,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LearningRecordsPage(
+          user: _FakeUser(),
+          lessonViewSegmentsStream: const Stream.empty(),
+          learningEventsStream: const Stream.empty(),
+          quizAttemptsStream: const Stream.empty(),
+          lessonNotesStream: const Stream.empty(),
+          lessonQuestionsStream: Stream.value([question]),
+          lessonQuestionAnswersStream: Stream.value([answer]),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('質問コメント'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('先生が非公開化した回答です。'), findsOneWidget);
+
+    final answerRecord = find.byKey(
+      const ValueKey('answer-record-open-answer-hidden'),
+    );
+    await tester.ensureVisible(answerRecord);
+    await tester.pumpAndSettle();
+    await tester.tap(answerRecord);
+    await tester.pumpAndSettle();
+
+    expect(find.text('質問詳細'), findsNothing);
+    expect(find.text('先生が非公開化した回答です。'), findsOneWidget);
   });
 
   testWidgets('Learning records page shows lesson cycle sessions', (

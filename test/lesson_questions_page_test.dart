@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:my_new_app/models/course.dart';
+import 'package:my_new_app/models/lesson_note.dart';
 import 'package:my_new_app/models/lesson_question.dart';
 import 'package:my_new_app/screens/lesson_questions_page.dart';
 import 'package:my_new_app/screens/video_lesson_page.dart';
@@ -21,6 +22,37 @@ void main() {
     lessons: [CourseLesson(title: '一次方程式の基本', duration: '1分30秒')],
   );
   const lesson = CourseLesson(title: '一次方程式の基本', duration: '1分30秒');
+
+  test('quoted note availability detects deleted or hidden notes', () {
+    expect(
+      quotedNoteUnavailableForQuestion(
+        {
+          'isDeleted': false,
+          'studentVisibility': lessonNoteVisibilityPublic,
+          'moderationStatus': lessonNoteModerationVisible,
+        },
+        exists: true,
+        hasError: false,
+      ),
+      isFalse,
+    );
+    expect(
+      quotedNoteUnavailableForQuestion(
+        {
+          'isDeleted': true,
+          'studentVisibility': lessonNoteVisibilityPublic,
+          'moderationStatus': lessonNoteModerationVisible,
+        },
+        exists: true,
+        hasError: false,
+      ),
+      isTrue,
+    );
+    expect(
+      quotedNoteUnavailableForQuestion(null, exists: false, hasError: false),
+      isTrue,
+    );
+  });
 
   testWidgets(
     'Question editor uses post label and forces public for everyone',
@@ -60,6 +92,76 @@ void main() {
       expect(switchTile.onChanged, isNull);
     },
   );
+
+  testWidgets('Question editor only lists quotable public notes', (
+    tester,
+  ) async {
+    const allowedNote = LessonNote(
+      id: 'allowed-note',
+      authorId: 'student-a',
+      authorName: 'Aさん',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '引用許可メモ',
+      body: '質問で引用できます。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.public,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      allowsQuestionCitation: true,
+    );
+    const deniedNote = LessonNote(
+      id: 'denied-note',
+      authorId: 'student-b',
+      authorName: 'Bさん',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '引用不可メモ',
+      body: '質問では引用できません。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.public,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonQuestionsPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            questionsStream: Stream.value(const []),
+            publicQuestionsStream: Stream.value(const []),
+            quotableNotesStream: Stream.value(const [allowedNote, deniedNote]),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('質問を作成'));
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(ListView).last, const Offset(0, -700));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.pumpAndSettle();
+
+    expect(find.text('引用許可メモ'), findsOneWidget);
+    expect(find.text('引用不可メモ'), findsNothing);
+  });
 
   testWidgets('Question list uses comment bubbles and opens detail in panel', (
     tester,

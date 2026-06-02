@@ -113,6 +113,7 @@ void main() {
       hasAudioAttachment: false,
       isCopied: false,
       canPublish: true,
+      allowsQuestionCitation: true,
       publicPublishedAt: Timestamp.fromDate(DateTime(2026, 6, 2, 9, 15)),
     );
 
@@ -147,6 +148,64 @@ void main() {
     expect(find.text('公開メモ'), findsWidgets);
     expect(find.text('他の学習者'), findsOneWidget);
     expect(find.text('両辺に同じ計算をする'), findsOneWidget);
+    expect(find.text('このメモを引用して質問する'), findsOneWidget);
+
+    await tester.tap(find.text('このメモを引用して質問する'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('質問を作成'), findsOneWidget);
+    expect(find.text('質問本文'), findsOneWidget);
+    expect(find.text('引用する公開メモ'), findsOneWidget);
+    final dropdown = tester.widget<DropdownButtonFormField<String>>(
+      find.byType(DropdownButtonFormField<String>),
+    );
+    expect(dropdown.initialValue, 'public-note');
+  });
+
+  testWidgets('Public note detail explains when citation is not allowed', (
+    tester,
+  ) async {
+    const publicNote = LessonNote(
+      id: 'public-note-not-allowed',
+      authorId: 'user-b',
+      authorName: '他の学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '引用不可の公開メモ',
+      body: '質問には引用しないでほしい内容です。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.public,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LessonNotesPage(
+          course: course,
+          lesson: lesson,
+          lessonNumber: 1,
+          notesStream: Stream.value(const []),
+          publicNotesStream: Stream.value(const [publicNote]),
+          foldersStream: Stream.value(const []),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('公開メモ'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('引用不可の公開メモ'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('このメモの作成者は引用を許可していません。'), findsOneWidget);
+    expect(find.text('このメモを引用して質問する'), findsNothing);
   });
 
   testWidgets('Lesson notes page groups notes under folders', (tester) async {
@@ -273,6 +332,73 @@ void main() {
     );
     expect(switchTile.value, isTrue);
     expect(switchTile.onChanged, isNull);
+
+    final citationSwitch = tester.widget<SwitchListTile>(
+      find.widgetWithText(SwitchListTile, '質問での引用を許可する'),
+    );
+    expect(citationSwitch.value, isFalse);
+    expect(citationSwitch.onChanged, isNotNull);
+
+    await tester.tap(find.text('質問での引用を許可する'));
+    await tester.pumpAndSettle();
+
+    final allowedCitationSwitch = tester.widget<SwitchListTile>(
+      find.widgetWithText(SwitchListTile, '質問での引用を許可する'),
+    );
+    expect(allowedCitationSwitch.value, isTrue);
+    expect(allowedCitationSwitch.onChanged, isNull);
+  });
+
+  testWidgets('Allowed question citation cannot be turned off while editing', (
+    tester,
+  ) async {
+    const publicNote = LessonNote(
+      id: 'citation-allowed-public-note',
+      authorId: 'user-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '引用許可済みメモ',
+      body: '質問で引用できます。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.public,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      allowsQuestionCitation: true,
+      hasPublicMirror: true,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LessonNotesPage(
+          course: course,
+          lesson: lesson,
+          lessonNumber: 1,
+          notesStream: Stream.value(const [publicNote]),
+          publicNotesStream: Stream.value(const []),
+          foldersStream: Stream.value(const []),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('引用許可済みメモ'));
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(ListView).last, const Offset(0, -700));
+    await tester.pumpAndSettle();
+
+    final citationSwitch = tester.widget<SwitchListTile>(
+      find.widgetWithText(SwitchListTile, '質問での引用を許可する'),
+    );
+    expect(citationSwitch.value, isTrue);
+    expect(citationSwitch.onChanged, isNull);
+    expect(find.text('一度許可した引用は後から取り消せません。'), findsOneWidget);
   });
 
   testWidgets('Embedded notes folder dialog can be cancelled safely', (

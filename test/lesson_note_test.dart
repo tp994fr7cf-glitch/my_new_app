@@ -123,32 +123,35 @@ void main() {
       expect(note.isPubliclyVisible, isFalse);
     });
 
-    test('keeps student-private public mirror hidden even when teacher visible', () {
-      const note = LessonNote(
-        id: 'note-a',
-        authorId: 'user-a',
-        authorName: '学習者',
-        courseId: 'course-a',
-        courseTitle: '数学',
-        lessonNumber: 1,
-        lessonTitle: '一次方程式',
-        title: '公開後に非公開化したメモ',
-        body: '自分だけで見る',
-        folderId: '',
-        folderName: '',
-        visibility: LessonNoteVisibility.public,
-        studentVisibility: LessonNoteVisibility.private,
-        tags: [],
-        attachmentTypes: [],
-        hasAudioAttachment: false,
-        isCopied: false,
-        canPublish: true,
-      );
+    test(
+      'keeps student-private public mirror hidden even when teacher visible',
+      () {
+        const note = LessonNote(
+          id: 'note-a',
+          authorId: 'user-a',
+          authorName: '学習者',
+          courseId: 'course-a',
+          courseTitle: '数学',
+          lessonNumber: 1,
+          lessonTitle: '一次方程式',
+          title: '公開後に非公開化したメモ',
+          body: '自分だけで見る',
+          folderId: '',
+          folderName: '',
+          visibility: LessonNoteVisibility.public,
+          studentVisibility: LessonNoteVisibility.private,
+          tags: [],
+          attachmentTypes: [],
+          hasAudioAttachment: false,
+          isCopied: false,
+          canPublish: true,
+        );
 
-      expect(note.isTeacherHidden, isFalse);
-      expect(note.isStudentPublic, isFalse);
-      expect(note.isPubliclyVisible, isFalse);
-    });
+        expect(note.isTeacherHidden, isFalse);
+        expect(note.isStudentPublic, isFalse);
+        expect(note.isPubliclyVisible, isFalse);
+      },
+    );
 
     test('treats missing studentVisibility as existing visibility', () {
       final note = LessonNote.fromMap({
@@ -172,6 +175,19 @@ void main() {
 
       expect(note.isStudentPublic, isTrue);
       expect(note.isPubliclyVisible, isTrue);
+    });
+
+    test('treats missing question citation permission as not allowed', () {
+      final note = LessonNote.fromMap({
+        'visibility': lessonNoteVisibilityPublic,
+      });
+      final allowedNote = LessonNote.fromMap({
+        'visibility': lessonNoteVisibilityPublic,
+        'allowsQuestionCitation': true,
+      });
+
+      expect(note.allowsQuestionCitation, isFalse);
+      expect(allowedNote.allowsQuestionCitation, isTrue);
     });
 
     test('tracks whether a note can have a public mirror', () {
