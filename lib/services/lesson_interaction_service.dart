@@ -44,7 +44,9 @@ class LessonInteractionService {
     try {
       final snapshot = await FirebaseFirestore.instance
           .collection('lessonInteractionSettings')
-          .doc(settingDocumentId(courseId: courseId, lessonNumber: lessonNumber))
+          .doc(
+            settingDocumentId(courseId: courseId, lessonNumber: lessonNumber),
+          )
           .get();
       final data = snapshot.data();
       return data == null || data[fieldName] != false;
@@ -70,4 +72,3 @@ class LessonInteractionService {
         }, SetOptions(merge: true));
   }
 }
-
