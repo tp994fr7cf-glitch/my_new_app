@@ -1651,12 +1651,19 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                     answerThreads,
                     widget.highlightedAnswerId,
                   );
+                  final standaloneHighlightedReply =
+                      _standaloneHighlightedReply(
+                        answers,
+                        highlightedRootId,
+                        widget.highlightedAnswerId,
+                      );
                   if (!_expandedInitialHighlightedAnswer &&
                       highlightedRootId != null) {
                     _expandedAnswerIds.add(highlightedRootId);
                     _expandedInitialHighlightedAnswer = true;
                   }
-                  if (answerThreads.isEmpty) {
+                  if (answerThreads.isEmpty &&
+                      standaloneHighlightedReply == null) {
                     return const Text('回答コメントはまだありません。');
                   }
                   return Column(
@@ -1684,6 +1691,16 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                           onReply: _setAnswerReplyTarget,
                           onDeleteAnswer: widget.onDeleteAnswer,
                           highlightedAnswerId: widget.highlightedAnswerId,
+                        ),
+                      if (standaloneHighlightedReply != null)
+                        _StandaloneRecordReplyView(
+                          answer: standaloneHighlightedReply,
+                          scopeLabel: _questionScopeLabel(question),
+                          currentUserId: widget.currentUserId,
+                          isCurrentUserTeacher: widget.isCurrentUserTeacher,
+                          canAnswer: widget.canAnswer,
+                          onReply: _setAnswerReplyTarget,
+                          onDeleteAnswer: widget.onDeleteAnswer,
                         ),
                     ],
                   );
@@ -1877,11 +1894,95 @@ class _AnswerThreadView extends StatelessWidget {
   }
 }
 
+class _StandaloneRecordReplyView extends StatelessWidget {
+  const _StandaloneRecordReplyView({
+    required this.answer,
+    required this.scopeLabel,
+    required this.currentUserId,
+    required this.isCurrentUserTeacher,
+    required this.canAnswer,
+    required this.onReply,
+    required this.onDeleteAnswer,
+  });
+
+  final LessonQuestionAnswer answer;
+  final String scopeLabel;
+  final String? currentUserId;
+  final bool isCurrentUserTeacher;
+  final bool canAnswer;
+  final void Function(LessonQuestionAnswer answer) onReply;
+  final Future<void> Function(LessonQuestionAnswer answer) onDeleteAnswer;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'この記録の返信',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '返信先の回答は削除済み、または現在は表示できません。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            _CommentBubble(
+              body: answer.body,
+              authorId: answer.authorId,
+              authorName: answer.authorName,
+              authorDisplayName: answer.authorDisplayName,
+              authorRole: answer.authorRole,
+              createdAt: answer.createdAt,
+              scopeLabel: scopeLabel,
+              attachmentTypes: answer.attachmentTypes,
+              quotedNoteTitle: answer.quotedNoteTitle,
+              quotedNoteId: answer.quotedNoteId,
+              quotedNoteBody: answer.quotedNoteBody,
+              isHighlighted: true,
+              isOwner: currentUserId == answer.authorId,
+              isTeacher: isCurrentUserTeacher,
+              onReply: canAnswer ? () => onReply(answer) : null,
+              onDelete: currentUserId == answer.authorId
+                  ? () => onDeleteAnswer(answer)
+                  : null,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _AnswerThread {
   const _AnswerThread({required this.root, required this.replies});
 
   final LessonQuestionAnswer root;
   final List<LessonQuestionAnswer> replies;
+}
+
+LessonQuestionAnswer? _standaloneHighlightedReply(
+  List<LessonQuestionAnswer> answers,
+  String? highlightedRootId,
+  String? highlightedAnswerId,
+) {
+  if (highlightedRootId != null ||
+      highlightedAnswerId == null ||
+      highlightedAnswerId.isEmpty) {
+    return null;
+  }
+  for (final answer in answers) {
+    if (answer.id == highlightedAnswerId &&
+        answer.parentCommentType == 'answer') {
+      return answer;
+    }
+  }
+  return null;
 }
 
 String? _rootAnswerIdForHighlightedAnswer(

@@ -145,10 +145,7 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
         .limit(100)
         .snapshots()
         .map((snapshot) {
-          return snapshot.docs
-              .map(LessonQuestion.fromFirestore)
-              .where((question) => !question.isDeleted)
-              .toList();
+          return snapshot.docs.map(LessonQuestion.fromFirestore).toList();
         });
   }
 
@@ -168,10 +165,7 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
         .limit(100)
         .snapshots()
         .map((snapshot) {
-          return snapshot.docs
-              .map(LessonQuestionAnswer.fromFirestore)
-              .where((answer) => !answer.isDeleted)
-              .toList();
+          return snapshot.docs.map(LessonQuestionAnswer.fromFirestore).toList();
         });
   }
 
@@ -807,6 +801,9 @@ class _LessonQuestionRecordCard extends StatelessWidget {
   final List<LessonQuestionAnswer> answers;
 
   bool get _canOpenQuestionThread => _canOpenQuestionFromRecord(question);
+  String? get _unavailableMessage => _canOpenQuestionThread
+      ? null
+      : 'この質問コメントは削除済み、または現在は表示できません。学習記録として内容だけ表示しています。';
 
   void _openQuestionThread(BuildContext context) {
     if (!_canOpenQuestionThread) {
@@ -905,6 +902,10 @@ class _LessonQuestionRecordCard extends StatelessWidget {
                 const SizedBox(height: 8),
                 Text('引用メモ: ${question.quotedNoteTitle}'),
               ],
+              if (_unavailableMessage != null) ...[
+                const SizedBox(height: 8),
+                Text(_unavailableMessage!),
+              ],
               const SizedBox(height: 8),
               Row(
                 children: [
@@ -966,6 +967,32 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
     return question != null &&
         _canOpenQuestionFromRecord(question) &&
         _canOpenAnswerFromRecord(widget.answer);
+  }
+
+  String? _unavailableMessageFor(LessonQuestion? question) {
+    if (!_canOpenAnswerFromRecord(widget.answer)) {
+      return 'この回答コメントは削除済み、または現在は表示できません。学習記録として内容だけ表示しています。';
+    }
+    if (question == null || !_canOpenQuestionFromRecord(question)) {
+      return '元の質問は削除済み、または現在は表示できません。学習記録として内容だけ表示しています。';
+    }
+    return null;
+  }
+
+  bool _shouldHideReplyTargetPreview() {
+    if (widget.answer.parentCommentType != 'answer') {
+      return false;
+    }
+    final parentId = widget.answer.parentCommentId;
+    if (parentId == null || parentId.isEmpty) {
+      return true;
+    }
+    for (final answer in widget.answers) {
+      if (answer.id == parentId) {
+        return !_canOpenAnswerFromRecord(answer);
+      }
+    }
+    return true;
   }
 
   void _openQuestionThread(
@@ -1047,7 +1074,12 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
                       style: TextStyle(fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 8),
-                    SelectableText(_replyPreviewText(widget.answer)),
+                    SelectableText(
+                      _replyPreviewText(
+                        widget.answer,
+                        hideBodyPreview: _shouldHideReplyTargetPreview(),
+                      ),
+                    ),
                     const SizedBox(height: 16),
                     const Text(
                       '元の質問',
@@ -1085,6 +1117,15 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
         final canOpenQuestionThread = _canOpenQuestionThreadFor(
           loadedParentQuestion,
         );
+        final unavailableMessage =
+            snapshot.connectionState == ConnectionState.waiting &&
+                _canOpenAnswerFromRecord(widget.answer)
+            ? null
+            : _unavailableMessageFor(loadedParentQuestion);
+        final replyPreview = _replyPreviewText(
+          widget.answer,
+          hideBodyPreview: _shouldHideReplyTargetPreview(),
+        );
         return Card(
           child: InkWell(
             key: ValueKey(
@@ -1113,7 +1154,11 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
                   const SizedBox(height: 8),
                   Text(widget.answer.body),
                   const SizedBox(height: 8),
-                  Text('返信先: ${_replyPreviewText(widget.answer)}'),
+                  Text('返信先: $replyPreview'),
+                  if (unavailableMessage != null) ...[
+                    const SizedBox(height: 8),
+                    Text(unavailableMessage),
+                  ],
                   const SizedBox(height: 8),
                   Row(
                     children: [
@@ -1204,9 +1249,14 @@ Course _courseFromQuestion(LessonQuestion question) {
   );
 }
 
-String _replyPreviewText(LessonQuestionAnswer answer) {
+String _replyPreviewText(
+  LessonQuestionAnswer answer, {
+  bool hideBodyPreview = false,
+}) {
   final displayName = answer.replyToDisplayName?.trim();
-  final bodyPreview = answer.replyToBodyPreview?.trim();
+  final bodyPreview = hideBodyPreview
+      ? null
+      : answer.replyToBodyPreview?.trim();
   if ((displayName ?? '').isEmpty && (bodyPreview ?? '').isEmpty) {
     return '返信先の控えはありません。';
   }
