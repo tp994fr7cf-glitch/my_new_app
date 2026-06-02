@@ -188,6 +188,29 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         });
   }
 
+  Stream<List<LessonNote>> _teacherPreviewPublicNotesStream() {
+    if (Firebase.apps.isEmpty) {
+      return Stream.value(const []);
+    }
+
+    return FirebaseFirestore.instance
+        .collection('publicLessonNotes')
+        .where('courseId', isEqualTo: _courseId)
+        .where('lessonNumber', isEqualTo: widget.lessonNumber)
+        .where('interactionSettingId', isEqualTo: _interactionSettingId)
+        .where('isDeleted', isEqualTo: false)
+        .snapshots(includeMetadataChanges: true)
+        .map((snapshot) {
+          if (snapshot.metadata.isFromCache) {
+            return const <LessonNote>[];
+          }
+          return sortPublicLessonNotes(
+            snapshot.docs.map(LessonNote.fromFirestore).toList(),
+            _publicSort,
+          );
+        });
+  }
+
   Stream<bool> _notePublicPlatformEnabledStream() {
     return _lessonInteractionService.publicFeatureEnabledStream(
       courseId: _courseId,
@@ -214,6 +237,16 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _setPublicNoteModeration(LessonNote note) async {
+    await _lessonInteractionService.setPublicModeration(
+      collectionPath: 'publicLessonNotes',
+      documentId: note.id,
+      moderationStatus: note.isTeacherHidden
+          ? lessonNoteModerationVisible
+          : lessonNoteModerationHiddenByTeacher,
+    );
   }
 
   Future<void> _createFolder() async {
@@ -795,7 +828,11 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       builder: (context, platformSnapshot) {
         final enabled = platformSnapshot.data == true;
         return _LessonNoteList(
-          notesStream: enabled ? _publicNotesStream() : Stream.value(const []),
+          notesStream: enabled
+              ? widget.isTeacherPreview && widget.publicNotesStream == null
+                    ? _teacherPreviewPublicNotesStream()
+                    : _publicNotesStream()
+              : Stream.value(const []),
           query: _query,
           emptyText: enabled ? '公開メモはまだありません。' : '公開メモ欄は非公開化されています。',
           onTap: (note) {
@@ -812,6 +849,9 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
             );
           },
           showAuthor: true,
+          onToggleModeration: widget.isTeacherPreview
+              ? _setPublicNoteModeration
+              : null,
           action: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -901,6 +941,7 @@ class _LessonNoteList extends StatelessWidget {
     this.showAuthor = false,
     this.onDeleteNote,
     this.onDeleteFolder,
+    this.onToggleModeration,
   });
 
   final Stream<List<LessonNote>> notesStream;
@@ -912,6 +953,7 @@ class _LessonNoteList extends StatelessWidget {
   final bool showAuthor;
   final ValueChanged<LessonNote>? onDeleteNote;
   final ValueChanged<LessonNoteFolder>? onDeleteFolder;
+  final ValueChanged<LessonNote>? onToggleModeration;
 
   @override
   Widget build(BuildContext context) {
@@ -935,6 +977,7 @@ class _LessonNoteList extends StatelessWidget {
                   onTap: onTap,
                   showAuthor: showAuthor,
                   onDelete: onDeleteNote,
+                  onToggleModeration: onToggleModeration,
                 )
             else
               ..._buildFolderSections(notes),
@@ -983,6 +1026,7 @@ class _LessonNoteList extends StatelessWidget {
             onTap: onTap,
             showAuthor: showAuthor,
             onDelete: onDeleteNote,
+            onToggleModeration: onToggleModeration,
           ),
         );
       }
@@ -1074,17 +1118,23 @@ class _LessonNoteCard extends StatelessWidget {
     required this.onTap,
     this.showAuthor = false,
     this.onDelete,
+    this.onToggleModeration,
   });
 
   final LessonNote note;
   final ValueChanged<LessonNote>? onTap;
   final bool showAuthor;
   final ValueChanged<LessonNote>? onDelete;
+  final ValueChanged<LessonNote>? onToggleModeration;
 
   @override
   Widget build(BuildContext context) {
     if (showAuthor) {
-      return _PublicLessonNoteCard(note: note, onTap: onTap);
+      return _PublicLessonNoteCard(
+        note: note,
+        onTap: onTap,
+        onToggleModeration: onToggleModeration,
+      );
     }
     return Card(
       child: ListTile(
@@ -1115,10 +1165,15 @@ class _LessonNoteCard extends StatelessWidget {
 }
 
 class _PublicLessonNoteCard extends StatelessWidget {
-  const _PublicLessonNoteCard({required this.note, required this.onTap});
+  const _PublicLessonNoteCard({
+    required this.note,
+    required this.onTap,
+    required this.onToggleModeration,
+  });
 
   final LessonNote note;
   final ValueChanged<LessonNote>? onTap;
+  final ValueChanged<LessonNote>? onToggleModeration;
 
   @override
   Widget build(BuildContext context) {
@@ -1213,17 +1268,26 @@ class _PublicLessonNoteCard extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(height: 4),
-                        Align(
-                          alignment: Alignment.centerRight,
-                          child: Text(
-                            '学習者にも公開',
-                            style: Theme.of(context).textTheme.labelSmall
-                                ?.copyWith(
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.onSurfaceVariant,
+                        Row(
+                          children: [
+                            Text(
+                              note.isTeacherHidden ? '先生が非公開化中' : '学習者にも公開',
+                              style: Theme.of(context).textTheme.labelSmall
+                                  ?.copyWith(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSurfaceVariant,
+                                  ),
+                            ),
+                            const Spacer(),
+                            if (onToggleModeration != null)
+                              TextButton(
+                                onPressed: () => onToggleModeration!(note),
+                                child: Text(
+                                  note.isTeacherHidden ? '公開に戻す' : '非公開にする',
                                 ),
-                          ),
+                              ),
+                          ],
                         ),
                       ],
                     ),

@@ -183,6 +183,27 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
         });
   }
 
+  Stream<List<LessonQuestion>> _teacherPreviewPublicQuestionsStream() {
+    if (Firebase.apps.isEmpty) {
+      return Stream.value(const []);
+    }
+    return FirebaseFirestore.instance
+        .collection('publicLessonQuestions')
+        .where('courseId', isEqualTo: _courseId)
+        .where('lessonNumber', isEqualTo: widget.lessonNumber)
+        .where('interactionSettingId', isEqualTo: _interactionSettingId)
+        .where('isDeleted', isEqualTo: false)
+        .snapshots(includeMetadataChanges: true)
+        .map((snapshot) {
+          if (snapshot.metadata.isFromCache) {
+            return const <LessonQuestion>[];
+          }
+          return sortLessonQuestionsByUpdatedAt(
+            snapshot.docs.map(LessonQuestion.fromFirestore).toList(),
+          );
+        });
+  }
+
   Stream<bool> _questionPublicPlatformEnabledStream() {
     return _lessonInteractionService.publicFeatureEnabledStream(
       courseId: _courseId,
@@ -244,6 +265,27 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
     } on FirebaseException {
       return false;
     }
+  }
+
+  Future<void> _setPublicQuestionModeration(LessonQuestion question) async {
+    await _lessonInteractionService.setPublicModeration(
+      collectionPath: 'publicLessonQuestions',
+      documentId: question.id,
+      moderationStatus: question.isTeacherHidden
+          ? lessonNoteModerationVisible
+          : lessonNoteModerationHiddenByTeacher,
+    );
+  }
+
+  Future<void> _setPublicAnswerModeration(LessonQuestionAnswer answer) async {
+    await _lessonInteractionService.setPublicModeration(
+      collectionPath: 'publicLessonQuestionAnswers',
+      documentId: answer.id,
+      moderationStatus:
+          answer.moderationStatus == lessonNoteModerationHiddenByTeacher
+          ? lessonNoteModerationVisible
+          : lessonNoteModerationHiddenByTeacher,
+    );
   }
 
   void _showMessage(String message) {
@@ -434,8 +476,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
         ? FirebaseFirestore.instance
               .collection('publicLessonQuestionAnswers')
               .where('questionId', isEqualTo: question.id)
-              .where('moderationStatus', isEqualTo: lessonNoteModerationVisible)
               .where('isDeleted', isEqualTo: false)
+              .where('moderationStatus', isEqualTo: lessonNoteModerationVisible)
         : FirebaseFirestore.instance
               .collection('users')
               .doc(user.uid)
@@ -458,6 +500,38 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
     });
   }
 
+  Stream<List<LessonQuestionAnswer>> _teacherPreviewAnswersStream(
+    LessonQuestion question,
+  ) {
+    final provided = widget.answersStream;
+    if (provided != null) {
+      return provided;
+    }
+    if (Firebase.apps.isEmpty || question.id == null || question.isDeleted) {
+      return Stream.value(const []);
+    }
+    return FirebaseFirestore.instance
+        .collection('publicLessonQuestionAnswers')
+        .where('questionId', isEqualTo: question.id)
+        .where('isDeleted', isEqualTo: false)
+        .snapshots(includeMetadataChanges: true)
+        .map((snapshot) {
+          if (snapshot.metadata.isFromCache) {
+            return const <LessonQuestionAnswer>[];
+          }
+          final answers = snapshot.docs
+              .map(LessonQuestionAnswer.fromFirestore)
+              .where((answer) => !answer.isDeleted)
+              .toList();
+          answers.sort((a, b) {
+            return timestampOrEpoch(
+              a.createdAt,
+            ).compareTo(timestampOrEpoch(b.createdAt));
+          });
+          return answers;
+        });
+  }
+
   Future<void> _saveAnswer(
     LessonQuestion question,
     _LessonQuestionAnswerDraft draft,
@@ -473,6 +547,10 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
       return;
     }
     final firestore = FirebaseFirestore.instance;
+    final isTeacherAnswer = widget.isTeacherPreview || _isCurrentUserTeacher;
+    final teacherDisplayName = isTeacherAnswer
+        ? await _teacherCommentDisplayName(user)
+        : null;
     final answerRef = firestore
         .collection('users')
         .doc(user.uid)
@@ -486,9 +564,10 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
       'lessonNumber': widget.lessonNumber,
       'lessonTitle': widget.lesson.title,
       'authorId': user.uid,
-      'authorName': user.displayName ?? user.email ?? '学習者',
-      'authorDisplayName': _isCurrentUserTeacher ? '先生' : null,
-      'authorRole': _isCurrentUserTeacher ? 'teacher' : 'student',
+      'authorName':
+          teacherDisplayName ?? user.displayName ?? user.email ?? '学習者',
+      'authorDisplayName': teacherDisplayName,
+      'authorRole': isTeacherAnswer ? 'teacher' : 'student',
       'body': draft.body.trim(),
       'attachmentTypes': <String>[],
       'parentCommentId': draft.parentCommentId,
@@ -514,8 +593,43 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
     await batch.commit();
   }
 
+  Future<String?> _teacherCommentDisplayName(User user) async {
+    if (Firebase.apps.isEmpty) {
+      return null;
+    }
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('publicUserProfiles')
+          .doc(
+            publicUserProfileDocumentId(user.uid, publicUserProfileRoleTeacher),
+          )
+          .get();
+      final profile = snapshot.exists
+          ? PublicUserProfile.fromFirestore(snapshot)
+          : fallbackPublicUserProfile(
+              userId: user.uid,
+              role: publicUserProfileRoleTeacher,
+              displayName: user.displayName ?? user.email,
+            );
+      final displayName = profile.displayName.trim();
+      if (displayName.isEmpty || displayName == '先生') {
+        return '先生';
+      }
+      if (displayName.endsWith('（先生）')) {
+        return displayName;
+      }
+      return '$displayName（先生）';
+    } on FirebaseException {
+      final displayName = (user.displayName ?? '').trim();
+      if (displayName.isEmpty) {
+        return '先生';
+      }
+      return displayName.endsWith('（先生）') ? displayName : '$displayName（先生）';
+    }
+  }
+
   bool _canCurrentUserAnswerQuestion(LessonQuestion question) {
-    if (_isCurrentUserTeacher) {
+    if (widget.isTeacherPreview || _isCurrentUserTeacher) {
       return true;
     }
     return question.isPubliclyVisible &&
@@ -616,9 +730,6 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
   }
 
   Widget _buildContent() {
-    if (widget.isTeacherPreview) {
-      return _buildTeacherPreviewQuestionList();
-    }
     final selectedQuestion = _selectedQuestion;
     if (selectedQuestion != null) {
       return StreamBuilder<LessonQuestion>(
@@ -632,7 +743,9 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
           }
           return _LessonQuestionDetail(
             question: currentQuestion,
-            answersStream: _answersStream(currentQuestion),
+            answersStream: widget.isTeacherPreview
+                ? _teacherPreviewAnswersStream(currentQuestion)
+                : _answersStream(currentQuestion),
             quotableNotesStream: _quotableNotesStream(),
             currentUserId: _currentUserId,
             isCurrentUserTeacher: _isCurrentUserTeacher,
@@ -640,6 +753,9 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
             highlightedAnswerId: widget.initialHighlightedAnswerId,
             onBack: () => setState(() => _selectedQuestion = null),
             onSaveAnswer: (draft) => _saveAnswer(currentQuestion, draft),
+            onToggleQuestionModeration: widget.isTeacherPreview
+                ? () => _setPublicQuestionModeration(currentQuestion)
+                : null,
             onDeleteQuestion: () async {
               await _deleteQuestion(currentQuestion);
               if (mounted) {
@@ -647,9 +763,15 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
               }
             },
             onDeleteAnswer: (answer) => _deleteAnswer(currentQuestion, answer),
+            onToggleAnswerModeration: widget.isTeacherPreview
+                ? _setPublicAnswerModeration
+                : null,
           );
         },
       );
+    }
+    if (widget.isTeacherPreview) {
+      return _buildTeacherPreviewQuestionList();
     }
     final editingQuestion = _editingQuestion;
     if (editingQuestion != null) {
@@ -690,7 +812,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
           padding: EdgeInsets.symmetric(horizontal: 16),
           child: Align(
             alignment: Alignment.centerLeft,
-            child: Text('先生プレビュー中は、自分の質問や回答を表示・投稿しません。'),
+            child: Text('先生プレビュー中は、公開質問の確認と返信・管理ができます。'),
           ),
         ),
         Expanded(
@@ -720,15 +842,19 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel> {
                       );
                     }
                     return _QuestionList(
-                      questionsStream: _publicQuestionsStream(),
+                      questionsStream: widget.publicQuestionsStream == null
+                          ? _teacherPreviewPublicQuestionsStream()
+                          : _publicQuestionsStream(),
                       query: _query,
-                      currentUserId: null,
-                      isCurrentUserTeacher: false,
-                      action: const Text('公開質問の閲覧のみできます。'),
+                      currentUserId: _currentUserId,
+                      isCurrentUserTeacher: true,
+                      action: const Text('公開質問を確認し、返信や公開状態の管理ができます。'),
                       emptyText: '公開質問はまだありません。',
-                      onTap: null,
+                      onTap: (question) =>
+                          setState(() => _selectedQuestion = question),
                       onDelete: null,
                       onEdit: null,
+                      onToggleModeration: _setPublicQuestionModeration,
                     );
                   },
                 ),
@@ -868,6 +994,7 @@ class _QuestionList extends StatelessWidget {
     required this.onEdit,
     required this.currentUserId,
     required this.isCurrentUserTeacher,
+    this.onToggleModeration,
   });
 
   final Stream<List<LessonQuestion>> questionsStream;
@@ -879,6 +1006,7 @@ class _QuestionList extends StatelessWidget {
   final ValueChanged<LessonQuestion>? onEdit;
   final String? currentUserId;
   final bool isCurrentUserTeacher;
+  final ValueChanged<LessonQuestion>? onToggleModeration;
 
   @override
   Widget build(BuildContext context) {
@@ -915,6 +1043,10 @@ class _QuestionList extends StatelessWidget {
                   onReply: onTap == null ? null : () => onTap!(question),
                   onEdit: onEdit == null ? null : () => onEdit!(question),
                   onDelete: onDelete == null ? null : () => onDelete!(question),
+                  onModerate: onToggleModeration == null
+                      ? null
+                      : () => onToggleModeration!(question),
+                  moderateLabel: question.isTeacherHidden ? '公開に戻す' : '非公開にする',
                 ),
           ],
         );
@@ -980,6 +1112,8 @@ class _CommentBubble extends StatelessWidget {
     this.onReply,
     this.onEdit,
     this.onDelete,
+    this.onModerate,
+    this.moderateLabel,
   });
 
   final String body;
@@ -1002,6 +1136,8 @@ class _CommentBubble extends StatelessWidget {
   final VoidCallback? onReply;
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
+  final VoidCallback? onModerate;
+  final String? moderateLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -1047,7 +1183,8 @@ class _CommentBubble extends StatelessWidget {
     required String displayName,
   }) {
     final createdAtText = _formatCommentTimestamp(createdAt);
-    final canOperate = isOwner || isTeacher || onReply != null;
+    final canOperate =
+        isOwner || isTeacher || onReply != null || onModerate != null;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
@@ -1175,6 +1312,8 @@ class _CommentBubble extends StatelessWidget {
                                 onEdit?.call();
                               case _CommentAction.delete:
                                 onDelete?.call();
+                              case _CommentAction.moderate:
+                                onModerate?.call();
                             }
                           },
                           itemBuilder: (context) => [
@@ -1192,6 +1331,11 @@ class _CommentBubble extends StatelessWidget {
                               const PopupMenuItem(
                                 value: _CommentAction.delete,
                                 child: Text('削除'),
+                              ),
+                            if (onModerate != null)
+                              PopupMenuItem(
+                                value: _CommentAction.moderate,
+                                child: Text(moderateLabel ?? '公開状態を変更'),
                               ),
                           ],
                         ),
@@ -1215,18 +1359,25 @@ class _CommentBubble extends StatelessWidget {
   }
 }
 
-enum _CommentAction { reply, edit, delete }
+enum _CommentAction { reply, edit, delete, moderate }
 
 String _commentDisplayName({
   required PublicUserProfile profile,
   required bool isOwner,
   required String authorRole,
 }) {
+  if (authorRole == 'teacher') {
+    final displayName = profile.displayName.trim();
+    if (displayName.isEmpty || displayName == '先生') {
+      return '先生';
+    }
+    if (displayName.endsWith('（先生）')) {
+      return displayName;
+    }
+    return '$displayName（先生）';
+  }
   if (!isOwner) {
     return profile.displayName;
-  }
-  if (authorRole == 'teacher') {
-    return 'あなた（＝先生）';
   }
   return 'あなた';
 }
@@ -1486,8 +1637,10 @@ class _LessonQuestionDetail extends StatefulWidget {
     required this.highlightedAnswerId,
     required this.onBack,
     required this.onSaveAnswer,
+    required this.onToggleQuestionModeration,
     required this.onDeleteQuestion,
     required this.onDeleteAnswer,
+    required this.onToggleAnswerModeration,
   });
 
   final LessonQuestion question;
@@ -1499,8 +1652,11 @@ class _LessonQuestionDetail extends StatefulWidget {
   final String? highlightedAnswerId;
   final VoidCallback onBack;
   final Future<void> Function(_LessonQuestionAnswerDraft draft) onSaveAnswer;
+  final Future<void> Function()? onToggleQuestionModeration;
   final Future<void> Function() onDeleteQuestion;
   final Future<void> Function(LessonQuestionAnswer answer) onDeleteAnswer;
+  final Future<void> Function(LessonQuestionAnswer answer)?
+  onToggleAnswerModeration;
 
   @override
   State<_LessonQuestionDetail> createState() => _LessonQuestionDetailState();
@@ -1631,6 +1787,8 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                 onDelete: widget.currentUserId == question.authorId
                     ? widget.onDeleteQuestion
                     : null,
+                onModerate: widget.onToggleQuestionModeration,
+                moderateLabel: question.isTeacherHidden ? '公開に戻す' : '非公開にする',
               ),
               const Divider(height: 32),
               const Text(
@@ -1690,6 +1848,8 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                                 },
                           onReply: _setAnswerReplyTarget,
                           onDeleteAnswer: widget.onDeleteAnswer,
+                          onToggleAnswerModeration:
+                              widget.onToggleAnswerModeration,
                           highlightedAnswerId: widget.highlightedAnswerId,
                         ),
                       if (standaloneHighlightedReply != null)
@@ -1701,6 +1861,8 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                           canAnswer: widget.canAnswer,
                           onReply: _setAnswerReplyTarget,
                           onDeleteAnswer: widget.onDeleteAnswer,
+                          onToggleAnswerModeration:
+                              widget.onToggleAnswerModeration,
                         ),
                     ],
                   );
@@ -1789,6 +1951,7 @@ class _AnswerThreadView extends StatelessWidget {
     required this.onToggle,
     required this.onReply,
     required this.onDeleteAnswer,
+    required this.onToggleAnswerModeration,
     this.highlightedAnswerId,
   });
 
@@ -1801,6 +1964,8 @@ class _AnswerThreadView extends StatelessWidget {
   final VoidCallback? onToggle;
   final void Function(LessonQuestionAnswer answer) onReply;
   final Future<void> Function(LessonQuestionAnswer answer) onDeleteAnswer;
+  final Future<void> Function(LessonQuestionAnswer answer)?
+  onToggleAnswerModeration;
   final String? highlightedAnswerId;
 
   @override
@@ -1833,6 +1998,13 @@ class _AnswerThreadView extends StatelessWidget {
           onDelete: currentUserId == root.authorId
               ? () => onDeleteAnswer(root)
               : null,
+          onModerate: onToggleAnswerModeration == null
+              ? null
+              : () => onToggleAnswerModeration!(root),
+          moderateLabel:
+              root.moderationStatus == lessonNoteModerationHiddenByTeacher
+              ? '公開に戻す'
+              : '非公開にする',
         ),
         if (replyCount > 0) ...[
           Padding(
@@ -1884,6 +2056,14 @@ class _AnswerThreadView extends StatelessWidget {
                       onDelete: currentUserId == reply.authorId
                           ? () => onDeleteAnswer(reply)
                           : null,
+                      onModerate: onToggleAnswerModeration == null
+                          ? null
+                          : () => onToggleAnswerModeration!(reply),
+                      moderateLabel:
+                          reply.moderationStatus ==
+                              lessonNoteModerationHiddenByTeacher
+                          ? '公開に戻す'
+                          : '非公開にする',
                     ),
                 ],
               ),
@@ -1903,6 +2083,7 @@ class _StandaloneRecordReplyView extends StatelessWidget {
     required this.canAnswer,
     required this.onReply,
     required this.onDeleteAnswer,
+    required this.onToggleAnswerModeration,
   });
 
   final LessonQuestionAnswer answer;
@@ -1912,6 +2093,8 @@ class _StandaloneRecordReplyView extends StatelessWidget {
   final bool canAnswer;
   final void Function(LessonQuestionAnswer answer) onReply;
   final Future<void> Function(LessonQuestionAnswer answer) onDeleteAnswer;
+  final Future<void> Function(LessonQuestionAnswer answer)?
+  onToggleAnswerModeration;
 
   @override
   Widget build(BuildContext context) {
@@ -1951,6 +2134,13 @@ class _StandaloneRecordReplyView extends StatelessWidget {
               onDelete: currentUserId == answer.authorId
                   ? () => onDeleteAnswer(answer)
                   : null,
+              onModerate: onToggleAnswerModeration == null
+                  ? null
+                  : () => onToggleAnswerModeration!(answer),
+              moderateLabel:
+                  answer.moderationStatus == lessonNoteModerationHiddenByTeacher
+                  ? '公開に戻す'
+                  : '非公開にする',
             ),
           ],
         ),

@@ -666,7 +666,6 @@ service cloud.firestore {
           || isPublicParentQuestionAuthor()
           || isCourseInstructor(resource.data.courseId)
           || (publicParentQuestionVisible()
-            && get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.target == 'everyone'
             && resource.data.moderationStatus == 'visible'
             && resource.data.isDeleted == false));
 

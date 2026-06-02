@@ -230,6 +230,18 @@ void main() {
       target: LessonQuestionTarget.teacher,
       attachmentTypes: [],
     );
+    const teacherAnswer = LessonQuestionAnswer(
+      id: 'teacher-answer',
+      questionId: 'question-teacher',
+      authorId: 'teacher-a',
+      authorName: '田中（先生）',
+      authorDisplayName: '田中（先生）',
+      authorRole: 'teacher',
+      body: '先生からの公開回答です。',
+      attachmentTypes: [],
+      parentCommentId: 'question-teacher',
+      parentCommentType: 'question',
+    );
 
     await tester.pumpWidget(
       MaterialApp(
@@ -240,6 +252,7 @@ void main() {
             lessonNumber: 1,
             questionsStream: Stream.value(const [question]),
             publicQuestionsStream: Stream.value(const []),
+            answersStream: Stream.value(const [teacherAnswer]),
           ),
         ),
       ),
@@ -251,7 +264,65 @@ void main() {
 
     expect(find.text('質問詳細'), findsOneWidget);
     expect(find.text('回答コメントを書く'), findsNothing);
-    expect(find.text('学習者にも公開 / 先生だけ回答可'), findsOneWidget);
+    expect(find.text('先生からの公開回答です。'), findsOneWidget);
+    expect(find.text('学習者にも公開 / 先生だけ回答可'), findsWidgets);
+  });
+
+  testWidgets('Teacher preview opens public question detail with moderation', (
+    tester,
+  ) async {
+    const question = LessonQuestion(
+      id: 'teacher-preview-question',
+      authorId: 'student-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '',
+      body: '先生プレビューで確認する公開質問です。',
+      visibility: LessonQuestionVisibility.public,
+      target: LessonQuestionTarget.teacher,
+      attachmentTypes: [],
+    );
+    const hiddenAnswer = LessonQuestionAnswer(
+      id: 'hidden-answer',
+      questionId: 'teacher-preview-question',
+      authorId: 'student-b',
+      authorName: '別の学習者',
+      authorRole: 'student',
+      body: '先生が確認できる非公開回答です。',
+      attachmentTypes: [],
+      moderationStatus: lessonNoteModerationHiddenByTeacher,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonQuestionsPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            publicQuestionsStream: Stream.value(const [question]),
+            answersStream: Stream.value(const [hiddenAnswer]),
+            isTeacherPreview: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('公開質問を確認し、返信や公開状態の管理ができます。'), findsOneWidget);
+    await tester.tap(find.text('先生プレビューで確認する公開質問です。'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('質問詳細'), findsOneWidget);
+    expect(find.text('回答コメントを書く'), findsOneWidget);
+    expect(find.text('先生が確認できる非公開回答です。'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('コメント操作').last);
+    await tester.pumpAndSettle();
+    expect(find.text('公開に戻す'), findsOneWidget);
   });
 
   testWidgets('Question editor locks scope after posting', (tester) async {

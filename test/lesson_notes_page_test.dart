@@ -162,6 +162,71 @@ void main() {
     expect(dropdown.initialValue, 'public-note');
   });
 
+  testWidgets('Teacher preview shows public note moderation actions', (
+    tester,
+  ) async {
+    const visibleNote = LessonNote(
+      id: 'visible-public-note',
+      authorId: 'user-b',
+      authorName: '他の学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '表示中の公開メモ',
+      body: '先生が確認できます。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.public,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+    );
+    const hiddenNote = LessonNote(
+      id: 'hidden-public-note',
+      authorId: 'user-c',
+      authorName: '別の学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '非公開化した公開メモ',
+      body: '先生だけが管理できます。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.public,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      moderationStatus: lessonNoteModerationHiddenByTeacher,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonNotesPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            publicNotesStream: Stream.value(const [visibleNote, hiddenNote]),
+            isTeacherPreview: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('表示中の公開メモ'), findsOneWidget);
+    expect(find.text('非公開化した公開メモ'), findsOneWidget);
+    expect(find.text('非公開にする'), findsOneWidget);
+    expect(find.text('公開に戻す'), findsOneWidget);
+    expect(find.text('先生が非公開化中'), findsOneWidget);
+  });
+
   testWidgets('Public note detail explains when citation is not allowed', (
     tester,
   ) async {

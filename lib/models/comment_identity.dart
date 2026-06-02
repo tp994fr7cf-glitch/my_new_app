@@ -20,7 +20,9 @@ CommentIdentity commentIdentityFor({
 }) {
   final isTeacher = authorRole == 'teacher' || authorName == '先生';
   final displayName = isTeacher
-      ? '先生'
+      ? (authorDisplayName?.trim().isNotEmpty == true
+            ? authorDisplayName!.trim()
+            : '先生')
       : _studentDisplayName(
           authorId: authorId,
           authorName: authorName,
