@@ -649,6 +649,16 @@ service cloud.firestore {
           && lessonQuestionsPublicEnabled(get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.interactionSettingId);
       }
 
+      function publicParentQuestionAuthorCanAnswer(questionId) {
+        return exists(/databases/$(database)/documents/publicLessonQuestions/$(questionId))
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.studentVisibility == 'public'
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.moderationStatus == 'visible'
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.isDeleted == false
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.authorId == request.auth.uid
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.authorRole != 'teacher'
+          && lessonQuestionsPublicEnabled(get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.interactionSettingId);
+      }
+
       function isPublicParentQuestionAuthor() {
         return exists(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId))
           && get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.authorId == request.auth.uid
@@ -659,11 +669,19 @@ service cloud.firestore {
             || hasActiveTeacherRole());
       }
 
+      function isParentQuestionCourseInstructor() {
+        return exists(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId))
+          && isCourseInstructor(
+            get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.courseId
+          );
+      }
+
       allow read: if signedIn()
         && ((resource.data.authorId == request.auth.uid
             && (resource.data.authorRole != 'teacher'
               || hasActiveTeacherRole()))
           || isPublicParentQuestionAuthor()
+          || isParentQuestionCourseInstructor()
           || isCourseInstructor(resource.data.courseId)
           || (publicParentQuestionVisible()
             && resource.data.moderationStatus == 'visible'
@@ -703,6 +721,7 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.moderationStatus == 'visible'
         && get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.isDeleted == false
         && (publicParentQuestionAllowsLearnerAnswers(request.resource.data.questionId)
+          || publicParentQuestionAuthorCanAnswer(request.resource.data.questionId)
           || isCourseInstructor(get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.courseId));
 
       allow update: if signedIn()

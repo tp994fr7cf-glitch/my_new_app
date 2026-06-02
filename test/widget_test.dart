@@ -337,7 +337,10 @@ void main() {
 
     expect(find.text('回答コメント'), findsOneWidget);
     expect(find.text('両辺に同じ計算をするからです。'), findsOneWidget);
-    expect(find.text('返信先: 学習者2 の「なぜ符号が変わりますか？」への返信'), findsOneWidget);
+    expect(
+      find.text('返信先の控え:\n学習者2 の「なぜ符号が変わりますか？」への返信'),
+      findsOneWidget,
+    );
 
     final answerRecord = find.byKey(
       const ValueKey('answer-record-open-answer-a'),
@@ -347,10 +350,10 @@ void main() {
     await tester.tap(answerRecord);
     await tester.pumpAndSettle();
 
-    expect(find.text('質問詳細'), findsOneWidget);
+    expect(find.text('回答への返信'), findsOneWidget);
     expect(find.text('回答コメント'), findsOneWidget);
     expect(find.text('両辺に同じ計算をするからです。'), findsOneWidget);
-    expect(find.text('なぜ符号が変わりますか？'), findsWidgets);
+    expect(find.textContaining('なぜ符号が変わりますか？'), findsOneWidget);
   });
 
   testWidgets('Learning records keep hidden questions as static records', (
@@ -398,6 +401,7 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('タップしてコメント欄を開けます。'), findsNothing);
+    expect(find.text('削除'), findsOneWidget);
 
     await tester.tap(find.text('先生が非公開化した質問です。'));
     await tester.pumpAndSettle();
@@ -475,9 +479,10 @@ void main() {
 
     expect(find.text('質問詳細'), findsNothing);
     expect(find.text('先生が非公開化した回答です。'), findsOneWidget);
+    expect(find.text('削除'), findsWidgets);
   });
 
-  testWidgets('Learning records keep deleted comments as static records', (
+  testWidgets('Learning records hide self-deleted comments', (
     WidgetTester tester,
   ) async {
     final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
@@ -531,17 +536,12 @@ void main() {
     await tester.tap(find.text('質問コメント'));
     await tester.pumpAndSettle();
 
-    expect(find.text('削除済みの質問です。'), findsOneWidget);
-    expect(find.text('削除済みの回答です。'), findsOneWidget);
+    expect(find.text('削除済みの質問です。'), findsNothing);
+    expect(find.text('削除済みの回答です。'), findsNothing);
     expect(
-      find.text('この質問コメントは削除済み、または現在は表示できません。学習記録として内容だけ表示しています。'),
+      find.text('この期間の質問コメントはまだありません。'),
       findsOneWidget,
     );
-    expect(
-      find.text('この回答コメントは削除済み、または現在は表示できません。学習記録として内容だけ表示しています。'),
-      findsOneWidget,
-    );
-    expect(find.text('タップしてコメント欄を開けます。'), findsNothing);
   });
 
   testWidgets('Learning records show reply when parent answer is unavailable', (

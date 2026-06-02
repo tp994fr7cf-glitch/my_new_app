@@ -118,36 +118,6 @@ void main() {
     expect(answerScopeLabel(hiddenAnswer, '学習者にも公開 / 先生だけ回答可'), '先生だけ表示');
   });
 
-  test('comment owner is decided by uid and active role', () {
-    expect(
-      isCommentOwnerForActiveRole(
-        currentUserId: 'same-user',
-        isCurrentUserTeacher: false,
-        authorId: 'same-user',
-        authorRole: 'student',
-      ),
-      isTrue,
-    );
-    expect(
-      isCommentOwnerForActiveRole(
-        currentUserId: 'same-user',
-        isCurrentUserTeacher: true,
-        authorId: 'same-user',
-        authorRole: 'student',
-      ),
-      isFalse,
-    );
-    expect(
-      isCommentOwnerForActiveRole(
-        currentUserId: 'same-user',
-        isCurrentUserTeacher: true,
-        authorId: 'same-user',
-        authorRole: 'teacher',
-      ),
-      isTrue,
-    );
-  });
-
   testWidgets(
     'Question editor uses post label and forces public for everyone',
     (tester) async {
@@ -602,14 +572,13 @@ void main() {
 
     expect(find.text('Bさんの直接回答です。'), findsOneWidget);
     expect(find.text('Eさんの別の直接回答です。'), findsOneWidget);
-    expect(find.text('返信 2件表示'), findsOneWidget);
+    expect(find.text('返信 2件を表示'), findsOneWidget);
     expect(find.text('CさんからBさんへの返信です。'), findsNothing);
     expect(find.text('DさんからCさんへの返信です。'), findsNothing);
 
-    await tester.tap(find.text('返信 2件表示'));
+    await tester.tap(find.text('返信 2件を表示'));
     await tester.pumpAndSettle();
 
-    expect(find.text('回答への返信'), findsOneWidget);
     expect(find.text('CさんからBさんへの返信です。'), findsOneWidget);
     expect(find.text('DさんからCさんへの返信です。'), findsOneWidget);
     expect(find.textContaining('Bさん への返信'), findsOneWidget);

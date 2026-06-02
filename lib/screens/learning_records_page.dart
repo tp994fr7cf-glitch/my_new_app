@@ -145,7 +145,10 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
         .limit(100)
         .snapshots()
         .map((snapshot) {
-          return snapshot.docs.map(LessonQuestion.fromFirestore).toList();
+          return snapshot.docs
+              .map(LessonQuestion.fromFirestore)
+              .where((question) => !question.isDeleted)
+              .toList();
         });
   }
 
@@ -165,7 +168,10 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
         .limit(100)
         .snapshots()
         .map((snapshot) {
-          return snapshot.docs.map(LessonQuestionAnswer.fromFirestore).toList();
+          return snapshot.docs
+              .map(LessonQuestionAnswer.fromFirestore)
+              .where((answer) => !answer.isDeleted)
+              .toList();
         });
   }
 
@@ -312,6 +318,9 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
     final since = _periodStart();
     final query = _query.trim().toLowerCase();
     return questions.where((question) {
+      if (question.isDeleted) {
+        return false;
+      }
       if (since != null) {
         final updatedAt = question.updatedAt ?? question.createdAt;
         if (updatedAt == null || updatedAt.toDate().isBefore(since)) {
@@ -331,6 +340,9 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
     final since = _periodStart();
     final query = _query.trim().toLowerCase();
     return answers.where((answer) {
+      if (answer.isDeleted) {
+        return false;
+      }
       if (since != null) {
         final updatedAt = answer.updatedAt ?? answer.createdAt;
         if (updatedAt == null || updatedAt.toDate().isBefore(since)) {
@@ -695,6 +707,7 @@ class _LessonQuestionRecordsList extends StatelessWidget {
                     question: question,
                     questions: allQuestions,
                     answers: answers,
+                    user: user,
                   ),
                   const SizedBox(height: 12),
                 ],
@@ -794,11 +807,13 @@ class _LessonQuestionRecordCard extends StatelessWidget {
     required this.question,
     required this.questions,
     required this.answers,
+    required this.user,
   });
 
   final LessonQuestion question;
   final List<LessonQuestion> questions;
   final List<LessonQuestionAnswer> answers;
+  final User user;
 
   bool get _canOpenQuestionThread => _canOpenQuestionFromRecord(question);
   String? get _unavailableMessage => _canOpenQuestionThread
@@ -867,6 +882,82 @@ class _LessonQuestionRecordCard extends StatelessWidget {
     );
   }
 
+  Future<void> _deleteQuestion() async {
+    final questionId = question.id;
+    if (questionId == null || Firebase.apps.isEmpty) {
+      return;
+    }
+    final firestore = FirebaseFirestore.instance;
+    final now = FieldValue.serverTimestamp();
+    final privateRef = firestore
+        .collection('users')
+        .doc(user.uid)
+        .collection('lessonQuestions')
+        .doc(questionId);
+    final publicRef = firestore
+        .collection('publicLessonQuestions')
+        .doc(questionId);
+    final publicSnapshot = await publicRef.get();
+    final batch = firestore.batch()
+      ..set(privateRef, {
+        'isDeleted': true,
+        'deletedAt': now,
+        'updatedAt': now,
+      }, SetOptions(merge: true));
+    if (publicSnapshot.exists) {
+      batch.set(publicRef, {
+        'studentVisibility': lessonQuestionVisibilityTeacherOnly,
+        'isDeleted': true,
+        'deletedAt': now,
+        'updatedAt': now,
+      }, SetOptions(merge: true));
+    }
+    await batch.commit();
+  }
+
+  Future<void> _confirmAndDelete(BuildContext context) async {
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('質問コメントを削除'),
+          content: const Text('この質問コメントを削除しますか？'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('キャンセル'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('削除する'),
+            ),
+          ],
+        );
+      },
+    );
+    if (shouldDelete != true) {
+      return;
+    }
+    try {
+      await _deleteQuestion();
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(const SnackBar(content: Text('質問コメントを削除しました。')));
+    } on FirebaseException catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          SnackBar(content: Text(error.message ?? '質問コメントの削除に失敗しました。')),
+        );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -909,8 +1000,22 @@ class _LessonQuestionRecordCard extends StatelessWidget {
               const SizedBox(height: 8),
               Row(
                 children: [
-                  if (_canOpenQuestionThread) const Text('タップしてコメント欄を開けます。'),
-                  const Spacer(),
+                  if (_canOpenQuestionThread)
+                    const Expanded(
+                      child: Text(
+                        'タップしてコメント欄を開けます。',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    )
+                  else
+                    const Spacer(),
+                  TextButton(
+                    onPressed: question.id == null
+                        ? null
+                        : () => _confirmAndDelete(context),
+                    child: const Text('削除'),
+                  ),
                   TextButton(
                     onPressed: () => _showDetails(context),
                     child: const Text('詳しく見る'),
@@ -995,6 +1100,46 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
     return true;
   }
 
+  bool _isReplyTargetUnavailable(LessonQuestion? question) {
+    if (widget.answer.parentCommentType == 'answer') {
+      return _shouldHideReplyTargetPreview();
+    }
+    return question == null || !_canOpenQuestionFromRecord(question);
+  }
+
+  Timestamp? _parentCommentTimestamp(LessonQuestion? question) {
+    if (widget.answer.parentCommentType == 'answer') {
+      final parentId = widget.answer.parentCommentId;
+      if (parentId == null || parentId.isEmpty) {
+        return null;
+      }
+      for (final answer in widget.answers) {
+        if (answer.id == parentId) {
+          return answer.createdAt ?? answer.updatedAt;
+        }
+      }
+      return null;
+    }
+    return question?.createdAt ?? question?.updatedAt;
+  }
+
+  String _replyTargetRecordSummary(LessonQuestion? question) {
+    final replyTo = (widget.answer.replyToDisplayName ?? '').trim();
+    final parentTimestamp = _parentCommentTimestamp(question);
+    final repliedAt = widget.answer.createdAt ?? widget.answer.updatedAt;
+    final parentTimestampText = parentTimestamp == null
+        ? '不明'
+        : _formatTimestamp(parentTimestamp);
+    final repliedAtText = repliedAt == null
+        ? '不明'
+        : _formatTimestamp(repliedAt);
+    return [
+      '1. 誰に対して: ${replyTo.isEmpty ? '不明' : replyTo}',
+      '2. いつ投稿されたコメントに対して: $parentTimestampText',
+      '3. いつ自分が返信したか: $repliedAtText',
+    ].join('\n');
+  }
+
   void _openQuestionThread(
     BuildContext context,
     LessonQuestion? parentQuestion,
@@ -1075,10 +1220,12 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
                     ),
                     const SizedBox(height: 8),
                     SelectableText(
-                      _replyPreviewText(
-                        widget.answer,
-                        hideBodyPreview: _shouldHideReplyTargetPreview(),
-                      ),
+                      _isReplyTargetUnavailable(parentQuestion)
+                          ? _replyTargetRecordSummary(parentQuestion)
+                          : _replyPreviewText(
+                              widget.answer,
+                              hideBodyPreview: false,
+                            ),
                     ),
                     const SizedBox(height: 16),
                     const Text(
@@ -1108,6 +1255,77 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
     );
   }
 
+  Future<void> _deleteAnswer() async {
+    final answerId = widget.answer.id;
+    if (answerId == null || Firebase.apps.isEmpty) {
+      return;
+    }
+    final firestore = FirebaseFirestore.instance;
+    final deletedData = {
+      'isDeleted': true,
+      'deletedAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+    final privateRef = firestore
+        .collection('users')
+        .doc(widget.user.uid)
+        .collection('lessonQuestionAnswers')
+        .doc(answerId);
+    final publicRef = firestore
+        .collection('publicLessonQuestionAnswers')
+        .doc(answerId);
+    final publicSnapshot = await publicRef.get();
+    final batch = firestore.batch()
+      ..set(privateRef, deletedData, SetOptions(merge: true));
+    if (publicSnapshot.exists) {
+      batch.set(publicRef, deletedData, SetOptions(merge: true));
+    }
+    await batch.commit();
+  }
+
+  Future<void> _confirmAndDelete(BuildContext context) async {
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('回答コメントを削除'),
+          content: const Text('この回答コメントを削除しますか？'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('キャンセル'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('削除する'),
+            ),
+          ],
+        );
+      },
+    );
+    if (shouldDelete != true) {
+      return;
+    }
+    try {
+      await _deleteAnswer();
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(const SnackBar(content: Text('回答コメントを削除しました。')));
+    } on FirebaseException catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          SnackBar(content: Text(error.message ?? '回答コメントの削除に失敗しました。')),
+        );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<LessonQuestion?>(
@@ -1122,10 +1340,9 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
                 _canOpenAnswerFromRecord(widget.answer)
             ? null
             : _unavailableMessageFor(loadedParentQuestion);
-        final replyPreview = _replyPreviewText(
-          widget.answer,
-          hideBodyPreview: _shouldHideReplyTargetPreview(),
-        );
+        final replyPreview = _isReplyTargetUnavailable(loadedParentQuestion)
+            ? _replyTargetRecordSummary(loadedParentQuestion)
+            : _replyPreviewText(widget.answer, hideBodyPreview: false);
         return Card(
           child: InkWell(
             key: ValueKey(
@@ -1154,7 +1371,7 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
                   const SizedBox(height: 8),
                   Text(widget.answer.body),
                   const SizedBox(height: 8),
-                  Text('返信先: $replyPreview'),
+                  Text('返信先の控え:\n$replyPreview'),
                   if (unavailableMessage != null) ...[
                     const SizedBox(height: 8),
                     Text(unavailableMessage),
@@ -1162,8 +1379,22 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
                   const SizedBox(height: 8),
                   Row(
                     children: [
-                      if (canOpenQuestionThread) const Text('タップしてコメント欄を開けます。'),
-                      const Spacer(),
+                      if (canOpenQuestionThread)
+                        const Expanded(
+                          child: Text(
+                            'タップしてコメント欄を開けます。',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        )
+                      else
+                        const Spacer(),
+                      TextButton(
+                        onPressed: widget.answer.id == null
+                            ? null
+                            : () => _confirmAndDelete(context),
+                        child: const Text('削除'),
+                      ),
                       TextButton(
                         key: ValueKey(
                           'answer-record-details-${widget.answer.id ?? widget.answer.body}',
@@ -1200,6 +1431,20 @@ void _openQuestionThreadPage({
   String? highlightedAnswerId,
 }) {
   final useRecordStreams = Firebase.apps.isEmpty;
+  final recordQuestionsStream = useRecordStreams
+      ? Stream.value(questions).asBroadcastStream()
+      : null;
+  final recordPublicQuestionsStream = useRecordStreams
+      ? Stream.value(const <LessonQuestion>[]).asBroadcastStream()
+      : null;
+  final recordAnswersStream = useRecordStreams
+      ? Stream.value(
+          answers
+              .where((answer) => answer.questionId == question.id)
+              .where(_canOpenAnswerFromRecord)
+              .toList(),
+        ).asBroadcastStream()
+      : null;
   Navigator.of(context).push(
     MaterialPageRoute(
       builder: (_) => Scaffold(
@@ -1213,18 +1458,9 @@ void _openQuestionThreadPage({
             ),
             lessonNumber: question.lessonNumber,
             initialSelectedQuestion: question,
-            questionsStream: useRecordStreams ? Stream.value(questions) : null,
-            publicQuestionsStream: useRecordStreams
-                ? Stream.value(const <LessonQuestion>[])
-                : null,
-            answersStream: useRecordStreams
-                ? Stream.value(
-                    answers
-                        .where((answer) => answer.questionId == question.id)
-                        .where(_canOpenAnswerFromRecord)
-                        .toList(),
-                  )
-                : null,
+            questionsStream: recordQuestionsStream,
+            publicQuestionsStream: recordPublicQuestionsStream,
+            answersStream: recordAnswersStream,
             initialHighlightedAnswerId: highlightedAnswerId,
           ),
         ),
