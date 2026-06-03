@@ -615,4 +615,155 @@ void main() {
     expect(find.textContaining('Bさん への返信'), findsOneWidget);
     expect(find.textContaining('Cさん への返信'), findsOneWidget);
   });
+
+  testWidgets(
+    'Reply thread falls back to teacher label when reply target name is missing',
+    (tester) async {
+      const question = LessonQuestion(
+        id: 'question-reply-fallback-teacher',
+        authorId: 'student-a',
+        authorName: 'Aさん',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '親質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: [],
+      );
+      final answers = [
+        LessonQuestionAnswer(
+          id: 'answer-root',
+          questionId: 'question-reply-fallback-teacher',
+          authorId: 'student-b',
+          authorName: 'Bさん',
+          authorRole: 'student',
+          body: '直接回答です。',
+          attachmentTypes: const [],
+          parentCommentId: 'question-reply-fallback-teacher',
+          parentCommentType: 'question',
+          replyToDisplayName: 'Aさん',
+          replyToBodyPreview: '親質問です。',
+          createdAt: Timestamp.fromDate(DateTime(2026, 5, 30, 8)),
+        ),
+        LessonQuestionAnswer(
+          id: 'reply-missing-teacher-name',
+          questionId: 'question-reply-fallback-teacher',
+          authorId: 'student-c',
+          authorName: 'Cさん',
+          authorRole: 'student',
+          body: '返信先名が空でも先生表示にします。',
+          attachmentTypes: const [],
+          parentCommentId: 'answer-root',
+          parentCommentType: 'answer',
+          replyToAuthorId: 'teacher-a',
+          replyToAuthorRole: 'teacher',
+          replyToDisplayName: '',
+          replyToBodyPreview: '直接回答です。',
+          createdAt: Timestamp.fromDate(DateTime(2026, 5, 30, 8, 5)),
+        ),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              initialSelectedQuestion: question,
+              questionsStream: Stream.value(const []),
+              publicQuestionsStream: Stream.value(const []),
+              answersStream: Stream.value(answers),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('返信 1件表示'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('回答への返信'), findsOneWidget);
+      expect(find.textContaining('先生 への返信'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Reply thread masks email-like reply target when profile is unavailable',
+    (tester) async {
+      const question = LessonQuestion(
+        id: 'question-reply-email-mask',
+        authorId: 'student-a',
+        authorName: 'Aさん',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '親質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: [],
+      );
+      final answers = [
+        LessonQuestionAnswer(
+          id: 'answer-root-email',
+          questionId: 'question-reply-email-mask',
+          authorId: 'student-b',
+          authorName: 'Bさん',
+          authorRole: 'student',
+          body: '直接回答です。',
+          attachmentTypes: const [],
+          parentCommentId: 'question-reply-email-mask',
+          parentCommentType: 'question',
+          replyToDisplayName: 'Aさん',
+          replyToBodyPreview: '親質問です。',
+          createdAt: Timestamp.fromDate(DateTime(2026, 5, 30, 9)),
+        ),
+        LessonQuestionAnswer(
+          id: 'reply-email-target',
+          questionId: 'question-reply-email-mask',
+          authorId: 'student-c',
+          authorName: 'Cさん',
+          authorRole: 'student',
+          body: 'メール形式の表示名は画面に出しません。',
+          attachmentTypes: const [],
+          parentCommentId: 'answer-root-email',
+          parentCommentType: 'answer',
+          replyToAuthorId: 'student-z',
+          replyToAuthorRole: 'student',
+          replyToDisplayName: 'private-user@example.com',
+          replyToBodyPreview: '直接回答です。',
+          createdAt: Timestamp.fromDate(DateTime(2026, 5, 30, 9, 5)),
+        ),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              initialSelectedQuestion: question,
+              questionsStream: Stream.value(const []),
+              publicQuestionsStream: Stream.value(const []),
+              answersStream: Stream.value(answers),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('返信 1件表示'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('回答への返信'), findsOneWidget);
+      expect(find.textContaining('学習者 への返信'), findsOneWidget);
+      expect(find.textContaining('private-user@example.com'), findsNothing);
+    },
+  );
 }

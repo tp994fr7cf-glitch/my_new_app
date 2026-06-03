@@ -19,9 +19,11 @@ CommentIdentity commentIdentityFor({
   String? authorRole,
 }) {
   final isTeacher = authorRole == 'teacher' || authorName == '先生';
+  final trimmedAuthorDisplayName = authorDisplayName?.trim();
   final displayName = isTeacher
-      ? (authorDisplayName?.trim().isNotEmpty == true
-            ? authorDisplayName!.trim()
+      ? (trimmedAuthorDisplayName?.isNotEmpty == true &&
+                !_isLikelyEmail(trimmedAuthorDisplayName!)
+            ? trimmedAuthorDisplayName
             : '先生')
       : _studentDisplayName(
           authorId: authorId,
@@ -41,24 +43,30 @@ String _studentDisplayName({
   required String authorName,
   required String? authorDisplayName,
 }) {
-  if (authorDisplayName != null && authorDisplayName.trim().isNotEmpty) {
+  if (authorDisplayName != null &&
+      authorDisplayName.trim().isNotEmpty &&
+      !_isLikelyEmail(authorDisplayName)) {
     return authorDisplayName.trim();
-  }
-  // Temporary client-side mapping until persisted displayNumber is populated.
-  if (authorName == 'naonaonaoya70833@gmail.com') {
-    return '1';
-  }
-  if (authorName == 'naonaonaoya7083@icloud.com') {
-    return '2';
   }
   final match = RegExp(r'^\d+$').firstMatch(authorName.trim());
   if (match != null) {
     return authorName.trim();
   }
+  if (_isLikelyEmail(authorName)) {
+    return authorId.isEmpty ? '学習者' : ((_stableHash(authorId) % 99) + 1).toString();
+  }
   if (authorId.isEmpty) {
     return authorName.isEmpty ? '学習者' : authorName;
   }
   return ((_stableHash(authorId) % 99) + 1).toString();
+}
+
+bool _isLikelyEmail(String value) {
+  final text = value.trim();
+  if (text.isEmpty) {
+    return false;
+  }
+  return RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(text);
 }
 
 Color _stableColor(String seed) {

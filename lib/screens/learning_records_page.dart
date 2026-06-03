@@ -37,9 +37,12 @@ enum _RecordType { views, quizzes, notes, comments }
 
 enum _PeriodFilter { all, today, sevenDays, thirtyDays }
 
+enum _CommentRecordType { questions, answers }
+
 class _LearningRecordsPageState extends State<LearningRecordsPage> {
   _RecordType _selectedType = _RecordType.views;
   _PeriodFilter _selectedPeriod = _PeriodFilter.all;
+  _CommentRecordType _selectedCommentType = _CommentRecordType.questions;
   String _query = '';
 
   Stream<List<Map<String, dynamic>>> _learningEventsStream() {
@@ -234,13 +237,16 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
               style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
-            const Text('視聴、クイズ回答、質問コメントの記録を切り替えて確認できます。'),
+            const Text('視聴、クイズ回答、質問・回答コメントの記録を切り替えて確認できます。'),
             const SizedBox(height: 24),
             _RecordTypeSelector(
               selectedType: _selectedType,
               onSelected: (type) {
                 setState(() {
                   _selectedType = type;
+                  if (type == _RecordType.comments) {
+                    _selectedCommentType = _CommentRecordType.questions;
+                  }
                 });
               },
             ),
@@ -288,6 +294,12 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
                 answersStream: _lessonQuestionAnswersStream(),
                 filterQuestions: _filterQuestions,
                 filterAnswers: _filterAnswers,
+                selectedType: _selectedCommentType,
+                onSelectedType: (type) {
+                  setState(() {
+                    _selectedCommentType = type;
+                  });
+                },
                 user: widget.user,
               ),
             },
@@ -317,7 +329,7 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
   List<LessonQuestion> _filterQuestions(List<LessonQuestion> questions) {
     final since = _periodStart();
     final query = _query.trim().toLowerCase();
-    return questions.where((question) {
+    final filtered = questions.where((question) {
       if (question.isDeleted) {
         return false;
       }
@@ -332,6 +344,13 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
       }
       return lessonQuestionMatchesQuery(question, query);
     }).toList();
+    filtered.sort(
+      (a, b) => _compareTimestampDescWithUnknownLast(
+        a.createdAt ?? a.updatedAt,
+        b.createdAt ?? b.updatedAt,
+      ),
+    );
+    return filtered;
   }
 
   List<LessonQuestionAnswer> _filterAnswers(
@@ -339,7 +358,7 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
   ) {
     final since = _periodStart();
     final query = _query.trim().toLowerCase();
-    return answers.where((answer) {
+    final filtered = answers.where((answer) {
       if (answer.isDeleted) {
         return false;
       }
@@ -354,6 +373,13 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
       }
       return lessonQuestionAnswerMatchesQuery(answer, query);
     }).toList();
+    filtered.sort(
+      (a, b) => _compareTimestampDescWithUnknownLast(
+        a.createdAt ?? a.updatedAt,
+        b.createdAt ?? b.updatedAt,
+      ),
+    );
+    return filtered;
   }
 }
 
@@ -388,7 +414,7 @@ class _RecordTypeSelector extends StatelessWidget {
           onSelected: (_) => onSelected(_RecordType.notes),
         ),
         ChoiceChip(
-          label: const Text('質問コメント'),
+          label: const Text('質問・回答コメントを見る'),
           selected: selectedType == _RecordType.comments,
           onSelected: (_) => onSelected(_RecordType.comments),
         ),
@@ -674,6 +700,8 @@ class _LessonQuestionRecordsList extends StatelessWidget {
     required this.answersStream,
     required this.filterQuestions,
     required this.filterAnswers,
+    required this.selectedType,
+    required this.onSelectedType,
     required this.user,
   });
 
@@ -683,6 +711,8 @@ class _LessonQuestionRecordsList extends StatelessWidget {
   filterQuestions;
   final List<LessonQuestionAnswer> Function(List<LessonQuestionAnswer> answers)
   filterAnswers;
+  final _CommentRecordType selectedType;
+  final ValueChanged<_CommentRecordType> onSelectedType;
   final User user;
 
   @override
@@ -697,38 +727,93 @@ class _LessonQuestionRecordsList extends StatelessWidget {
                 questionSnapshot.data ?? const <LessonQuestion>[];
             final questions = filterQuestions(allQuestions);
             final answers = filterAnswers(answerSnapshot.data ?? const []);
-            if (questions.isEmpty && answers.isEmpty) {
-              return const _EmptyRecordCard(message: 'この期間の質問コメントはまだありません。');
+            final isQuestionSelected =
+                selectedType == _CommentRecordType.questions;
+            final isEmpty = isQuestionSelected
+                ? questions.isEmpty
+                : answers.isEmpty;
+            if (isEmpty) {
+              return Column(
+                children: [
+                  _CommentTypeSelector(
+                    selectedType: selectedType,
+                    onSelected: onSelectedType,
+                  ),
+                  const SizedBox(height: 12),
+                  _EmptyRecordCard(
+                    message: isQuestionSelected
+                        ? 'この期間の質問コメントはまだありません。'
+                        : 'この期間の回答コメントはまだありません。',
+                  ),
+                ],
+              );
             }
             return Column(
               children: [
-                for (final question in questions) ...[
-                  _LessonQuestionRecordCard(
-                    question: question,
-                    questions: allQuestions,
-                    answers: answers,
-                    user: user,
-                  ),
-                  const SizedBox(height: 12),
-                ],
-                for (final answer in answers) ...[
-                  _LessonAnswerRecordCard(
-                    answer: answer,
-                    user: user,
-                    parentQuestion: _parentQuestionForAnswer(
-                      answer,
-                      allQuestions,
+                _CommentTypeSelector(
+                  selectedType: selectedType,
+                  onSelected: onSelectedType,
+                ),
+                const SizedBox(height: 12),
+                if (isQuestionSelected)
+                  for (final question in questions) ...[
+                    _LessonQuestionRecordCard(
+                      question: question,
+                      questions: allQuestions,
+                      answers: answers,
+                      user: user,
                     ),
-                    questions: allQuestions,
-                    answers: answers,
-                  ),
-                  const SizedBox(height: 12),
-                ],
+                    const SizedBox(height: 12),
+                  ]
+                else
+                  for (final answer in answers) ...[
+                    _LessonAnswerRecordCard(
+                      answer: answer,
+                      user: user,
+                      parentQuestion: _parentQuestionForAnswer(
+                        answer,
+                        allQuestions,
+                      ),
+                      questions: allQuestions,
+                      answers: answers,
+                    ),
+                    const SizedBox(height: 12),
+                  ],
               ],
             );
           },
         );
       },
+    );
+  }
+}
+
+class _CommentTypeSelector extends StatelessWidget {
+  const _CommentTypeSelector({
+    required this.selectedType,
+    required this.onSelected,
+  });
+
+  final _CommentRecordType selectedType;
+  final ValueChanged<_CommentRecordType> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        ChoiceChip(
+          label: const Text('質問コメント'),
+          selected: selectedType == _CommentRecordType.questions,
+          onSelected: (_) => onSelected(_CommentRecordType.questions),
+        ),
+        ChoiceChip(
+          label: const Text('回答コメント'),
+          selected: selectedType == _CommentRecordType.answers,
+          onSelected: (_) => onSelected(_CommentRecordType.answers),
+        ),
+      ],
     );
   }
 }
@@ -983,7 +1068,7 @@ class _LessonQuestionRecordCard extends StatelessWidget {
               Text(question.isPublic ? '公開質問' : '先生にだけ公開'),
               const SizedBox(height: 4),
               Text(
-                '更新日: ${_formatTimestamp(question.updatedAt ?? question.createdAt)}',
+                '投稿日: ${_formatCommentTimestamp(question.createdAt ?? question.updatedAt)}',
               ),
               if (question.body.isNotEmpty) ...[
                 const SizedBox(height: 8),
@@ -1052,11 +1137,13 @@ class _LessonAnswerRecordCard extends StatefulWidget {
 
 class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
   late Future<LessonQuestion?> _parentQuestionFuture;
+  late Future<LessonQuestionAnswer?> _parentAnswerFuture;
 
   @override
   void initState() {
     super.initState();
     _parentQuestionFuture = _loadParentQuestion();
+    _parentAnswerFuture = _loadParentAnswer();
   }
 
   @override
@@ -1065,6 +1152,11 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
     if (oldWidget.answer.questionId != widget.answer.questionId ||
         oldWidget.parentQuestion != widget.parentQuestion) {
       _parentQuestionFuture = _loadParentQuestion();
+    }
+    if (oldWidget.answer.parentCommentId != widget.answer.parentCommentId ||
+        oldWidget.answer.parentCommentType != widget.answer.parentCommentType ||
+        oldWidget.answers != widget.answers) {
+      _parentAnswerFuture = _loadParentAnswer();
     }
   }
 
@@ -1100,15 +1192,27 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
     return true;
   }
 
-  bool _isReplyTargetUnavailable(LessonQuestion? question) {
+  bool _isReplyTargetUnavailable(
+    LessonQuestion? question,
+    LessonQuestionAnswer? parentAnswer,
+  ) {
     if (widget.answer.parentCommentType == 'answer') {
-      return _shouldHideReplyTargetPreview();
+      if (parentAnswer == null) {
+        return _shouldHideReplyTargetPreview();
+      }
+      return !_canOpenAnswerFromRecord(parentAnswer);
     }
     return question == null || !_canOpenQuestionFromRecord(question);
   }
 
-  Timestamp? _parentCommentTimestamp(LessonQuestion? question) {
+  Timestamp? _parentCommentTimestamp(
+    LessonQuestion? question,
+    LessonQuestionAnswer? parentAnswer,
+  ) {
     if (widget.answer.parentCommentType == 'answer') {
+      if (parentAnswer != null) {
+        return parentAnswer.createdAt ?? parentAnswer.updatedAt;
+      }
       final parentId = widget.answer.parentCommentId;
       if (parentId == null || parentId.isEmpty) {
         return null;
@@ -1118,14 +1222,30 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
           return answer.createdAt ?? answer.updatedAt;
         }
       }
-      return null;
+      return widget.answer.replyToCreatedAt;
     }
-    return question?.createdAt ?? question?.updatedAt;
+    return question?.createdAt ??
+        question?.updatedAt ??
+        widget.answer.replyToCreatedAt;
   }
 
-  String _replyTargetRecordSummary(LessonQuestion? question) {
-    final replyTo = (widget.answer.replyToDisplayName ?? '').trim();
-    final parentTimestamp = _parentCommentTimestamp(question);
+  String _replyTargetRecordSummary(
+    LessonQuestion? question,
+    LessonQuestionAnswer? parentAnswer,
+  ) {
+    final replyTo = _safeReplyTargetDisplayName(
+      widget.answer.replyToDisplayName,
+      role: widget.answer.replyToAuthorRole,
+    );
+    final replyToRole = (widget.answer.replyToAuthorRole ?? '').trim();
+    final replyToLabel = replyTo.isNotEmpty
+        ? replyTo
+        : replyToRole == 'teacher'
+        ? '先生'
+        : replyToRole == 'student'
+        ? '学習者'
+        : '不明';
+    final parentTimestamp = _parentCommentTimestamp(question, parentAnswer);
     final repliedAt = widget.answer.createdAt ?? widget.answer.updatedAt;
     final parentTimestampText = parentTimestamp == null
         ? '不明'
@@ -1134,7 +1254,7 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
         ? '不明'
         : _formatTimestamp(repliedAt);
     return [
-      '1. 誰に対して: ${replyTo.isEmpty ? '不明' : replyTo}',
+      '1. 誰に対して: $replyToLabel',
       '2. いつ投稿されたコメントに対して: $parentTimestampText',
       '3. いつ自分が返信したか: $repliedAtText',
     ].join('\n');
@@ -1192,6 +1312,45 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
     }
   }
 
+  Future<LessonQuestionAnswer?> _loadParentAnswer() async {
+    if (widget.answer.parentCommentType != 'answer') {
+      return null;
+    }
+    final parentId = widget.answer.parentCommentId;
+    if (parentId == null || parentId.isEmpty) {
+      return null;
+    }
+    for (final answer in widget.answers) {
+      if (answer.id == parentId) {
+        return answer;
+      }
+    }
+    if (Firebase.apps.isEmpty) {
+      return null;
+    }
+    try {
+      final privateSnapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(widget.user.uid)
+          .collection('lessonQuestionAnswers')
+          .doc(parentId)
+          .get();
+      if (privateSnapshot.exists) {
+        return LessonQuestionAnswer.fromFirestore(privateSnapshot);
+      }
+      final publicSnapshot = await FirebaseFirestore.instance
+          .collection('publicLessonQuestionAnswers')
+          .doc(parentId)
+          .get();
+      if (publicSnapshot.exists) {
+        return LessonQuestionAnswer.fromFirestore(publicSnapshot);
+      }
+      return null;
+    } on FirebaseException {
+      return null;
+    }
+  }
+
   Future<void> _showDetails(BuildContext context) {
     return showDialog<void>(
       context: context,
@@ -1200,54 +1359,63 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
           future: _parentQuestionFuture,
           builder: (context, snapshot) {
             final parentQuestion = snapshot.data;
-            return AlertDialog(
-              title: const Text('回答コメントの記録'),
-              content: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text(
-                      'あなたの回答',
-                      style: TextStyle(fontWeight: FontWeight.bold),
+            return FutureBuilder<LessonQuestionAnswer?>(
+              future: _parentAnswerFuture,
+              builder: (context, parentAnswerSnapshot) {
+                final parentAnswer = parentAnswerSnapshot.data;
+                return AlertDialog(
+                  title: const Text('回答コメントの記録'),
+                  content: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          'あなたの回答',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 8),
+                        SelectableText(widget.answer.body),
+                        const SizedBox(height: 16),
+                        const Text(
+                          '返信先の控え',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 8),
+                        SelectableText(
+                          _isReplyTargetUnavailable(parentQuestion, parentAnswer)
+                              ? _replyTargetRecordSummary(
+                                  parentQuestion,
+                                  parentAnswer,
+                                )
+                              : _replyPreviewText(
+                                  widget.answer,
+                                  hideBodyPreview: false,
+                                ),
+                        ),
+                        const SizedBox(height: 16),
+                        const Text(
+                          '元の質問',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 8),
+                        if (snapshot.connectionState == ConnectionState.waiting)
+                          const Text('確認中です...')
+                        else if (parentQuestion == null)
+                          const Text('元の質問は削除済み、または現在は表示できません。')
+                        else
+                          SelectableText(parentQuestion.body),
+                      ],
                     ),
-                    const SizedBox(height: 8),
-                    SelectableText(widget.answer.body),
-                    const SizedBox(height: 16),
-                    const Text(
-                      '返信先の控え',
-                      style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('閉じる'),
                     ),
-                    const SizedBox(height: 8),
-                    SelectableText(
-                      _isReplyTargetUnavailable(parentQuestion)
-                          ? _replyTargetRecordSummary(parentQuestion)
-                          : _replyPreviewText(
-                              widget.answer,
-                              hideBodyPreview: false,
-                            ),
-                    ),
-                    const SizedBox(height: 16),
-                    const Text(
-                      '元の質問',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 8),
-                    if (snapshot.connectionState == ConnectionState.waiting)
-                      const Text('確認中です...')
-                    else if (parentQuestion == null)
-                      const Text('元の質問は削除済み、または現在は表示できません。')
-                    else
-                      SelectableText(parentQuestion.body),
                   ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('閉じる'),
-                ),
-              ],
+                );
+              },
             );
           },
         );
@@ -1340,74 +1508,81 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
                 _canOpenAnswerFromRecord(widget.answer)
             ? null
             : _unavailableMessageFor(loadedParentQuestion);
-        final replyPreview = _isReplyTargetUnavailable(loadedParentQuestion)
-            ? _replyTargetRecordSummary(loadedParentQuestion)
-            : _replyPreviewText(widget.answer, hideBodyPreview: false);
-        return Card(
-          child: InkWell(
-            key: ValueKey(
-              'answer-record-open-${widget.answer.id ?? widget.answer.body}',
-            ),
-            onTap: canOpenQuestionThread
-                ? () => _openQuestionThread(context, loadedParentQuestion)
-                : null,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    '回答コメント',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${widget.answer.courseTitle} / レッスン${widget.answer.lessonNumber}: ${widget.answer.lessonTitle}',
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '投稿日: ${_formatTimestamp(widget.answer.createdAt ?? widget.answer.updatedAt)}',
-                  ),
-                  const SizedBox(height: 8),
-                  Text(widget.answer.body),
-                  const SizedBox(height: 8),
-                  Text('返信先の控え:\n$replyPreview'),
-                  if (unavailableMessage != null) ...[
-                    const SizedBox(height: 8),
-                    Text(unavailableMessage),
-                  ],
-                  const SizedBox(height: 8),
-                  Row(
+        return FutureBuilder<LessonQuestionAnswer?>(
+          future: _parentAnswerFuture,
+          builder: (context, parentAnswerSnapshot) {
+            final parentAnswer = parentAnswerSnapshot.data;
+            final replyPreview =
+                _isReplyTargetUnavailable(loadedParentQuestion, parentAnswer)
+                ? _replyTargetRecordSummary(loadedParentQuestion, parentAnswer)
+                : _replyPreviewText(widget.answer, hideBodyPreview: false);
+            return Card(
+              child: InkWell(
+                key: ValueKey(
+                  'answer-record-open-${widget.answer.id ?? widget.answer.body}',
+                ),
+                onTap: canOpenQuestionThread
+                    ? () => _openQuestionThread(context, loadedParentQuestion)
+                    : null,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (canOpenQuestionThread)
-                        const Expanded(
-                          child: Text(
-                            'タップしてコメント欄を開けます。',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        )
-                      else
-                        const Spacer(),
-                      TextButton(
-                        onPressed: widget.answer.id == null
-                            ? null
-                            : () => _confirmAndDelete(context),
-                        child: const Text('削除'),
+                      const Text(
+                        '回答コメント',
+                        style: TextStyle(fontWeight: FontWeight.bold),
                       ),
-                      TextButton(
-                        key: ValueKey(
-                          'answer-record-details-${widget.answer.id ?? widget.answer.body}',
-                        ),
-                        onPressed: () => _showDetails(context),
-                        child: const Text('詳しく見る'),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${widget.answer.courseTitle} / レッスン${widget.answer.lessonNumber}: ${widget.answer.lessonTitle}',
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '投稿日: ${_formatCommentTimestamp(widget.answer.createdAt ?? widget.answer.updatedAt)}',
+                      ),
+                      const SizedBox(height: 8),
+                      Text(widget.answer.body),
+                      const SizedBox(height: 8),
+                      Text('返信先の控え:\n$replyPreview'),
+                      if (unavailableMessage != null) ...[
+                        const SizedBox(height: 8),
+                        Text(unavailableMessage),
+                      ],
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          if (canOpenQuestionThread)
+                            const Expanded(
+                              child: Text(
+                                'タップしてコメント欄を開けます。',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            )
+                          else
+                            const Spacer(),
+                          TextButton(
+                            onPressed: widget.answer.id == null
+                                ? null
+                                : () => _confirmAndDelete(context),
+                            child: const Text('削除'),
+                          ),
+                          TextButton(
+                            key: ValueKey(
+                              'answer-record-details-${widget.answer.id ?? widget.answer.body}',
+                            ),
+                            onPressed: () => _showDetails(context),
+                            child: const Text('詳しく見る'),
+                          ),
+                        ],
                       ),
                     ],
                   ),
-                ],
+                ),
               ),
-            ),
-          ),
+            );
+          },
         );
       },
     );
@@ -1489,20 +1664,45 @@ String _replyPreviewText(
   LessonQuestionAnswer answer, {
   bool hideBodyPreview = false,
 }) {
-  final displayName = answer.replyToDisplayName?.trim();
+  final displayName = _safeReplyTargetDisplayName(
+    answer.replyToDisplayName,
+    role: answer.replyToAuthorRole,
+  );
   final bodyPreview = hideBodyPreview
       ? null
       : answer.replyToBodyPreview?.trim();
-  if ((displayName ?? '').isEmpty && (bodyPreview ?? '').isEmpty) {
+  if (displayName.isEmpty && (bodyPreview ?? '').isEmpty) {
     return '返信先の控えはありません。';
   }
-  if ((displayName ?? '').isEmpty) {
+  if (displayName.isEmpty) {
     return bodyPreview!;
   }
   if ((bodyPreview ?? '').isEmpty) {
     return '$displayName への返信';
   }
   return '$displayName の「$bodyPreview」への返信';
+}
+
+String _safeReplyTargetDisplayName(String? value, {String? role}) {
+  final text = (value ?? '').trim();
+  if (text.isNotEmpty && !_looksLikeEmail(text)) {
+    return text;
+  }
+  if (role == 'teacher') {
+    return '先生';
+  }
+  if (role == 'student') {
+    return '学習者';
+  }
+  return '';
+}
+
+bool _looksLikeEmail(String value) {
+  final text = value.trim();
+  if (text.isEmpty) {
+    return false;
+  }
+  return RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(text);
 }
 
 String _quotedNotePreviewText(LessonQuestion question) {
@@ -1687,6 +1887,26 @@ class _EmptyRecordCard extends StatelessWidget {
       child: Padding(padding: const EdgeInsets.all(16), child: Text(message)),
     );
   }
+}
+
+int _compareTimestampDescWithUnknownLast(Timestamp? a, Timestamp? b) {
+  if (a == null && b == null) {
+    return 0;
+  }
+  if (a == null) {
+    return 1;
+  }
+  if (b == null) {
+    return -1;
+  }
+  return b.toDate().compareTo(a.toDate());
+}
+
+String _formatCommentTimestamp(Timestamp? timestamp) {
+  if (timestamp == null) {
+    return '不明';
+  }
+  return _formatTimestamp(timestamp);
 }
 
 String _formatTimestamp(Object? value) {

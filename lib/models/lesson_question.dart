@@ -147,8 +147,10 @@ class LessonQuestionAnswer {
     this.parentCommentId,
     this.parentCommentType,
     this.replyToAuthorId,
+    this.replyToAuthorRole,
     this.replyToDisplayName,
     this.replyToBodyPreview,
+    this.replyToCreatedAt,
     this.quotedNoteId,
     this.quotedNoteTitle,
     this.quotedNoteBody,
@@ -174,8 +176,10 @@ class LessonQuestionAnswer {
   final String? parentCommentId;
   final String? parentCommentType;
   final String? replyToAuthorId;
+  final String? replyToAuthorRole;
   final String? replyToDisplayName;
   final String? replyToBodyPreview;
+  final Timestamp? replyToCreatedAt;
   final String? quotedNoteId;
   final String? quotedNoteTitle;
   final String? quotedNoteBody;
@@ -205,8 +209,10 @@ class LessonQuestionAnswer {
       parentCommentId: data['parentCommentId'] as String?,
       parentCommentType: data['parentCommentType'] as String?,
       replyToAuthorId: data['replyToAuthorId'] as String?,
+      replyToAuthorRole: data['replyToAuthorRole'] as String?,
       replyToDisplayName: data['replyToDisplayName'] as String?,
       replyToBodyPreview: data['replyToBodyPreview'] as String?,
+      replyToCreatedAt: data['replyToCreatedAt'] as Timestamp?,
       quotedNoteId: data['quotedNoteId'] as String?,
       quotedNoteTitle: data['quotedNoteTitle'] as String?,
       quotedNoteBody: data['quotedNoteBody'] as String?,
