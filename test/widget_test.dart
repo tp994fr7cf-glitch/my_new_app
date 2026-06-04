@@ -355,11 +355,197 @@ void main() {
     await tester.tap(answerRecord);
     await tester.pumpAndSettle();
 
-    expect(find.text('回答への返信'), findsOneWidget);
+    expect(find.text('質問詳細'), findsOneWidget);
+    expect(find.text('回答への返信'), findsNothing);
     expect(find.text('回答コメント'), findsWidgets);
     expect(find.text('両辺に同じ計算をするからです。'), findsOneWidget);
-    expect(find.textContaining('なぜ符号が変わりますか？'), findsOneWidget);
+    expect(find.textContaining('なぜ符号が変わりますか？'), findsWidgets);
+    expect(
+      find.byKey(const ValueKey('parent-highlighted-question-question-a')),
+      findsOneWidget,
+    );
   });
+
+  testWidgets(
+    'Learning records open reply thread view when highlighted direct answer has replies',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
+      final question = LessonQuestion(
+        id: 'question-thread-open',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '親質問です。',
+        visibility: LessonQuestionVisibility.teacherOnly,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: const [],
+        updatedAt: now,
+      );
+      final directAnswer = LessonQuestionAnswer(
+        id: 'answer-root',
+        questionId: 'question-thread-open',
+        authorId: 'user-b',
+        authorName: '学習者B',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        body: 'これは親の回答です。',
+        attachmentTypes: const [],
+        parentCommentId: 'question-thread-open',
+        parentCommentType: 'question',
+        createdAt: now,
+      );
+      final reply = LessonQuestionAnswer(
+        id: 'answer-reply',
+        questionId: 'question-thread-open',
+        authorId: 'user-c',
+        authorName: '学習者C',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        body: 'これは親回答への返信です。',
+        attachmentTypes: const [],
+        parentCommentId: 'answer-root',
+        parentCommentType: 'answer',
+        replyToDisplayName: '学習者B',
+        replyToBodyPreview: 'これは親の回答です。',
+        createdAt: Timestamp.fromDate(DateTime(2026, 5, 31, 13, 31)),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            lessonViewSegmentsStream: const Stream.empty(),
+            learningEventsStream: const Stream.empty(),
+            quizAttemptsStream: const Stream.empty(),
+            lessonNotesStream: const Stream.empty(),
+            lessonQuestionsStream: Stream.value([question]),
+            lessonQuestionAnswersStream: Stream.value([directAnswer, reply]),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('質問・回答コメントを見る'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('回答コメント'));
+      await tester.pumpAndSettle();
+
+      final answerRecord = find.byKey(
+        const ValueKey('answer-record-open-answer-root'),
+      );
+      await tester.ensureVisible(answerRecord);
+      await tester.pumpAndSettle();
+      await tester.tap(answerRecord);
+      await tester.pumpAndSettle();
+
+      expect(find.text('回答への返信'), findsOneWidget);
+      expect(find.text('これは親回答への返信です。'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Learning records keep parent answer highlighted for highlighted reply',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
+      final question = LessonQuestion(
+        id: 'question-highlight-parent',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '親質問です。',
+        visibility: LessonQuestionVisibility.teacherOnly,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: const [],
+        updatedAt: now,
+      );
+      final parentAnswer = LessonQuestionAnswer(
+        id: 'answer-parent',
+        questionId: 'question-highlight-parent',
+        authorId: 'user-b',
+        authorName: '学習者B',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        body: '親回答です。',
+        attachmentTypes: const [],
+        parentCommentId: 'question-highlight-parent',
+        parentCommentType: 'question',
+        createdAt: now,
+      );
+      final highlightedReply = LessonQuestionAnswer(
+        id: 'reply-highlighted',
+        questionId: 'question-highlight-parent',
+        authorId: 'user-c',
+        authorName: '学習者C',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        body: '親回答への返信です。',
+        attachmentTypes: const [],
+        parentCommentId: 'answer-parent',
+        parentCommentType: 'answer',
+        replyToDisplayName: '学習者B',
+        replyToBodyPreview: '親回答です。',
+        createdAt: Timestamp.fromDate(DateTime(2026, 5, 31, 13, 31)),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            lessonViewSegmentsStream: const Stream.empty(),
+            learningEventsStream: const Stream.empty(),
+            quizAttemptsStream: const Stream.empty(),
+            lessonNotesStream: const Stream.empty(),
+            lessonQuestionsStream: Stream.value([question]),
+            lessonQuestionAnswersStream: Stream.value([
+              parentAnswer,
+              highlightedReply,
+            ]),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('質問・回答コメントを見る'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('回答コメント'));
+      await tester.pumpAndSettle();
+
+      final answerRecord = find.byKey(
+        const ValueKey('answer-record-open-reply-highlighted'),
+      );
+      await tester.ensureVisible(answerRecord);
+      await tester.pumpAndSettle();
+      await tester.tap(answerRecord);
+      await tester.pumpAndSettle();
+
+      expect(find.text('回答への返信'), findsOneWidget);
+      expect(find.text('親回答への返信です。'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('parent-highlighted-answer-answer-parent')),
+        findsOneWidget,
+      );
+    },
+  );
 
   testWidgets('Learning records keep hidden questions as static records', (
     WidgetTester tester,

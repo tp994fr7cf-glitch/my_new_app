@@ -61,6 +61,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
   ScrollController? _restoreScrollController;
   double _restoreScrollOffset = 0;
   int _restoreTabIndex = 0;
+  bool _restorePending = false;
+  DateTime? _restoreStartedAt;
   List<LessonQuestion> _lastPublicQuestions = const [];
   List<LessonQuestion> _lastTeacherPreviewPublicQuestions = const [];
   List<LessonQuestionAnswer> _lastPublicAnswers = const [];
@@ -139,6 +141,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     _restoreScrollOffset = sourceController.hasClients
         ? sourceController.offset
         : 0;
+    _restorePending = _restoreScrollOffset > 0;
+    _restoreStartedAt = null;
     setState(() => _selectedQuestion = question);
   }
 
@@ -147,38 +151,65 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       _questionTabController.index = _restoreTabIndex;
     }
     setState(() => _selectedQuestion = null);
-    _restoreScrollWhenReady();
+    if (_restorePending) {
+      _restoreScrollWhenReady();
+    }
   }
 
-  void _restoreScrollWhenReady([int remainingFrames = 12]) {
+  void _restoreScrollWhenReady() {
+    final controller = _restoreScrollController;
+    if (controller == null) {
+      _restorePending = false;
+      return;
+    }
+    _restoreStartedAt ??= DateTime.now();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
         return;
       }
-      final controller = _restoreScrollController;
-      if (controller == null || !controller.hasClients) {
-        if (remainingFrames > 0) {
-          _restoreScrollWhenReady(remainingFrames - 1);
-        }
+      if (!_restorePending) {
+        _restorePending = false;
         return;
       }
-      final max = controller.position.maxScrollExtent;
+      final currentController = _restoreScrollController;
+      if (currentController == null || !currentController.hasClients) {
+        _scheduleRestoreRetry();
+        return;
+      }
+      final max = currentController.position.maxScrollExtent;
       if (max <= 0) {
-        if (remainingFrames > 0) {
-          _restoreScrollWhenReady(remainingFrames - 1);
-        }
+        _scheduleRestoreRetry();
         return;
       }
       final target = _restoreScrollOffset.clamp(0, max).toDouble();
-      final closeEnough = (controller.offset - target).abs() < 1;
+      final closeEnough = (currentController.offset - target).abs() < 1;
       if (closeEnough) {
+        _restorePending = false;
         return;
       }
-      if (remainingFrames > 0 && target == 0 && _restoreScrollOffset > 0) {
-        _restoreScrollWhenReady(remainingFrames - 1);
+      currentController.jumpTo(target);
+      _restorePending = false;
+    });
+  }
+
+  void _scheduleRestoreRetry() {
+    if (!_restorePending) {
+      _restorePending = false;
+      return;
+    }
+    final startedAt = _restoreStartedAt;
+    if (startedAt == null) {
+      _restoreStartedAt = DateTime.now();
+    } else if (DateTime.now().difference(startedAt) >
+        const Duration(seconds: 3)) {
+      _restorePending = false;
+      return;
+    }
+    Future<void>.delayed(const Duration(milliseconds: 50), () {
+      if (!mounted || !_restorePending) {
         return;
       }
-      controller.jumpTo(target);
+      _restoreScrollWhenReady();
     });
   }
 
@@ -1332,6 +1363,8 @@ class _CommentBubble extends StatelessWidget {
     this.replyToAuthorRole,
     this.replyToBodyPreview,
     this.isHighlighted = false,
+    this.isParentHighlighted = false,
+    this.bubbleKey,
     this.onTap,
     this.onReply,
     this.onEdit,
@@ -1357,6 +1390,8 @@ class _CommentBubble extends StatelessWidget {
   final String? replyToAuthorRole;
   final String? replyToBodyPreview;
   final bool isHighlighted;
+  final bool isParentHighlighted;
+  final Key? bubbleKey;
   final bool isOwner;
   final bool isTeacher;
   final VoidCallback? onTap;
@@ -1378,7 +1413,7 @@ class _CommentBubble extends StatelessWidget {
     final profileRole = authorRole == publicUserProfileRoleTeacher
         ? publicUserProfileRoleTeacher
         : publicUserProfileRoleStudent;
-    return StreamBuilder<PublicUserProfile>(
+    final bubble = StreamBuilder<PublicUserProfile>(
       stream: publicUserProfileStream(
         userId: authorId,
         role: profileRole,
@@ -1403,6 +1438,10 @@ class _CommentBubble extends StatelessWidget {
         );
       },
     );
+    if (bubbleKey == null) {
+      return bubble;
+    }
+    return KeyedSubtree(key: bubbleKey, child: bubble);
   }
 
   Widget _buildBubble({
@@ -1449,6 +1488,8 @@ class _CommentBubble extends StatelessWidget {
                           decoration: BoxDecoration(
                             color: isHighlighted
                                 ? Theme.of(context).colorScheme.primaryContainer
+                                : isParentHighlighted
+                                ? Colors.yellow.shade200
                                 : Theme.of(
                                     context,
                                   ).colorScheme.surfaceContainerHighest,
@@ -1458,6 +1499,8 @@ class _CommentBubble extends StatelessWidget {
                                       context,
                                     ).colorScheme.primary,
                                   )
+                                : isParentHighlighted
+                                ? Border.all(color: Colors.amber.shade700)
                                 : null,
                             borderRadius: BorderRadius.circular(16),
                           ),
@@ -2076,6 +2119,7 @@ class _LessonQuestionDetail extends StatefulWidget {
 class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
   final TextEditingController _answerController = TextEditingController();
   final ScrollController _threadScrollController = ScrollController();
+  final GlobalKey _highlightedAnswerBubbleKey = GlobalKey();
   String _quotedNoteId = '';
   String _quotedNoteTitle = '';
   String _quotedNoteBody = '';
@@ -2088,6 +2132,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
   Timestamp? _replyToCreatedAt;
   String? _openedAnswerThreadRootId;
   bool _openedInitialHighlightedThread = false;
+  bool _didAutoPositionHighlightedAnswer = false;
   bool _isSaving = false;
   List<LessonQuestionAnswer> _lastNonEmptyAnswers = const [];
 
@@ -2105,8 +2150,35 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
       _lastNonEmptyAnswers = const [];
       _openedAnswerThreadRootId = null;
       _openedInitialHighlightedThread = false;
+      _didAutoPositionHighlightedAnswer = false;
       _scrollToTop();
     }
+  }
+
+  void _positionHighlightedAnswerAtTopOnce() {
+    if (_didAutoPositionHighlightedAnswer) {
+      return;
+    }
+    final highlightedId = widget.highlightedAnswerId;
+    if (highlightedId == null || highlightedId.isEmpty) {
+      _didAutoPositionHighlightedAnswer = true;
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _didAutoPositionHighlightedAnswer) {
+        return;
+      }
+      final targetContext = _highlightedAnswerBubbleKey.currentContext;
+      if (targetContext == null) {
+        return;
+      }
+      Scrollable.ensureVisible(
+        targetContext,
+        alignment: 0,
+        duration: Duration.zero,
+      );
+      _didAutoPositionHighlightedAnswer = true;
+    });
   }
 
   Future<void> _saveAnswer() async {
@@ -2238,56 +2310,6 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
             controller: _threadScrollController,
             padding: const EdgeInsets.all(16),
             children: [
-              Offstage(
-                offstage: _openedAnswerThreadRootId != null,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _CommentBubble(
-                      body: question.body,
-                      authorId: question.authorId,
-                      authorName: question.authorName,
-                      authorDisplayName: question.authorDisplayName,
-                      authorRole: question.authorRole,
-                      createdAt: question.createdAt,
-                      scopeLabel: _questionScopeLabel(question),
-                      attachmentTypes: question.attachmentTypes,
-                      quotedNoteId: question.quotedNoteId,
-                      quotedNoteTitle: question.quotedNoteTitle,
-                      quotedNoteBody: question.quotedNoteBody,
-                      isOwner: isCommentOwnerForActiveRole(
-                        currentUserId: widget.currentUserId,
-                        isCurrentUserTeacher: widget.isCurrentUserTeacher,
-                        authorId: question.authorId,
-                        authorRole: question.authorRole,
-                      ),
-                      isTeacher: widget.isCurrentUserTeacher,
-                      onReply: widget.canAnswer
-                          ? _setQuestionReplyTarget
-                          : null,
-                      onDelete:
-                          isCommentOwnerForActiveRole(
-                            currentUserId: widget.currentUserId,
-                            isCurrentUserTeacher: widget.isCurrentUserTeacher,
-                            authorId: question.authorId,
-                            authorRole: question.authorRole,
-                          )
-                          ? widget.onDeleteQuestion
-                          : null,
-                      onModerate: widget.onToggleQuestionModeration,
-                      moderateLabel: question.isTeacherHidden
-                          ? '公開に戻す'
-                          : '非公開にする',
-                    ),
-                    const Divider(height: 32),
-                  ],
-                ),
-              ),
-              const Text(
-                '回答コメント',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
               StreamBuilder<List<LessonQuestionAnswer>>(
                 stream: widget.answersStream,
                 builder: (context, snapshot) {
@@ -2308,6 +2330,33 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                     answerThreads,
                     widget.highlightedAnswerId,
                   );
+                  final parentHighlightedAnswerId =
+                      _parentAnswerIdForHighlightedAnswer(
+                        answers,
+                        widget.highlightedAnswerId,
+                      );
+                  final parentHighlightedQuestionId =
+                      _parentQuestionIdForHighlightedAnswer(
+                        answers,
+                        widget.highlightedAnswerId,
+                      );
+                  _AnswerThread? highlightedThread;
+                  if (highlightedRootId != null) {
+                    for (final thread in answerThreads) {
+                      if (thread.root.id == highlightedRootId) {
+                        highlightedThread = thread;
+                        break;
+                      }
+                    }
+                  }
+                  final shouldAutoOpenHighlightedThread =
+                      highlightedThread != null &&
+                      highlightedRootId != null &&
+                      (widget.highlightedAnswerId != highlightedRootId ||
+                          highlightedThread.replies.isNotEmpty);
+                  final autoOpenRootId = shouldAutoOpenHighlightedThread
+                      ? highlightedRootId
+                      : null;
                   final standaloneHighlightedReply =
                       _standaloneHighlightedReply(
                         answers,
@@ -2315,16 +2364,17 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                         widget.highlightedAnswerId,
                       );
                   if (!_openedInitialHighlightedThread &&
-                      highlightedRootId != null &&
+                      autoOpenRootId != null &&
                       _openedAnswerThreadRootId == null) {
                     _openedInitialHighlightedThread = true;
                     WidgetsBinding.instance.addPostFrameCallback((_) {
                       if (!mounted || _openedAnswerThreadRootId != null) {
                         return;
                       }
-                      _openRepliesThread(highlightedRootId);
+                      _openRepliesThread(autoOpenRootId);
                     });
                   }
+                  _positionHighlightedAnswerAtTopOnce();
                   _AnswerThread? openedThread;
                   if (_openedAnswerThreadRootId != null) {
                     for (final thread in answerThreads) {
@@ -2334,8 +2384,9 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                       }
                     }
                   }
+                  Widget answersSection;
                   if (openedThread != null) {
-                    return _AnswerThreadDetailView(
+                    answersSection = _AnswerThreadDetailView(
                       thread: openedThread,
                       scopeLabel: _questionScopeLabel(question),
                       currentUserId: widget.currentUserId,
@@ -2345,42 +2396,113 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                       onDeleteAnswer: widget.onDeleteAnswer,
                       onToggleAnswerModeration: widget.onToggleAnswerModeration,
                       highlightedAnswerId: widget.highlightedAnswerId,
+                      parentHighlightedAnswerId: parentHighlightedAnswerId,
+                      highlightedBubbleKey: _highlightedAnswerBubbleKey,
+                    );
+                  } else if (answerThreads.isEmpty &&
+                      standaloneHighlightedReply == null) {
+                    answersSection = const Text('回答コメントはまだありません。');
+                  } else {
+                    answersSection = Column(
+                      children: [
+                        for (final thread in answerThreads)
+                          _AnswerThreadView(
+                            thread: thread,
+                            scopeLabel: _questionScopeLabel(question),
+                            currentUserId: widget.currentUserId,
+                            isCurrentUserTeacher: widget.isCurrentUserTeacher,
+                            canAnswer: widget.canAnswer,
+                            onOpenReplies: thread.root.id == null
+                                ? null
+                                : () => _openRepliesThread(thread.root.id!),
+                            onReply: _setAnswerReplyTarget,
+                            onDeleteAnswer: widget.onDeleteAnswer,
+                            onToggleAnswerModeration:
+                                widget.onToggleAnswerModeration,
+                            highlightedAnswerId: widget.highlightedAnswerId,
+                            parentHighlightedAnswerId: parentHighlightedAnswerId,
+                            highlightedBubbleKey: _highlightedAnswerBubbleKey,
+                          ),
+                        if (standaloneHighlightedReply != null)
+                          _StandaloneRecordReplyView(
+                            answer: standaloneHighlightedReply,
+                            scopeLabel: _questionScopeLabel(question),
+                            currentUserId: widget.currentUserId,
+                            isCurrentUserTeacher: widget.isCurrentUserTeacher,
+                            canAnswer: widget.canAnswer,
+                            onReply: _setAnswerReplyTarget,
+                            onDeleteAnswer: widget.onDeleteAnswer,
+                            onToggleAnswerModeration:
+                                widget.onToggleAnswerModeration,
+                            highlightedBubbleKey: _highlightedAnswerBubbleKey,
+                          ),
+                      ],
                     );
                   }
-                  if (answerThreads.isEmpty &&
-                      standaloneHighlightedReply == null) {
-                    return const Text('回答コメントはまだありません。');
-                  }
                   return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      for (final thread in answerThreads)
-                        _AnswerThreadView(
-                          thread: thread,
-                          scopeLabel: _questionScopeLabel(question),
-                          currentUserId: widget.currentUserId,
-                          isCurrentUserTeacher: widget.isCurrentUserTeacher,
-                          canAnswer: widget.canAnswer,
-                          onOpenReplies: thread.root.id == null
-                              ? null
-                              : () => _openRepliesThread(thread.root.id!),
-                          onReply: _setAnswerReplyTarget,
-                          onDeleteAnswer: widget.onDeleteAnswer,
-                          onToggleAnswerModeration:
-                              widget.onToggleAnswerModeration,
-                          highlightedAnswerId: widget.highlightedAnswerId,
+                      Offstage(
+                        offstage: _openedAnswerThreadRootId != null,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            _CommentBubble(
+                              body: question.body,
+                              authorId: question.authorId,
+                              authorName: question.authorName,
+                              authorDisplayName: question.authorDisplayName,
+                              authorRole: question.authorRole,
+                              createdAt: question.createdAt,
+                              scopeLabel: _questionScopeLabel(question),
+                              attachmentTypes: question.attachmentTypes,
+                              quotedNoteId: question.quotedNoteId,
+                              quotedNoteTitle: question.quotedNoteTitle,
+                              quotedNoteBody: question.quotedNoteBody,
+                              isParentHighlighted:
+                                  question.id != null &&
+                                  question.id == parentHighlightedQuestionId,
+                              bubbleKey: question.id != null &&
+                                      question.id == parentHighlightedQuestionId
+                                  ? ValueKey(
+                                      'parent-highlighted-question-${question.id}',
+                                    )
+                                  : null,
+                              isOwner: isCommentOwnerForActiveRole(
+                                currentUserId: widget.currentUserId,
+                                isCurrentUserTeacher: widget.isCurrentUserTeacher,
+                                authorId: question.authorId,
+                                authorRole: question.authorRole,
+                              ),
+                              isTeacher: widget.isCurrentUserTeacher,
+                              onReply: widget.canAnswer
+                                  ? _setQuestionReplyTarget
+                                  : null,
+                              onDelete:
+                                  isCommentOwnerForActiveRole(
+                                    currentUserId: widget.currentUserId,
+                                    isCurrentUserTeacher:
+                                        widget.isCurrentUserTeacher,
+                                    authorId: question.authorId,
+                                    authorRole: question.authorRole,
+                                  )
+                                  ? widget.onDeleteQuestion
+                                  : null,
+                              onModerate: widget.onToggleQuestionModeration,
+                              moderateLabel: question.isTeacherHidden
+                                  ? '公開に戻す'
+                                  : '非公開にする',
+                            ),
+                            const Divider(height: 32),
+                          ],
                         ),
-                      if (standaloneHighlightedReply != null)
-                        _StandaloneRecordReplyView(
-                          answer: standaloneHighlightedReply,
-                          scopeLabel: _questionScopeLabel(question),
-                          currentUserId: widget.currentUserId,
-                          isCurrentUserTeacher: widget.isCurrentUserTeacher,
-                          canAnswer: widget.canAnswer,
-                          onReply: _setAnswerReplyTarget,
-                          onDeleteAnswer: widget.onDeleteAnswer,
-                          onToggleAnswerModeration:
-                              widget.onToggleAnswerModeration,
-                        ),
+                      ),
+                      const Text(
+                        '回答コメント',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      answersSection,
                     ],
                   );
                 },
@@ -2489,6 +2611,8 @@ class _AnswerThreadView extends StatelessWidget {
     required this.onDeleteAnswer,
     required this.onToggleAnswerModeration,
     this.highlightedAnswerId,
+    this.parentHighlightedAnswerId,
+    this.highlightedBubbleKey,
   });
 
   final _AnswerThread thread;
@@ -2502,6 +2626,8 @@ class _AnswerThreadView extends StatelessWidget {
   final Future<void> Function(LessonQuestionAnswer answer)?
   onToggleAnswerModeration;
   final String? highlightedAnswerId;
+  final String? parentHighlightedAnswerId;
+  final Key? highlightedBubbleKey;
 
   @override
   Widget build(BuildContext context) {
@@ -2527,6 +2653,14 @@ class _AnswerThreadView extends StatelessWidget {
           replyToAuthorRole: root.replyToAuthorRole,
           replyToBodyPreview: root.replyToBodyPreview,
           isHighlighted: root.id == highlightedAnswerId,
+          isParentHighlighted:
+              root.id != highlightedAnswerId &&
+              root.id == parentHighlightedAnswerId,
+          bubbleKey: root.id == highlightedAnswerId
+              ? highlightedBubbleKey
+              : root.id == parentHighlightedAnswerId
+              ? ValueKey('parent-highlighted-answer-${root.id}')
+              : null,
           isOwner: isCommentOwnerForActiveRole(
             currentUserId: currentUserId,
             isCurrentUserTeacher: isCurrentUserTeacher,
@@ -2581,6 +2715,8 @@ class _AnswerThreadDetailView extends StatelessWidget {
     required this.onDeleteAnswer,
     required this.onToggleAnswerModeration,
     this.highlightedAnswerId,
+    this.parentHighlightedAnswerId,
+    this.highlightedBubbleKey,
   });
 
   final _AnswerThread thread;
@@ -2593,6 +2729,8 @@ class _AnswerThreadDetailView extends StatelessWidget {
   final Future<void> Function(LessonQuestionAnswer answer)?
   onToggleAnswerModeration;
   final String? highlightedAnswerId;
+  final String? parentHighlightedAnswerId;
+  final Key? highlightedBubbleKey;
 
   @override
   Widget build(BuildContext context) {
@@ -2618,6 +2756,14 @@ class _AnswerThreadDetailView extends StatelessWidget {
           replyToAuthorRole: root.replyToAuthorRole,
           replyToBodyPreview: root.replyToBodyPreview,
           isHighlighted: root.id == highlightedAnswerId,
+          isParentHighlighted:
+              root.id != highlightedAnswerId &&
+              root.id == parentHighlightedAnswerId,
+          bubbleKey: root.id == highlightedAnswerId
+              ? highlightedBubbleKey
+              : root.id == parentHighlightedAnswerId
+              ? ValueKey('parent-highlighted-answer-${root.id}')
+              : null,
           isOwner: isCommentOwnerForActiveRole(
             currentUserId: currentUserId,
             isCurrentUserTeacher: isCurrentUserTeacher,
@@ -2667,6 +2813,14 @@ class _AnswerThreadDetailView extends StatelessWidget {
                   replyToAuthorRole: reply.replyToAuthorRole,
                   replyToBodyPreview: reply.replyToBodyPreview,
                   isHighlighted: reply.id == highlightedAnswerId,
+                  isParentHighlighted:
+                      reply.id != highlightedAnswerId &&
+                      reply.id == parentHighlightedAnswerId,
+                  bubbleKey: reply.id == highlightedAnswerId
+                      ? highlightedBubbleKey
+                      : reply.id == parentHighlightedAnswerId
+                      ? ValueKey('parent-highlighted-answer-${reply.id}')
+                      : null,
                   isOwner: isCommentOwnerForActiveRole(
                     currentUserId: currentUserId,
                     isCurrentUserTeacher: isCurrentUserTeacher,
@@ -2710,6 +2864,7 @@ class _StandaloneRecordReplyView extends StatelessWidget {
     required this.onReply,
     required this.onDeleteAnswer,
     required this.onToggleAnswerModeration,
+    this.highlightedBubbleKey,
   });
 
   final LessonQuestionAnswer answer;
@@ -2721,6 +2876,7 @@ class _StandaloneRecordReplyView extends StatelessWidget {
   final Future<void> Function(LessonQuestionAnswer answer) onDeleteAnswer;
   final Future<void> Function(LessonQuestionAnswer answer)?
   onToggleAnswerModeration;
+  final Key? highlightedBubbleKey;
 
   @override
   Widget build(BuildContext context) {
@@ -2758,6 +2914,7 @@ class _StandaloneRecordReplyView extends StatelessWidget {
               replyToAuthorRole: answer.replyToAuthorRole,
               replyToBodyPreview: answer.replyToBodyPreview,
               isHighlighted: true,
+              bubbleKey: highlightedBubbleKey,
               isOwner: isCommentOwnerForActiveRole(
                 currentUserId: currentUserId,
                 isCurrentUserTeacher: isCurrentUserTeacher,
@@ -2832,6 +2989,52 @@ String? _rootAnswerIdForHighlightedAnswer(
         return thread.root.id;
       }
     }
+  }
+  return null;
+}
+
+String? _parentAnswerIdForHighlightedAnswer(
+  List<LessonQuestionAnswer> answers,
+  String? highlightedAnswerId,
+) {
+  if (highlightedAnswerId == null || highlightedAnswerId.isEmpty) {
+    return null;
+  }
+  for (final answer in answers) {
+    if (answer.id != highlightedAnswerId) {
+      continue;
+    }
+    if (answer.parentCommentType != 'answer') {
+      return null;
+    }
+    final parentId = answer.parentCommentId;
+    if (parentId == null || parentId.isEmpty) {
+      return null;
+    }
+    return parentId;
+  }
+  return null;
+}
+
+String? _parentQuestionIdForHighlightedAnswer(
+  List<LessonQuestionAnswer> answers,
+  String? highlightedAnswerId,
+) {
+  if (highlightedAnswerId == null || highlightedAnswerId.isEmpty) {
+    return null;
+  }
+  for (final answer in answers) {
+    if (answer.id != highlightedAnswerId) {
+      continue;
+    }
+    if (answer.parentCommentType == 'answer') {
+      return null;
+    }
+    final parentId = answer.parentCommentId;
+    if (parentId == null || parentId.isEmpty) {
+      return answer.questionId.isEmpty ? null : answer.questionId;
+    }
+    return parentId;
   }
   return null;
 }
