@@ -386,6 +386,14 @@ service cloud.firestore {
             && request.resource.data.isCopied is bool
             && request.resource.data.canPublish is bool
             && request.resource.data.allowsQuestionCitation is bool
+            && (!request.resource.data.keys().hasAny(['citationEnabledAt'])
+              || request.resource.data.citationEnabledAt is timestamp)
+            && (!request.resource.data.keys().hasAny(['citationFreeEditUntil'])
+              || request.resource.data.citationFreeEditUntil is timestamp)
+            && (!request.resource.data.keys().hasAny(['citationEditCount'])
+              || request.resource.data.citationEditCount is int)
+            && (!request.resource.data.keys().hasAny(['lastCitationEditedAt'])
+              || request.resource.data.lastCitationEditedAt is timestamp)
             && (request.resource.data.visibility == 'private'
               || request.resource.data.canPublish == true)
             && (!request.resource.data.keys().hasAny(['isDeleted'])
@@ -504,6 +512,14 @@ service cloud.firestore {
           && request.resource.data.tags is list
           && request.resource.data.attachmentTypes is list
           && request.resource.data.allowsQuestionCitation is bool
+          && (!request.resource.data.keys().hasAny(['citationEnabledAt'])
+            || request.resource.data.citationEnabledAt is timestamp)
+          && (!request.resource.data.keys().hasAny(['citationFreeEditUntil'])
+            || request.resource.data.citationFreeEditUntil is timestamp)
+          && (!request.resource.data.keys().hasAny(['citationEditCount'])
+            || request.resource.data.citationEditCount is int)
+          && (!request.resource.data.keys().hasAny(['lastCitationEditedAt'])
+            || request.resource.data.lastCitationEditedAt is timestamp)
           && request.resource.data.hasAudioAttachment == false
           && request.resource.data.isCopied == false
           && request.resource.data.canPublish == true
@@ -558,6 +574,54 @@ service cloud.firestore {
         && resource.data.authorId == request.auth.uid
         && (!resource.data.keys().hasAny(['moderationStatus'])
           || resource.data.moderationStatus != 'hiddenByTeacher');
+
+      match /editHistory/{historyId} {
+        function readableParentPublicLessonNote() {
+          return exists(/databases/$(database)/documents/publicLessonNotes/$(noteId))
+            && (
+              get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.authorId == request.auth.uid
+              || isCourseInstructor(get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.courseId)
+              || (
+                get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.studentVisibility == 'public'
+                && get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.moderationStatus == 'visible'
+                && get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.isDeleted == false
+                && lessonNotesPublicEnabled(get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.interactionSettingId)
+              )
+            );
+        }
+
+        function validPublicLessonNoteEditHistoryWrite() {
+          return request.resource.data.noteId == noteId
+            && request.resource.data.editedAt is timestamp
+            && request.resource.data.countsTowardWeeklyLimit is bool
+            && request.resource.data.compareAvailable is bool
+            && (!request.resource.data.keys().hasAny(['beforeTitle'])
+              || request.resource.data.beforeTitle == null
+              || request.resource.data.beforeTitle is string)
+            && (!request.resource.data.keys().hasAny(['beforeBody'])
+              || request.resource.data.beforeBody == null
+              || request.resource.data.beforeBody is string)
+            && (!request.resource.data.keys().hasAny(['afterTitle'])
+              || request.resource.data.afterTitle == null
+              || request.resource.data.afterTitle is string)
+            && (!request.resource.data.keys().hasAny(['afterBody'])
+              || request.resource.data.afterBody == null
+              || request.resource.data.afterBody is string)
+            && (!request.resource.data.keys().hasAny(['compareVisibleUntil'])
+              || request.resource.data.compareVisibleUntil == null
+              || request.resource.data.compareVisibleUntil is timestamp)
+            && (!request.resource.data.keys().hasAny(['purgedAt'])
+              || request.resource.data.purgedAt is timestamp);
+        }
+
+        allow read: if signedIn()
+          && readableParentPublicLessonNote();
+
+        allow create, update: if signedIn()
+          && exists(/databases/$(database)/documents/publicLessonNotes/$(noteId))
+          && get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.authorId == request.auth.uid
+          && validPublicLessonNoteEditHistoryWrite();
+      }
     }
 
     match /publicLessonQuestions/{questionId} {

@@ -10,6 +10,7 @@ import '../models/lesson_note.dart';
 import '../models/public_user_profile.dart';
 import '../services/lesson_interaction_service.dart';
 import 'lesson_questions_page.dart';
+import 'public_note_edit_history_sheet.dart';
 import 'public_user_profile_page.dart';
 
 class LessonNotesPage extends StatelessWidget {
@@ -77,7 +78,9 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   String _query = '';
   String? _message;
   LessonNote? _editingNote;
+  LessonNote? _previewingOwnNote;
   List<LessonNoteFolder> _editingFolders = const [];
+  List<LessonNoteFolder> _previewFolders = const [];
   bool _isEditingNote = false;
   LessonNotePublicSort _publicSort = LessonNotePublicSort.newest;
   final LessonInteractionService _lessonInteractionService =
@@ -293,8 +296,19 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       });
       return;
     }
+    await _pushEditorPage(
+      context,
+      note: note,
+      folders: folders,
+    );
+  }
 
-    await Navigator.of(context).push(
+  Future<void> _pushEditorPage(
+    BuildContext navigationContext, {
+    LessonNote? note,
+    required List<LessonNoteFolder> folders,
+  }) async {
+    await Navigator.of(navigationContext).push(
       MaterialPageRoute(
         builder: (_) => _LessonNoteEditorPage(
           note: note,
@@ -306,6 +320,68 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         ),
       ),
     );
+  }
+
+  Future<void> _openOwnNotePreview({
+    required LessonNote note,
+    required List<LessonNoteFolder> folders,
+  }) async {
+    if (widget.isEmbedded) {
+      setState(() {
+        _previewingOwnNote = note;
+        _previewFolders = folders;
+        _isEditingNote = false;
+      });
+      return;
+    }
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => _PublicLessonNoteDetailPage(
+          note: note,
+          course: widget.course,
+          lesson: widget.lesson,
+          lessonNumber: widget.lessonNumber,
+          canCreateQuestion: !widget.isTeacherPreview && note.isPubliclyVisible,
+          onEdit: (pageContext) =>
+              _pushEditorPage(pageContext, note: note, folders: folders),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openPublicNotePreview(LessonNote note) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => _PublicLessonNoteDetailPage(
+          note: note,
+          course: widget.course,
+          lesson: widget.lesson,
+          lessonNumber: widget.lessonNumber,
+          canCreateQuestion: !widget.isTeacherPreview,
+          onEdit: _canCurrentUserEditNote(note)
+              ? (pageContext) async {
+                  final folders = await _foldersStream().first;
+                  if (!mounted || !pageContext.mounted) {
+                    return;
+                  }
+                  await _pushEditorPage(
+                    pageContext,
+                    note: note,
+                    folders: folders,
+                  );
+                }
+              : null,
+        ),
+      ),
+    );
+  }
+
+  bool _canCurrentUserEditNote(LessonNote note) {
+    if (widget.isTeacherPreview || Firebase.apps.isEmpty) {
+      return false;
+    }
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    return uid != null && uid.isNotEmpty && uid == note.authorId;
   }
 
   Future<bool> _saveNote(_LessonNoteDraft draft) async {
@@ -326,11 +402,24 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
           ? userRef.collection('lessonNotes').doc()
           : userRef.collection('lessonNotes').doc(draft.noteId);
       final noteId = noteRef.id;
+      final nowClientUtc = DateTime.now().toUtc();
       final visibility = draft.visibility == LessonNoteVisibility.public
           ? lessonNoteVisibilityPublic
           : lessonNoteVisibilityPrivate;
       final now = FieldValue.serverTimestamp();
       final authorName = user.displayName ?? user.email ?? '学習者';
+      final existingNoteSnapshot = await noteRef.get();
+      final existingData = existingNoteSnapshot.data();
+      final previousTitle = existingData?['title'] as String? ?? '';
+      final previousBody = existingData?['body'] as String? ?? '';
+      final contentChanged =
+          existingData != null &&
+          (previousTitle != draft.title || previousBody != draft.body);
+      final existingAllowsQuestionCitation =
+          existingData?['allowsQuestionCitation'] == true;
+      final existingHasPublicMirror =
+          existingData?['hasPublicMirror'] == true ||
+          existingData?['visibility'] == lessonNoteVisibilityPublic;
       final canPublish = canPublishLessonNote(
         hasAudioAttachment: draft.attachmentTypes.contains(
           lessonNoteAttachmentAudio,
@@ -346,7 +435,19 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
           ? visibility
           : lessonNoteVisibilityPrivate;
       final publicRef = firestore.collection('publicLessonNotes').doc(noteId);
-      final publicSnapshot = draft.wasPublic ? await publicRef.get() : null;
+      // New public notes do not have a mirror yet, so avoid pre-reading
+      // /publicLessonNotes/{noteId} before create. This prevents false
+      // permission-denied failures on first publish.
+      final shouldReadPublicMirror = draft.wasPublic || existingHasPublicMirror;
+      final publicSnapshotResult = await _publicNoteSnapshotForSave(
+        publicRef,
+        shouldRead: shouldReadPublicMirror,
+      );
+      if (publicSnapshotResult.permissionDenied) {
+        _showMessage('公開メモの確認権限がないため保存できませんでした。');
+        return false;
+      }
+      final publicSnapshot = publicSnapshotResult.snapshot;
       final publicData = publicSnapshot?.data();
       final hasPublicMirror = publicSnapshot?.exists ?? false;
       final nextHasPublicMirror =
@@ -354,6 +455,84 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       final publicModerationStatus =
           publicData?['moderationStatus'] as String? ??
           lessonNoteModerationVisible;
+      final hasJustEnabledCitation =
+          draft.allowsQuestionCitation && !existingAllowsQuestionCitation;
+      final citationEnabledAt = draft.allowsQuestionCitation
+          ? (hasJustEnabledCitation
+                ? Timestamp.fromDate(nowClientUtc)
+                : existingData?['citationEnabledAt'] as Timestamp? ??
+                      Timestamp.fromDate(nowClientUtc))
+          : null;
+      final citationFreeEditUntil = draft.allowsQuestionCitation
+          ? (hasJustEnabledCitation
+                ? Timestamp.fromDate(
+                    nowClientUtc.add(lessonNoteCitationEditFreeWindow),
+                  )
+                : resolveLessonNoteCitationFreeEditUntil(
+                    allowsQuestionCitation: true,
+                    citationEnabledAt:
+                        existingData?['citationEnabledAt'] as Timestamp?,
+                    citationFreeEditUntil:
+                        existingData?['citationFreeEditUntil'] as Timestamp?,
+                    publicPublishedAt:
+                        (existingData?['publicPublishedAt'] as Timestamp?) ??
+                        (publicData?['publicPublishedAt'] as Timestamp?),
+                    createdAt: existingData?['createdAt'] as Timestamp?,
+                  ) ??
+                      Timestamp.fromDate(
+                        nowClientUtc.add(lessonNoteCitationEditFreeWindow),
+                      ))
+          : null;
+      final citationProtectedBeforeEdit =
+          existingAllowsQuestionCitation && existingHasPublicMirror;
+      final shouldRecordCitationEditHistory =
+          citationProtectedBeforeEdit && contentChanged;
+      var countsTowardWeeklyLimit = false;
+      if (shouldRecordCitationEditHistory &&
+          !isWithinLessonNoteCitationFreeEditWindow(
+            nowUtc: nowClientUtc,
+            citationFreeEditUntil: citationFreeEditUntil,
+          )) {
+        final recentCountSnapshot = await publicRef
+            .collection(publicLessonNoteEditHistoryCollection)
+            .where(
+              'editedAt',
+              isGreaterThanOrEqualTo: Timestamp.fromDate(
+                nowClientUtc.subtract(lessonNoteCitationCompareRetentionWindow),
+              ),
+            )
+            .orderBy('editedAt', descending: true)
+            .get();
+        final lockUntil = lessonNoteEditLockUntil(
+          countableEditTimes: recentCountSnapshot.docs
+              .where((doc) => doc.data()['countsTowardWeeklyLimit'] == true)
+              .map((doc) => doc.data()['editedAt'] as Timestamp?)
+              .whereType<Timestamp>(),
+          now: nowClientUtc,
+        );
+        if (lockUntil != null) {
+          _showMessage(
+            '過去7日間の編集回数が上限（3回）に達しました。${_formatEditUnlockTime(lockUntil)} 以降に再編集できます。',
+          );
+          return false;
+        }
+        countsTowardWeeklyLimit = true;
+      }
+      final existingCitationEditCount =
+          (existingData?['citationEditCount'] as num?)?.toInt() ?? 0;
+      final nextCitationEditCount = shouldRecordCitationEditHistory
+          ? existingCitationEditCount + 1
+          : existingCitationEditCount;
+      final staleComparisonSnapshots = shouldRecordCitationEditHistory
+          ? await publicRef
+                .collection(publicLessonNoteEditHistoryCollection)
+                .where(
+                  'compareVisibleUntil',
+                  isLessThan: Timestamp.fromDate(nowClientUtc),
+                )
+                .limit(100)
+                .get()
+          : null;
       final data = {
         'userId': user.uid,
         'authorId': user.uid,
@@ -377,6 +556,14 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         'isCopied': draft.isCopied,
         'canPublish': draft.canPublish,
         'allowsQuestionCitation': draft.allowsQuestionCitation,
+        if (draft.allowsQuestionCitation) 'citationEnabledAt': citationEnabledAt,
+        if (draft.allowsQuestionCitation)
+          'citationFreeEditUntil': citationFreeEditUntil,
+        if (draft.allowsQuestionCitation) 'citationEditCount': nextCitationEditCount,
+        if (shouldRecordCitationEditHistory) 'lastCitationEditedAt': now,
+        if (!shouldRecordCitationEditHistory &&
+            existingData?['lastCitationEditedAt'] != null)
+          'lastCitationEditedAt': existingData?['lastCitationEditedAt'],
         'hasPublicMirror': nextHasPublicMirror,
         'isDeleted': false,
         'moderationStatus': lessonNoteModerationVisible,
@@ -399,6 +586,15 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
           'studentVisibility': savedVisibility,
           'moderationStatus': publicModerationStatus,
           'publicPublishedAt': publicData?['publicPublishedAt'] ?? now,
+          if (draft.allowsQuestionCitation) 'citationEnabledAt': citationEnabledAt,
+          if (draft.allowsQuestionCitation)
+            'citationFreeEditUntil': citationFreeEditUntil,
+          if (draft.allowsQuestionCitation)
+            'citationEditCount': nextCitationEditCount,
+          if (shouldRecordCitationEditHistory) 'lastCitationEditedAt': now,
+          if (!shouldRecordCitationEditHistory &&
+              publicData?['lastCitationEditedAt'] != null)
+            'lastCitationEditedAt': publicData?['lastCitationEditedAt'],
           'favoriteCount': (publicData?['favoriteCount'] as num?)?.toInt() ?? 0,
           'ratingAverage':
               (publicData?['ratingAverage'] as num?)?.toDouble() ?? 0,
@@ -411,6 +607,41 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
           'isDeleted': true,
           'deletedAt': now,
           'updatedAt': now,
+        }, SetOptions(merge: true));
+      }
+      if (shouldRecordCitationEditHistory) {
+        final historyRef = publicRef
+            .collection(publicLessonNoteEditHistoryCollection)
+            .doc();
+        final compareVisibleUntil = countsTowardWeeklyLimit
+            ? Timestamp.fromDate(
+                nowClientUtc.add(lessonNoteCitationCompareRetentionWindow),
+              )
+            : null;
+        batch.set(historyRef, {
+          'noteId': noteId,
+          'editedAt': now,
+          'beforeTitle': countsTowardWeeklyLimit ? previousTitle : null,
+          'beforeBody': countsTowardWeeklyLimit ? previousBody : null,
+          'afterTitle': countsTowardWeeklyLimit ? draft.title : null,
+          'afterBody': countsTowardWeeklyLimit ? draft.body : null,
+          'countsTowardWeeklyLimit': countsTowardWeeklyLimit,
+          'compareAvailable': countsTowardWeeklyLimit,
+          'compareVisibleUntil': compareVisibleUntil,
+        });
+      }
+      final staleSnapshots = staleComparisonSnapshots?.docs ?? const [];
+      for (final stale in staleSnapshots) {
+        if (stale.data()['compareAvailable'] != true) {
+          continue;
+        }
+        batch.set(stale.reference, {
+          'beforeTitle': FieldValue.delete(),
+          'beforeBody': FieldValue.delete(),
+          'afterTitle': FieldValue.delete(),
+          'afterBody': FieldValue.delete(),
+          'compareAvailable': false,
+          'purgedAt': now,
         }, SetOptions(merge: true));
       }
 
@@ -432,6 +663,13 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       _showMessage('メモの作成に失敗しました: $error');
       return false;
     }
+  }
+
+  String _formatEditUnlockTime(DateTime value) {
+    final local = value.toLocal();
+    final hour = local.hour.toString().padLeft(2, '0');
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '${local.month}/${local.day} $hour:$minute';
   }
 
   Future<void> _deleteNote(LessonNote note) async {
@@ -482,6 +720,23 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
     } on FirebaseException catch (error) {
       if (error.code == 'permission-denied') {
         return null;
+      }
+      rethrow;
+    }
+  }
+
+  Future<_PublicSnapshotLoadResult> _publicNoteSnapshotForSave(
+    DocumentReference<Map<String, dynamic>> publicRef, {
+    required bool shouldRead,
+  }) async {
+    if (!shouldRead) {
+      return const _PublicSnapshotLoadResult();
+    }
+    try {
+      return _PublicSnapshotLoadResult(snapshot: await publicRef.get());
+    } on FirebaseException catch (error) {
+      if (error.code == 'permission-denied') {
+        return const _PublicSnapshotLoadResult(permissionDenied: true);
       }
       rethrow;
     }
@@ -724,16 +979,64 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
                         setState(() {
                           _editingNote = null;
                           _isEditingNote = false;
+                          _previewingOwnNote = null;
                         });
                       },
                       onSaved: () {
                         setState(() {
                           _editingNote = null;
                           _isEditingNote = false;
+                          _previewingOwnNote = null;
                         });
                       },
                     );
                   },
+                ),
+              )
+            else if (widget.isEmbedded && _previewingOwnNote != null)
+              Expanded(
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: Row(
+                        children: [
+                          IconButton(
+                            onPressed: () {
+                              setState(() {
+                                _previewingOwnNote = null;
+                              });
+                            },
+                            icon: const Icon(Icons.arrow_back),
+                            tooltip: 'メモ一覧に戻る',
+                          ),
+                          Text(
+                            '公開メモ',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: _LessonNotePreviewBody(
+                        note: _previewingOwnNote!,
+                        course: widget.course,
+                        lesson: widget.lesson,
+                        lessonNumber: widget.lessonNumber,
+                        canCreateQuestion:
+                            !widget.isTeacherPreview &&
+                            _previewingOwnNote!.isPubliclyVisible,
+                        onEdit: (_) async {
+                          setState(() {
+                            _editingNote = _previewingOwnNote;
+                            _editingFolders = _previewFolders;
+                            _previewingOwnNote = null;
+                            _isEditingNote = true;
+                          });
+                        },
+                      ),
+                    ),
+                  ],
                 ),
               )
             else ...[
@@ -783,8 +1086,10 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
                                 folders: folders,
                                 query: _query,
                                 emptyText: 'このレッスンのメモはまだありません。',
-                                onTap: (note) =>
-                                    _openEditor(note: note, folders: folders),
+                                onTap: (note) => _openOwnNotePreview(
+                                  note: note,
+                                  folders: folders,
+                                ),
                                 onDeleteNote: _confirmDeleteNote,
                                 onDeleteFolder: _confirmDeleteFolder,
                                 action: Column(
@@ -835,19 +1140,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
               : Stream.value(const []),
           query: _query,
           emptyText: enabled ? '公開メモはまだありません。' : '公開メモ欄は非公開化されています。',
-          onTap: (note) {
-            Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => _PublicLessonNoteDetailPage(
-                  note: note,
-                  course: widget.course,
-                  lesson: widget.lesson,
-                  lessonNumber: widget.lessonNumber,
-                  canCreateQuestion: !widget.isTeacherPreview,
-                ),
-              ),
-            );
-          },
+          onTap: _openPublicNotePreview,
           showAuthor: true,
           onToggleModeration: widget.isTeacherPreview
               ? _setPublicNoteModeration
@@ -929,6 +1222,16 @@ class _CreateFolderDialogState extends State<_CreateFolderDialog> {
 }
 
 enum _FolderDeleteMode { moveNotes, deleteNotes }
+
+class _PublicSnapshotLoadResult {
+  const _PublicSnapshotLoadResult({
+    this.snapshot,
+    this.permissionDenied = false,
+  });
+
+  final DocumentSnapshot<Map<String, dynamic>>? snapshot;
+  final bool permissionDenied;
+}
 
 class _LessonNoteList extends StatelessWidget {
   const _LessonNoteList({
@@ -1137,27 +1440,53 @@ class _LessonNoteCard extends StatelessWidget {
       );
     }
     return Card(
-      child: ListTile(
+      child: InkWell(
         onTap: onTap == null ? null : () => onTap!(note),
-        title: Text(note.title.isEmpty ? '無題のメモ' : note.title),
-        trailing: onDelete == null
-            ? null
-            : IconButton(
-                onPressed: () => onDelete!(note),
-                icon: const Icon(Icons.delete_outline),
-                tooltip: 'メモを削除',
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+          child: Column(
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          note.title.isEmpty ? '無題のメモ' : note.title,
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          _noteFirstLinePreview(note.body),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (onDelete != null)
+                    IconButton(
+                      onPressed: () => onDelete!(note),
+                      icon: const Icon(Icons.delete_outline),
+                      tooltip: 'メモを削除',
+                    ),
+                ],
               ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(note.body.isEmpty ? '本文なし' : note.body),
-            if (note.folderName.isNotEmpty) Text('フォルダ: ${note.folderName}'),
-            if (note.tags.isNotEmpty)
-              Text(note.tags.map((tag) => '#$tag').join(' ')),
-            if (note.attachmentTypes.isNotEmpty)
-              Text('添付予定: ${note.attachmentTypes.join(', ')}'),
-            Text(note.isPublic ? '公開中' : '非公開'),
-          ],
+              Align(
+                alignment: Alignment.centerRight,
+                child: Text(
+                  _noteToggleStatusLabel(note),
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -1240,32 +1569,73 @@ class _PublicLessonNoteCard extends StatelessWidget {
                           ],
                         ),
                         const SizedBox(height: 8),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.surfaceContainerHighest,
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                note.title.isEmpty ? '無題のメモ' : note.title,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
+                        Stack(
+                          children: [
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.surfaceContainerHighest,
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    note.title.isEmpty ? '無題のメモ' : note.title,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(note.body.isEmpty ? '本文なし' : note.body),
+                                  if (note.tags.isNotEmpty) ...[
+                                    const SizedBox(height: 8),
+                                    Text(note.tags.map((tag) => '#$tag').join(' ')),
+                                  ],
+                                ],
+                              ),
+                            ),
+                            if (note.hasCitationEdits && (note.id ?? '').isNotEmpty)
+                              Positioned(
+                                top: 8,
+                                right: 8,
+                                child: InkWell(
+                                  onTap: () {
+                                    showPublicNoteEditHistorySheet(
+                                      context,
+                                      noteId: note.id!,
+                                      fallbackTitle: note.title,
+                                      fallbackBody: note.body,
+                                    );
+                                  },
+                                  borderRadius: BorderRadius.circular(999),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 4,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.tertiaryContainer,
+                                      borderRadius: BorderRadius.circular(999),
+                                    ),
+                                    child: Text(
+                                      '編集済',
+                                      style: Theme.of(context).textTheme.labelSmall
+                                          ?.copyWith(
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.onTertiaryContainer,
+                                          ),
+                                    ),
+                                  ),
                                 ),
                               ),
-                              const SizedBox(height: 4),
-                              Text(note.body.isEmpty ? '本文なし' : note.body),
-                              if (note.tags.isNotEmpty) ...[
-                                const SizedBox(height: 8),
-                                Text(note.tags.map((tag) => '#$tag').join(' ')),
-                              ],
-                            ],
-                          ),
+                          ],
                         ),
                         const SizedBox(height: 4),
                         Row(
@@ -1309,6 +1679,7 @@ class _PublicLessonNoteDetailPage extends StatelessWidget {
     required this.lesson,
     required this.lessonNumber,
     required this.canCreateQuestion,
+    this.onEdit,
   });
 
   final LessonNote note;
@@ -1316,97 +1687,135 @@ class _PublicLessonNoteDetailPage extends StatelessWidget {
   final CourseLesson lesson;
   final int lessonNumber;
   final bool canCreateQuestion;
+  final Future<void> Function(BuildContext context)? onEdit;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('公開メモ')),
       body: SafeArea(
-        child: StreamBuilder<PublicUserProfile>(
-          stream: publicUserProfileStream(
-            userId: note.authorId,
-            role: publicUserProfileRoleStudent,
-            fallbackDisplayName: note.authorName,
-          ),
-          builder: (context, snapshot) {
-            final profile =
-                snapshot.data ??
-                fallbackPublicUserProfile(
-                  userId: note.authorId,
-                  role: publicUserProfileRoleStudent,
-                  displayName: note.authorName,
-                );
-            return ListView(
-              padding: const EdgeInsets.all(24),
-              children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    PublicProfileAvatar(profile: profile),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            profile.displayName,
-                            style: Theme.of(context).textTheme.labelMedium,
-                          ),
-                          Text(
-                            _formatPublicNoteTimestamp(note),
-                            style: Theme.of(context).textTheme.labelSmall
-                                ?.copyWith(
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.onSurfaceVariant,
-                                ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 24),
-                Text(
-                  note.title.isEmpty ? '無題のメモ' : note.title,
-                  style: Theme.of(context).textTheme.headlineSmall,
-                ),
-                const SizedBox(height: 16),
-                Text(note.body.isEmpty ? '本文なし' : note.body),
-                if (note.tags.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  Text(note.tags.map((tag) => '#$tag').join(' ')),
-                ],
-                if (note.attachmentTypes.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  Text('添付予定: ${note.attachmentTypes.join(', ')}'),
-                ],
-                const SizedBox(height: 24),
-                if (canCreateQuestion && note.allowsQuestionCitation) ...[
-                  FilledButton.icon(
-                    onPressed: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => _QuotedLessonQuestionPage(
-                            course: course,
-                            lesson: lesson,
-                            lessonNumber: lessonNumber,
-                            quotedNote: note,
-                          ),
-                        ),
-                      );
-                    },
-                    icon: const Icon(Icons.add_comment),
-                    label: const Text('このメモを引用して質問する'),
-                  ),
-                ] else if (canCreateQuestion) ...[
-                  const Text('このメモの作成者は引用を許可していません。'),
-                ],
-              ],
-            );
-          },
+        child: _LessonNotePreviewBody(
+          note: note,
+          course: course,
+          lesson: lesson,
+          lessonNumber: lessonNumber,
+          canCreateQuestion: canCreateQuestion,
+          onEdit: onEdit,
         ),
       ),
+    );
+  }
+}
+
+class _LessonNotePreviewBody extends StatelessWidget {
+  const _LessonNotePreviewBody({
+    required this.note,
+    required this.course,
+    required this.lesson,
+    required this.lessonNumber,
+    required this.canCreateQuestion,
+    this.onEdit,
+  });
+
+  final LessonNote note;
+  final Course course;
+  final CourseLesson lesson;
+  final int lessonNumber;
+  final bool canCreateQuestion;
+  final Future<void> Function(BuildContext context)? onEdit;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<PublicUserProfile>(
+      stream: publicUserProfileStream(
+        userId: note.authorId,
+        role: publicUserProfileRoleStudent,
+        fallbackDisplayName: note.authorName,
+      ),
+      builder: (context, snapshot) {
+        final profile =
+            snapshot.data ??
+            fallbackPublicUserProfile(
+              userId: note.authorId,
+              role: publicUserProfileRoleStudent,
+              displayName: note.authorName,
+            );
+        return ListView(
+          padding: const EdgeInsets.all(24),
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                PublicProfileAvatar(profile: profile),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        profile.displayName,
+                        style: Theme.of(context).textTheme.labelMedium,
+                      ),
+                      Text(
+                        _formatPublicNoteTimestamp(note),
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+            Text(
+              note.title.isEmpty ? '無題のメモ' : note.title,
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
+            const SizedBox(height: 16),
+            Text(note.body.isEmpty ? '本文なし' : note.body),
+            if (note.tags.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text(note.tags.map((tag) => '#$tag').join(' ')),
+            ],
+            if (note.attachmentTypes.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text('添付予定: ${note.attachmentTypes.join(', ')}'),
+            ],
+            const SizedBox(height: 24),
+            if (canCreateQuestion && note.allowsQuestionCitation) ...[
+              FilledButton.icon(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => _QuotedLessonQuestionPage(
+                        course: course,
+                        lesson: lesson,
+                        lessonNumber: lessonNumber,
+                        quotedNote: note,
+                      ),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.add_comment),
+                label: const Text('このメモを引用して質問する'),
+              ),
+            ] else if (canCreateQuestion) ...[
+              const Text('このメモの作成者は引用を許可していません。'),
+            ],
+            if (onEdit != null) ...[
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  await onEdit!.call(context);
+                },
+                icon: const Icon(Icons.edit),
+                label: const Text('このメモを編集'),
+              ),
+            ],
+          ],
+        );
+      },
     );
   }
 }
@@ -1449,6 +1858,26 @@ String _formatPublicNoteTimestamp(LessonNote note) {
   final hour = dateTime.hour.toString().padLeft(2, '0');
   final minute = dateTime.minute.toString().padLeft(2, '0');
   return '${dateTime.month}/${dateTime.day} $hour:$minute';
+}
+
+String _noteFirstLinePreview(String body) {
+  if (body.trim().isEmpty) {
+    return '本文なし';
+  }
+  final lines = body
+      .split('\n')
+      .map((line) => line.trim())
+      .where((line) => line.isNotEmpty);
+  if (lines.isEmpty) {
+    return '本文なし';
+  }
+  return lines.first;
+}
+
+String _noteToggleStatusLabel(LessonNote note) {
+  final isPublicOn = note.isPublic ? 'ON' : 'OFF';
+  final isCitationOn = note.allowsQuestionCitation ? 'ON' : 'OFF';
+  return '公開:$isPublicOn / 引用:$isCitationOn';
 }
 
 class _LessonNoteEditorPage extends StatefulWidget {

@@ -19,6 +19,10 @@ const String lessonNoteAttachmentAudio = 'audio';
 const String lessonNoteModerationVisible = lessonInteractionModerationVisible;
 const String lessonNoteModerationHiddenByTeacher =
     lessonInteractionModerationHiddenByTeacher;
+const Duration lessonNoteCitationEditFreeWindow = Duration(minutes: 30);
+const Duration lessonNoteCitationCompareRetentionWindow = Duration(days: 7);
+const int lessonNoteCitationEditLimitInWindow = 3;
+const String publicLessonNoteEditHistoryCollection = 'editHistory';
 
 class LessonNoteFolder {
   const LessonNoteFolder({
@@ -79,6 +83,10 @@ class LessonNote {
     this.createdAt,
     this.updatedAt,
     this.publicPublishedAt,
+    this.citationEnabledAt,
+    this.citationFreeEditUntil,
+    this.citationEditCount = 0,
+    this.lastCitationEditedAt,
     this.favoriteCount = 0,
     this.ratingAverage = 0,
     this.ratingCount = 0,
@@ -113,6 +121,10 @@ class LessonNote {
   final Timestamp? createdAt;
   final Timestamp? updatedAt;
   final Timestamp? publicPublishedAt;
+  final Timestamp? citationEnabledAt;
+  final Timestamp? citationFreeEditUntil;
+  final int citationEditCount;
+  final Timestamp? lastCitationEditedAt;
   final int favoriteCount;
   final double ratingAverage;
   final int ratingCount;
@@ -128,6 +140,8 @@ class LessonNote {
       moderationStatus == lessonNoteModerationHiddenByTeacher;
   bool get isPubliclyVisible =>
       isStudentPublic && !isDeleted && !isTeacherHidden;
+  bool get isCitationProtectedPublicMemo => hasPublicMirror && allowsQuestionCitation;
+  bool get hasCitationEdits => citationEditCount > 0;
 
   factory LessonNote.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     return LessonNote.fromMap(doc.data() ?? {}, id: doc.id);
@@ -173,6 +187,10 @@ class LessonNote {
       createdAt: data['createdAt'] as Timestamp?,
       updatedAt: data['updatedAt'] as Timestamp?,
       publicPublishedAt: data['publicPublishedAt'] as Timestamp?,
+      citationEnabledAt: data['citationEnabledAt'] as Timestamp?,
+      citationFreeEditUntil: data['citationFreeEditUntil'] as Timestamp?,
+      citationEditCount: (data['citationEditCount'] as num?)?.toInt() ?? 0,
+      lastCitationEditedAt: data['lastCitationEditedAt'] as Timestamp?,
       favoriteCount: (data['favoriteCount'] as num?)?.toInt() ?? 0,
       ratingAverage: (data['ratingAverage'] as num?)?.toDouble() ?? 0,
       ratingCount: (data['ratingCount'] as num?)?.toInt() ?? 0,
@@ -252,4 +270,109 @@ int _lessonNotePopularityScore(LessonNote note) {
       note.ratingCount * 10 +
       note.favoriteCount * 5 +
       note.copyCount * 20;
+}
+
+class LessonNoteEditHistoryEntry {
+  const LessonNoteEditHistoryEntry({
+    this.id,
+    this.editedAt,
+    this.beforeTitle,
+    this.beforeBody,
+    this.afterTitle,
+    this.afterBody,
+    this.countsTowardWeeklyLimit = false,
+    this.compareAvailable = false,
+    this.compareVisibleUntil,
+    this.purgedAt,
+  });
+
+  final String? id;
+  final Timestamp? editedAt;
+  final String? beforeTitle;
+  final String? beforeBody;
+  final String? afterTitle;
+  final String? afterBody;
+  final bool countsTowardWeeklyLimit;
+  final bool compareAvailable;
+  final Timestamp? compareVisibleUntil;
+  final Timestamp? purgedAt;
+
+  factory LessonNoteEditHistoryEntry.fromFirestore(
+    DocumentSnapshot<Map<String, dynamic>> doc,
+  ) {
+    return LessonNoteEditHistoryEntry.fromMap(doc.data() ?? {}, id: doc.id);
+  }
+
+  factory LessonNoteEditHistoryEntry.fromMap(Map data, {String? id}) {
+    return LessonNoteEditHistoryEntry(
+      id: id ?? data['id'] as String?,
+      editedAt: data['editedAt'] as Timestamp?,
+      beforeTitle: data['beforeTitle'] as String?,
+      beforeBody: data['beforeBody'] as String?,
+      afterTitle: data['afterTitle'] as String?,
+      afterBody: data['afterBody'] as String?,
+      countsTowardWeeklyLimit: data['countsTowardWeeklyLimit'] == true,
+      compareAvailable: data['compareAvailable'] == true,
+      compareVisibleUntil: data['compareVisibleUntil'] as Timestamp?,
+      purgedAt: data['purgedAt'] as Timestamp?,
+    );
+  }
+}
+
+Timestamp? resolveLessonNoteCitationFreeEditUntil({
+  required bool allowsQuestionCitation,
+  required Timestamp? citationEnabledAt,
+  required Timestamp? citationFreeEditUntil,
+  required Timestamp? publicPublishedAt,
+  required Timestamp? createdAt,
+}) {
+  if (!allowsQuestionCitation) {
+    return null;
+  }
+  if (citationFreeEditUntil != null) {
+    return citationFreeEditUntil;
+  }
+  final base = citationEnabledAt ?? publicPublishedAt ?? createdAt;
+  if (base == null) {
+    return null;
+  }
+  return Timestamp.fromDate(
+    base.toDate().toUtc().add(lessonNoteCitationEditFreeWindow),
+  );
+}
+
+bool isWithinLessonNoteCitationFreeEditWindow({
+  required DateTime nowUtc,
+  required Timestamp? citationFreeEditUntil,
+}) {
+  if (citationFreeEditUntil == null) {
+    return false;
+  }
+  return !nowUtc.isAfter(citationFreeEditUntil.toDate().toUtc());
+}
+
+DateTime? lessonNoteEditLockUntil({
+  required Iterable<Timestamp> countableEditTimes,
+  DateTime? now,
+  int limit = lessonNoteCitationEditLimitInWindow,
+  Duration window = lessonNoteCitationCompareRetentionWindow,
+}) {
+  if (limit <= 0) {
+    return null;
+  }
+  final nowUtc = (now ?? DateTime.now()).toUtc();
+  final threshold = nowUtc.subtract(window);
+  final recent = countableEditTimes
+      .map((entry) => entry.toDate().toUtc())
+      .where((entry) => !entry.isBefore(threshold))
+      .toList()
+    ..sort((a, b) => b.compareTo(a));
+  if (recent.length < limit) {
+    return null;
+  }
+  final lockUntil = recent.first.add(window);
+  if (lockUntil.isAfter(nowUtc)) {
+    return lockUntil;
+  }
+  return null;
 }

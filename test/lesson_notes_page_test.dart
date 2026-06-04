@@ -133,6 +133,7 @@ void main() {
 
     expect(find.text('自分のメモ'), findsWidgets);
     expect(find.text('移項を復習する'), findsOneWidget);
+    expect(find.text('公開:OFF / 引用:OFF'), findsOneWidget);
 
     await tester.tap(find.text('公開メモ'));
     await tester.pumpAndSettle();
@@ -227,6 +228,57 @@ void main() {
     expect(find.text('先生が非公開化中'), findsOneWidget);
   });
 
+  testWidgets('Public note card shows edited badge and history sheet', (
+    tester,
+  ) async {
+    final publicNote = LessonNote(
+      id: 'edited-public-note',
+      authorId: 'user-b',
+      authorName: '他の学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '編集済み公開メモ',
+      body: '更新後の本文です。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.public,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      allowsQuestionCitation: true,
+      hasPublicMirror: true,
+      citationEditCount: 2,
+      lastCitationEditedAt: Timestamp.fromDate(DateTime(2026, 6, 4, 11, 45)),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LessonNotesPage(
+          course: course,
+          lesson: lesson,
+          lessonNumber: 1,
+          notesStream: Stream.value(const []),
+          publicNotesStream: Stream.value([publicNote]),
+          foldersStream: Stream.value(const []),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('公開メモ'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('編集済'), findsOneWidget);
+    await tester.tap(find.text('編集済'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('メモ編集履歴'), findsOneWidget);
+  });
+
   testWidgets('Public note detail explains when citation is not allowed', (
     tester,
   ) async {
@@ -319,6 +371,140 @@ void main() {
     expect(find.text('フォルダ内メモ'), findsOneWidget);
   });
 
+  testWidgets('Self memo list shows first line and latest toggle status', (
+    tester,
+  ) async {
+    const ownPublicNote = LessonNote(
+      id: 'own-public-note',
+      authorId: 'user-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '整理メモ',
+      body: '1行目だけ見せたい\n2行目は一覧に出さない',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.public,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      allowsQuestionCitation: true,
+      hasPublicMirror: true,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LessonNotesPage(
+          course: course,
+          lesson: lesson,
+          lessonNumber: 1,
+          notesStream: Stream.value(const [ownPublicNote]),
+          publicNotesStream: Stream.value(const []),
+          foldersStream: Stream.value(const []),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('整理メモ'), findsOneWidget);
+    expect(find.text('1行目だけ見せたい'), findsOneWidget);
+    expect(find.text('2行目は一覧に出さない'), findsNothing);
+    expect(find.text('公開:ON / 引用:ON'), findsOneWidget);
+  });
+
+  testWidgets('Own note tap opens shared preview before editor', (tester) async {
+    const ownNote = LessonNote(
+      id: 'own-note-preview',
+      authorId: 'user-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '自分の下書きメモ',
+      body: '先にプレビューを確認する',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.private,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LessonNotesPage(
+          course: course,
+          lesson: lesson,
+          lessonNumber: 1,
+          notesStream: Stream.value(const [ownNote]),
+          publicNotesStream: Stream.value(const []),
+          foldersStream: Stream.value(const []),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('自分の下書きメモ'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('先にプレビューを確認する'), findsOneWidget);
+    expect(find.text('このメモを編集'), findsOneWidget);
+    expect(find.text('タイトル'), findsNothing);
+  });
+
+  testWidgets('Embedded own note tap opens preview before editor', (tester) async {
+    const ownNote = LessonNote(
+      id: 'embedded-own-note-preview',
+      authorId: 'user-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '埋め込みメモ',
+      body: '埋め込みでもプレビューを先に表示する',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.private,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonNotesPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            isEmbedded: true,
+            notesStream: Stream.value(const [ownNote]),
+            publicNotesStream: Stream.value(const []),
+            foldersStream: Stream.value(const []),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('埋め込みメモ'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('埋め込みでもプレビューを先に表示する'), findsOneWidget);
+    expect(find.text('このメモを編集'), findsOneWidget);
+    expect(find.byTooltip('メモ一覧に戻る'), findsOneWidget);
+  });
+
   testWidgets('Audio attachments disable public note publishing', (
     tester,
   ) async {
@@ -388,6 +574,9 @@ void main() {
 
     await tester.tap(find.text('公開済みメモ'));
     await tester.pumpAndSettle();
+    expect(find.text('このメモを編集'), findsOneWidget);
+    await tester.tap(find.text('このメモを編集'));
+    await tester.pumpAndSettle();
     await tester.drag(find.byType(ListView).last, const Offset(0, -700));
     await tester.pumpAndSettle();
 
@@ -454,6 +643,9 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('引用許可済みメモ'));
+    await tester.pumpAndSettle();
+    expect(find.text('このメモを編集'), findsOneWidget);
+    await tester.tap(find.text('このメモを編集'));
     await tester.pumpAndSettle();
     await tester.drag(find.byType(ListView).last, const Offset(0, -700));
     await tester.pumpAndSettle();

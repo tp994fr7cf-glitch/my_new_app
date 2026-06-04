@@ -307,6 +307,89 @@ void main() {
     expect(find.text('回答コメントを書く'), findsOneWidget);
   });
 
+  testWidgets('Quoted note bubble shows memo status action', (tester) async {
+    const question = LessonQuestion(
+      id: 'question-note-status',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '',
+      body: '引用メモの編集状態を確認したいです。',
+      visibility: LessonQuestionVisibility.public,
+      target: LessonQuestionTarget.everyone,
+      attachmentTypes: [],
+      quotedNoteId: 'public-note-1',
+      quotedNoteTitle: '引用メモ',
+      quotedNoteBody: '引用時の本文',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonQuestionsPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            questionsStream: Stream.value(const [question]),
+            publicQuestionsStream: Stream.value(const []),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('メモ: 状態確認'), findsOneWidget);
+    await tester.tap(find.textContaining('メモ: 状態確認'));
+    await tester.pumpAndSettle();
+    expect(find.text('メモ編集履歴'), findsOneWidget);
+  });
+
+  testWidgets('Quoted note chip opens latest view and hides stale snapshot', (
+    tester,
+  ) async {
+    const question = LessonQuestion(
+      id: 'question-latest-note',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '',
+      body: '引用メモを確認します。',
+      visibility: LessonQuestionVisibility.public,
+      target: LessonQuestionTarget.everyone,
+      attachmentTypes: [],
+      quotedNoteId: 'public-note-latest',
+      quotedNoteTitle: '引用メモタイトル',
+      quotedNoteBody: '古い引用本文',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonQuestionsPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            questionsStream: Stream.value(const [question]),
+            publicQuestionsStream: Stream.value(const []),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('レッスンメモ'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('引用元メモは削除されたか、現在は表示できません。'), findsOneWidget);
+    expect(find.text('古い引用本文'), findsNothing);
+  });
+
   testWidgets('Learner cannot answer teacher-target public question', (
     tester,
   ) async {

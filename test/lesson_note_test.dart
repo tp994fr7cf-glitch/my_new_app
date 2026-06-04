@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:my_new_app/models/lesson_note.dart';
 
 void main() {
@@ -256,6 +257,56 @@ void main() {
       ], LessonNotePublicSort.popular);
 
       expect(sorted.first.id, 'rating');
+    });
+
+    test('resolves citation free edit window from enabled timestamp', () {
+      final enabledAt = Timestamp.fromDate(DateTime.utc(2026, 6, 1, 10, 0));
+      final freeUntil = resolveLessonNoteCitationFreeEditUntil(
+        allowsQuestionCitation: true,
+        citationEnabledAt: enabledAt,
+        citationFreeEditUntil: null,
+        publicPublishedAt: null,
+        createdAt: null,
+      );
+
+      expect(freeUntil, isNotNull);
+      expect(
+        freeUntil!.toDate().toUtc(),
+        DateTime.utc(2026, 6, 1, 10, 30),
+      );
+      expect(
+        isWithinLessonNoteCitationFreeEditWindow(
+          nowUtc: DateTime.utc(2026, 6, 1, 10, 10),
+          citationFreeEditUntil: freeUntil,
+        ),
+        isTrue,
+      );
+      expect(
+        isWithinLessonNoteCitationFreeEditWindow(
+          nowUtc: DateTime.utc(2026, 6, 1, 10, 31),
+          citationFreeEditUntil: freeUntil,
+        ),
+        isFalse,
+      );
+    });
+
+    test('locks edit when three countable edits exist in seven days', () {
+      final now = DateTime.utc(2026, 6, 10, 12, 0);
+      final lockUntil = lessonNoteEditLockUntil(
+        now: now,
+        countableEditTimes: [
+          Timestamp.fromDate(now.subtract(const Duration(days: 1))),
+          Timestamp.fromDate(now.subtract(const Duration(days: 2))),
+          Timestamp.fromDate(now.subtract(const Duration(days: 3))),
+        ],
+      );
+      expect(lockUntil, isNotNull);
+      expect(
+        lockUntil!.toUtc(),
+        now.subtract(const Duration(days: 1)).add(
+          lessonNoteCitationCompareRetentionWindow,
+        ),
+      );
     });
   });
 }

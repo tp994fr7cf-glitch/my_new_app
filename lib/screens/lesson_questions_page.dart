@@ -12,6 +12,7 @@ import '../models/lesson_question.dart';
 import '../models/public_user_profile.dart';
 import '../services/lesson_interaction_service.dart';
 import '../utils/firestore_parsing.dart';
+import 'public_note_edit_history_sheet.dart';
 import 'public_user_profile_page.dart';
 
 class LessonQuestionsPanel extends StatefulWidget {
@@ -1534,8 +1535,6 @@ class _CommentBubble extends StatelessWidget {
                                     if ((quotedNoteTitle ?? '').isNotEmpty)
                                       _QuotedNotePreviewChip(
                                         quotedNoteId: quotedNoteId,
-                                        title: quotedNoteTitle ?? '無題のメモ',
-                                        body: quotedNoteBody ?? '',
                                       ),
                                   ],
                                 ),
@@ -1623,6 +1622,18 @@ class _CommentBubble extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 4),
+                if ((quotedNoteId ?? '').trim().isNotEmpty ||
+                    (quotedNoteTitle ?? '').isNotEmpty)
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: PublicNoteEditStatusButton(
+                      noteId: quotedNoteId,
+                      fallbackTitle: quotedNoteTitle ?? '無題のメモ',
+                      fallbackBody: quotedNoteBody ?? '',
+                      icon: Icons.sticky_note_2_outlined,
+                      leadingLabel: 'メモ',
+                    ),
+                  ),
                 Text(
                   scopeLabel,
                   textAlign: TextAlign.right,
@@ -1930,31 +1941,33 @@ class _AttachmentPreviewChip extends StatelessWidget {
 }
 
 class _QuotedNotePreviewChip extends StatelessWidget {
-  const _QuotedNotePreviewChip({
-    required this.quotedNoteId,
-    required this.title,
-    required this.body,
-  });
+  const _QuotedNotePreviewChip({required this.quotedNoteId});
 
   final String? quotedNoteId;
-  final String title;
-  final String body;
 
   @override
   Widget build(BuildContext context) {
-    final chip = _AttachmentPreviewChip(
-      label: 'レッスンメモ',
-      detail: '$title\n$body',
+    final safeQuotedNoteId = (quotedNoteId ?? '').trim();
+    final chip = ActionChip(
+      avatar: const Icon(Icons.insert_drive_file, size: 18),
+      label: const Text('レッスンメモ'),
+      onPressed: () {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => _LatestQuotedNotePreviewPage(
+              quotedNoteId: safeQuotedNoteId,
+            ),
+          ),
+        );
+      },
     );
-    if (Firebase.apps.isEmpty ||
-        quotedNoteId == null ||
-        quotedNoteId!.isEmpty) {
+    if (Firebase.apps.isEmpty || safeQuotedNoteId.isEmpty) {
       return chip;
     }
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       stream: FirebaseFirestore.instance
           .collection('publicLessonNotes')
-          .doc(quotedNoteId)
+          .doc(safeQuotedNoteId)
           .snapshots(),
       builder: (context, snapshot) {
         final data = snapshot.data?.data();
@@ -1983,6 +1996,88 @@ class _QuotedNotePreviewChip extends StatelessWidget {
           ],
         );
       },
+    );
+  }
+}
+
+class _LatestQuotedNotePreviewPage extends StatelessWidget {
+  const _LatestQuotedNotePreviewPage({required this.quotedNoteId});
+
+  final String quotedNoteId;
+
+  @override
+  Widget build(BuildContext context) {
+    final safeQuotedNoteId = quotedNoteId.trim();
+    if (Firebase.apps.isEmpty || safeQuotedNoteId.isEmpty) {
+      return const _UnavailableQuotedNotePreviewPage();
+    }
+    return Scaffold(
+      appBar: AppBar(title: const Text('レッスンメモ')),
+      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+        stream: FirebaseFirestore.instance
+            .collection('publicLessonNotes')
+            .doc(safeQuotedNoteId)
+            .snapshots(),
+        builder: (context, snapshot) {
+          final data = snapshot.data?.data();
+          final unavailable = snapshot.connectionState == ConnectionState.waiting
+              ? false
+              : quotedNoteUnavailableForQuestion(
+                  data,
+                  exists: snapshot.data?.exists == true,
+                  hasError: snapshot.hasError,
+                );
+          if (unavailable) {
+            return const _UnavailableQuotedNotePreviewBody();
+          }
+          if (!snapshot.hasData && snapshot.connectionState != ConnectionState.done) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          final note = data == null
+              ? null
+              : LessonNote.fromMap(data, id: snapshot.data?.id);
+          if (note == null) {
+            return const _UnavailableQuotedNotePreviewBody();
+          }
+          return ListView(
+            padding: const EdgeInsets.all(24),
+            children: [
+              Text(
+                note.title.isEmpty ? '無題のメモ' : note.title,
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 12),
+              Text(note.body.isEmpty ? '本文なし' : note.body),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _UnavailableQuotedNotePreviewPage extends StatelessWidget {
+  const _UnavailableQuotedNotePreviewPage();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('レッスンメモ')),
+      body: const _UnavailableQuotedNotePreviewBody(),
+    );
+  }
+}
+
+class _UnavailableQuotedNotePreviewBody extends StatelessWidget {
+  const _UnavailableQuotedNotePreviewBody();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(24),
+        child: Text('引用元メモは削除されたか、現在は表示できません。'),
+      ),
     );
   }
 }
