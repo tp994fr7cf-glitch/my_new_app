@@ -54,6 +54,176 @@ void main() {
     );
   });
 
+  test('own private quoted note can open detailed preview', () {
+    const ownPrivateNote = LessonNote(
+      id: 'own-private-note',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '自分の非公開メモ',
+      body: '編集に進みたいメモです。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.private,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+    );
+
+    expect(
+      canOpenOwnQuotedNoteDetail(
+        note: ownPrivateNote,
+        currentUserId: 'student-a',
+        isTeacherPreview: false,
+      ),
+      isTrue,
+    );
+  });
+
+  test('teacher preview mode does not treat own note as editable detail', () {
+    const ownPublicNote = LessonNote(
+      id: 'own-public-note',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '自分の公開メモ',
+      body: '先生表示中は特別表示しない。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.public,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      allowsQuestionCitation: true,
+    );
+
+    expect(
+      canOpenOwnQuotedNoteDetail(
+        note: ownPublicNote,
+        currentUserId: 'student-a',
+        isTeacherPreview: true,
+      ),
+      isFalse,
+    );
+  });
+
+  test('own deleted quoted note blocks navigation before push', () {
+    const deletedOwnNote = LessonNote(
+      id: 'own-deleted-note',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '削除済みメモ',
+      body: 'このメモは削除済みです。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.public,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      isDeleted: true,
+    );
+
+    expect(
+      shouldBlockOwnDeletedQuotedNoteNavigation(
+        note: deletedOwnNote,
+        currentUserId: 'student-a',
+      ),
+      isTrue,
+    );
+    expect(
+      shouldBlockOwnDeletedQuotedNoteNavigation(
+        note: deletedOwnNote,
+        currentUserId: 'student-b',
+      ),
+      isFalse,
+    );
+  });
+
+  test('public audience can quote only student-visible notes', () {
+    const publicNote = LessonNote(
+      id: 'public-note',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '公開メモ',
+      body: '公開引用可',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.public,
+      studentVisibility: LessonNoteVisibility.public,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      allowsQuestionCitation: true,
+    );
+    const teacherOnlyNote = LessonNote(
+      id: 'teacher-only-note',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '先生限定メモ',
+      body: '先生向け',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.teacherOnly,
+      studentVisibility: LessonNoteVisibility.teacherOnly,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      allowsQuestionCitation: true,
+    );
+    const privateNote = LessonNote(
+      id: 'private-note',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '非公開メモ',
+      body: '自分用',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.private,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      allowsQuestionCitation: true,
+    );
+
+    expect(canQuoteLessonNoteToPublicAudience(publicNote), isTrue);
+    expect(canQuoteLessonNoteToPublicAudience(teacherOnlyNote), isFalse);
+    expect(canQuoteLessonNoteToPublicAudience(privateNote), isFalse);
+  });
+
   test('question author can answer teacher-target public question', () {
     const question = LessonQuestion(
       id: 'question-teacher',
@@ -83,6 +253,79 @@ void main() {
       canAnswerLessonQuestion(
         question: question,
         currentUserId: 'student-b',
+        isCurrentUserTeacher: false,
+        isTeacherPreview: false,
+      ),
+      isFalse,
+    );
+  });
+
+  test('teacher-only question allows only author to answer', () {
+    const question = LessonQuestion(
+      id: 'question-teacher-only',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '',
+      body: '先生だけ表示の質問です。',
+      visibility: LessonQuestionVisibility.teacherOnly,
+      target: LessonQuestionTarget.teacher,
+      attachmentTypes: [],
+    );
+
+    expect(
+      canAnswerLessonQuestion(
+        question: question,
+        currentUserId: 'student-a',
+        isCurrentUserTeacher: false,
+        isTeacherPreview: false,
+      ),
+      isTrue,
+    );
+    expect(
+      canAnswerLessonQuestion(
+        question: question,
+        currentUserId: 'student-b',
+        isCurrentUserTeacher: false,
+        isTeacherPreview: false,
+      ),
+      isFalse,
+    );
+  });
+
+  test('teacher and learner cannot answer teacher-hidden question', () {
+    const hiddenQuestion = LessonQuestion(
+      id: 'hidden-question',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '',
+      body: '先生が非公開化した質問です。',
+      visibility: LessonQuestionVisibility.public,
+      target: LessonQuestionTarget.teacher,
+      attachmentTypes: [],
+      moderationStatus: lessonNoteModerationHiddenByTeacher,
+    );
+
+    expect(
+      canAnswerLessonQuestion(
+        question: hiddenQuestion,
+        currentUserId: 'teacher-a',
+        isCurrentUserTeacher: true,
+        isTeacherPreview: true,
+      ),
+      isFalse,
+    );
+    expect(
+      canAnswerLessonQuestion(
+        question: hiddenQuestion,
+        currentUserId: 'student-a',
         isCurrentUserTeacher: false,
         isTeacherPreview: false,
       ),
@@ -174,7 +417,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('コメントを投稿'), findsOneWidget);
-      expect(find.text('引用する公開メモ'), findsOneWidget);
+      expect(find.text('引用するメモ'), findsOneWidget);
 
       await tester.tap(find.text('全員に質問'));
       await tester.pumpAndSettle();
@@ -229,6 +472,27 @@ void main() {
       isCopied: false,
       canPublish: true,
     );
+    const teacherOnlyOtherNote = LessonNote(
+      id: 'teacher-only-other-note',
+      authorId: 'student-c',
+      authorName: 'Cさん',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '先生向けメモ',
+      body: '先生にだけ見せるメモです。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.teacherOnly,
+      studentVisibility: LessonNoteVisibility.teacherOnly,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      allowsQuestionCitation: true,
+    );
 
     await tester.pumpWidget(
       MaterialApp(
@@ -239,7 +503,9 @@ void main() {
             lessonNumber: 1,
             questionsStream: Stream.value(const []),
             publicQuestionsStream: Stream.value(const []),
-            quotableNotesStream: Stream.value(const [allowedNote, deniedNote]),
+            quotableNotesStream: Stream.value(
+              const [allowedNote, deniedNote, teacherOnlyOtherNote],
+            ),
           ),
         ),
       ),
@@ -255,6 +521,7 @@ void main() {
 
     expect(find.text('引用許可メモ'), findsOneWidget);
     expect(find.text('引用不可メモ'), findsNothing);
+    expect(find.text('先生向けメモ'), findsNothing);
   });
 
   testWidgets('Question list uses comment bubbles and opens detail in panel', (
@@ -489,7 +756,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('公開質問を確認し、返信や公開状態の管理ができます。'), findsOneWidget);
+    expect(find.text('質問コメントを確認し、返信や公開状態の管理ができます。'), findsOneWidget);
     await tester.tap(find.text('先生プレビューで確認する公開質問です。'));
     await tester.pumpAndSettle();
 
@@ -501,6 +768,156 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('公開に戻す'), findsOneWidget);
   });
+
+  testWidgets('Teacher preview hides answer box for teacher-hidden question', (
+    tester,
+  ) async {
+    const question = LessonQuestion(
+      id: 'teacher-preview-hidden-question',
+      authorId: 'student-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '',
+      body: '先生が非公開化した公開質問です。',
+      visibility: LessonQuestionVisibility.public,
+      target: LessonQuestionTarget.teacher,
+      attachmentTypes: [],
+      moderationStatus: lessonNoteModerationHiddenByTeacher,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonQuestionsPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            publicQuestionsStream: Stream.value(const [question]),
+            answersStream: Stream.value(const []),
+            isTeacherPreview: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('先生が非公開化した公開質問です。'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('質問詳細'), findsOneWidget);
+    expect(find.text('回答コメントを書く'), findsNothing);
+  });
+
+  testWidgets('Teacher preview lists teacher-only question mirror', (tester) async {
+    const question = LessonQuestion(
+      id: 'teacher-only-preview-question',
+      authorId: 'student-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '',
+      body: '先生だけに見える質問です。',
+      visibility: LessonQuestionVisibility.public,
+      studentVisibility: LessonQuestionVisibility.teacherOnly,
+      target: LessonQuestionTarget.teacher,
+      attachmentTypes: [],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonQuestionsPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            publicQuestionsStream: Stream.value(const [question]),
+            answersStream: Stream.value(const []),
+            isTeacherPreview: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('先生だけに見える質問です。'), findsOneWidget);
+    expect(find.text('先生だけ表示 / 先生だけ回答可'), findsWidgets);
+
+    await tester.tap(find.text('先生だけに見える質問です。'));
+    await tester.pumpAndSettle();
+    expect(find.text('質問詳細'), findsOneWidget);
+    expect(find.text('先生だけ表示 / 先生だけ回答可'), findsWidgets);
+  });
+
+  testWidgets(
+    'Teacher preview can quote learner teacher-only memo when replying',
+    (tester) async {
+      const question = LessonQuestion(
+        id: 'teacher-preview-public-question',
+        authorId: 'student-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '公開質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: [],
+      );
+      const learnerTeacherOnlyNote = LessonNote(
+        id: 'learner-teacher-only-note',
+        authorId: 'student-b',
+        authorName: '別の学習者',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '学習者の先生向けメモ',
+        body: '先生だけ引用可',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.teacherOnly,
+        studentVisibility: LessonNoteVisibility.teacherOnly,
+        tags: [],
+        attachmentTypes: [],
+        hasAudioAttachment: false,
+        isCopied: false,
+        canPublish: true,
+        allowsQuestionCitation: true,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              publicQuestionsStream: Stream.value(const [question]),
+              answersStream: Stream.value(const []),
+              quotableNotesStream: Stream.value(const [learnerTeacherOnlyNote]),
+              isTeacherPreview: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('公開質問です。'));
+      await tester.pumpAndSettle();
+      expect(find.text('回答コメントを書く'), findsOneWidget);
+
+      await tester.tap(find.byType(DropdownButtonFormField<String>).last);
+      await tester.pumpAndSettle();
+      expect(find.text('学習者の先生向けメモ'), findsOneWidget);
+    },
+  );
 
   testWidgets('Question editor locks scope after posting', (tester) async {
     const question = LessonQuestion(
@@ -539,7 +956,7 @@ void main() {
     expect(find.text('公開範囲: 学習者にも公開'), findsOneWidget);
     expect(find.text('宛先: 全員に質問'), findsOneWidget);
     expect(find.text('他の学習者にも公開する'), findsNothing);
-    expect(find.text('引用する公開メモ'), findsNothing);
+    expect(find.text('引用するメモ'), findsNothing);
   });
 
   testWidgets('Deleted parent question hides normal answer thread', (

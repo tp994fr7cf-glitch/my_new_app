@@ -7,11 +7,12 @@ export 'lesson_interaction_constants.dart'
         lessonInteractionModerationHiddenByTeacher,
         lessonInteractionModerationVisible;
 
-enum LessonNoteVisibility { private, public }
+enum LessonNoteVisibility { private, teacherOnly, public }
 
 enum LessonNotePublicSort { newest, popular }
 
 const String lessonNoteVisibilityPrivate = 'private';
+const String lessonNoteVisibilityTeacherOnly = 'teacherOnly';
 const String lessonNoteVisibilityPublic = 'public';
 const String lessonNoteAttachmentPdf = 'pdf';
 const String lessonNoteAttachmentImage = 'image';
@@ -134,8 +135,11 @@ class LessonNote {
   final String moderationStatus;
 
   bool get isPublic => visibility == LessonNoteVisibility.public;
+  bool get isTeacherOnly => visibility == LessonNoteVisibility.teacherOnly;
   bool get isStudentPublic =>
       (studentVisibility ?? visibility) == LessonNoteVisibility.public;
+  bool get isStudentTeacherOnly =>
+      (studentVisibility ?? visibility) == LessonNoteVisibility.teacherOnly;
   bool get isTeacherHidden =>
       moderationStatus == lessonNoteModerationHiddenByTeacher;
   bool get isPubliclyVisible =>
@@ -167,9 +171,13 @@ class LessonNote {
       folderName: data['folderName'] as String? ?? '',
       visibility: visibilityText == lessonNoteVisibilityPublic
           ? LessonNoteVisibility.public
+          : visibilityText == lessonNoteVisibilityTeacherOnly
+          ? LessonNoteVisibility.teacherOnly
           : LessonNoteVisibility.private,
       studentVisibility: studentVisibilityText == lessonNoteVisibilityPublic
           ? LessonNoteVisibility.public
+          : studentVisibilityText == lessonNoteVisibilityTeacherOnly
+          ? LessonNoteVisibility.teacherOnly
           : LessonNoteVisibility.private,
       tags: parseStringList(data['tags']),
       attachmentTypes: parseStringList(attachmentData),
@@ -183,7 +191,8 @@ class LessonNote {
       allowsQuestionCitation: data['allowsQuestionCitation'] == true,
       hasPublicMirror:
           data['hasPublicMirror'] == true ||
-          visibilityText == lessonNoteVisibilityPublic,
+          visibilityText == lessonNoteVisibilityPublic ||
+          visibilityText == lessonNoteVisibilityTeacherOnly,
       createdAt: data['createdAt'] as Timestamp?,
       updatedAt: data['updatedAt'] as Timestamp?,
       publicPublishedAt: data['publicPublishedAt'] as Timestamp?,

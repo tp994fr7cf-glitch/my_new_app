@@ -1,0 +1,607 @@
+{
+  "meta": {
+    "startedAt": "2026-06-05T23:09:56.318Z",
+    "finishedAt": "2026-06-05T23:09:57.194Z",
+    "projectId": "my-new-app-naona-20260523",
+    "mode": "plan",
+    "applyWhenLowRisk": false,
+    "lowRiskLimit": 200
+  },
+  "summary": {
+    "teacherOnlySourceCount": 7,
+    "candidateCount": 7,
+    "missingMirrorCount": 7,
+    "existingMirrorCount": 0
+  },
+  "missingMirrors": [
+    {
+      "userId": "2oddrJ4yB7SeE1pUljdTyZ0dtyY2",
+      "questionId": "seed0604-q-2oddrJ4y-2",
+      "sourceName": "projects/my-new-app-naona-20260523/databases/(default)/documents/users/2oddrJ4yB7SeE1pUljdTyZ0dtyY2/lessonQuestions/seed0604-q-2oddrJ4y-2",
+      "sourceFields": {
+        "userId": {
+          "stringValue": "2oddrJ4yB7SeE1pUljdTyZ0dtyY2"
+        },
+        "questionId": {
+          "stringValue": "seed0604-q-2oddrJ4y-2"
+        },
+        "status": {
+          "stringValue": "open"
+        },
+        "target": {
+          "stringValue": "teacher"
+        },
+        "quotedNoteTitle": {
+          "nullValue": null
+        },
+        "quotedNoteId": {
+          "nullValue": null
+        },
+        "updatedAt": {
+          "timestampValue": "2026-06-03T17:00:44.176298Z"
+        },
+        "attachmentTypes": {
+          "arrayValue": {}
+        },
+        "moderationStatus": {
+          "stringValue": "visible"
+        },
+        "isDeleted": {
+          "booleanValue": false
+        },
+        "body": {
+          "stringValue": "SEED0604 先生だけ回答可で途中式の見方を教えてください"
+        },
+        "createdAt": {
+          "timestampValue": "2026-06-03T17:00:44.176298Z"
+        },
+        "authorId": {
+          "stringValue": "2oddrJ4yB7SeE1pUljdTyZ0dtyY2"
+        },
+        "interactionSettingId": {
+          "stringValue": "teacher-math-basic_1"
+        },
+        "authorDisplayName": {
+          "nullValue": null
+        },
+        "courseTitle": {
+          "stringValue": "数学 方程式入門"
+        },
+        "quotedNoteBody": {
+          "nullValue": null
+        },
+        "lessonTitle": {
+          "stringValue": "一次方程式の基本"
+        },
+        "lessonNumber": {
+          "integerValue": "1"
+        },
+        "authorName": {
+          "stringValue": "7083@7083.com"
+        },
+        "authorRole": {
+          "stringValue": "student"
+        },
+        "studentVisibility": {
+          "stringValue": "teacherOnly"
+        },
+        "title": {
+          "stringValue": ""
+        },
+        "answerCount": {
+          "integerValue": "0"
+        },
+        "courseId": {
+          "stringValue": "teacher-math-basic"
+        },
+        "visibility": {
+          "stringValue": "teacherOnly"
+        }
+      }
+    },
+    {
+      "userId": "2oddrJ4yB7SeE1pUljdTyZ0dtyY2",
+      "questionId": "seed0604-q-2oddrJ4y-4",
+      "sourceName": "projects/my-new-app-naona-20260523/databases/(default)/documents/users/2oddrJ4yB7SeE1pUljdTyZ0dtyY2/lessonQuestions/seed0604-q-2oddrJ4y-4",
+      "sourceFields": {
+        "authorName": {
+          "stringValue": "7083@7083.com"
+        },
+        "lessonNumber": {
+          "integerValue": "1"
+        },
+        "lessonTitle": {
+          "stringValue": "一次方程式の基本"
+        },
+        "courseId": {
+          "stringValue": "teacher-math-basic"
+        },
+        "visibility": {
+          "stringValue": "teacherOnly"
+        },
+        "title": {
+          "stringValue": ""
+        },
+        "answerCount": {
+          "integerValue": "0"
+        },
+        "studentVisibility": {
+          "stringValue": "teacherOnly"
+        },
+        "authorRole": {
+          "stringValue": "student"
+        },
+        "interactionSettingId": {
+          "stringValue": "teacher-math-basic_1"
+        },
+        "quotedNoteBody": {
+          "stringValue": "SEED0604 方程式の移項手順を簡潔に整理したメモです"
+        },
+        "courseTitle": {
+          "stringValue": "数学 方程式入門"
+        },
+        "authorDisplayName": {
+          "nullValue": null
+        },
+        "updatedAt": {
+          "timestampValue": "2026-06-03T17:01:06.176298Z"
+        },
+        "attachmentTypes": {
+          "arrayValue": {}
+        },
+        "quotedNoteId": {
+          "stringValue": "seed0604-note-2oddrJ4y-1"
+        },
+        "authorId": {
+          "stringValue": "2oddrJ4yB7SeE1pUljdTyZ0dtyY2"
+        },
+        "isDeleted": {
+          "booleanValue": false
+        },
+        "body": {
+          "stringValue": "SEED0604 先生にだけ表示でつまずいた点を相談したいです"
+        },
+        "createdAt": {
+          "timestampValue": "2026-06-03T17:01:06.176298Z"
+        },
+        "moderationStatus": {
+          "stringValue": "visible"
+        },
+        "userId": {
+          "stringValue": "2oddrJ4yB7SeE1pUljdTyZ0dtyY2"
+        },
+        "quotedNoteTitle": {
+          "stringValue": "SEED0604-N11"
+        },
+        "status": {
+          "stringValue": "open"
+        },
+        "target": {
+          "stringValue": "teacher"
+        },
+        "questionId": {
+          "stringValue": "seed0604-q-2oddrJ4y-4"
+        }
+      }
+    },
+    {
+      "userId": "CQ714KZYBvN3G389pkP8EwJueX83",
+      "questionId": "seed0604-q-CQ714KZY-2",
+      "sourceName": "projects/my-new-app-naona-20260523/databases/(default)/documents/users/CQ714KZYBvN3G389pkP8EwJueX83/lessonQuestions/seed0604-q-CQ714KZY-2",
+      "sourceFields": {
+        "title": {
+          "stringValue": ""
+        },
+        "studentVisibility": {
+          "stringValue": "teacherOnly"
+        },
+        "userId": {
+          "stringValue": "CQ714KZYBvN3G389pkP8EwJueX83"
+        },
+        "quotedNoteTitle": {
+          "nullValue": null
+        },
+        "lessonNumber": {
+          "integerValue": "1"
+        },
+        "createdAt": {
+          "timestampValue": "2026-06-03T17:05:44.176298Z"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-06-03T17:05:44.176298Z"
+        },
+        "authorId": {
+          "stringValue": "CQ714KZYBvN3G389pkP8EwJueX83"
+        },
+        "interactionSettingId": {
+          "stringValue": "teacher-math-basic_1"
+        },
+        "authorDisplayName": {
+          "nullValue": null
+        },
+        "quotedNoteBody": {
+          "nullValue": null
+        },
+        "isDeleted": {
+          "booleanValue": false
+        },
+        "answerCount": {
+          "integerValue": "0"
+        },
+        "lessonTitle": {
+          "stringValue": "一次方程式の基本"
+        },
+        "status": {
+          "stringValue": "open"
+        },
+        "courseTitle": {
+          "stringValue": "数学 方程式入門"
+        },
+        "authorName": {
+          "stringValue": "naonaonaoya7083@icloud.com"
+        },
+        "moderationStatus": {
+          "stringValue": "visible"
+        },
+        "authorRole": {
+          "stringValue": "student"
+        },
+        "courseId": {
+          "stringValue": "teacher-math-basic"
+        },
+        "attachmentTypes": {
+          "arrayValue": {}
+        },
+        "target": {
+          "stringValue": "teacher"
+        },
+        "body": {
+          "stringValue": "SEED0604 公開質問です。別の解き方があれば知りたいです"
+        },
+        "visibility": {
+          "stringValue": "teacherOnly"
+        },
+        "questionId": {
+          "stringValue": "seed0604-q-CQ714KZY-2"
+        },
+        "quotedNoteId": {
+          "nullValue": null
+        }
+      }
+    },
+    {
+      "userId": "CQ714KZYBvN3G389pkP8EwJueX83",
+      "questionId": "seed0604-q-CQ714KZY-4",
+      "sourceName": "projects/my-new-app-naona-20260523/databases/(default)/documents/users/CQ714KZYBvN3G389pkP8EwJueX83/lessonQuestions/seed0604-q-CQ714KZY-4",
+      "sourceFields": {
+        "answerCount": {
+          "integerValue": "0"
+        },
+        "lessonTitle": {
+          "stringValue": "一次方程式の基本"
+        },
+        "authorDisplayName": {
+          "nullValue": null
+        },
+        "quotedNoteBody": {
+          "stringValue": "SEED0604 計算時の符号ミスを防ぐ確認ポイントです"
+        },
+        "isDeleted": {
+          "booleanValue": false
+        },
+        "createdAt": {
+          "timestampValue": "2026-06-03T17:06:06.176298Z"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-06-03T17:06:06.176298Z"
+        },
+        "authorId": {
+          "stringValue": "CQ714KZYBvN3G389pkP8EwJueX83"
+        },
+        "interactionSettingId": {
+          "stringValue": "teacher-math-basic_1"
+        },
+        "title": {
+          "stringValue": ""
+        },
+        "studentVisibility": {
+          "stringValue": "teacherOnly"
+        },
+        "userId": {
+          "stringValue": "CQ714KZYBvN3G389pkP8EwJueX83"
+        },
+        "quotedNoteTitle": {
+          "stringValue": "SEED0604-N21"
+        },
+        "lessonNumber": {
+          "integerValue": "1"
+        },
+        "courseId": {
+          "stringValue": "teacher-math-basic"
+        },
+        "attachmentTypes": {
+          "arrayValue": {}
+        },
+        "target": {
+          "stringValue": "teacher"
+        },
+        "body": {
+          "stringValue": "SEED0604 引用メモの手順で計算しても合わず確認したいです"
+        },
+        "visibility": {
+          "stringValue": "teacherOnly"
+        },
+        "quotedNoteId": {
+          "stringValue": "seed0604-note-CQ714KZY-1"
+        },
+        "questionId": {
+          "stringValue": "seed0604-q-CQ714KZY-4"
+        },
+        "authorName": {
+          "stringValue": "naonaonaoya7083@icloud.com"
+        },
+        "courseTitle": {
+          "stringValue": "数学 方程式入門"
+        },
+        "moderationStatus": {
+          "stringValue": "visible"
+        },
+        "authorRole": {
+          "stringValue": "student"
+        },
+        "status": {
+          "stringValue": "open"
+        }
+      }
+    },
+    {
+      "userId": "ph6gWB93I0WmuvcilvPdOGZGxt82",
+      "questionId": "OIrBjpmGPWgtIkJBxVon",
+      "sourceName": "projects/my-new-app-naona-20260523/databases/(default)/documents/users/ph6gWB93I0WmuvcilvPdOGZGxt82/lessonQuestions/OIrBjpmGPWgtIkJBxVon",
+      "sourceFields": {
+        "quotedNoteTitle": {
+          "stringValue": "ぬるあ"
+        },
+        "status": {
+          "stringValue": "open"
+        },
+        "lessonTitle": {
+          "stringValue": "一次方程式の基本"
+        },
+        "courseTitle": {
+          "stringValue": "数学 方程式入門"
+        },
+        "authorRole": {
+          "stringValue": "student"
+        },
+        "answerCount": {
+          "integerValue": "0"
+        },
+        "target": {
+          "stringValue": "teacher"
+        },
+        "createdAt": {
+          "timestampValue": "2026-06-05T05:37:50.997Z"
+        },
+        "body": {
+          "stringValue": "ああああ"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-06-05T05:37:50.997Z"
+        },
+        "userId": {
+          "stringValue": "ph6gWB93I0WmuvcilvPdOGZGxt82"
+        },
+        "visibility": {
+          "stringValue": "teacherOnly"
+        },
+        "attachmentTypes": {
+          "arrayValue": {}
+        },
+        "moderationStatus": {
+          "stringValue": "visible"
+        },
+        "title": {
+          "stringValue": ""
+        },
+        "authorId": {
+          "stringValue": "ph6gWB93I0WmuvcilvPdOGZGxt82"
+        },
+        "quotedNoteId": {
+          "stringValue": "zZ9uFaF1JBrJ6VuHPfeB"
+        },
+        "isDeleted": {
+          "booleanValue": false
+        },
+        "studentVisibility": {
+          "stringValue": "teacherOnly"
+        },
+        "authorName": {
+          "stringValue": "４人目"
+        },
+        "authorDisplayName": {
+          "nullValue": null
+        },
+        "quotedNoteBody": {
+          "stringValue": "ああ"
+        },
+        "lessonNumber": {
+          "integerValue": "1"
+        },
+        "courseId": {
+          "stringValue": "teacher-math-basic"
+        }
+      }
+    },
+    {
+      "userId": "ph6gWB93I0WmuvcilvPdOGZGxt82",
+      "questionId": "seed0604-q-ph6gWB93-2",
+      "sourceName": "projects/my-new-app-naona-20260523/databases/(default)/documents/users/ph6gWB93I0WmuvcilvPdOGZGxt82/lessonQuestions/seed0604-q-ph6gWB93-2",
+      "sourceFields": {
+        "authorName": {
+          "stringValue": "naonaonaoya7083@iclod.com"
+        },
+        "courseId": {
+          "stringValue": "teacher-math-basic"
+        },
+        "lessonNumber": {
+          "integerValue": "1"
+        },
+        "quotedNoteId": {
+          "nullValue": null
+        },
+        "authorId": {
+          "stringValue": "ph6gWB93I0WmuvcilvPdOGZGxt82"
+        },
+        "questionId": {
+          "stringValue": "seed0604-q-ph6gWB93-2"
+        },
+        "isDeleted": {
+          "booleanValue": false
+        },
+        "interactionSettingId": {
+          "stringValue": "teacher-math-basic_1"
+        },
+        "lessonTitle": {
+          "stringValue": "一次方程式の基本"
+        },
+        "quotedNoteTitle": {
+          "nullValue": null
+        },
+        "status": {
+          "stringValue": "open"
+        },
+        "target": {
+          "stringValue": "teacher"
+        },
+        "body": {
+          "stringValue": "SEED0604 先生にだけ表示でつまずいた点を相談したいです"
+        },
+        "createdAt": {
+          "timestampValue": "2026-06-03T17:10:44.176298Z"
+        },
+        "courseTitle": {
+          "stringValue": "数学 方程式入門"
+        },
+        "answerCount": {
+          "integerValue": "0"
+        },
+        "authorRole": {
+          "stringValue": "student"
+        },
+        "authorDisplayName": {
+          "nullValue": null
+        },
+        "quotedNoteBody": {
+          "nullValue": null
+        },
+        "studentVisibility": {
+          "stringValue": "teacherOnly"
+        },
+        "visibility": {
+          "stringValue": "teacherOnly"
+        },
+        "attachmentTypes": {
+          "arrayValue": {}
+        },
+        "updatedAt": {
+          "timestampValue": "2026-06-03T17:10:44.176298Z"
+        },
+        "userId": {
+          "stringValue": "ph6gWB93I0WmuvcilvPdOGZGxt82"
+        },
+        "moderationStatus": {
+          "stringValue": "visible"
+        },
+        "title": {
+          "stringValue": ""
+        }
+      }
+    },
+    {
+      "userId": "ph6gWB93I0WmuvcilvPdOGZGxt82",
+      "questionId": "seed0604-q-ph6gWB93-4",
+      "sourceName": "projects/my-new-app-naona-20260523/databases/(default)/documents/users/ph6gWB93I0WmuvcilvPdOGZGxt82/lessonQuestions/seed0604-q-ph6gWB93-4",
+      "sourceFields": {
+        "studentVisibility": {
+          "stringValue": "teacherOnly"
+        },
+        "quotedNoteBody": {
+          "stringValue": "SEED0604 一次方程式を解く流れを短くまとめました"
+        },
+        "authorDisplayName": {
+          "nullValue": null
+        },
+        "visibility": {
+          "stringValue": "teacherOnly"
+        },
+        "attachmentTypes": {
+          "arrayValue": {}
+        },
+        "userId": {
+          "stringValue": "ph6gWB93I0WmuvcilvPdOGZGxt82"
+        },
+        "updatedAt": {
+          "timestampValue": "2026-06-03T17:11:06.176298Z"
+        },
+        "title": {
+          "stringValue": ""
+        },
+        "moderationStatus": {
+          "stringValue": "visible"
+        },
+        "quotedNoteId": {
+          "stringValue": "seed0604-note-ph6gWB93-1"
+        },
+        "authorId": {
+          "stringValue": "ph6gWB93I0WmuvcilvPdOGZGxt82"
+        },
+        "questionId": {
+          "stringValue": "seed0604-q-ph6gWB93-4"
+        },
+        "isDeleted": {
+          "booleanValue": false
+        },
+        "authorName": {
+          "stringValue": "naonaonaoya7083@iclod.com"
+        },
+        "courseId": {
+          "stringValue": "teacher-math-basic"
+        },
+        "lessonNumber": {
+          "integerValue": "1"
+        },
+        "lessonTitle": {
+          "stringValue": "一次方程式の基本"
+        },
+        "status": {
+          "stringValue": "open"
+        },
+        "quotedNoteTitle": {
+          "stringValue": "SEED0604-N31"
+        },
+        "body": {
+          "stringValue": "SEED0604 この解き方で符号が変わる理由を確認したいです"
+        },
+        "createdAt": {
+          "timestampValue": "2026-06-03T17:11:06.176298Z"
+        },
+        "target": {
+          "stringValue": "teacher"
+        },
+        "authorRole": {
+          "stringValue": "student"
+        },
+        "answerCount": {
+          "integerValue": "0"
+        },
+        "courseTitle": {
+          "stringValue": "数学 方程式入門"
+        },
+        "interactionSettingId": {
+          "stringValue": "teacher-math-basic_1"
+        }
+      }
+    }
+  ]
+}

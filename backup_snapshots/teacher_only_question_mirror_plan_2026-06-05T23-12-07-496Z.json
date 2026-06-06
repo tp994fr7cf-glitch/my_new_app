@@ -1,0 +1,17 @@
+{
+  "meta": {
+    "startedAt": "2026-06-05T23:12:06.721Z",
+    "finishedAt": "2026-06-05T23:12:07.496Z",
+    "projectId": "my-new-app-naona-20260523",
+    "mode": "plan",
+    "applyWhenLowRisk": false,
+    "lowRiskLimit": 200
+  },
+  "summary": {
+    "teacherOnlySourceCount": 7,
+    "candidateCount": 7,
+    "missingMirrorCount": 0,
+    "existingMirrorCount": 7
+  },
+  "missingMirrors": []
+}

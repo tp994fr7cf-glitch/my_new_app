@@ -1,0 +1,59 @@
+{
+  "meta": {
+    "startedAt": "2026-06-05T23:10:40.891Z",
+    "finishedAt": "2026-06-05T23:10:42.052Z",
+    "projectId": "my-new-app-naona-20260523",
+    "lowRiskLimit": 50,
+    "planPath": "C:\\Users\\naona\\StudioProjects\\my_new_app\\backup_snapshots\\teacher_only_question_mirror_plan_2026-06-05T23-10-41-636Z.json"
+  },
+  "summary": {
+    "attempted": 7,
+    "createdCount": 7,
+    "alreadyExistsCount": 0,
+    "failedCount": 0
+  },
+  "results": [
+    {
+      "userId": "2oddrJ4yB7SeE1pUljdTyZ0dtyY2",
+      "questionId": "seed0604-q-2oddrJ4y-2",
+      "status": "created",
+      "error": null
+    },
+    {
+      "userId": "2oddrJ4yB7SeE1pUljdTyZ0dtyY2",
+      "questionId": "seed0604-q-2oddrJ4y-4",
+      "status": "created",
+      "error": null
+    },
+    {
+      "userId": "CQ714KZYBvN3G389pkP8EwJueX83",
+      "questionId": "seed0604-q-CQ714KZY-2",
+      "status": "created",
+      "error": null
+    },
+    {
+      "userId": "CQ714KZYBvN3G389pkP8EwJueX83",
+      "questionId": "seed0604-q-CQ714KZY-4",
+      "status": "created",
+      "error": null
+    },
+    {
+      "userId": "ph6gWB93I0WmuvcilvPdOGZGxt82",
+      "questionId": "OIrBjpmGPWgtIkJBxVon",
+      "status": "created",
+      "error": null
+    },
+    {
+      "userId": "ph6gWB93I0WmuvcilvPdOGZGxt82",
+      "questionId": "seed0604-q-ph6gWB93-2",
+      "status": "created",
+      "error": null
+    },
+    {
+      "userId": "ph6gWB93I0WmuvcilvPdOGZGxt82",
+      "questionId": "seed0604-q-ph6gWB93-4",
+      "status": "created",
+      "error": null
+    }
+  ]
+}

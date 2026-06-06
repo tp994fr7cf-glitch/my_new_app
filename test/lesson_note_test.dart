@@ -178,6 +178,30 @@ void main() {
       expect(note.isPubliclyVisible, isTrue);
     });
 
+    test('supports teacher-only visibility for notes', () {
+      final note = LessonNote.fromMap({
+        'authorId': 'user-a',
+        'authorName': '学習者',
+        'courseId': 'course-a',
+        'courseTitle': '数学',
+        'lessonNumber': 1,
+        'lessonTitle': '一次方程式',
+        'title': '先生向けメモ',
+        'body': '先生にだけ見せる内容',
+        'folderId': '',
+        'folderName': '',
+        'visibility': lessonNoteVisibilityTeacherOnly,
+        'studentVisibility': lessonNoteVisibilityTeacherOnly,
+        'allowsQuestionCitation': true,
+      });
+
+      expect(note.isTeacherOnly, isTrue);
+      expect(note.isStudentTeacherOnly, isTrue);
+      expect(note.isStudentPublic, isFalse);
+      expect(note.isPubliclyVisible, isFalse);
+      expect(note.hasPublicMirror, isTrue);
+    });
+
     test('treats missing question citation permission as not allowed', () {
       final note = LessonNote.fromMap({
         'visibility': lessonNoteVisibilityPublic,

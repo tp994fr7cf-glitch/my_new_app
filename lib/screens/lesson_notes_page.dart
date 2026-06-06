@@ -12,6 +12,7 @@ import '../services/lesson_interaction_service.dart';
 import 'lesson_questions_page.dart';
 import 'public_note_edit_history_sheet.dart';
 import 'public_user_profile_page.dart';
+import 'shared/lesson_note_preview_body.dart';
 
 class LessonNotesPage extends StatelessWidget {
   const LessonNotesPage({
@@ -22,6 +23,7 @@ class LessonNotesPage extends StatelessWidget {
     this.notesStream,
     this.publicNotesStream,
     this.foldersStream,
+    this.initialFocusNoteId,
   });
 
   final Course course;
@@ -30,6 +32,7 @@ class LessonNotesPage extends StatelessWidget {
   final Stream<List<LessonNote>>? notesStream;
   final Stream<List<LessonNote>>? publicNotesStream;
   final Stream<List<LessonNoteFolder>>? foldersStream;
+  final String? initialFocusNoteId;
 
   @override
   Widget build(BuildContext context) {
@@ -42,6 +45,7 @@ class LessonNotesPage extends StatelessWidget {
         notesStream: notesStream,
         publicNotesStream: publicNotesStream,
         foldersStream: foldersStream,
+        initialFocusNoteId: initialFocusNoteId,
       ),
     );
   }
@@ -58,6 +62,7 @@ class LessonNotesPanel extends StatefulWidget {
     this.foldersStream,
     this.isEmbedded = false,
     this.isTeacherPreview = false,
+    this.initialFocusNoteId,
   });
 
   final Course course;
@@ -68,6 +73,7 @@ class LessonNotesPanel extends StatefulWidget {
   final Stream<List<LessonNoteFolder>>? foldersStream;
   final bool isEmbedded;
   final bool isTeacherPreview;
+  final String? initialFocusNoteId;
 
   @override
   State<LessonNotesPanel> createState() => _LessonNotesPanelState();
@@ -405,6 +411,8 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       final nowClientUtc = DateTime.now().toUtc();
       final visibility = draft.visibility == LessonNoteVisibility.public
           ? lessonNoteVisibilityPublic
+          : draft.visibility == LessonNoteVisibility.teacherOnly
+          ? lessonNoteVisibilityTeacherOnly
           : lessonNoteVisibilityPrivate;
       final now = FieldValue.serverTimestamp();
       final authorName = user.displayName ?? user.email ?? '学習者';
@@ -419,7 +427,8 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
           existingData?['allowsQuestionCitation'] == true;
       final existingHasPublicMirror =
           existingData?['hasPublicMirror'] == true ||
-          existingData?['visibility'] == lessonNoteVisibilityPublic;
+          existingData?['visibility'] == lessonNoteVisibilityPublic ||
+          existingData?['visibility'] == lessonNoteVisibilityTeacherOnly;
       final canPublish = canPublishLessonNote(
         hasAudioAttachment: draft.attachmentTypes.contains(
           lessonNoteAttachmentAudio,
@@ -428,17 +437,23 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         canPublish: draft.canPublish,
       );
       final platformEnabled = await _isNotePublicPlatformEnabled();
-      final isPublicLocked = draft.wasPublic && canPublish;
+      final isPublicLocked = draft.wasPublic;
       final savedVisibility = isPublicLocked
           ? lessonNoteVisibilityPublic
-          : canPublish && platformEnabled
-          ? visibility
-          : lessonNoteVisibilityPrivate;
+          : switch (visibility) {
+              lessonNoteVisibilityPublic => canPublish && platformEnabled
+                  ? lessonNoteVisibilityPublic
+                  : lessonNoteVisibilityPrivate,
+              lessonNoteVisibilityTeacherOnly => canPublish
+                  ? lessonNoteVisibilityTeacherOnly
+                  : lessonNoteVisibilityPrivate,
+              _ => lessonNoteVisibilityPrivate,
+            };
       final publicRef = firestore.collection('publicLessonNotes').doc(noteId);
       // New public notes do not have a mirror yet, so avoid pre-reading
       // /publicLessonNotes/{noteId} before create. This prevents false
       // permission-denied failures on first publish.
-      final shouldReadPublicMirror = draft.wasPublic || existingHasPublicMirror;
+      final shouldReadPublicMirror = existingHasPublicMirror;
       final publicSnapshotResult = await _publicNoteSnapshotForSave(
         publicRef,
         shouldRead: shouldReadPublicMirror,
@@ -451,7 +466,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       final publicData = publicSnapshot?.data();
       final hasPublicMirror = publicSnapshot?.exists ?? false;
       final nextHasPublicMirror =
-          savedVisibility == lessonNoteVisibilityPublic || hasPublicMirror;
+          savedVisibility != lessonNoteVisibilityPrivate || hasPublicMirror;
       final publicModerationStatus =
           publicData?['moderationStatus'] as String? ??
           lessonNoteModerationVisible;
@@ -573,8 +588,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
 
       final batch = firestore.batch()
         ..set(noteRef, data, SetOptions(merge: true));
-      if (savedVisibility == lessonNoteVisibilityPublic ||
-          (hasPublicMirror && canPublish)) {
+      if (savedVisibility != lessonNoteVisibilityPrivate) {
         batch.set(publicRef, {
           ...data,
           'noteId': noteId,
@@ -647,13 +661,13 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
 
       await batch.commit();
       _showMessage(
-        isPublicLocked ||
-                canPublish && platformEnabled ||
-                visibility == lessonNoteVisibilityPrivate
-            ? 'メモを保存しました。'
-            : platformEnabled
-            ? '音声添付またはコピー元メモは公開できないため、非公開で保存しました。'
-            : '先生により公開メモ機能が非公開化されているため、非公開で保存しました。',
+        isPublicLocked || savedVisibility == visibility
+            ? savedVisibility == lessonNoteVisibilityTeacherOnly
+                  ? 'メモを先生にだけ公開で保存しました。'
+                  : 'メモを保存しました。'
+            : visibility == lessonNoteVisibilityPublic && !platformEnabled
+            ? '先生により公開メモ機能が非公開化されているため、非公開で保存しました。'
+            : '音声添付またはコピー元メモは共有できないため、非公開で保存しました。',
       );
       return true;
     } on FirebaseException catch (error) {
@@ -1086,6 +1100,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
                                 folders: folders,
                                 query: _query,
                                 emptyText: 'このレッスンのメモはまだありません。',
+                                focusedNoteId: widget.initialFocusNoteId,
                                 onTap: (note) => _openOwnNotePreview(
                                   note: note,
                                   folders: folders,
@@ -1233,7 +1248,7 @@ class _PublicSnapshotLoadResult {
   final bool permissionDenied;
 }
 
-class _LessonNoteList extends StatelessWidget {
+class _LessonNoteList extends StatefulWidget {
   const _LessonNoteList({
     required this.notesStream,
     required this.query,
@@ -1245,6 +1260,7 @@ class _LessonNoteList extends StatelessWidget {
     this.onDeleteNote,
     this.onDeleteFolder,
     this.onToggleModeration,
+    this.focusedNoteId,
   });
 
   final Stream<List<LessonNote>> notesStream;
@@ -1257,37 +1273,155 @@ class _LessonNoteList extends StatelessWidget {
   final ValueChanged<LessonNote>? onDeleteNote;
   final ValueChanged<LessonNoteFolder>? onDeleteFolder;
   final ValueChanged<LessonNote>? onToggleModeration;
+  final String? focusedNoteId;
+
+  @override
+  State<_LessonNoteList> createState() => _LessonNoteListState();
+}
+
+class _LessonNoteListState extends State<_LessonNoteList> {
+  final ScrollController _scrollController = ScrollController();
+  final Map<String, GlobalKey> _noteKeys = {};
+  bool _didAutoScrollToFocusedNote = false;
+  int _focusScrollAttemptCount = 0;
+
+  String get _safeFocusedNoteId => (widget.focusedNoteId ?? '').trim();
+
+  GlobalKey _noteKey(String noteId) {
+    return _noteKeys.putIfAbsent(noteId, GlobalKey.new);
+  }
+
+  @override
+  void didUpdateWidget(covariant _LessonNoteList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if ((oldWidget.focusedNoteId ?? '').trim() != _safeFocusedNoteId) {
+      _didAutoScrollToFocusedNote = false;
+      _focusScrollAttemptCount = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<List<LessonNote>>(
-      stream: notesStream,
+      stream: widget.notesStream,
       builder: (context, snapshot) {
         final notes = (snapshot.data ?? const <LessonNote>[])
-            .where((note) => lessonNoteMatchesQuery(note, query))
+            .where((note) => lessonNoteMatchesQuery(note, widget.query))
             .toList();
+        _scheduleAutoScroll(notes);
         return ListView(
+          controller: _scrollController,
           padding: const EdgeInsets.all(16),
           children: [
-            action,
+            widget.action,
             const SizedBox(height: 16),
             if (notes.isEmpty)
-              Text(emptyText)
-            else if (folders.isEmpty)
-              for (final note in notes)
-                _LessonNoteCard(
-                  note: note,
-                  onTap: onTap,
-                  showAuthor: showAuthor,
-                  onDelete: onDeleteNote,
-                  onToggleModeration: onToggleModeration,
-                )
+              Text(widget.emptyText)
+            else if (widget.folders.isEmpty)
+              for (final note in notes) _buildNoteCard(note)
             else
               ..._buildFolderSections(notes),
           ],
         );
       },
     );
+  }
+
+  Widget _buildNoteCard(LessonNote note) {
+    final noteId = note.id;
+    final isFocused = _safeFocusedNoteId.isNotEmpty && noteId == _safeFocusedNoteId;
+    final card = _LessonNoteCard(
+      key: noteId == null || noteId.isEmpty ? null : _noteKey(noteId),
+      note: note,
+      onTap: widget.onTap,
+      showAuthor: widget.showAuthor,
+      onDelete: widget.onDeleteNote,
+      onToggleModeration: widget.onToggleModeration,
+      isHighlighted: isFocused,
+    );
+    if (noteId == null || noteId.isEmpty) {
+      return card;
+    }
+    return KeyedSubtree(
+      key: ValueKey('lesson-note-card-$noteId'),
+      child: card,
+    );
+  }
+
+  void _scheduleAutoScroll(List<LessonNote> notes) {
+    if (_didAutoScrollToFocusedNote) {
+      return;
+    }
+    final targetId = _safeFocusedNoteId;
+    if (targetId.isEmpty) {
+      _didAutoScrollToFocusedNote = true;
+      return;
+    }
+    final targetExists = notes.any((note) => note.id == targetId);
+    if (!targetExists) {
+      return;
+    }
+    final targetIndex = notes.indexWhere((note) => note.id == targetId);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _tryAutoScrollToFocusedNote(targetId: targetId, targetIndex: targetIndex);
+    });
+  }
+
+  void _tryAutoScrollToFocusedNote({
+    required String targetId,
+    required int targetIndex,
+  }) {
+    if (!mounted || _didAutoScrollToFocusedNote) {
+      return;
+    }
+    final targetContext = _noteKeys[targetId]?.currentContext;
+    if (targetContext != null) {
+      _didAutoScrollToFocusedNote = true;
+      Scrollable.ensureVisible(
+        targetContext,
+        duration: const Duration(milliseconds: 260),
+        curve: Curves.easeOutCubic,
+        alignment: 0.18,
+      );
+      return;
+    }
+    if (!_scrollController.hasClients || targetIndex < 0) {
+      if (_focusScrollAttemptCount >= 8) {
+        _didAutoScrollToFocusedNote = true;
+        return;
+      }
+      _focusScrollAttemptCount += 1;
+      _enqueueAutoScrollRetry(targetId: targetId, targetIndex: targetIndex);
+      return;
+    }
+    if (_focusScrollAttemptCount >= 8) {
+      _didAutoScrollToFocusedNote = true;
+      return;
+    }
+    _focusScrollAttemptCount += 1;
+    final position = _scrollController.position;
+    final maxOffset = position.maxScrollExtent;
+    final viewport = position.viewportDimension;
+    const estimatedItemExtent = 96.0;
+    final estimatedOffset =
+        (targetIndex * estimatedItemExtent) - (viewport * 0.2);
+    _scrollController.jumpTo(estimatedOffset.clamp(0.0, maxOffset));
+    _enqueueAutoScrollRetry(targetId: targetId, targetIndex: targetIndex);
+  }
+
+  void _enqueueAutoScrollRetry({
+    required String targetId,
+    required int targetIndex,
+  }) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _tryAutoScrollToFocusedNote(targetId: targetId, targetIndex: targetIndex);
+    });
   }
 
   List<Widget> _buildFolderSections(List<LessonNote> notes) {
@@ -1297,15 +1431,17 @@ class _LessonNoteList extends StatelessWidget {
       notesByFolder.putIfAbsent(note.folderId, () => []).add(note);
     }
 
-    for (final folder in folders) {
+    for (final folder in widget.folders) {
       final folderNotes = notesByFolder.remove(folder.id ?? '') ?? const [];
+      final shouldExpand = _safeFocusedNoteId.isNotEmpty &&
+          folderNotes.any((note) => note.id == _safeFocusedNoteId);
       widgets.add(
         _LessonNoteFolderTile(
           folder: folder,
           notes: folderNotes,
-          onTapNote: onTap,
-          onDeleteNote: onDeleteNote,
-          onDeleteFolder: onDeleteFolder,
+          onDeleteFolder: widget.onDeleteFolder,
+          initiallyExpanded: shouldExpand,
+          noteCardBuilder: _buildNoteCard,
         ),
       );
       widgets.add(const SizedBox(height: 8));
@@ -1316,22 +1452,13 @@ class _LessonNoteList extends StatelessWidget {
       widgets.add(
         _LessonNoteUnfiledSection(
           notes: unfiledNotes,
-          onTapNote: onTap,
-          onDeleteNote: onDeleteNote,
+          noteCardBuilder: _buildNoteCard,
         ),
       );
     }
     for (final folderNotes in notesByFolder.values) {
       for (final note in folderNotes) {
-        widgets.add(
-          _LessonNoteCard(
-            note: note,
-            onTap: onTap,
-            showAuthor: showAuthor,
-            onDelete: onDeleteNote,
-            onToggleModeration: onToggleModeration,
-          ),
-        );
+        widgets.add(_buildNoteCard(note));
       }
     }
     return widgets;
@@ -1342,21 +1469,22 @@ class _LessonNoteFolderTile extends StatelessWidget {
   const _LessonNoteFolderTile({
     required this.folder,
     required this.notes,
-    required this.onTapNote,
-    required this.onDeleteNote,
     required this.onDeleteFolder,
+    required this.initiallyExpanded,
+    required this.noteCardBuilder,
   });
 
   final LessonNoteFolder folder;
   final List<LessonNote> notes;
-  final ValueChanged<LessonNote>? onTapNote;
-  final ValueChanged<LessonNote>? onDeleteNote;
   final ValueChanged<LessonNoteFolder>? onDeleteFolder;
+  final bool initiallyExpanded;
+  final Widget Function(LessonNote note) noteCardBuilder;
 
   @override
   Widget build(BuildContext context) {
     return Card(
       child: ExpansionTile(
+        initiallyExpanded: initiallyExpanded,
         leading: const Icon(Icons.folder),
         title: Text(folder.name),
         subtitle: Text('${notes.length}件のメモ'),
@@ -1371,12 +1499,7 @@ class _LessonNoteFolderTile extends StatelessWidget {
           if (notes.isEmpty)
             const ListTile(title: Text('このフォルダにはメモがありません。'))
           else
-            for (final note in notes)
-              _LessonNoteCard(
-                note: note,
-                onTap: onTapNote,
-                onDelete: onDeleteNote,
-              ),
+            for (final note in notes) noteCardBuilder(note),
         ],
       ),
     );
@@ -1386,13 +1509,11 @@ class _LessonNoteFolderTile extends StatelessWidget {
 class _LessonNoteUnfiledSection extends StatelessWidget {
   const _LessonNoteUnfiledSection({
     required this.notes,
-    required this.onTapNote,
-    required this.onDeleteNote,
+    required this.noteCardBuilder,
   });
 
   final List<LessonNote> notes;
-  final ValueChanged<LessonNote>? onTapNote;
-  final ValueChanged<LessonNote>? onDeleteNote;
+  final Widget Function(LessonNote note) noteCardBuilder;
 
   @override
   Widget build(BuildContext context) {
@@ -1402,14 +1523,7 @@ class _LessonNoteUnfiledSection extends StatelessWidget {
         leading: const Icon(Icons.note_outlined),
         title: const Text('フォルダなし'),
         subtitle: Text('${notes.length}件のメモ'),
-        children: [
-          for (final note in notes)
-            _LessonNoteCard(
-              note: note,
-              onTap: onTapNote,
-              onDelete: onDeleteNote,
-            ),
-        ],
+        children: [for (final note in notes) noteCardBuilder(note)],
       ),
     );
   }
@@ -1417,11 +1531,13 @@ class _LessonNoteUnfiledSection extends StatelessWidget {
 
 class _LessonNoteCard extends StatelessWidget {
   const _LessonNoteCard({
+    super.key,
     required this.note,
     required this.onTap,
     this.showAuthor = false,
     this.onDelete,
     this.onToggleModeration,
+    this.isHighlighted = false,
   });
 
   final LessonNote note;
@@ -1429,6 +1545,7 @@ class _LessonNoteCard extends StatelessWidget {
   final bool showAuthor;
   final ValueChanged<LessonNote>? onDelete;
   final ValueChanged<LessonNote>? onToggleModeration;
+  final bool isHighlighted;
 
   @override
   Widget build(BuildContext context) {
@@ -1439,7 +1556,17 @@ class _LessonNoteCard extends StatelessWidget {
         onToggleModeration: onToggleModeration,
       );
     }
+    final highlightedBorderColor = Theme.of(context).colorScheme.primary;
     return Card(
+      color: isHighlighted
+          ? Theme.of(context).colorScheme.secondaryContainer
+          : null,
+      shape: isHighlighted
+          ? RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: highlightedBorderColor, width: 1.5),
+            )
+          : null,
       child: InkWell(
         onTap: onTap == null ? null : () => onTap!(note),
         borderRadius: BorderRadius.circular(12),
@@ -1641,7 +1768,11 @@ class _PublicLessonNoteCard extends StatelessWidget {
                         Row(
                           children: [
                             Text(
-                              note.isTeacherHidden ? '先生が非公開化中' : '学習者にも公開',
+                              note.isTeacherHidden
+                                  ? '先生が非公開化中'
+                                  : note.isStudentPublic
+                                  ? '学習者にも公開'
+                                  : '先生にだけ公開',
                               style: Theme.of(context).textTheme.labelSmall
                                   ?.copyWith(
                                     color: Theme.of(
@@ -1726,96 +1857,24 @@ class _LessonNotePreviewBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<PublicUserProfile>(
-      stream: publicUserProfileStream(
-        userId: note.authorId,
-        role: publicUserProfileRoleStudent,
-        fallbackDisplayName: note.authorName,
-      ),
-      builder: (context, snapshot) {
-        final profile =
-            snapshot.data ??
-            fallbackPublicUserProfile(
-              userId: note.authorId,
-              role: publicUserProfileRoleStudent,
-              displayName: note.authorName,
-            );
-        return ListView(
-          padding: const EdgeInsets.all(24),
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                PublicProfileAvatar(profile: profile),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        profile.displayName,
-                        style: Theme.of(context).textTheme.labelMedium,
-                      ),
-                      Text(
-                        _formatPublicNoteTimestamp(note),
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
+    return LessonNotePreviewBody(
+      note: note,
+      canCreateQuestion: canCreateQuestion,
+      onCreateQuestion: canCreateQuestion && note.allowsQuestionCitation
+          ? () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => _QuotedLessonQuestionPage(
+                    course: course,
+                    lesson: lesson,
+                    lessonNumber: lessonNumber,
+                    quotedNote: note,
                   ),
                 ),
-              ],
-            ),
-            const SizedBox(height: 24),
-            Text(
-              note.title.isEmpty ? '無題のメモ' : note.title,
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-            const SizedBox(height: 16),
-            Text(note.body.isEmpty ? '本文なし' : note.body),
-            if (note.tags.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Text(note.tags.map((tag) => '#$tag').join(' ')),
-            ],
-            if (note.attachmentTypes.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Text('添付予定: ${note.attachmentTypes.join(', ')}'),
-            ],
-            const SizedBox(height: 24),
-            if (canCreateQuestion && note.allowsQuestionCitation) ...[
-              FilledButton.icon(
-                onPressed: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => _QuotedLessonQuestionPage(
-                        course: course,
-                        lesson: lesson,
-                        lessonNumber: lessonNumber,
-                        quotedNote: note,
-                      ),
-                    ),
-                  );
-                },
-                icon: const Icon(Icons.add_comment),
-                label: const Text('このメモを引用して質問する'),
-              ),
-            ] else if (canCreateQuestion) ...[
-              const Text('このメモの作成者は引用を許可していません。'),
-            ],
-            if (onEdit != null) ...[
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: () async {
-                  await onEdit!.call(context);
-                },
-                icon: const Icon(Icons.edit),
-                label: const Text('このメモを編集'),
-              ),
-            ],
-          ],
-        );
-      },
+              );
+            }
+          : null,
+      onEdit: onEdit,
     );
   }
 }
@@ -1875,9 +1934,13 @@ String _noteFirstLinePreview(String body) {
 }
 
 String _noteToggleStatusLabel(LessonNote note) {
-  final isPublicOn = note.isPublic ? 'ON' : 'OFF';
+  final visibilityLabel = note.isPublic
+      ? 'ON'
+      : note.isTeacherOnly
+      ? '先生のみ'
+      : 'OFF';
   final isCitationOn = note.allowsQuestionCitation ? 'ON' : 'OFF';
-  return '公開:$isPublicOn / 引用:$isCitationOn';
+  return '公開:$visibilityLabel / 引用:$isCitationOn';
 }
 
 class _LessonNoteEditorPage extends StatefulWidget {
@@ -1948,7 +2011,7 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
     canPublish: widget.note?.canPublish ?? true,
   );
 
-  bool get _isPublicLocked => widget.note?.hasPublicMirror == true;
+  bool get _isPublicLocked => widget.note?.visibility == LessonNoteVisibility.public;
 
   bool get _canChangeVisibility => _canPublish && !_isPublicLocked;
 
@@ -1982,7 +2045,7 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
         isCopied: widget.note?.isCopied ?? false,
         canPublish: widget.note?.canPublish ?? true,
         allowsQuestionCitation: _allowsQuestionCitation,
-        wasPublic: widget.note?.hasPublicMirror ?? false,
+        wasPublic: widget.note?.visibility == LessonNoteVisibility.public,
       ),
     );
     if (!mounted) {
@@ -2103,6 +2166,27 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
                   setState(() {
                     _visibility = value
                         ? LessonNoteVisibility.public
+                        : LessonNoteVisibility.private;
+                  });
+                },
+        ),
+        SwitchListTile(
+          title: const Text('先生にだけ公開する'),
+          subtitle: Text(
+            _isPublicLocked
+                ? '一度受講者にも公開したメモは、先生だけ公開に戻せません。'
+                : 'オンの場合は先生だけが閲覧できます。',
+          ),
+          value: _visibility == LessonNoteVisibility.teacherOnly && _canPublish,
+          onChanged:
+              !_canPublish ||
+                  _isPublicLocked ||
+                  _visibility == LessonNoteVisibility.public
+              ? null
+              : (value) {
+                  setState(() {
+                    _visibility = value
+                        ? LessonNoteVisibility.teacherOnly
                         : LessonNoteVisibility.private;
                   });
                 },

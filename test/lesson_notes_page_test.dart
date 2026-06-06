@@ -156,7 +156,7 @@ void main() {
 
     expect(find.text('質問を作成'), findsOneWidget);
     expect(find.text('質問本文'), findsOneWidget);
-    expect(find.text('引用する公開メモ'), findsOneWidget);
+    expect(find.text('引用するメモ'), findsOneWidget);
     final dropdown = tester.widget<DropdownButtonFormField<String>>(
       find.byType(DropdownButtonFormField<String>),
     );
@@ -226,6 +226,49 @@ void main() {
     expect(find.text('非公開にする'), findsOneWidget);
     expect(find.text('公開に戻す'), findsOneWidget);
     expect(find.text('先生が非公開化中'), findsOneWidget);
+  });
+
+  testWidgets('Teacher preview shows teacher-only note scope label', (
+    tester,
+  ) async {
+    const teacherOnlyNote = LessonNote(
+      id: 'teacher-only-note',
+      authorId: 'user-b',
+      authorName: '他の学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '先生だけ公開メモ',
+      body: '先生向けの共有です。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.public,
+      studentVisibility: LessonNoteVisibility.teacherOnly,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonNotesPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            publicNotesStream: Stream.value(const [teacherOnlyNote]),
+            isTeacherPreview: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('先生だけ公開メモ'), findsOneWidget);
+    expect(find.text('先生にだけ公開'), findsOneWidget);
   });
 
   testWidgets('Public note card shows edited badge and history sheet', (
@@ -369,6 +412,65 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('フォルダ内メモ'), findsOneWidget);
+  });
+
+  testWidgets('Lesson notes page focuses and highlights requested note', (
+    tester,
+  ) async {
+    final notes = List<LessonNote>.generate(36, (index) {
+      return LessonNote(
+        id: 'note-$index',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: 'メモ$index',
+        body: '本文$index',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.private,
+        tags: const [],
+        attachmentTypes: const [],
+        hasAudioAttachment: false,
+        isCopied: false,
+        canPublish: true,
+      );
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LessonNotesPage(
+          course: course,
+          lesson: lesson,
+          lessonNumber: 1,
+          notesStream: Stream.value(notes),
+          publicNotesStream: Stream.value(const []),
+          foldersStream: Stream.value(const []),
+          initialFocusNoteId: 'note-30',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final focusedTileFinder = find.byKey(const ValueKey('lesson-note-card-note-30'));
+    expect(focusedTileFinder, findsOneWidget);
+    expect(find.text('メモ30'), findsOneWidget);
+
+    final focusedCardFinder = find.descendant(
+      of: focusedTileFinder,
+      matching: find.byType(Card),
+    );
+    final focusedCard = tester.widget<Card>(focusedCardFinder.first);
+    final expectedColor =
+        Theme.of(tester.element(find.byType(LessonNotesPage)))
+            .colorScheme
+            .secondaryContainer;
+    expect(focusedCard.color, expectedColor);
+
+    final focusedTop = tester.getTopLeft(focusedTileFinder).dy;
+    expect(focusedTop, lessThan(560));
   });
 
   testWidgets('Self memo list shows first line and latest toggle status', (

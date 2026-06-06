@@ -852,7 +852,13 @@ class _LessonNoteRecordCard extends StatelessWidget {
               '${note.courseTitle} / レッスン${note.lessonNumber}: ${note.lessonTitle}',
             ),
             const SizedBox(height: 4),
-            Text(note.isPublic ? '公開メモ' : '非公開メモ'),
+            Text(
+              note.isPublic
+                  ? '公開メモ'
+                  : note.isTeacherOnly
+                  ? '先生にだけ公開'
+                  : '非公開メモ',
+            ),
             const SizedBox(height: 4),
             Text('更新日: ${_formatTimestamp(note.updatedAt ?? note.createdAt)}'),
             if (note.body.isNotEmpty) ...[
