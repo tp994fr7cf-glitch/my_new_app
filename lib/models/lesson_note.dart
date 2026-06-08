@@ -9,7 +9,7 @@ export 'lesson_interaction_constants.dart'
 
 enum LessonNoteVisibility { private, teacherOnly, public }
 
-enum LessonNotePublicSort { newest, popular }
+enum LessonNotePublicSort { newest, popular, editedNewest }
 
 const String lessonNoteVisibilityPrivate = 'private';
 const String lessonNoteVisibilityTeacherOnly = 'teacherOnly';
@@ -235,6 +235,34 @@ String normalizeLessonNotePublicApprovalStatus(String? value) {
   };
 }
 
+String resolveLessonNotePublicApprovalStatus({
+  required String? ownerPublicApprovalStatus,
+  required String? mirrorPublicApprovalStatus,
+}) {
+  final ownerStatus = normalizeLessonNotePublicApprovalStatus(
+    ownerPublicApprovalStatus,
+  );
+  if (ownerStatus != lessonNotePublicApprovalNone) {
+    return ownerStatus;
+  }
+  return normalizeLessonNotePublicApprovalStatus(mirrorPublicApprovalStatus);
+}
+
+bool isLessonNoteAlreadyApprovedByTeacher({
+  required String? ownerPublicApprovalStatus,
+  required String? ownerVisibility,
+  required String? mirrorPublicApprovalStatus,
+  required String? mirrorStudentVisibility,
+}) {
+  final resolvedStatus = resolveLessonNotePublicApprovalStatus(
+    ownerPublicApprovalStatus: ownerPublicApprovalStatus,
+    mirrorPublicApprovalStatus: mirrorPublicApprovalStatus,
+  );
+  return resolvedStatus == lessonNotePublicApprovalApproved ||
+      ownerVisibility == lessonNoteVisibilityPublic ||
+      mirrorStudentVisibility == lessonNoteVisibilityPublic;
+}
+
 List<String> parseLessonNoteTags(String input) {
   return input
       .split(RegExp(r'[\s,、]+'))
@@ -275,26 +303,68 @@ List<LessonNote> sortLessonNotesByUpdatedAt(List<LessonNote> notes) {
   return sortByUpdatedAt(notes, (note) => note.updatedAt);
 }
 
+Timestamp? lessonNotePostedAt(LessonNote note) {
+  return note.createdAt ?? note.publicPublishedAt ?? note.updatedAt;
+}
+
+Timestamp? lessonNoteEditedAt(LessonNote note) {
+  return editedTimestamp(note.createdAt, note.updatedAt);
+}
+
+List<LessonNote> sortLessonNotesByPostedAt(List<LessonNote> notes) {
+  return [...notes]..sort(
+    (a, b) => compareTimestampDescWithUnknownLast(
+      lessonNotePostedAt(a),
+      lessonNotePostedAt(b),
+    ),
+  );
+}
+
+List<LessonNote> sortLessonNotesByEditedAt(List<LessonNote> notes) {
+  return [...notes]..sort(
+    (a, b) => compareTimestampDescWithUnknownLast(
+      lessonNoteEditedAt(a),
+      lessonNoteEditedAt(b),
+    ),
+  );
+}
+
+List<LessonNote> sortLessonNotes(
+  List<LessonNote> notes,
+  LessonNotePublicSort sort, {
+  bool enablePopularity = false,
+}) {
+  return switch (sort) {
+    LessonNotePublicSort.newest => sortLessonNotesByPostedAt(notes),
+    LessonNotePublicSort.popular =>
+      enablePopularity
+          ? _sortLessonNotesByPopularity(notes)
+          : sortLessonNotesByPostedAt(notes),
+    LessonNotePublicSort.editedNewest => sortLessonNotesByEditedAt(notes),
+  };
+}
+
 List<LessonNote> sortPublicLessonNotes(
   List<LessonNote> notes,
   LessonNotePublicSort sort,
 ) {
   final visibleNotes = notes.where((note) => !note.isDeleted).toList();
-  return switch (sort) {
-    LessonNotePublicSort.newest => sortLessonNotesByUpdatedAt(visibleNotes),
-    LessonNotePublicSort.popular =>
-      visibleNotes..sort((a, b) {
-        final popularityCompare = _lessonNotePopularityScore(
-          b,
-        ).compareTo(_lessonNotePopularityScore(a));
-        if (popularityCompare != 0) {
-          return popularityCompare;
-        }
-        return timestampOrEpoch(
-          b.updatedAt,
-        ).compareTo(timestampOrEpoch(a.updatedAt));
-      }),
-  };
+  return sortLessonNotes(visibleNotes, sort, enablePopularity: true);
+}
+
+List<LessonNote> _sortLessonNotesByPopularity(List<LessonNote> notes) {
+  return [...notes]..sort((a, b) {
+    final popularityCompare = _lessonNotePopularityScore(
+      b,
+    ).compareTo(_lessonNotePopularityScore(a));
+    if (popularityCompare != 0) {
+      return popularityCompare;
+    }
+    return compareTimestampDescWithUnknownLast(
+      lessonNotePostedAt(a),
+      lessonNotePostedAt(b),
+    );
+  });
 }
 
 int _lessonNotePopularityScore(LessonNote note) {

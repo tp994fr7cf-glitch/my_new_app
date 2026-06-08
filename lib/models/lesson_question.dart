@@ -7,6 +7,8 @@ enum LessonQuestionVisibility { teacherOnly, public }
 
 enum LessonQuestionTarget { teacher, everyone }
 
+enum LessonQuestionSort { newest, popular, editedNewest }
+
 const String lessonQuestionVisibilityTeacherOnly = 'teacherOnly';
 const String lessonQuestionVisibilityPublic = 'public';
 const String lessonQuestionTargetTeacher = 'teacher';
@@ -106,8 +108,7 @@ class LessonQuestion {
       visibility: visibilityText == lessonQuestionVisibilityPublic
           ? LessonQuestionVisibility.public
           : LessonQuestionVisibility.teacherOnly,
-      studentVisibility:
-          studentVisibilityText == lessonQuestionVisibilityPublic
+      studentVisibility: studentVisibilityText == lessonQuestionVisibilityPublic
           ? LessonQuestionVisibility.public
           : LessonQuestionVisibility.teacherOnly,
       target: targetText == lessonQuestionTargetEveryone
@@ -262,4 +263,52 @@ List<LessonQuestion> sortLessonQuestionsByUpdatedAt(
   List<LessonQuestion> questions,
 ) {
   return sortByUpdatedAt(questions, (question) => question.updatedAt);
+}
+
+Timestamp? lessonQuestionPostedAt(LessonQuestion question) {
+  return postedTimestamp(question.createdAt, question.updatedAt);
+}
+
+Timestamp? lessonQuestionEditedAt(LessonQuestion question) {
+  return editedTimestamp(question.createdAt, question.updatedAt);
+}
+
+Timestamp? lessonQuestionAnswerPostedAt(LessonQuestionAnswer answer) {
+  return postedTimestamp(answer.createdAt, answer.updatedAt);
+}
+
+Timestamp? lessonQuestionAnswerEditedAt(LessonQuestionAnswer answer) {
+  return editedTimestamp(answer.createdAt, answer.updatedAt);
+}
+
+List<LessonQuestion> sortLessonQuestions(
+  List<LessonQuestion> questions,
+  LessonQuestionSort sort, {
+  bool enablePopularity = false,
+}) {
+  return [...questions]..sort((a, b) {
+    switch (sort) {
+      case LessonQuestionSort.newest:
+        return compareTimestampDescWithUnknownLast(
+          lessonQuestionPostedAt(a),
+          lessonQuestionPostedAt(b),
+        );
+      case LessonQuestionSort.editedNewest:
+        return compareTimestampDescWithUnknownLast(
+          lessonQuestionEditedAt(a),
+          lessonQuestionEditedAt(b),
+        );
+      case LessonQuestionSort.popular:
+        if (enablePopularity) {
+          final answerCountCompare = b.answerCount.compareTo(a.answerCount);
+          if (answerCountCompare != 0) {
+            return answerCountCompare;
+          }
+        }
+        return compareTimestampDescWithUnknownLast(
+          lessonQuestionPostedAt(a),
+          lessonQuestionPostedAt(b),
+        );
+    }
+  });
 }

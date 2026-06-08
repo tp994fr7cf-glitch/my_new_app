@@ -73,6 +73,12 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
   List<LessonNote> _lastQuotablePublicNotes = const [];
   List<LessonNote> _lastQuotableOwnNotes = const [];
   late Stream<List<LessonNote>> _sharedQuotableNotesStream;
+  Stream<List<LessonQuestion>>? _providedQuestionsSource;
+  Stream<List<LessonQuestion>>? _providedQuestionsBroadcast;
+  Stream<List<LessonQuestion>>? _providedPublicQuestionsSource;
+  Stream<List<LessonQuestion>>? _providedPublicQuestionsBroadcast;
+  LessonQuestionSort _myQuestionsSort = LessonQuestionSort.newest;
+  LessonQuestionSort _publicQuestionsSort = LessonQuestionSort.newest;
   String _query = '';
   String? _message;
   LessonQuestion? _editingQuestion;
@@ -169,6 +175,24 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     super.dispose();
   }
 
+  Stream<List<LessonQuestion>> _asBroadcastQuestionsStream(
+    Stream<List<LessonQuestion>> source, {
+    required bool isPublic,
+  }) {
+    if (isPublic) {
+      if (!identical(source, _providedPublicQuestionsSource)) {
+        _providedPublicQuestionsSource = source;
+        _providedPublicQuestionsBroadcast = source.asBroadcastStream();
+      }
+      return _providedPublicQuestionsBroadcast!;
+    }
+    if (!identical(source, _providedQuestionsSource)) {
+      _providedQuestionsSource = source;
+      _providedQuestionsBroadcast = source.asBroadcastStream();
+    }
+    return _providedQuestionsBroadcast!;
+  }
+
   void _openQuestionDetail(
     LessonQuestion question,
     ScrollController sourceController,
@@ -253,7 +277,15 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
   Stream<List<LessonQuestion>> _questionsStream() {
     final provided = widget.questionsStream;
     if (provided != null) {
-      return provided;
+      return _asBroadcastQuestionsStream(provided, isPublic: false).map(
+        (questions) => sortLessonQuestions(
+          questions
+              .where((question) => !question.isDeleted)
+              .where(_matchesActiveRole)
+              .toList(),
+          _myQuestionsSort,
+        ),
+      );
     }
     if (Firebase.apps.isEmpty) {
       return Stream.value(const []);
@@ -270,12 +302,13 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         .where('lessonNumber', isEqualTo: widget.lessonNumber)
         .snapshots()
         .map((snapshot) {
-          return sortLessonQuestionsByUpdatedAt(
+          return sortLessonQuestions(
             snapshot.docs
                 .map(LessonQuestion.fromFirestore)
                 .where((question) => !question.isDeleted)
                 .where(_matchesActiveRole)
                 .toList(),
+            _myQuestionsSort,
           );
         });
   }
@@ -294,7 +327,16 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
   Stream<List<LessonQuestion>> _publicQuestionsStream() {
     final provided = widget.publicQuestionsStream;
     if (provided != null) {
-      return provided;
+      return _asBroadcastQuestionsStream(provided, isPublic: true).map((
+        questions,
+      ) {
+        final filtered = widget.isTeacherPreview
+            ? questions.where((question) => !question.isDeleted).toList()
+            : questions
+                  .where((question) => question.isPubliclyVisible)
+                  .toList();
+        return sortLessonQuestions(filtered, _publicQuestionsSort);
+      });
     }
     if (Firebase.apps.isEmpty) {
       return Stream.value(const []);
@@ -312,11 +354,12 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
           if (snapshot.metadata.isFromCache) {
             return _lastPublicQuestions;
           }
-          final questions = sortLessonQuestionsByUpdatedAt(
+          final questions = sortLessonQuestions(
             snapshot.docs
                 .map(LessonQuestion.fromFirestore)
                 .where((question) => question.isPubliclyVisible)
                 .toList(),
+            _publicQuestionsSort,
           );
           _lastPublicQuestions = questions;
           return questions;
@@ -338,8 +381,9 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
           if (snapshot.metadata.isFromCache) {
             return _lastTeacherPreviewPublicQuestions;
           }
-          final questions = sortLessonQuestionsByUpdatedAt(
+          final questions = sortLessonQuestions(
             snapshot.docs.map(LessonQuestion.fromFirestore).toList(),
+            _publicQuestionsSort,
           );
           _lastTeacherPreviewPublicQuestions = questions;
           return questions;
@@ -430,22 +474,17 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
           ),
         );
       }
+
       emit();
 
-      final publicSubscription = publicNotesStream.listen(
-        (notes) {
-          latestPublicNotes = notes;
-          emit();
-        },
-        onError: controller.addError,
-      );
-      final ownSubscription = ownNotesStream.listen(
-        (notes) {
-          latestOwnNotes = notes;
-          emit();
-        },
-        onError: controller.addError,
-      );
+      final publicSubscription = publicNotesStream.listen((notes) {
+        latestPublicNotes = notes;
+        emit();
+      }, onError: controller.addError);
+      final ownSubscription = ownNotesStream.listen((notes) {
+        latestOwnNotes = notes;
+        emit();
+      }, onError: controller.addError);
 
       controller.onCancel = () async {
         await publicSubscription.cancel();
@@ -462,7 +501,9 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     );
   }
 
-  Future<Map<String, dynamic>?> _publicQuestionMirrorData(String questionId) async {
+  Future<Map<String, dynamic>?> _publicQuestionMirrorData(
+    String questionId,
+  ) async {
     if (Firebase.apps.isEmpty) {
       return null;
     }
@@ -580,7 +621,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       if (!isQuotedNoteValid) {
         return false;
       }
-      final isTeacherQuestion = widget.isTeacherPreview || _isCurrentUserTeacher;
+      final isTeacherQuestion =
+          widget.isTeacherPreview || _isCurrentUserTeacher;
       final teacherDisplayName = isTeacherQuestion
           ? await _teacherCommentDisplayName(user)
           : null;
@@ -779,20 +821,14 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         controller.add(answers);
       }
 
-      final ownSubscription = ownAnswersStream.listen(
-        (answers) {
-          latestOwnAnswers = answers;
-          emitMergedAnswers();
-        },
-        onError: controller.addError,
-      );
-      final mirroredSubscription = mirroredAnswersStream.listen(
-        (answers) {
-          latestMirroredAnswers = answers;
-          emitMergedAnswers();
-        },
-        onError: controller.addError,
-      );
+      final ownSubscription = ownAnswersStream.listen((answers) {
+        latestOwnAnswers = answers;
+        emitMergedAnswers();
+      }, onError: controller.addError);
+      final mirroredSubscription = mirroredAnswersStream.listen((answers) {
+        latestMirroredAnswers = answers;
+        emitMergedAnswers();
+      }, onError: controller.addError);
       controller.onCancel = () async {
         await ownSubscription.cancel();
         await mirroredSubscription.cancel();
@@ -914,7 +950,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       _showMessage('引用メモを確認できないため、選び直してください。');
       return false;
     }
-    if (question.isPubliclyVisible && !canQuoteLessonNoteToPublicAudience(quotedNote)) {
+    if (question.isPubliclyVisible &&
+        !canQuoteLessonNoteToPublicAudience(quotedNote)) {
       _showMessage('公開コメントでは、受講者にも公開されているメモだけ引用できます。');
       return false;
     }
@@ -1356,15 +1393,31 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
                           ),
                         Expanded(
                           child: _QuestionList(
-                            questionsStream: widget.publicQuestionsStream == null
+                            questionsStream:
+                                widget.publicQuestionsStream == null
                                 ? _teacherPreviewPublicQuestionsStream()
                                 : _publicQuestionsStream(),
                             query: _query,
                             currentUserId: _currentUserId,
                             isCurrentUserTeacher: true,
-                            scrollController: _teacherPreviewPublicScrollController,
+                            scrollController:
+                                _teacherPreviewPublicScrollController,
                             listStorageKey: 'teacher-preview-public-questions',
-                            action: const Text('質問コメントを確認し、返信や公開状態の管理ができます。'),
+                            action: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                _buildQuestionSortSelector(
+                                  selectedSort: _publicQuestionsSort,
+                                  onSelected: (selection) {
+                                    setState(() {
+                                      _publicQuestionsSort = selection;
+                                    });
+                                  },
+                                ),
+                                const SizedBox(height: 8),
+                                const Text('質問コメントを確認し、返信や公開状態の管理ができます。'),
+                              ],
+                            ),
                             emptyText: '質問コメントはまだありません。',
                             onTap: (question) => _openQuestionDetail(
                               question,
@@ -1447,24 +1500,39 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
                       isCurrentUserTeacher: _isCurrentUserTeacher,
                       scrollController: _myQuestionsScrollController,
                       listStorageKey: 'my-questions',
-                      action: FilledButton.icon(
-                        onPressed: () => setState(
-                          () => _editingQuestion = const LessonQuestion(
-                            authorId: '',
-                            authorName: '',
-                            courseId: '',
-                            courseTitle: '',
-                            lessonNumber: 1,
-                            lessonTitle: '',
-                            title: '',
-                            body: '',
-                            visibility: LessonQuestionVisibility.teacherOnly,
-                            target: LessonQuestionTarget.teacher,
-                            attachmentTypes: [],
+                      action: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _buildQuestionSortSelector(
+                            selectedSort: _myQuestionsSort,
+                            onSelected: (selection) {
+                              setState(() {
+                                _myQuestionsSort = selection;
+                              });
+                            },
                           ),
-                        ),
-                        icon: const Icon(Icons.add_comment),
-                        label: const Text('質問を作成'),
+                          const SizedBox(height: 8),
+                          FilledButton.icon(
+                            onPressed: () => setState(
+                              () => _editingQuestion = const LessonQuestion(
+                                authorId: '',
+                                authorName: '',
+                                courseId: '',
+                                courseTitle: '',
+                                lessonNumber: 1,
+                                lessonTitle: '',
+                                title: '',
+                                body: '',
+                                visibility:
+                                    LessonQuestionVisibility.teacherOnly,
+                                target: LessonQuestionTarget.teacher,
+                                attachmentTypes: [],
+                              ),
+                            ),
+                            icon: const Icon(Icons.add_comment),
+                            label: const Text('質問を作成'),
+                          ),
+                        ],
                       ),
                       emptyText: 'このレッスンの質問はまだありません。',
                       onTap: (question) => _openQuestionDetail(
@@ -1492,7 +1560,21 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
                           isCurrentUserTeacher: _isCurrentUserTeacher,
                           scrollController: _publicQuestionsScrollController,
                           listStorageKey: 'public-questions',
-                          action: const Text('回答コメント作成は初期版として後で拡張します。'),
+                          action: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _buildQuestionSortSelector(
+                                selectedSort: _publicQuestionsSort,
+                                onSelected: (selection) {
+                                  setState(() {
+                                    _publicQuestionsSort = selection;
+                                  });
+                                },
+                              ),
+                              const SizedBox(height: 8),
+                              const Text('回答コメント作成は初期版として後で拡張します。'),
+                            ],
+                          ),
                           emptyText: '公開質問はまだありません。',
                           onTap: (question) => _openQuestionDetail(
                             question,
@@ -1510,6 +1592,24 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildQuestionSortSelector({
+    required LessonQuestionSort selectedSort,
+    required ValueChanged<LessonQuestionSort> onSelected,
+  }) {
+    return SegmentedButton<LessonQuestionSort>(
+      segments: const [
+        ButtonSegment(value: LessonQuestionSort.newest, label: Text('新しい順')),
+        ButtonSegment(value: LessonQuestionSort.popular, label: Text('人気順')),
+        ButtonSegment(
+          value: LessonQuestionSort.editedNewest,
+          label: Text('編集の新しい順'),
+        ),
+      ],
+      selected: {selectedSort},
+      onSelectionChanged: (selection) => onSelected(selection.first),
     );
   }
 }
@@ -1568,7 +1668,7 @@ class _QuestionList extends StatelessWidget {
                   authorName: question.authorName,
                   authorDisplayName: question.authorDisplayName,
                   authorRole: question.authorRole,
-                  createdAt: question.createdAt,
+                  postedAt: lessonQuestionPostedAt(question),
                   scopeLabel: _questionScopeLabel(question),
                   attachmentTypes: question.attachmentTypes,
                   quotedNoteId: question.quotedNoteId,
@@ -1638,7 +1738,7 @@ class _CommentBubble extends StatelessWidget {
     required this.authorId,
     required this.authorName,
     required this.authorRole,
-    required this.createdAt,
+    required this.postedAt,
     required this.scopeLabel,
     required this.attachmentTypes,
     required this.isOwner,
@@ -1668,7 +1768,7 @@ class _CommentBubble extends StatelessWidget {
   final String authorName;
   final String? authorDisplayName;
   final String authorRole;
-  final Timestamp? createdAt;
+  final Timestamp? postedAt;
   final String scopeLabel;
   final List<String> attachmentTypes;
   final String? quotedNoteId;
@@ -1738,7 +1838,7 @@ class _CommentBubble extends StatelessWidget {
     required PublicUserProfile profile,
     required String displayName,
   }) {
-    final createdAtText = _formatCommentTimestamp(createdAt);
+    final createdAtText = _formatCommentTimestamp(postedAt);
     final canOperate =
         isOwner || isTeacher || onReply != null || onModerate != null;
     return Padding(
@@ -2313,9 +2413,9 @@ class _QuotedNotePreviewChip extends StatelessWidget {
             );
             if (isOwnDeletedNote) {
               if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('このメモは削除済みです。')),
-                );
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(const SnackBar(content: Text('このメモは削除済みです。')));
               }
               return;
             }
@@ -2790,7 +2890,8 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
       _replyToAuthorRole = widget.question.authorRole;
       _replyToDisplayName = _displayNameForQuestion(widget.question);
       _replyToBodyPreview = _previewText(widget.question.body);
-      _replyToCreatedAt = widget.question.createdAt ?? widget.question.updatedAt;
+      _replyToCreatedAt =
+          widget.question.createdAt ?? widget.question.updatedAt;
     });
   }
 
@@ -2883,8 +2984,8 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                   if (incomingAnswers.isNotEmpty) {
                     _lastNonEmptyAnswers = incomingAnswers;
                   }
-                  final answers = incomingAnswers.isEmpty &&
-                          _lastNonEmptyAnswers.isNotEmpty
+                  final answers =
+                      incomingAnswers.isEmpty && _lastNonEmptyAnswers.isNotEmpty
                       ? _lastNonEmptyAnswers
                       : incomingAnswers;
                   final answerThreads = _buildAnswerThreads(
@@ -2985,7 +3086,8 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                             onToggleAnswerModeration:
                                 widget.onToggleAnswerModeration,
                             highlightedAnswerId: widget.highlightedAnswerId,
-                            parentHighlightedAnswerId: parentHighlightedAnswerId,
+                            parentHighlightedAnswerId:
+                                parentHighlightedAnswerId,
                             highlightedBubbleKey: _highlightedAnswerBubbleKey,
                           ),
                         if (standaloneHighlightedReply != null)
@@ -3018,7 +3120,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                               authorName: question.authorName,
                               authorDisplayName: question.authorDisplayName,
                               authorRole: question.authorRole,
-                              createdAt: question.createdAt,
+                              postedAt: lessonQuestionPostedAt(question),
                               scopeLabel: _questionScopeLabel(question),
                               attachmentTypes: question.attachmentTypes,
                               quotedNoteId: question.quotedNoteId,
@@ -3027,7 +3129,8 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                               isParentHighlighted:
                                   question.id != null &&
                                   question.id == parentHighlightedQuestionId,
-                              bubbleKey: question.id != null &&
+                              bubbleKey:
+                                  question.id != null &&
                                       question.id == parentHighlightedQuestionId
                                   ? ValueKey(
                                       'parent-highlighted-question-${question.id}',
@@ -3035,7 +3138,8 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                                   : null,
                               isOwner: isCommentOwnerForActiveRole(
                                 currentUserId: widget.currentUserId,
-                                isCurrentUserTeacher: widget.isCurrentUserTeacher,
+                                isCurrentUserTeacher:
+                                    widget.isCurrentUserTeacher,
                                 authorId: question.authorId,
                                 authorRole: question.authorRole,
                               ),
@@ -3207,7 +3311,7 @@ class _AnswerThreadView extends StatelessWidget {
           authorName: root.authorName,
           authorDisplayName: root.authorDisplayName,
           authorRole: root.authorRole,
-          createdAt: root.createdAt,
+          postedAt: lessonQuestionAnswerPostedAt(root),
           scopeLabel: answerScopeLabel(root, scopeLabel),
           attachmentTypes: root.attachmentTypes,
           quotedNoteTitle: root.quotedNoteTitle,
@@ -3310,7 +3414,7 @@ class _AnswerThreadDetailView extends StatelessWidget {
           authorName: root.authorName,
           authorDisplayName: root.authorDisplayName,
           authorRole: root.authorRole,
-          createdAt: root.createdAt,
+          postedAt: lessonQuestionAnswerPostedAt(root),
           scopeLabel: answerScopeLabel(root, scopeLabel),
           attachmentTypes: root.attachmentTypes,
           quotedNoteTitle: root.quotedNoteTitle,
@@ -3367,7 +3471,7 @@ class _AnswerThreadDetailView extends StatelessWidget {
                   authorName: reply.authorName,
                   authorDisplayName: reply.authorDisplayName,
                   authorRole: reply.authorRole,
-                  createdAt: reply.createdAt,
+                  postedAt: lessonQuestionAnswerPostedAt(reply),
                   scopeLabel: answerScopeLabel(reply, scopeLabel),
                   attachmentTypes: reply.attachmentTypes,
                   quotedNoteTitle: reply.quotedNoteTitle,
@@ -3468,7 +3572,7 @@ class _StandaloneRecordReplyView extends StatelessWidget {
               authorName: answer.authorName,
               authorDisplayName: answer.authorDisplayName,
               authorRole: answer.authorRole,
-              createdAt: answer.createdAt,
+              postedAt: lessonQuestionAnswerPostedAt(answer),
               scopeLabel: answerScopeLabel(answer, scopeLabel),
               attachmentTypes: answer.attachmentTypes,
               quotedNoteTitle: answer.quotedNoteTitle,

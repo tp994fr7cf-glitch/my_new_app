@@ -88,6 +88,11 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   List<LessonNoteFolder> _editingFolders = const [];
   List<LessonNoteFolder> _previewFolders = const [];
   bool _isEditingNote = false;
+  Stream<List<LessonNote>>? _providedNotesSource;
+  Stream<List<LessonNote>>? _providedNotesBroadcast;
+  Stream<List<LessonNote>>? _providedPublicNotesSource;
+  Stream<List<LessonNote>>? _providedPublicNotesBroadcast;
+  LessonNotePublicSort _ownSort = LessonNotePublicSort.newest;
   LessonNotePublicSort _publicSort = LessonNotePublicSort.newest;
   final Set<String> _processingPublicApprovalNoteIds = <String>{};
   final Set<String> _suppressedPublicApprovalBellNoteIds = <String>{};
@@ -106,6 +111,24 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  Stream<List<LessonNote>> _asBroadcastNotesStream(
+    Stream<List<LessonNote>> source, {
+    required bool isPublic,
+  }) {
+    if (isPublic) {
+      if (!identical(source, _providedPublicNotesSource)) {
+        _providedPublicNotesSource = source;
+        _providedPublicNotesBroadcast = source.asBroadcastStream();
+      }
+      return _providedPublicNotesBroadcast!;
+    }
+    if (!identical(source, _providedNotesSource)) {
+      _providedNotesSource = source;
+      _providedNotesBroadcast = source.asBroadcastStream();
+    }
+    return _providedNotesBroadcast!;
   }
 
   Stream<List<LessonNoteFolder>> _foldersStream() {
@@ -140,7 +163,12 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   Stream<List<LessonNote>> _notesStream() {
     final provided = widget.notesStream;
     if (provided != null) {
-      return provided;
+      return _asBroadcastNotesStream(provided, isPublic: false).map(
+        (notes) => sortLessonNotes(
+          notes.where((note) => !note.isDeleted).toList(),
+          _ownSort,
+        ),
+      );
     }
     if (Firebase.apps.isEmpty) {
       return Stream.value(const []);
@@ -158,11 +186,12 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         .where('lessonNumber', isEqualTo: widget.lessonNumber)
         .snapshots()
         .map((snapshot) {
-          return sortLessonNotesByUpdatedAt(
+          return sortLessonNotes(
             snapshot.docs
                 .map(LessonNote.fromFirestore)
                 .where((note) => !note.isDeleted)
                 .toList(),
+            _ownSort,
           );
         });
   }
@@ -170,7 +199,12 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   Stream<List<LessonNote>> _publicNotesStream() {
     final provided = widget.publicNotesStream;
     if (provided != null) {
-      return provided;
+      return _asBroadcastNotesStream(provided, isPublic: true).map((notes) {
+        final filtered = widget.isTeacherPreview
+            ? notes.where((note) => !note.isDeleted).toList()
+            : notes.where((note) => note.isPubliclyVisible).toList();
+        return sortPublicLessonNotes(filtered, _publicSort);
+      });
     }
     if (Firebase.apps.isEmpty) {
       return Stream.value(const []);
@@ -403,10 +437,8 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   String _friendlyPublicApprovalErrorMessage(FirebaseException error) {
     return switch (error.code) {
       'permission-denied' =>
-        error.message ??
-            '公開許可を実行できませんでした。権限設定または申請データの状態を確認して、もう一度お試しください。',
-      'failed-precondition' =>
-        error.message ?? 'この申請はすでに処理済みです。画面を更新してください。',
+        error.message ?? '公開許可を実行できませんでした。権限設定または申請データの状態を確認して、もう一度お試しください。',
+      'failed-precondition' => error.message ?? 'この申請はすでに処理済みです。画面を更新してください。',
       _ => error.message ?? '公開許可の更新に失敗しました。',
     };
   }
@@ -607,12 +639,17 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       return false;
     }
 
+    DocumentReference<Map<String, dynamic>>? noteRefForApprovalRaceCheck;
+    DocumentReference<Map<String, dynamic>>? publicRefForApprovalRaceCheck;
+    var cancelPublicApprovalRequested = false;
+
     try {
       final firestore = FirebaseFirestore.instance;
       final userRef = firestore.collection('users').doc(user.uid);
       final noteRef = draft.noteId == null
           ? userRef.collection('lessonNotes').doc()
           : userRef.collection('lessonNotes').doc(draft.noteId);
+      noteRefForApprovalRaceCheck = noteRef;
       final noteId = noteRef.id;
       final nowClientUtc = DateTime.now().toUtc();
       final visibility = draft.visibility == LessonNoteVisibility.public
@@ -667,6 +704,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
               _ => lessonNoteVisibilityPrivate,
             };
       final publicRef = firestore.collection('publicLessonNotes').doc(noteId);
+      publicRefForApprovalRaceCheck = publicRef;
       // New public notes do not have a mirror yet, so avoid pre-reading
       // /publicLessonNotes/{noteId} before create. This prevents false
       // permission-denied failures on first publish.
@@ -691,15 +729,20 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
             publicData?['publicApprovalStatus'] as String?,
           );
       final existingPublicApprovalStatus =
-          existingPublicApprovalStatusFromOwner == lessonNotePublicApprovalNone
-          ? existingPublicApprovalStatusFromMirror
-          : existingPublicApprovalStatusFromOwner;
-      final cancelPublicApprovalRequested =
+          resolveLessonNotePublicApprovalStatus(
+            ownerPublicApprovalStatus: existingPublicApprovalStatusFromOwner,
+            mirrorPublicApprovalStatus: existingPublicApprovalStatusFromMirror,
+          );
+      cancelPublicApprovalRequested =
           draft.wasPublicApprovalPending && !draft.requestPublicApproval;
-      final approvedByTeacherAlready =
-          existingPublicApprovalStatus == lessonNotePublicApprovalApproved ||
-          existingData?['visibility'] == lessonNoteVisibilityPublic ||
-          publicData?['studentVisibility'] == lessonNoteVisibilityPublic;
+      final approvedByTeacherAlready = isLessonNoteAlreadyApprovedByTeacher(
+        ownerPublicApprovalStatus:
+            existingData?['publicApprovalStatus'] as String?,
+        ownerVisibility: existingData?['visibility'] as String?,
+        mirrorPublicApprovalStatus:
+            publicData?['publicApprovalStatus'] as String?,
+        mirrorStudentVisibility: publicData?['studentVisibility'] as String?,
+      );
       if (cancelPublicApprovalRequested && approvedByTeacherAlready) {
         await _showPublicApprovalMessageDialog('先生により既に許可されています。');
         return false;
@@ -938,6 +981,23 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       );
       return true;
     } on FirebaseException catch (error) {
+      final shouldRetryForApprovalRace =
+          cancelPublicApprovalRequested &&
+          noteRefForApprovalRaceCheck != null &&
+          publicRefForApprovalRaceCheck != null &&
+          (error.code == 'permission-denied' ||
+              error.code == 'aborted' ||
+              error.code == 'failed-precondition');
+      if (shouldRetryForApprovalRace) {
+        final approvedByTeacherNow = await _isNoteApprovedByTeacherNow(
+          noteRef: noteRefForApprovalRaceCheck!,
+          publicRef: publicRefForApprovalRaceCheck!,
+        );
+        if (approvedByTeacherNow) {
+          await _showPublicApprovalMessageDialog('先生により既に許可されています。');
+          return false;
+        }
+      }
       _showMessage(error.message ?? 'メモの作成に失敗しました。');
       return false;
     } catch (error) {
@@ -1021,6 +1081,30 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       }
       rethrow;
     }
+  }
+
+  Future<bool> _isNoteApprovedByTeacherNow({
+    required DocumentReference<Map<String, dynamic>> noteRef,
+    required DocumentReference<Map<String, dynamic>> publicRef,
+  }) async {
+    final ownerSnapshot = await noteRef.get();
+    final ownerData = ownerSnapshot.data();
+    Map<String, dynamic>? publicData;
+    try {
+      final publicSnapshot = await publicRef.get();
+      publicData = publicSnapshot.data();
+    } on FirebaseException catch (error) {
+      if (error.code != 'permission-denied') {
+        rethrow;
+      }
+    }
+    return isLessonNoteAlreadyApprovedByTeacher(
+      ownerPublicApprovalStatus: ownerData?['publicApprovalStatus'] as String?,
+      ownerVisibility: ownerData?['visibility'] as String?,
+      mirrorPublicApprovalStatus:
+          publicData?['publicApprovalStatus'] as String?,
+      mirrorStudentVisibility: publicData?['studentVisibility'] as String?,
+    );
   }
 
   Future<void> _deleteFolder(
@@ -1380,6 +1464,30 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
                                   crossAxisAlignment:
                                       CrossAxisAlignment.stretch,
                                   children: [
+                                    SegmentedButton<LessonNotePublicSort>(
+                                      segments: const [
+                                        ButtonSegment(
+                                          value: LessonNotePublicSort.newest,
+                                          label: Text('新しい順'),
+                                        ),
+                                        ButtonSegment(
+                                          value: LessonNotePublicSort.popular,
+                                          label: Text('人気順'),
+                                        ),
+                                        ButtonSegment(
+                                          value:
+                                              LessonNotePublicSort.editedNewest,
+                                          label: Text('編集の新しい順'),
+                                        ),
+                                      ],
+                                      selected: {_ownSort},
+                                      onSelectionChanged: (selection) {
+                                        setState(() {
+                                          _ownSort = selection.first;
+                                        });
+                                      },
+                                    ),
+                                    const SizedBox(height: 8),
                                     FilledButton.icon(
                                       onPressed: () =>
                                           _openEditor(folders: folders),
@@ -1450,6 +1558,10 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
                   ButtonSegment(
                     value: LessonNotePublicSort.popular,
                     label: Text('人気順'),
+                  ),
+                  ButtonSegment(
+                    value: LessonNotePublicSort.editedNewest,
+                    label: Text('編集の新しい順'),
                   ),
                 ],
                 selected: {_publicSort},
@@ -1894,6 +2006,16 @@ class _LessonNoteCard extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '投稿: ${_formatOwnNoteTimestamp(note)}',
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
+                              ),
+                        ),
                       ],
                     ),
                   ),
@@ -2264,9 +2386,16 @@ class _QuotedLessonQuestionPage extends StatelessWidget {
 }
 
 String _formatPublicNoteTimestamp(LessonNote note) {
-  final timestamp = note.publicPublishedAt ?? note.createdAt ?? note.updatedAt;
+  return _formatPostedTimestamp(lessonNotePostedAt(note));
+}
+
+String _formatOwnNoteTimestamp(LessonNote note) {
+  return _formatPostedTimestamp(lessonNotePostedAt(note));
+}
+
+String _formatPostedTimestamp(Timestamp? timestamp) {
   if (timestamp == null) {
-    return '公開日時不明';
+    return '投稿日時不明';
   }
   final dateTime = timestamp.toDate().toLocal();
   final hour = dateTime.hour.toString().padLeft(2, '0');
@@ -2383,8 +2512,7 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
 
   bool get _canChangeVisibility => _canPublish && !_isPublicLocked;
 
-  bool get _wasPendingApproval =>
-      widget.note?.isPublicApprovalPending == true;
+  bool get _wasPendingApproval => widget.note?.isPublicApprovalPending == true;
 
   Future<void> _save() async {
     setState(() {

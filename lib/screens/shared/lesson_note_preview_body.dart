@@ -77,7 +77,9 @@ class LessonNotePreviewBody extends StatelessWidget {
               Text('添付予定: ${note.attachmentTypes.join(', ')}'),
             ],
             const SizedBox(height: 24),
-            if (canCreateQuestion && note.allowsQuestionCitation && onCreateQuestion != null) ...[
+            if (canCreateQuestion &&
+                note.allowsQuestionCitation &&
+                onCreateQuestion != null) ...[
               FilledButton.icon(
                 onPressed: onCreateQuestion,
                 icon: const Icon(Icons.add_comment),
@@ -104,9 +106,9 @@ class LessonNotePreviewBody extends StatelessWidget {
 }
 
 String formatPublicNoteTimestamp(LessonNote note) {
-  final timestamp = note.publicPublishedAt ?? note.createdAt ?? note.updatedAt;
+  final timestamp = lessonNotePostedAt(note);
   if (timestamp == null) {
-    return '公開日時不明';
+    return '投稿日時不明';
   }
   final dateTime = timestamp.toDate().toLocal();
   final hour = dateTime.hour.toString().padLeft(2, '0');

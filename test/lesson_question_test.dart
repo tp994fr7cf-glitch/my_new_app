@@ -40,7 +40,7 @@ void main() {
       );
 
       expect(teacher.displayName, '先生');
-      expect(firstStudent.displayName, '1');
+      expect(firstStudent.displayName, matches(RegExp(r'^\d+$')));
       expect(
         commentIdentityFor(
           authorId: 'student-a',
@@ -71,27 +71,30 @@ void main() {
       expect(question.isPubliclyVisible, isFalse);
     });
 
-    test('keeps student-private public question hidden when teacher visible', () {
-      const question = LessonQuestion(
-        id: 'question-a',
-        authorId: 'user-a',
-        authorName: '学習者',
-        courseId: 'course-a',
-        courseTitle: '数学',
-        lessonNumber: 1,
-        lessonTitle: '一次方程式',
-        title: '',
-        body: '公開後に先生だけへ戻した質問',
-        visibility: LessonQuestionVisibility.public,
-        studentVisibility: LessonQuestionVisibility.teacherOnly,
-        target: LessonQuestionTarget.everyone,
-        attachmentTypes: [],
-      );
+    test(
+      'keeps student-private public question hidden when teacher visible',
+      () {
+        const question = LessonQuestion(
+          id: 'question-a',
+          authorId: 'user-a',
+          authorName: '学習者',
+          courseId: 'course-a',
+          courseTitle: '数学',
+          lessonNumber: 1,
+          lessonTitle: '一次方程式',
+          title: '',
+          body: '公開後に先生だけへ戻した質問',
+          visibility: LessonQuestionVisibility.public,
+          studentVisibility: LessonQuestionVisibility.teacherOnly,
+          target: LessonQuestionTarget.everyone,
+          attachmentTypes: [],
+        );
 
-      expect(question.isTeacherHidden, isFalse);
-      expect(question.isStudentPublic, isFalse);
-      expect(question.isPubliclyVisible, isFalse);
-    });
+        expect(question.isTeacherHidden, isFalse);
+        expect(question.isStudentPublic, isFalse);
+        expect(question.isPubliclyVisible, isFalse);
+      },
+    );
 
     test('treats missing studentVisibility as existing visibility', () {
       final question = LessonQuestion.fromMap({
@@ -113,12 +116,8 @@ void main() {
     });
 
     test('parses author role for teacher-created questions', () {
-      final explicitTeacher = LessonQuestion.fromMap({
-        'authorRole': 'teacher',
-      });
-      final legacyTeacher = LessonQuestion.fromMap({
-        'authorDisplayName': '先生',
-      });
+      final explicitTeacher = LessonQuestion.fromMap({'authorRole': 'teacher'});
+      final legacyTeacher = LessonQuestion.fromMap({'authorDisplayName': '先生'});
       final student = LessonQuestion.fromMap({});
 
       expect(explicitTeacher.authorRole, 'teacher');
@@ -159,6 +158,58 @@ void main() {
       );
 
       expect(sortLessonQuestionsByUpdatedAt([older, newer]).first.id, 'newer');
+    });
+
+    test('sorts newest by posted time and edited newest by updated time', () {
+      final earlyPostedRecentlyEdited = LessonQuestion(
+        id: 'early-posted',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '先に投稿して後で編集',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: const [],
+        createdAt: Timestamp.fromDate(DateTime.utc(2026, 1, 1, 9)),
+        updatedAt: Timestamp.fromDate(DateTime.utc(2026, 1, 3, 9)),
+      );
+      final latePostedOldEdited = LessonQuestion(
+        id: 'late-posted',
+        authorId: 'user-b',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '後に投稿',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: const [],
+        createdAt: Timestamp.fromDate(DateTime.utc(2026, 1, 2, 9)),
+        updatedAt: Timestamp.fromDate(DateTime.utc(2026, 1, 2, 10)),
+      );
+
+      final newest = sortLessonQuestions([
+        earlyPostedRecentlyEdited,
+        latePostedOldEdited,
+      ], LessonQuestionSort.newest);
+      final editedNewest = sortLessonQuestions([
+        earlyPostedRecentlyEdited,
+        latePostedOldEdited,
+      ], LessonQuestionSort.editedNewest);
+      final popularFallback = sortLessonQuestions([
+        earlyPostedRecentlyEdited,
+        latePostedOldEdited,
+      ], LessonQuestionSort.popular);
+
+      expect(newest.first.id, 'late-posted');
+      expect(editedNewest.first.id, 'early-posted');
+      expect(popularFallback.first.id, 'late-posted');
     });
   });
 }

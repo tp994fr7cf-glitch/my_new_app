@@ -43,6 +43,7 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
   _RecordType _selectedType = _RecordType.views;
   _PeriodFilter _selectedPeriod = _PeriodFilter.all;
   _CommentRecordType _selectedCommentType = _CommentRecordType.questions;
+  LessonQuestionSort _commentSort = LessonQuestionSort.newest;
   String _query = '';
 
   Stream<List<Map<String, dynamic>>> _learningEventsStream() {
@@ -300,6 +301,12 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
                     _selectedCommentType = type;
                   });
                 },
+                selectedSort: _commentSort,
+                onSelectedSort: (sort) {
+                  setState(() {
+                    _commentSort = sort;
+                  });
+                },
                 user: widget.user,
               ),
             },
@@ -312,10 +319,10 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
   List<LessonNote> _filterNotes(List<LessonNote> notes) {
     final since = _periodStart();
     final query = _query.trim().toLowerCase();
-    return notes.where((note) {
+    final filtered = notes.where((note) {
       if (since != null) {
-        final updatedAt = note.updatedAt ?? note.createdAt;
-        if (updatedAt == null || updatedAt.toDate().isBefore(since)) {
+        final postedAt = lessonNotePostedAt(note);
+        if (postedAt == null || postedAt.toDate().isBefore(since)) {
           return false;
         }
       }
@@ -324,6 +331,13 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
       }
       return lessonNoteMatchesQuery(note, query);
     }).toList();
+    filtered.sort(
+      (a, b) => _compareTimestampDescWithUnknownLast(
+        lessonNotePostedAt(a),
+        lessonNotePostedAt(b),
+      ),
+    );
+    return filtered;
   }
 
   List<LessonQuestion> _filterQuestions(List<LessonQuestion> questions) {
@@ -334,8 +348,10 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
         return false;
       }
       if (since != null) {
-        final updatedAt = question.updatedAt ?? question.createdAt;
-        if (updatedAt == null || updatedAt.toDate().isBefore(since)) {
+        final referenceTime = _commentSort == LessonQuestionSort.editedNewest
+            ? lessonQuestionEditedAt(question)
+            : lessonQuestionPostedAt(question);
+        if (referenceTime == null || referenceTime.toDate().isBefore(since)) {
           return false;
         }
       }
@@ -344,12 +360,21 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
       }
       return lessonQuestionMatchesQuery(question, query);
     }).toList();
-    filtered.sort(
-      (a, b) => _compareTimestampDescWithUnknownLast(
-        a.createdAt ?? a.updatedAt,
-        b.createdAt ?? b.updatedAt,
-      ),
-    );
+    filtered.sort((a, b) {
+      switch (_commentSort) {
+        case LessonQuestionSort.newest:
+        case LessonQuestionSort.popular:
+          return _compareTimestampDescWithUnknownLast(
+            lessonQuestionPostedAt(a),
+            lessonQuestionPostedAt(b),
+          );
+        case LessonQuestionSort.editedNewest:
+          return _compareTimestampDescWithUnknownLast(
+            lessonQuestionEditedAt(a),
+            lessonQuestionEditedAt(b),
+          );
+      }
+    });
     return filtered;
   }
 
@@ -363,8 +388,10 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
         return false;
       }
       if (since != null) {
-        final updatedAt = answer.updatedAt ?? answer.createdAt;
-        if (updatedAt == null || updatedAt.toDate().isBefore(since)) {
+        final referenceTime = _commentSort == LessonQuestionSort.editedNewest
+            ? lessonQuestionAnswerEditedAt(answer)
+            : lessonQuestionAnswerPostedAt(answer);
+        if (referenceTime == null || referenceTime.toDate().isBefore(since)) {
           return false;
         }
       }
@@ -373,12 +400,21 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
       }
       return lessonQuestionAnswerMatchesQuery(answer, query);
     }).toList();
-    filtered.sort(
-      (a, b) => _compareTimestampDescWithUnknownLast(
-        a.createdAt ?? a.updatedAt,
-        b.createdAt ?? b.updatedAt,
-      ),
-    );
+    filtered.sort((a, b) {
+      switch (_commentSort) {
+        case LessonQuestionSort.newest:
+        case LessonQuestionSort.popular:
+          return _compareTimestampDescWithUnknownLast(
+            lessonQuestionAnswerPostedAt(a),
+            lessonQuestionAnswerPostedAt(b),
+          );
+        case LessonQuestionSort.editedNewest:
+          return _compareTimestampDescWithUnknownLast(
+            lessonQuestionAnswerEditedAt(a),
+            lessonQuestionAnswerEditedAt(b),
+          );
+      }
+    });
     return filtered;
   }
 }
@@ -702,6 +738,8 @@ class _LessonQuestionRecordsList extends StatelessWidget {
     required this.filterAnswers,
     required this.selectedType,
     required this.onSelectedType,
+    required this.selectedSort,
+    required this.onSelectedSort,
     required this.user,
   });
 
@@ -713,6 +751,8 @@ class _LessonQuestionRecordsList extends StatelessWidget {
   filterAnswers;
   final _CommentRecordType selectedType;
   final ValueChanged<_CommentRecordType> onSelectedType;
+  final LessonQuestionSort selectedSort;
+  final ValueChanged<LessonQuestionSort> onSelectedSort;
   final User user;
 
   @override
@@ -739,6 +779,11 @@ class _LessonQuestionRecordsList extends StatelessWidget {
                     selectedType: selectedType,
                     onSelected: onSelectedType,
                   ),
+                  const SizedBox(height: 8),
+                  _CommentSortSelector(
+                    selectedSort: selectedSort,
+                    onSelected: onSelectedSort,
+                  ),
                   const SizedBox(height: 12),
                   _EmptyRecordCard(
                     message: isQuestionSelected
@@ -753,6 +798,11 @@ class _LessonQuestionRecordsList extends StatelessWidget {
                 _CommentTypeSelector(
                   selectedType: selectedType,
                   onSelected: onSelectedType,
+                ),
+                const SizedBox(height: 8),
+                _CommentSortSelector(
+                  selectedSort: selectedSort,
+                  onSelected: onSelectedSort,
                 ),
                 const SizedBox(height: 12),
                 if (isQuestionSelected)
@@ -818,6 +868,32 @@ class _CommentTypeSelector extends StatelessWidget {
   }
 }
 
+class _CommentSortSelector extends StatelessWidget {
+  const _CommentSortSelector({
+    required this.selectedSort,
+    required this.onSelected,
+  });
+
+  final LessonQuestionSort selectedSort;
+  final ValueChanged<LessonQuestionSort> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return SegmentedButton<LessonQuestionSort>(
+      segments: const [
+        ButtonSegment(value: LessonQuestionSort.newest, label: Text('新しい順')),
+        ButtonSegment(value: LessonQuestionSort.popular, label: Text('人気順')),
+        ButtonSegment(
+          value: LessonQuestionSort.editedNewest,
+          label: Text('編集の新しい順'),
+        ),
+      ],
+      selected: {selectedSort},
+      onSelectionChanged: (selection) => onSelected(selection.first),
+    );
+  }
+}
+
 LessonQuestion? _parentQuestionForAnswer(
   LessonQuestionAnswer answer,
   List<LessonQuestion> questions,
@@ -860,7 +936,7 @@ class _LessonNoteRecordCard extends StatelessWidget {
                   : '非公開メモ',
             ),
             const SizedBox(height: 4),
-            Text('更新日: ${_formatTimestamp(note.updatedAt ?? note.createdAt)}'),
+            Text('投稿日: ${_formatCommentTimestamp(lessonNotePostedAt(note))}'),
             if (note.body.isNotEmpty) ...[
               const SizedBox(height: 8),
               Text(note.body),
@@ -1074,7 +1150,7 @@ class _LessonQuestionRecordCard extends StatelessWidget {
               Text(question.isPublic ? '公開質問' : '先生にだけ公開'),
               const SizedBox(height: 4),
               Text(
-                '投稿日: ${_formatCommentTimestamp(question.createdAt ?? question.updatedAt)}',
+                '投稿日: ${_formatCommentTimestamp(lessonQuestionPostedAt(question))}',
               ),
               if (question.body.isNotEmpty) ...[
                 const SizedBox(height: 8),
@@ -1389,7 +1465,10 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
                         ),
                         const SizedBox(height: 8),
                         SelectableText(
-                          _isReplyTargetUnavailable(parentQuestion, parentAnswer)
+                          _isReplyTargetUnavailable(
+                                parentQuestion,
+                                parentAnswer,
+                              )
                               ? _replyTargetRecordSummary(
                                   parentQuestion,
                                   parentAnswer,
@@ -1545,7 +1624,7 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        '投稿日: ${_formatCommentTimestamp(widget.answer.createdAt ?? widget.answer.updatedAt)}',
+                        '投稿日: ${_formatCommentTimestamp(lessonQuestionAnswerPostedAt(widget.answer))}',
                       ),
                       const SizedBox(height: 8),
                       Text(widget.answer.body),

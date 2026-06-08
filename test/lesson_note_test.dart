@@ -228,6 +228,53 @@ void main() {
       );
     });
 
+    test('resolves approval status from owner then mirror', () {
+      expect(
+        resolveLessonNotePublicApprovalStatus(
+          ownerPublicApprovalStatus: lessonNotePublicApprovalPending,
+          mirrorPublicApprovalStatus: lessonNotePublicApprovalApproved,
+        ),
+        lessonNotePublicApprovalPending,
+      );
+      expect(
+        resolveLessonNotePublicApprovalStatus(
+          ownerPublicApprovalStatus: lessonNotePublicApprovalNone,
+          mirrorPublicApprovalStatus: lessonNotePublicApprovalApproved,
+        ),
+        lessonNotePublicApprovalApproved,
+      );
+    });
+
+    test('detects when teacher approval is already committed', () {
+      expect(
+        isLessonNoteAlreadyApprovedByTeacher(
+          ownerPublicApprovalStatus: lessonNotePublicApprovalApproved,
+          ownerVisibility: lessonNoteVisibilityTeacherOnly,
+          mirrorPublicApprovalStatus: lessonNotePublicApprovalNone,
+          mirrorStudentVisibility: lessonNoteVisibilityTeacherOnly,
+        ),
+        isTrue,
+      );
+      expect(
+        isLessonNoteAlreadyApprovedByTeacher(
+          ownerPublicApprovalStatus: lessonNotePublicApprovalPending,
+          ownerVisibility: lessonNoteVisibilityTeacherOnly,
+          mirrorPublicApprovalStatus: lessonNotePublicApprovalPending,
+          mirrorStudentVisibility: lessonNoteVisibilityPublic,
+        ),
+        isTrue,
+      );
+      expect(
+        isLessonNoteAlreadyApprovedByTeacher(
+          ownerPublicApprovalStatus: lessonNotePublicApprovalPending,
+          ownerVisibility: lessonNoteVisibilityTeacherOnly,
+          mirrorPublicApprovalStatus: lessonNotePublicApprovalPending,
+          mirrorStudentVisibility: lessonNoteVisibilityTeacherOnly,
+        ),
+        isFalse,
+      );
+    });
+
     test('treats missing question citation permission as not allowed', () {
       final note = LessonNote.fromMap({
         'visibility': lessonNoteVisibilityPublic,
@@ -307,6 +354,113 @@ void main() {
       ], LessonNotePublicSort.popular);
 
       expect(sorted.first.id, 'rating');
+    });
+
+    test('sorts newest by posted time and edited newest by updated time', () {
+      final earlyPostedRecentlyEdited = LessonNote(
+        id: 'early-posted',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '早く投稿',
+        body: '',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.private,
+        tags: const [],
+        attachmentTypes: const [],
+        hasAudioAttachment: false,
+        isCopied: false,
+        canPublish: true,
+        createdAt: Timestamp.fromDate(DateTime.utc(2026, 1, 1, 9)),
+        updatedAt: Timestamp.fromDate(DateTime.utc(2026, 1, 3, 9)),
+      );
+      final latePostedOldEdited = LessonNote(
+        id: 'late-posted',
+        authorId: 'user-b',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '遅く投稿',
+        body: '',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.private,
+        tags: const [],
+        attachmentTypes: const [],
+        hasAudioAttachment: false,
+        isCopied: false,
+        canPublish: true,
+        createdAt: Timestamp.fromDate(DateTime.utc(2026, 1, 2, 9)),
+        updatedAt: Timestamp.fromDate(DateTime.utc(2026, 1, 2, 10)),
+      );
+
+      final newest = sortLessonNotes([
+        earlyPostedRecentlyEdited,
+        latePostedOldEdited,
+      ], LessonNotePublicSort.newest);
+      final editedNewest = sortLessonNotes([
+        earlyPostedRecentlyEdited,
+        latePostedOldEdited,
+      ], LessonNotePublicSort.editedNewest);
+
+      expect(newest.first.id, 'late-posted');
+      expect(editedNewest.first.id, 'early-posted');
+    });
+
+    test('uses newest order when non-public popular is selected', () {
+      final first = LessonNote(
+        id: 'first',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '先に投稿',
+        body: '',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.private,
+        tags: const [],
+        attachmentTypes: const [],
+        hasAudioAttachment: false,
+        isCopied: false,
+        canPublish: true,
+        createdAt: Timestamp.fromDate(DateTime.utc(2026, 1, 1, 10)),
+      );
+      final second = LessonNote(
+        id: 'second',
+        authorId: 'user-b',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '後に投稿',
+        body: '',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.private,
+        tags: const [],
+        attachmentTypes: const [],
+        hasAudioAttachment: false,
+        isCopied: false,
+        canPublish: true,
+        createdAt: Timestamp.fromDate(DateTime.utc(2026, 1, 2, 10)),
+      );
+
+      final sorted = sortLessonNotes([
+        first,
+        second,
+      ], LessonNotePublicSort.popular);
+
+      expect(sorted.first.id, 'second');
     });
 
     test('resolves citation free edit window from enabled timestamp', () {
