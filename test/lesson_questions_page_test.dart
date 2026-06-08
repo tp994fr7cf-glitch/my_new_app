@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -503,9 +505,11 @@ void main() {
             lessonNumber: 1,
             questionsStream: Stream.value(const []),
             publicQuestionsStream: Stream.value(const []),
-            quotableNotesStream: Stream.value(
-              const [allowedNote, deniedNote, teacherOnlyOtherNote],
-            ),
+            quotableNotesStream: Stream.value(const [
+              allowedNote,
+              deniedNote,
+              teacherOnlyOtherNote,
+            ]),
           ),
         ),
       ),
@@ -811,7 +815,9 @@ void main() {
     expect(find.text('回答コメントを書く'), findsNothing);
   });
 
-  testWidgets('Teacher preview lists teacher-only question mirror', (tester) async {
+  testWidgets('Teacher preview lists teacher-only question mirror', (
+    tester,
+  ) async {
     const question = LessonQuestion(
       id: 'teacher-only-preview-question',
       authorId: 'student-a',
@@ -916,6 +922,83 @@ void main() {
       await tester.tap(find.byType(DropdownButtonFormField<String>).last);
       await tester.pumpAndSettle();
       expect(find.text('学習者の先生向けメモ'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Reply composer updates quotable memo options after delayed stream emission',
+    (tester) async {
+      const question = LessonQuestion(
+        id: 'teacher-preview-public-question-delayed-notes',
+        authorId: 'student-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '公開質問です（遅延候補）。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: [],
+      );
+      const delayedNote = LessonNote(
+        id: 'learner-teacher-only-note-delayed',
+        authorId: 'student-b',
+        authorName: '別の学習者',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '遅延で届く先生向けメモ',
+        body: 'あとから候補に表示される',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.teacherOnly,
+        studentVisibility: LessonNoteVisibility.teacherOnly,
+        tags: [],
+        attachmentTypes: [],
+        hasAudioAttachment: false,
+        isCopied: false,
+        canPublish: true,
+        allowsQuestionCitation: true,
+      );
+      final notesController = StreamController<List<LessonNote>>();
+      addTearDown(notesController.close);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              publicQuestionsStream: Stream.value(const [question]),
+              answersStream: Stream.value(const []),
+              quotableNotesStream: notesController.stream,
+              isTeacherPreview: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('公開質問です（遅延候補）。'));
+      await tester.pumpAndSettle();
+      final dropdownFinder = find.byType(DropdownButtonFormField<String>).last;
+
+      await tester.tap(dropdownFinder);
+      await tester.pumpAndSettle();
+      expect(find.text('遅延で届く先生向けメモ'), findsNothing);
+      await tester.tapAt(const Offset(8, 8));
+      await tester.pumpAndSettle();
+
+      notesController.add(const [delayedNote]);
+      await tester.pumpAndSettle();
+
+      await tester.tap(dropdownFinder);
+      await tester.pumpAndSettle();
+      expect(find.text('遅延で届く先生向けメモ'), findsOneWidget);
     },
   );
 

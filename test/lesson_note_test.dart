@@ -202,6 +202,32 @@ void main() {
       expect(note.hasPublicMirror, isTrue);
     });
 
+    test('parses and normalizes public approval status', () {
+      final pendingNote = LessonNote.fromMap({
+        'visibility': lessonNoteVisibilityTeacherOnly,
+        'studentVisibility': lessonNoteVisibilityTeacherOnly,
+        'publicApprovalStatus': lessonNotePublicApprovalPending,
+      });
+      final rejectedNote = LessonNote.fromMap({
+        'visibility': lessonNoteVisibilityTeacherOnly,
+        'publicApprovalStatus': lessonNotePublicApprovalRejected,
+      });
+      final unknownStatusNote = LessonNote.fromMap({
+        'visibility': lessonNoteVisibilityTeacherOnly,
+        'publicApprovalStatus': 'unexpected',
+      });
+
+      expect(pendingNote.publicApprovalStatus, lessonNotePublicApprovalPending);
+      expect(pendingNote.isPublicApprovalPending, isTrue);
+      expect(pendingNote.isPublicApprovalRejected, isFalse);
+      expect(rejectedNote.isPublicApprovalPending, isFalse);
+      expect(rejectedNote.isPublicApprovalRejected, isTrue);
+      expect(
+        unknownStatusNote.publicApprovalStatus,
+        lessonNotePublicApprovalNone,
+      );
+    });
+
     test('treats missing question citation permission as not allowed', () {
       final note = LessonNote.fromMap({
         'visibility': lessonNoteVisibilityPublic,
@@ -294,10 +320,7 @@ void main() {
       );
 
       expect(freeUntil, isNotNull);
-      expect(
-        freeUntil!.toDate().toUtc(),
-        DateTime.utc(2026, 6, 1, 10, 30),
-      );
+      expect(freeUntil!.toDate().toUtc(), DateTime.utc(2026, 6, 1, 10, 30));
       expect(
         isWithinLessonNoteCitationFreeEditWindow(
           nowUtc: DateTime.utc(2026, 6, 1, 10, 10),
@@ -327,9 +350,9 @@ void main() {
       expect(lockUntil, isNotNull);
       expect(
         lockUntil!.toUtc(),
-        now.subtract(const Duration(days: 1)).add(
-          lessonNoteCitationCompareRetentionWindow,
-        ),
+        now
+            .subtract(const Duration(days: 1))
+            .add(lessonNoteCitationCompareRetentionWindow),
       );
     });
   });

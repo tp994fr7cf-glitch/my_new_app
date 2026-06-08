@@ -89,6 +89,8 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   List<LessonNoteFolder> _previewFolders = const [];
   bool _isEditingNote = false;
   LessonNotePublicSort _publicSort = LessonNotePublicSort.newest;
+  final Set<String> _processingPublicApprovalNoteIds = <String>{};
+  final Set<String> _suppressedPublicApprovalBellNoteIds = <String>{};
   final LessonInteractionService _lessonInteractionService =
       const LessonInteractionService();
 
@@ -258,6 +260,214 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
     );
   }
 
+  Future<void> _handleOwnPublicApprovalNoticeTap(LessonNote note) async {
+    if (note.isPublicApprovalPending) {
+      await _showPublicApprovalMessageDialog('現在先生に許可申請中です。');
+      return;
+    }
+    if (!note.isPublicApprovalRejected) {
+      return;
+    }
+    await _showPublicApprovalMessageDialog('このメモの公開は許可されませんでした。');
+    if (!mounted) {
+      return;
+    }
+    if (Firebase.apps.isEmpty) {
+      return;
+    }
+    final noteId = note.id;
+    final userId = FirebaseAuth.instance.currentUser?.uid;
+    if (noteId == null || userId == null || userId.isEmpty) {
+      return;
+    }
+    try {
+      await _lessonInteractionService.clearOwnPublicApprovalNotice(
+        noteId: noteId,
+        ownerId: userId,
+      );
+    } on FirebaseException catch (error) {
+      _showMessage(error.message ?? '通知状態の更新に失敗しました。');
+    } catch (error) {
+      _showMessage('通知状態の更新に失敗しました: $error');
+    }
+  }
+
+  Future<void> _handleTeacherPublicApprovalTap(LessonNote note) async {
+    final noteId = note.id;
+    if (noteId == null || noteId.isEmpty) {
+      return;
+    }
+    if (_processingPublicApprovalNoteIds.contains(noteId)) {
+      _showMessage('公開処理を実行中です。完了までお待ちください。');
+      return;
+    }
+    if (!note.isPublicApprovalPending) {
+      _showMessage('この申請はすでに処理済みです。');
+      return;
+    }
+    if (Firebase.apps.isNotEmpty) {
+      try {
+        final latestSnapshot = await FirebaseFirestore.instance
+            .collection('publicLessonNotes')
+            .doc(noteId)
+            .get();
+        if (!latestSnapshot.exists) {
+          _showMessage('申請対象のメモが見つかりませんでした。画面を更新してください。');
+          return;
+        }
+        final latestNote = LessonNote.fromFirestore(latestSnapshot);
+        if (!latestNote.isPublicApprovalPending) {
+          _showMessage(
+            latestNote.isStudentPublic
+                ? 'このメモはすでに公開済みです。'
+                : latestNote.isPublicApprovalRejected
+                ? 'この申請はすでに「許可しない」で処理されています。'
+                : 'この申請はすでに処理済みです。',
+          );
+          setState(() {
+            _suppressedPublicApprovalBellNoteIds.add(noteId);
+          });
+          _releaseSuppressedApprovalBellLater(noteId);
+          return;
+        }
+      } on FirebaseException catch (_) {
+        // If latest-check fails temporarily, keep the original flow.
+      }
+    }
+    if (!mounted) {
+      return;
+    }
+    final decision = await showDialog<_PublicApprovalDecision>(
+      context: context,
+      builder: (context) => AlertDialog(
+        content: const Text('このメモを受講者にも公開しますか？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('キャンセル'),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_PublicApprovalDecision.reject),
+            child: const Text('許可しない'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_PublicApprovalDecision.approve),
+            child: const Text('許可'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || decision == null) {
+      return;
+    }
+    setState(() {
+      _processingPublicApprovalNoteIds.add(noteId);
+      _suppressedPublicApprovalBellNoteIds.add(noteId);
+    });
+    _showMessage('公開処理中です。しばらくお待ちください。');
+    var keepBellSuppressed = true;
+    try {
+      await _lessonInteractionService.decidePublicNoteApproval(
+        noteId: noteId,
+        authorId: note.authorId,
+        approve: decision == _PublicApprovalDecision.approve,
+      );
+      _showMessage(
+        decision == _PublicApprovalDecision.approve
+            ? '公開を許可しました。反映まで少し時間がかかる場合があります。'
+            : '公開を許可しませんでした。',
+      );
+    } on FirebaseException catch (error) {
+      keepBellSuppressed = false;
+      _showMessage(_friendlyPublicApprovalErrorMessage(error));
+    } catch (error) {
+      keepBellSuppressed = false;
+      _showMessage('公開許可の更新に失敗しました: $error');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _processingPublicApprovalNoteIds.remove(noteId);
+          if (!keepBellSuppressed) {
+            _suppressedPublicApprovalBellNoteIds.remove(noteId);
+          }
+        });
+        if (keepBellSuppressed) {
+          _releaseSuppressedApprovalBellLater(noteId);
+        }
+      }
+    }
+  }
+
+  String _friendlyPublicApprovalErrorMessage(FirebaseException error) {
+    return switch (error.code) {
+      'permission-denied' =>
+        error.message ??
+            '公開許可を実行できませんでした。権限設定または申請データの状態を確認して、もう一度お試しください。',
+      'failed-precondition' =>
+        error.message ?? 'この申請はすでに処理済みです。画面を更新してください。',
+      _ => error.message ?? '公開許可の更新に失敗しました。',
+    };
+  }
+
+  bool _isPublicApprovalProcessing(LessonNote note) {
+    final noteId = note.id;
+    if (noteId == null || noteId.isEmpty) {
+      return false;
+    }
+    return _processingPublicApprovalNoteIds.contains(noteId);
+  }
+
+  bool _isPublicApprovalBellSuppressed(LessonNote note) {
+    final noteId = note.id;
+    if (noteId == null || noteId.isEmpty) {
+      return false;
+    }
+    final suppressed = _suppressedPublicApprovalBellNoteIds.contains(noteId);
+    if (suppressed && !note.isPublicApprovalPending) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _suppressedPublicApprovalBellNoteIds.remove(noteId);
+        });
+      });
+      return false;
+    }
+    return suppressed;
+  }
+
+  void _releaseSuppressedApprovalBellLater(String noteId) {
+    Future.delayed(const Duration(seconds: 6), () {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _suppressedPublicApprovalBellNoteIds.remove(noteId);
+      });
+    });
+  }
+
+  Future<void> _showPublicApprovalMessageDialog(String message) async {
+    if (!mounted) {
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        content: Text(message),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _createFolder() async {
     final name = await showDialog<String>(
       context: context,
@@ -302,11 +512,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       });
       return;
     }
-    await _pushEditorPage(
-      context,
-      note: note,
-      folders: folders,
-    );
+    await _pushEditorPage(context, note: note, folders: folders);
   }
 
   Future<void> _pushEditorPage(
@@ -416,6 +622,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
           : lessonNoteVisibilityPrivate;
       final now = FieldValue.serverTimestamp();
       final authorName = user.displayName ?? user.email ?? '学習者';
+      final courseInstructorId = widget.course.instructorId?.trim() ?? '';
       final existingNoteSnapshot = await noteRef.get();
       final existingData = existingNoteSnapshot.data();
       final previousTitle = existingData?['title'] as String? ?? '';
@@ -438,15 +645,25 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       );
       final platformEnabled = await _isNotePublicPlatformEnabled();
       final isPublicLocked = draft.wasPublic;
+      final isTeacherOnlyLocked = !isPublicLocked && draft.wasTeacherOnly;
+      final requestedPublicApproval =
+          draft.requestPublicApproval &&
+          visibility == lessonNoteVisibilityPublic &&
+          canPublish &&
+          platformEnabled;
       final savedVisibility = isPublicLocked
           ? lessonNoteVisibilityPublic
+          : isTeacherOnlyLocked
+          ? lessonNoteVisibilityTeacherOnly
           : switch (visibility) {
-              lessonNoteVisibilityPublic => canPublish && platformEnabled
-                  ? lessonNoteVisibilityPublic
-                  : lessonNoteVisibilityPrivate,
-              lessonNoteVisibilityTeacherOnly => canPublish
-                  ? lessonNoteVisibilityTeacherOnly
-                  : lessonNoteVisibilityPrivate,
+              lessonNoteVisibilityPublic =>
+                canPublish && platformEnabled
+                    ? lessonNoteVisibilityPublic
+                    : lessonNoteVisibilityPrivate,
+              lessonNoteVisibilityTeacherOnly =>
+                canPublish
+                    ? lessonNoteVisibilityTeacherOnly
+                    : lessonNoteVisibilityPrivate,
               _ => lessonNoteVisibilityPrivate,
             };
       final publicRef = firestore.collection('publicLessonNotes').doc(noteId);
@@ -465,6 +682,40 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       final publicSnapshot = publicSnapshotResult.snapshot;
       final publicData = publicSnapshot?.data();
       final hasPublicMirror = publicSnapshot?.exists ?? false;
+      final existingPublicApprovalStatusFromOwner =
+          normalizeLessonNotePublicApprovalStatus(
+            existingData?['publicApprovalStatus'] as String?,
+          );
+      final existingPublicApprovalStatusFromMirror =
+          normalizeLessonNotePublicApprovalStatus(
+            publicData?['publicApprovalStatus'] as String?,
+          );
+      final existingPublicApprovalStatus =
+          existingPublicApprovalStatusFromOwner == lessonNotePublicApprovalNone
+          ? existingPublicApprovalStatusFromMirror
+          : existingPublicApprovalStatusFromOwner;
+      final cancelPublicApprovalRequested =
+          draft.wasPublicApprovalPending && !draft.requestPublicApproval;
+      final approvedByTeacherAlready =
+          existingPublicApprovalStatus == lessonNotePublicApprovalApproved ||
+          existingData?['visibility'] == lessonNoteVisibilityPublic ||
+          publicData?['studentVisibility'] == lessonNoteVisibilityPublic;
+      if (cancelPublicApprovalRequested && approvedByTeacherAlready) {
+        await _showPublicApprovalMessageDialog('先生により既に許可されています。');
+        return false;
+      }
+      final nextPublicApprovalStatus = switch (savedVisibility) {
+        lessonNoteVisibilityPrivate => lessonNotePublicApprovalNone,
+        lessonNoteVisibilityPublic => lessonNotePublicApprovalNone,
+        _ =>
+          cancelPublicApprovalRequested
+              ? lessonNotePublicApprovalNone
+              : requestedPublicApproval
+              ? lessonNotePublicApprovalPending
+              : existingPublicApprovalStatus == lessonNotePublicApprovalApproved
+              ? lessonNotePublicApprovalNone
+              : existingPublicApprovalStatus,
+      };
       final nextHasPublicMirror =
           savedVisibility != lessonNoteVisibilityPrivate || hasPublicMirror;
       final publicModerationStatus =
@@ -484,16 +735,18 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
                     nowClientUtc.add(lessonNoteCitationEditFreeWindow),
                   )
                 : resolveLessonNoteCitationFreeEditUntil(
-                    allowsQuestionCitation: true,
-                    citationEnabledAt:
-                        existingData?['citationEnabledAt'] as Timestamp?,
-                    citationFreeEditUntil:
-                        existingData?['citationFreeEditUntil'] as Timestamp?,
-                    publicPublishedAt:
-                        (existingData?['publicPublishedAt'] as Timestamp?) ??
-                        (publicData?['publicPublishedAt'] as Timestamp?),
-                    createdAt: existingData?['createdAt'] as Timestamp?,
-                  ) ??
+                        allowsQuestionCitation: true,
+                        citationEnabledAt:
+                            existingData?['citationEnabledAt'] as Timestamp?,
+                        citationFreeEditUntil:
+                            existingData?['citationFreeEditUntil']
+                                as Timestamp?,
+                        publicPublishedAt:
+                            (existingData?['publicPublishedAt']
+                                as Timestamp?) ??
+                            (publicData?['publicPublishedAt'] as Timestamp?),
+                        createdAt: existingData?['createdAt'] as Timestamp?,
+                      ) ??
                       Timestamp.fromDate(
                         nowClientUtc.add(lessonNoteCitationEditFreeWindow),
                       ))
@@ -560,6 +813,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         'courseTitle': widget.course.title,
         'lessonNumber': widget.lessonNumber,
         'lessonTitle': widget.lesson.title,
+        if (courseInstructorId.isNotEmpty) 'instructorId': courseInstructorId,
         'visibility': savedVisibility,
         'tags': draft.tags,
         'attachmentTypes': draft.attachmentTypes,
@@ -571,14 +825,17 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         'isCopied': draft.isCopied,
         'canPublish': draft.canPublish,
         'allowsQuestionCitation': draft.allowsQuestionCitation,
-        if (draft.allowsQuestionCitation) 'citationEnabledAt': citationEnabledAt,
+        if (draft.allowsQuestionCitation)
+          'citationEnabledAt': citationEnabledAt,
         if (draft.allowsQuestionCitation)
           'citationFreeEditUntil': citationFreeEditUntil,
-        if (draft.allowsQuestionCitation) 'citationEditCount': nextCitationEditCount,
+        if (draft.allowsQuestionCitation)
+          'citationEditCount': nextCitationEditCount,
         if (shouldRecordCitationEditHistory) 'lastCitationEditedAt': now,
         if (!shouldRecordCitationEditHistory &&
             existingData?['lastCitationEditedAt'] != null)
           'lastCitationEditedAt': existingData?['lastCitationEditedAt'],
+        'publicApprovalStatus': nextPublicApprovalStatus,
         'hasPublicMirror': nextHasPublicMirror,
         'isDeleted': false,
         'moderationStatus': lessonNoteModerationVisible,
@@ -600,7 +857,8 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
           'studentVisibility': savedVisibility,
           'moderationStatus': publicModerationStatus,
           'publicPublishedAt': publicData?['publicPublishedAt'] ?? now,
-          if (draft.allowsQuestionCitation) 'citationEnabledAt': citationEnabledAt,
+          if (draft.allowsQuestionCitation)
+            'citationEnabledAt': citationEnabledAt,
           if (draft.allowsQuestionCitation)
             'citationFreeEditUntil': citationFreeEditUntil,
           if (draft.allowsQuestionCitation)
@@ -618,6 +876,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       } else if (hasPublicMirror) {
         batch.set(publicRef, {
           'studentVisibility': lessonNoteVisibilityPrivate,
+          'publicApprovalStatus': lessonNotePublicApprovalNone,
           'isDeleted': true,
           'deletedAt': now,
           'updatedAt': now,
@@ -660,8 +919,16 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       }
 
       await batch.commit();
+      if (cancelPublicApprovalRequested) {
+        await _showPublicApprovalMessageDialog('公開許可の申請を取り下げました。');
+        return true;
+      }
       _showMessage(
-        isPublicLocked || savedVisibility == visibility
+        requestedPublicApproval
+            ? '先生への公開申請を送信しました。許可されるまで受講者には公開されません。'
+            : isPublicLocked ||
+                  isTeacherOnlyLocked ||
+                  savedVisibility == visibility
             ? savedVisibility == lessonNoteVisibilityTeacherOnly
                   ? 'メモを先生にだけ公開で保存しました。'
                   : 'メモを保存しました。'
@@ -1107,6 +1374,8 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
                                 ),
                                 onDeleteNote: _confirmDeleteNote,
                                 onDeleteFolder: _confirmDeleteFolder,
+                                onApprovalNoticeTap:
+                                    _handleOwnPublicApprovalNoticeTap,
                                 action: Column(
                                   crossAxisAlignment:
                                       CrossAxisAlignment.stretch,
@@ -1159,6 +1428,15 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
           showAuthor: true,
           onToggleModeration: widget.isTeacherPreview
               ? _setPublicNoteModeration
+              : null,
+          onResolvePublicApproval: widget.isTeacherPreview
+              ? _handleTeacherPublicApprovalTap
+              : null,
+          isPublicApprovalProcessing: widget.isTeacherPreview
+              ? _isPublicApprovalProcessing
+              : null,
+          isPublicApprovalBellSuppressed: widget.isTeacherPreview
+              ? _isPublicApprovalBellSuppressed
               : null,
           action: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1260,6 +1538,10 @@ class _LessonNoteList extends StatefulWidget {
     this.onDeleteNote,
     this.onDeleteFolder,
     this.onToggleModeration,
+    this.onApprovalNoticeTap,
+    this.onResolvePublicApproval,
+    this.isPublicApprovalProcessing,
+    this.isPublicApprovalBellSuppressed,
     this.focusedNoteId,
   });
 
@@ -1273,6 +1555,10 @@ class _LessonNoteList extends StatefulWidget {
   final ValueChanged<LessonNote>? onDeleteNote;
   final ValueChanged<LessonNoteFolder>? onDeleteFolder;
   final ValueChanged<LessonNote>? onToggleModeration;
+  final ValueChanged<LessonNote>? onApprovalNoticeTap;
+  final ValueChanged<LessonNote>? onResolvePublicApproval;
+  final bool Function(LessonNote note)? isPublicApprovalProcessing;
+  final bool Function(LessonNote note)? isPublicApprovalBellSuppressed;
   final String? focusedNoteId;
 
   @override
@@ -1335,7 +1621,8 @@ class _LessonNoteListState extends State<_LessonNoteList> {
 
   Widget _buildNoteCard(LessonNote note) {
     final noteId = note.id;
-    final isFocused = _safeFocusedNoteId.isNotEmpty && noteId == _safeFocusedNoteId;
+    final isFocused =
+        _safeFocusedNoteId.isNotEmpty && noteId == _safeFocusedNoteId;
     final card = _LessonNoteCard(
       key: noteId == null || noteId.isEmpty ? null : _noteKey(noteId),
       note: note,
@@ -1343,15 +1630,18 @@ class _LessonNoteListState extends State<_LessonNoteList> {
       showAuthor: widget.showAuthor,
       onDelete: widget.onDeleteNote,
       onToggleModeration: widget.onToggleModeration,
+      onApprovalNoticeTap: widget.onApprovalNoticeTap,
+      onResolvePublicApproval: widget.onResolvePublicApproval,
+      isPublicApprovalProcessing:
+          widget.isPublicApprovalProcessing?.call(note) ?? false,
+      suppressPublicApprovalBell:
+          widget.isPublicApprovalBellSuppressed?.call(note) ?? false,
       isHighlighted: isFocused,
     );
     if (noteId == null || noteId.isEmpty) {
       return card;
     }
-    return KeyedSubtree(
-      key: ValueKey('lesson-note-card-$noteId'),
-      child: card,
-    );
+    return KeyedSubtree(key: ValueKey('lesson-note-card-$noteId'), child: card);
   }
 
   void _scheduleAutoScroll(List<LessonNote> notes) {
@@ -1433,7 +1723,8 @@ class _LessonNoteListState extends State<_LessonNoteList> {
 
     for (final folder in widget.folders) {
       final folderNotes = notesByFolder.remove(folder.id ?? '') ?? const [];
-      final shouldExpand = _safeFocusedNoteId.isNotEmpty &&
+      final shouldExpand =
+          _safeFocusedNoteId.isNotEmpty &&
           folderNotes.any((note) => note.id == _safeFocusedNoteId);
       widgets.add(
         _LessonNoteFolderTile(
@@ -1537,6 +1828,10 @@ class _LessonNoteCard extends StatelessWidget {
     this.showAuthor = false,
     this.onDelete,
     this.onToggleModeration,
+    this.onApprovalNoticeTap,
+    this.onResolvePublicApproval,
+    this.isPublicApprovalProcessing = false,
+    this.suppressPublicApprovalBell = false,
     this.isHighlighted = false,
   });
 
@@ -1545,6 +1840,10 @@ class _LessonNoteCard extends StatelessWidget {
   final bool showAuthor;
   final ValueChanged<LessonNote>? onDelete;
   final ValueChanged<LessonNote>? onToggleModeration;
+  final ValueChanged<LessonNote>? onApprovalNoticeTap;
+  final ValueChanged<LessonNote>? onResolvePublicApproval;
+  final bool isPublicApprovalProcessing;
+  final bool suppressPublicApprovalBell;
   final bool isHighlighted;
 
   @override
@@ -1554,6 +1853,9 @@ class _LessonNoteCard extends StatelessWidget {
         note: note,
         onTap: onTap,
         onToggleModeration: onToggleModeration,
+        onResolvePublicApproval: onResolvePublicApproval,
+        isPublicApprovalProcessing: isPublicApprovalProcessing,
+        suppressPublicApprovalBell: suppressPublicApprovalBell,
       );
     }
     final highlightedBorderColor = Theme.of(context).colorScheme.primary;
@@ -1595,6 +1897,16 @@ class _LessonNoteCard extends StatelessWidget {
                       ],
                     ),
                   ),
+                  if (onApprovalNoticeTap != null &&
+                      (note.isPublicApprovalPending ||
+                          note.isPublicApprovalRejected))
+                    _AnimatedAttentionIconButton(
+                      icon: Icons.warning_amber_rounded,
+                      color: Colors.amber.shade700,
+                      tooltip: '公開申請の状態',
+                      animate: note.isPublicApprovalRejected,
+                      onPressed: () => onApprovalNoticeTap!(note),
+                    ),
                   if (onDelete != null)
                     IconButton(
                       onPressed: () => onDelete!(note),
@@ -1625,11 +1937,17 @@ class _PublicLessonNoteCard extends StatelessWidget {
     required this.note,
     required this.onTap,
     required this.onToggleModeration,
+    required this.onResolvePublicApproval,
+    required this.isPublicApprovalProcessing,
+    required this.suppressPublicApprovalBell,
   });
 
   final LessonNote note;
   final ValueChanged<LessonNote>? onTap;
   final ValueChanged<LessonNote>? onToggleModeration;
+  final ValueChanged<LessonNote>? onResolvePublicApproval;
+  final bool isPublicApprovalProcessing;
+  final bool suppressPublicApprovalBell;
 
   @override
   Widget build(BuildContext context) {
@@ -1720,12 +2038,15 @@ class _PublicLessonNoteCard extends StatelessWidget {
                                   Text(note.body.isEmpty ? '本文なし' : note.body),
                                   if (note.tags.isNotEmpty) ...[
                                     const SizedBox(height: 8),
-                                    Text(note.tags.map((tag) => '#$tag').join(' ')),
+                                    Text(
+                                      note.tags.map((tag) => '#$tag').join(' '),
+                                    ),
                                   ],
                                 ],
                               ),
                             ),
-                            if (note.hasCitationEdits && (note.id ?? '').isNotEmpty)
+                            if (note.hasCitationEdits &&
+                                (note.id ?? '').isNotEmpty)
                               Positioned(
                                 top: 8,
                                 right: 8,
@@ -1752,13 +2073,43 @@ class _PublicLessonNoteCard extends StatelessWidget {
                                     ),
                                     child: Text(
                                       '編集済',
-                                      style: Theme.of(context).textTheme.labelSmall
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .labelSmall
                                           ?.copyWith(
                                             color: Theme.of(
                                               context,
                                             ).colorScheme.onTertiaryContainer,
                                           ),
                                     ),
+                                  ),
+                                ),
+                              ),
+                            if (onResolvePublicApproval != null &&
+                                note.isPublicApprovalPending &&
+                                !suppressPublicApprovalBell &&
+                                !isPublicApprovalProcessing)
+                              Positioned(
+                                top: 8,
+                                right: note.hasCitationEdits ? 56 : 8,
+                                child: _AnimatedAttentionIconButton(
+                                  icon: Icons.notifications_active_outlined,
+                                  color: Colors.red.shade400,
+                                  tooltip: '公開申請の確認',
+                                  animate: true,
+                                  onPressed: () =>
+                                      onResolvePublicApproval!(note),
+                                ),
+                              ),
+                            if (isPublicApprovalProcessing)
+                              Positioned(
+                                top: 14,
+                                right: note.hasCitationEdits ? 62 : 14,
+                                child: const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
                                   ),
                                 ),
                               ),
@@ -1770,6 +2121,10 @@ class _PublicLessonNoteCard extends StatelessWidget {
                             Text(
                               note.isTeacherHidden
                                   ? '先生が非公開化中'
+                                  : note.isPublicApprovalPending
+                                  ? '公開申請中'
+                                  : note.isPublicApprovalRejected
+                                  ? '公開申請が不許可'
                                   : note.isStudentPublic
                                   ? '学習者にも公開'
                                   : '先生にだけ公開',
@@ -1940,7 +2295,12 @@ String _noteToggleStatusLabel(LessonNote note) {
       ? '先生のみ'
       : 'OFF';
   final isCitationOn = note.allowsQuestionCitation ? 'ON' : 'OFF';
-  return '公開:$visibilityLabel / 引用:$isCitationOn';
+  final approvalLabel = note.isPublicApprovalPending
+      ? ' / 承認:申請中'
+      : note.isPublicApprovalRejected
+      ? ' / 承認:不許可'
+      : '';
+  return '公開:$visibilityLabel / 引用:$isCitationOn$approvalLabel';
 }
 
 class _LessonNoteEditorPage extends StatefulWidget {
@@ -1978,6 +2338,7 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
   LessonNoteVisibility _visibility = LessonNoteVisibility.private;
   final Set<String> _attachmentTypes = {};
   bool _allowsQuestionCitation = false;
+  bool _requestPublicApproval = false;
   bool _isSaving = false;
 
   @override
@@ -1993,6 +2354,7 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
     _visibility = note?.visibility ?? LessonNoteVisibility.private;
     _attachmentTypes.addAll(note?.attachmentTypes ?? const []);
     _allowsQuestionCitation = note?.allowsQuestionCitation ?? false;
+    _requestPublicApproval = note?.isPublicApprovalPending ?? false;
   }
 
   @override
@@ -2011,9 +2373,18 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
     canPublish: widget.note?.canPublish ?? true,
   );
 
-  bool get _isPublicLocked => widget.note?.visibility == LessonNoteVisibility.public;
+  bool get _isPublicLocked =>
+      widget.note?.visibility == LessonNoteVisibility.public;
+
+  bool get _isTeacherOnlyLocked =>
+      widget.note?.visibility == LessonNoteVisibility.teacherOnly;
+
+  bool get _isCitationLocked => widget.note?.allowsQuestionCitation == true;
 
   bool get _canChangeVisibility => _canPublish && !_isPublicLocked;
+
+  bool get _wasPendingApproval =>
+      widget.note?.isPublicApprovalPending == true;
 
   Future<void> _save() async {
     setState(() {
@@ -2035,6 +2406,10 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
         folderName: selectedFolder?.name ?? '',
         visibility: _isPublicLocked
             ? LessonNoteVisibility.public
+            : _isTeacherOnlyLocked
+            ? _visibility == LessonNoteVisibility.public
+                  ? LessonNoteVisibility.public
+                  : LessonNoteVisibility.teacherOnly
             : _canPublish
             ? _visibility
             : LessonNoteVisibility.private,
@@ -2045,7 +2420,11 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
         isCopied: widget.note?.isCopied ?? false,
         canPublish: widget.note?.canPublish ?? true,
         allowsQuestionCitation: _allowsQuestionCitation,
+        requestPublicApproval: _requestPublicApproval,
         wasPublic: widget.note?.visibility == LessonNoteVisibility.public,
+        wasTeacherOnly:
+            widget.note?.visibility == LessonNoteVisibility.teacherOnly,
+        wasPublicApprovalPending: widget.note?.isPublicApprovalPending == true,
       ),
     );
     if (!mounted) {
@@ -2142,7 +2521,9 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
               label: '音声',
               value: lessonNoteAttachmentAudio,
               selected: _hasAudioAttachment,
-              onSelected: _isPublicLocked ? null : _toggleAttachment,
+              onSelected: _isPublicLocked || _isTeacherOnlyLocked
+                  ? null
+                  : _toggleAttachment,
             ),
           ],
         ),
@@ -2151,23 +2532,49 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
           const Text('音声添付またはコピー元メモは公開できません。'),
         ],
         SwitchListTile(
-          title: const Text('受講者と先生に公開する'),
+          title: Row(
+            children: [
+              const Expanded(child: Text('受講者と先生に公開する')),
+              if (_wasPendingApproval)
+                Text(
+                  '申請中（現時点では未公開）',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.error,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+            ],
+          ),
           subtitle: Text(
-            _isPublicLocked
+            _wasPendingApproval
+                ? '先生の許可待ちです。保存するまで申請中表示は消えません。'
+                : _isPublicLocked
                 ? '一度公開したメモは後から非公開に戻せません。本文などは編集できます。'
+                : _isTeacherOnlyLocked
+                ? 'オフにすると先生だけ公開に戻ります。'
                 : '公開メモは同じ講座・レッスンのユーザーが閲覧できます。',
           ),
           value:
-              (_visibility == LessonNoteVisibility.public || _isPublicLocked) &&
+              (_visibility == LessonNoteVisibility.public ||
+                  _isPublicLocked ||
+                  (_wasPendingApproval && _requestPublicApproval)) &&
               _canPublish,
           onChanged: !_canChangeVisibility
               ? null
               : (value) {
+                  final wasTeacherOnly =
+                      _visibility == LessonNoteVisibility.teacherOnly;
                   setState(() {
                     _visibility = value
                         ? LessonNoteVisibility.public
+                        : _isTeacherOnlyLocked
+                        ? LessonNoteVisibility.teacherOnly
                         : LessonNoteVisibility.private;
+                    _requestPublicApproval = value && wasTeacherOnly;
                   });
+                  if (value && wasTeacherOnly && !_wasPendingApproval) {
+                    unawaited(_showPublicApprovalRequiredDialog());
+                  }
                 },
         ),
         SwitchListTile(
@@ -2175,12 +2582,15 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
           subtitle: Text(
             _isPublicLocked
                 ? '一度受講者にも公開したメモは、先生だけ公開に戻せません。'
+                : _isTeacherOnlyLocked
+                ? '一度先生にだけ公開したメモは、完全非公開に戻せません。'
                 : 'オンの場合は先生だけが閲覧できます。',
           ),
           value: _visibility == LessonNoteVisibility.teacherOnly && _canPublish,
           onChanged:
               !_canPublish ||
                   _isPublicLocked ||
+                  _isTeacherOnlyLocked ||
                   _visibility == LessonNoteVisibility.public
               ? null
               : (value) {
@@ -2188,18 +2598,21 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
                     _visibility = value
                         ? LessonNoteVisibility.teacherOnly
                         : LessonNoteVisibility.private;
+                    _requestPublicApproval = false;
                   });
                 },
         ),
         SwitchListTile(
           title: const Text('質問での引用を許可する'),
           subtitle: Text(
-            _allowsQuestionCitation
+            _isCitationLocked
                 ? '一度許可した引用は後から取り消せません。'
+                : _allowsQuestionCitation
+                ? '保存するまでは引用許可を取り消せます。'
                 : '許可すると、他の学習者がこの公開メモを引用して質問できます。',
           ),
           value: _allowsQuestionCitation,
-          onChanged: !_canPublish || _allowsQuestionCitation
+          onChanged: !_canPublish || _isCitationLocked
               ? null
               : (value) {
                   setState(() {
@@ -2246,17 +2659,37 @@ class _LessonNoteEditorPageState extends State<_LessonNoteEditorPage> {
   void _toggleAttachment(String value, bool selected) {
     setState(() {
       if (selected) {
-        if (_isPublicLocked && value == lessonNoteAttachmentAudio) {
+        if ((_isPublicLocked || _isTeacherOnlyLocked) &&
+            value == lessonNoteAttachmentAudio) {
           return;
         }
         _attachmentTypes.add(value);
         if (value == lessonNoteAttachmentAudio) {
           _visibility = LessonNoteVisibility.private;
+          _requestPublicApproval = false;
         }
       } else {
         _attachmentTypes.remove(value);
       }
     });
+  }
+
+  Future<void> _showPublicApprovalRequiredDialog() async {
+    if (!mounted) {
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        content: const Text('先生が受講者に公開することを許可すれば公開されます。'),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -2285,6 +2718,89 @@ class _AttachmentChip extends StatelessWidget {
   }
 }
 
+class _AnimatedAttentionIconButton extends StatefulWidget {
+  const _AnimatedAttentionIconButton({
+    required this.icon,
+    required this.color,
+    required this.tooltip,
+    required this.animate,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String tooltip;
+  final bool animate;
+  final VoidCallback onPressed;
+
+  @override
+  State<_AnimatedAttentionIconButton> createState() =>
+      _AnimatedAttentionIconButtonState();
+}
+
+class _AnimatedAttentionIconButtonState
+    extends State<_AnimatedAttentionIconButton>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _rotation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 550),
+    );
+    _rotation = Tween<double>(
+      begin: -0.22,
+      end: 0.22,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
+    if (widget.animate) {
+      _controller.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _AnimatedAttentionIconButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.animate == widget.animate) {
+      return;
+    }
+    if (widget.animate) {
+      _controller.repeat(reverse: true);
+    } else {
+      _controller.stop();
+      _controller.reset();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: widget.tooltip,
+      onPressed: widget.onPressed,
+      icon: AnimatedBuilder(
+        animation: _rotation,
+        builder: (context, child) {
+          return Transform.rotate(
+            angle: widget.animate ? _rotation.value : 0,
+            child: child,
+          );
+        },
+        child: Icon(widget.icon, color: widget.color),
+      ),
+    );
+  }
+}
+
+enum _PublicApprovalDecision { approve, reject }
+
 class _LessonNoteDraft {
   const _LessonNoteDraft({
     required this.noteId,
@@ -2300,7 +2816,10 @@ class _LessonNoteDraft {
     required this.isCopied,
     required this.canPublish,
     required this.allowsQuestionCitation,
+    required this.requestPublicApproval,
     required this.wasPublic,
+    required this.wasTeacherOnly,
+    required this.wasPublicApprovalPending,
   });
 
   final String? noteId;
@@ -2316,5 +2835,8 @@ class _LessonNoteDraft {
   final bool isCopied;
   final bool canPublish;
   final bool allowsQuestionCitation;
+  final bool requestPublicApproval;
   final bool wasPublic;
+  final bool wasTeacherOnly;
+  final bool wasPublicApprovalPending;
 }

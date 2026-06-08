@@ -20,6 +20,10 @@ const String lessonNoteAttachmentAudio = 'audio';
 const String lessonNoteModerationVisible = lessonInteractionModerationVisible;
 const String lessonNoteModerationHiddenByTeacher =
     lessonInteractionModerationHiddenByTeacher;
+const String lessonNotePublicApprovalNone = 'none';
+const String lessonNotePublicApprovalPending = 'pending';
+const String lessonNotePublicApprovalApproved = 'approved';
+const String lessonNotePublicApprovalRejected = 'rejected';
 const Duration lessonNoteCitationEditFreeWindow = Duration(minutes: 30);
 const Duration lessonNoteCitationCompareRetentionWindow = Duration(days: 7);
 const int lessonNoteCitationEditLimitInWindow = 3;
@@ -95,6 +99,7 @@ class LessonNote {
     this.isDeleted = false,
     this.deletedAt,
     this.moderationStatus = lessonNoteModerationVisible,
+    this.publicApprovalStatus = lessonNotePublicApprovalNone,
   });
 
   final String? id;
@@ -133,6 +138,7 @@ class LessonNote {
   final bool isDeleted;
   final Timestamp? deletedAt;
   final String moderationStatus;
+  final String publicApprovalStatus;
 
   bool get isPublic => visibility == LessonNoteVisibility.public;
   bool get isTeacherOnly => visibility == LessonNoteVisibility.teacherOnly;
@@ -142,9 +148,14 @@ class LessonNote {
       (studentVisibility ?? visibility) == LessonNoteVisibility.teacherOnly;
   bool get isTeacherHidden =>
       moderationStatus == lessonNoteModerationHiddenByTeacher;
+  bool get isPublicApprovalPending =>
+      publicApprovalStatus == lessonNotePublicApprovalPending;
+  bool get isPublicApprovalRejected =>
+      publicApprovalStatus == lessonNotePublicApprovalRejected;
   bool get isPubliclyVisible =>
       isStudentPublic && !isDeleted && !isTeacherHidden;
-  bool get isCitationProtectedPublicMemo => hasPublicMirror && allowsQuestionCitation;
+  bool get isCitationProtectedPublicMemo =>
+      hasPublicMirror && allowsQuestionCitation;
   bool get hasCitationEdits => citationEditCount > 0;
 
   factory LessonNote.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
@@ -208,8 +219,20 @@ class LessonNote {
       deletedAt: data['deletedAt'] as Timestamp?,
       moderationStatus:
           data['moderationStatus'] as String? ?? lessonNoteModerationVisible,
+      publicApprovalStatus: normalizeLessonNotePublicApprovalStatus(
+        data['publicApprovalStatus'] as String?,
+      ),
     );
   }
+}
+
+String normalizeLessonNotePublicApprovalStatus(String? value) {
+  return switch (value) {
+    lessonNotePublicApprovalPending => lessonNotePublicApprovalPending,
+    lessonNotePublicApprovalApproved => lessonNotePublicApprovalApproved,
+    lessonNotePublicApprovalRejected => lessonNotePublicApprovalRejected,
+    _ => lessonNotePublicApprovalNone,
+  };
 }
 
 List<String> parseLessonNoteTags(String input) {
@@ -371,11 +394,12 @@ DateTime? lessonNoteEditLockUntil({
   }
   final nowUtc = (now ?? DateTime.now()).toUtc();
   final threshold = nowUtc.subtract(window);
-  final recent = countableEditTimes
-      .map((entry) => entry.toDate().toUtc())
-      .where((entry) => !entry.isBefore(threshold))
-      .toList()
-    ..sort((a, b) => b.compareTo(a));
+  final recent =
+      countableEditTimes
+          .map((entry) => entry.toDate().toUtc())
+          .where((entry) => !entry.isBefore(threshold))
+          .toList()
+        ..sort((a, b) => b.compareTo(a));
   if (recent.length < limit) {
     return null;
   }

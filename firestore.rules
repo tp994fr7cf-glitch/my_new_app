@@ -463,10 +463,21 @@ service cloud.firestore {
               || request.resource.data.isDeleted is bool)
             && (!request.resource.data.keys().hasAny(['moderationStatus'])
               || request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'])
+            && (!request.resource.data.keys().hasAny(['publicApprovalStatus'])
+              || request.resource.data.publicApprovalStatus in ['none', 'pending', 'approved', 'rejected'])
             && (request.resource.data.visibility == 'private'
               || (request.resource.data.hasAudioAttachment == false
                 && request.resource.data.isCopied == false
                 && request.resource.data.canPublish == true));
+        }
+
+        function instructorCanResolveLessonNoteApproval(userId) {
+          return signedIn()
+            && (resource.data.authorId == userId || resource.data.userId == userId)
+            && (
+              resource.data.instructorId == request.auth.uid
+              || isCourseInstructor(resource.data.courseId)
+            );
         }
 
         allow create: if isOwner(userId)
@@ -485,8 +496,35 @@ service cloud.firestore {
               && resource.data.visibility != 'teacherOnly')
             || (resource.data.visibility == 'public'
               && request.resource.data.visibility == 'public')
-            || (resource.data.visibility != 'public')
+            || (resource.data.visibility == 'teacherOnly'
+              && request.resource.data.visibility == 'teacherOnly')
+            || (resource.data.visibility != 'public'
+              && resource.data.visibility != 'teacherOnly')
             || request.resource.data.isDeleted == true);
+
+        allow update: if signedIn()
+          && instructorCanResolveLessonNoteApproval(userId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'visibility',
+            'publicApprovalStatus',
+            'updatedAt'
+          ])
+          && resource.data.visibility == 'teacherOnly'
+          && resource.data.publicApprovalStatus == 'pending'
+          && request.resource.data.visibility == 'public'
+          && request.resource.data.publicApprovalStatus == 'approved';
+
+        allow update: if signedIn()
+          && instructorCanResolveLessonNoteApproval(userId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'visibility',
+            'publicApprovalStatus',
+            'updatedAt'
+          ])
+          && resource.data.visibility == 'teacherOnly'
+          && resource.data.publicApprovalStatus == 'pending'
+          && request.resource.data.visibility == 'teacherOnly'
+          && request.resource.data.publicApprovalStatus == 'rejected';
       }
 
       match /lessonQuestions/{questionId} {
@@ -666,7 +704,9 @@ service cloud.firestore {
           && (!request.resource.data.keys().hasAny(['publicPublishedAt'])
             || request.resource.data.publicPublishedAt is timestamp)
           && (!request.resource.data.keys().hasAny(['moderationStatus'])
-            || request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher']);
+            || request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'])
+          && (!request.resource.data.keys().hasAny(['publicApprovalStatus'])
+            || request.resource.data.publicApprovalStatus in ['none', 'pending', 'approved', 'rejected']);
       }
 
       allow create: if signedIn()
@@ -682,6 +722,8 @@ service cloud.firestore {
           || resource.data.allowsQuestionCitation != true
           || request.resource.data.allowsQuestionCitation == true)
         && request.resource.data.studentVisibility in ['public', 'teacherOnly']
+        && (resource.data.studentVisibility != 'teacherOnly'
+          || request.resource.data.studentVisibility == 'teacherOnly')
         && (resource.data.studentVisibility != 'public'
           || request.resource.data.studentVisibility == 'public')
         && ((!resource.data.keys().hasAny(['moderationStatus'])
@@ -701,6 +743,36 @@ service cloud.firestore {
         ])
         && request.resource.data.studentVisibility == 'private'
         && request.resource.data.isDeleted == true;
+
+      function instructorCanResolvePublicLessonNoteApproval() {
+        return resource.data.instructorId == request.auth.uid
+          || isCourseInstructor(resource.data.courseId);
+      }
+
+      allow update: if signedIn()
+        && instructorCanResolvePublicLessonNoteApproval()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'studentVisibility',
+          'publicApprovalStatus',
+          'publicPublishedAt',
+          'updatedAt'
+        ])
+        && resource.data.studentVisibility == 'teacherOnly'
+        && resource.data.publicApprovalStatus == 'pending'
+        && request.resource.data.studentVisibility == 'public'
+        && request.resource.data.publicApprovalStatus == 'approved';
+
+      allow update: if signedIn()
+        && instructorCanResolvePublicLessonNoteApproval()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'studentVisibility',
+          'publicApprovalStatus',
+          'updatedAt'
+        ])
+        && resource.data.studentVisibility == 'teacherOnly'
+        && resource.data.publicApprovalStatus == 'pending'
+        && request.resource.data.studentVisibility == 'teacherOnly'
+        && request.resource.data.publicApprovalStatus == 'rejected';
 
       allow update: if signedIn()
         && isCourseInstructor(resource.data.courseId)

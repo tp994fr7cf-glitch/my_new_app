@@ -454,7 +454,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final focusedTileFinder = find.byKey(const ValueKey('lesson-note-card-note-30'));
+    final focusedTileFinder = find.byKey(
+      const ValueKey('lesson-note-card-note-30'),
+    );
     expect(focusedTileFinder, findsOneWidget);
     expect(find.text('メモ30'), findsOneWidget);
 
@@ -463,10 +465,9 @@ void main() {
       matching: find.byType(Card),
     );
     final focusedCard = tester.widget<Card>(focusedCardFinder.first);
-    final expectedColor =
-        Theme.of(tester.element(find.byType(LessonNotesPage)))
-            .colorScheme
-            .secondaryContainer;
+    final expectedColor = Theme.of(
+      tester.element(find.byType(LessonNotesPage)),
+    ).colorScheme.secondaryContainer;
     expect(focusedCard.color, expectedColor);
 
     final focusedTop = tester.getTopLeft(focusedTileFinder).dy;
@@ -518,7 +519,9 @@ void main() {
     expect(find.text('公開:ON / 引用:ON'), findsOneWidget);
   });
 
-  testWidgets('Own note tap opens shared preview before editor', (tester) async {
+  testWidgets('Own note tap opens shared preview before editor', (
+    tester,
+  ) async {
     const ownNote = LessonNote(
       id: 'own-note-preview',
       authorId: 'user-a',
@@ -561,7 +564,9 @@ void main() {
     expect(find.text('タイトル'), findsNothing);
   });
 
-  testWidgets('Embedded own note tap opens preview before editor', (tester) async {
+  testWidgets('Embedded own note tap opens preview before editor', (
+    tester,
+  ) async {
     const ownNote = LessonNote(
       id: 'embedded-own-note-preview',
       authorId: 'user-a',
@@ -702,7 +707,315 @@ void main() {
       find.widgetWithText(SwitchListTile, '質問での引用を許可する'),
     );
     expect(allowedCitationSwitch.value, isTrue);
-    expect(allowedCitationSwitch.onChanged, isNull);
+    expect(allowedCitationSwitch.onChanged, isNotNull);
+
+    await tester.tap(find.text('質問での引用を許可する'));
+    await tester.pumpAndSettle();
+
+    final citationSwitchAfterCancel = tester.widget<SwitchListTile>(
+      find.widgetWithText(SwitchListTile, '質問での引用を許可する'),
+    );
+    expect(citationSwitchAfterCancel.value, isFalse);
+    expect(citationSwitchAfterCancel.onChanged, isNotNull);
+  });
+
+  testWidgets(
+    'Teacher-only notes cannot be reverted to private while editing',
+    (tester) async {
+      const teacherOnlyNote = LessonNote(
+        id: 'locked-teacher-only-note',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '先生だけ公開済みメモ',
+        body: '先生向けに保存済みです。',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.teacherOnly,
+        studentVisibility: LessonNoteVisibility.teacherOnly,
+        tags: [],
+        attachmentTypes: [],
+        hasAudioAttachment: false,
+        isCopied: false,
+        canPublish: true,
+        hasPublicMirror: true,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LessonNotesPage(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            notesStream: Stream.value(const [teacherOnlyNote]),
+            publicNotesStream: Stream.value(const []),
+            foldersStream: Stream.value(const []),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('先生だけ公開済みメモ'));
+      await tester.pumpAndSettle();
+      expect(find.text('このメモを編集'), findsOneWidget);
+      await tester.tap(find.text('このメモを編集'));
+      await tester.pumpAndSettle();
+      await tester.drag(find.byType(ListView).last, const Offset(0, -700));
+      await tester.pumpAndSettle();
+
+      final teacherOnlySwitch = tester.widget<SwitchListTile>(
+        find.widgetWithText(SwitchListTile, '先生にだけ公開する'),
+      );
+      expect(teacherOnlySwitch.value, isTrue);
+      expect(teacherOnlySwitch.onChanged, isNull);
+      expect(find.text('一度先生にだけ公開したメモは、完全非公開に戻せません。'), findsOneWidget);
+
+      final publicSwitchFinder = find.widgetWithText(
+        SwitchListTile,
+        '受講者と先生に公開する',
+      );
+      final publicSwitchBefore = tester.widget<SwitchListTile>(
+        publicSwitchFinder,
+      );
+      expect(publicSwitchBefore.value, isFalse);
+      expect(publicSwitchBefore.onChanged, isNotNull);
+
+      await tester.tap(find.text('受講者と先生に公開する'));
+      await tester.pumpAndSettle();
+      expect(find.text('先生が受講者に公開することを許可すれば公開されます。'), findsOneWidget);
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+
+      final publicSwitchOn = tester.widget<SwitchListTile>(publicSwitchFinder);
+      expect(publicSwitchOn.value, isTrue);
+
+      await tester.tap(find.text('受講者と先生に公開する'));
+      await tester.pumpAndSettle();
+      final publicSwitchOff = tester.widget<SwitchListTile>(publicSwitchFinder);
+      expect(publicSwitchOff.value, isFalse);
+
+      final teacherOnlySwitchAfterToggle = tester.widget<SwitchListTile>(
+        find.widgetWithText(SwitchListTile, '先生にだけ公開する'),
+      );
+      expect(teacherOnlySwitchAfterToggle.value, isTrue);
+    },
+  );
+
+  testWidgets('Pending approval note shows student notice dialog', (
+    tester,
+  ) async {
+    const pendingNote = LessonNote(
+      id: 'pending-note',
+      authorId: 'user-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '申請中メモ',
+      body: '先生の許可待ちです。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.teacherOnly,
+      studentVisibility: LessonNoteVisibility.teacherOnly,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      hasPublicMirror: true,
+      publicApprovalStatus: lessonNotePublicApprovalPending,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LessonNotesPage(
+          course: course,
+          lesson: lesson,
+          lessonNumber: 1,
+          notesStream: Stream.value(const [pendingNote]),
+          publicNotesStream: Stream.value(const []),
+          foldersStream: Stream.value(const []),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byTooltip('公開申請の状態'), findsOneWidget);
+    await tester.tap(find.byTooltip('公開申請の状態'));
+    await tester.pumpAndSettle();
+    expect(find.text('現在先生に許可申請中です。'), findsOneWidget);
+
+    await tester.tap(find.text('OK'));
+    await tester.pump(const Duration(milliseconds: 300));
+  });
+
+  testWidgets('Pending approval stays labeled while editing before save', (
+    tester,
+  ) async {
+    const pendingNote = LessonNote(
+      id: 'pending-edit-note',
+      authorId: 'user-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '編集中の申請メモ',
+      body: '公開申請中です。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.teacherOnly,
+      studentVisibility: LessonNoteVisibility.teacherOnly,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      hasPublicMirror: true,
+      publicApprovalStatus: lessonNotePublicApprovalPending,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LessonNotesPage(
+          course: course,
+          lesson: lesson,
+          lessonNumber: 1,
+          notesStream: Stream.value(const [pendingNote]),
+          publicNotesStream: Stream.value(const []),
+          foldersStream: Stream.value(const []),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('編集中の申請メモ'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('このメモを編集'));
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(ListView).last, const Offset(0, -700));
+    await tester.pumpAndSettle();
+
+    final publicSwitchFinder = find.widgetWithText(
+      SwitchListTile,
+      '受講者と先生に公開する',
+    );
+    final publicSwitchOn = tester.widget<SwitchListTile>(publicSwitchFinder);
+    expect(publicSwitchOn.value, isTrue);
+    expect(find.text('申請中（現時点では未公開）'), findsOneWidget);
+
+    await tester.tap(find.text('受講者と先生に公開する'));
+    await tester.pumpAndSettle();
+
+    final publicSwitchOff = tester.widget<SwitchListTile>(publicSwitchFinder);
+    expect(publicSwitchOff.value, isFalse);
+    expect(find.text('申請中（現時点では未公開）'), findsOneWidget);
+  });
+
+  testWidgets('Rejected approval note shows rejection dialog', (tester) async {
+    const rejectedNote = LessonNote(
+      id: 'rejected-note',
+      authorId: 'user-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '不許可メモ',
+      body: '公開不許可です。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.teacherOnly,
+      studentVisibility: LessonNoteVisibility.teacherOnly,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      hasPublicMirror: true,
+      publicApprovalStatus: lessonNotePublicApprovalRejected,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LessonNotesPage(
+          course: course,
+          lesson: lesson,
+          lessonNumber: 1,
+          notesStream: Stream.value(const [rejectedNote]),
+          publicNotesStream: Stream.value(const []),
+          foldersStream: Stream.value(const []),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byTooltip('公開申請の状態'), findsOneWidget);
+    await tester.tap(find.byTooltip('公開申請の状態'));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('このメモの公開は許可されませんでした。'), findsOneWidget);
+
+    await tester.tap(find.text('OK'));
+    await tester.pump(const Duration(milliseconds: 300));
+  });
+
+  testWidgets('Teacher preview shows approval bell and decision dialog', (
+    tester,
+  ) async {
+    const pendingPublicNote = LessonNote(
+      id: 'pending-public-note',
+      authorId: 'student-b',
+      authorName: '別の学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '公開申請中のメモ',
+      body: '先生の確認が必要です。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.public,
+      studentVisibility: LessonNoteVisibility.teacherOnly,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      hasPublicMirror: true,
+      publicApprovalStatus: lessonNotePublicApprovalPending,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonNotesPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            publicNotesStream: Stream.value(const [pendingPublicNote]),
+            isTeacherPreview: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('公開申請中'), findsOneWidget);
+    expect(find.byIcon(Icons.notifications_active_outlined), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.notifications_active_outlined));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('このメモを受講者にも公開しますか？'), findsOneWidget);
+    expect(find.text('許可しない'), findsOneWidget);
+    expect(find.text('許可'), findsOneWidget);
+
+    await tester.tap(find.text('キャンセル'));
+    await tester.pump(const Duration(milliseconds: 300));
   });
 
   testWidgets('Allowed question citation cannot be turned off while editing', (
