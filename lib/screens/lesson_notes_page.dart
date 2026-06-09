@@ -24,6 +24,7 @@ class LessonNotesPage extends StatelessWidget {
     this.publicNotesStream,
     this.foldersStream,
     this.initialFocusNoteId,
+    this.teacherHiddenOwnNoteIdsStream,
   });
 
   final Course course;
@@ -33,6 +34,7 @@ class LessonNotesPage extends StatelessWidget {
   final Stream<List<LessonNote>>? publicNotesStream;
   final Stream<List<LessonNoteFolder>>? foldersStream;
   final String? initialFocusNoteId;
+  final Stream<Set<String>>? teacherHiddenOwnNoteIdsStream;
 
   @override
   Widget build(BuildContext context) {
@@ -46,6 +48,7 @@ class LessonNotesPage extends StatelessWidget {
         publicNotesStream: publicNotesStream,
         foldersStream: foldersStream,
         initialFocusNoteId: initialFocusNoteId,
+        teacherHiddenOwnNoteIdsStream: teacherHiddenOwnNoteIdsStream,
       ),
     );
   }
@@ -63,6 +66,7 @@ class LessonNotesPanel extends StatefulWidget {
     this.isEmbedded = false,
     this.isTeacherPreview = false,
     this.initialFocusNoteId,
+    this.teacherHiddenOwnNoteIdsStream,
   });
 
   final Course course;
@@ -74,6 +78,7 @@ class LessonNotesPanel extends StatefulWidget {
   final bool isEmbedded;
   final bool isTeacherPreview;
   final String? initialFocusNoteId;
+  final Stream<Set<String>>? teacherHiddenOwnNoteIdsStream;
 
   @override
   State<LessonNotesPanel> createState() => _LessonNotesPanelState();
@@ -194,6 +199,34 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
             _ownSort,
           );
         });
+  }
+
+  Stream<Set<String>> _teacherHiddenOwnNoteIdsStream() {
+    final provided = widget.teacherHiddenOwnNoteIdsStream;
+    if (provided != null) {
+      return provided;
+    }
+    if (Firebase.apps.isEmpty) {
+      return Stream.value(const <String>{});
+    }
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return Stream.value(const <String>{});
+    }
+
+    return FirebaseFirestore.instance
+        .collection('publicLessonNotes')
+        .where('courseId', isEqualTo: _courseId)
+        .where('lessonNumber', isEqualTo: widget.lessonNumber)
+        .where('interactionSettingId', isEqualTo: _interactionSettingId)
+        .where('authorId', isEqualTo: user.uid)
+        .where(
+          'moderationStatus',
+          isEqualTo: lessonNoteModerationHiddenByTeacher,
+        )
+        .where('isDeleted', isEqualTo: false)
+        .snapshots(includeMetadataChanges: true)
+        .map((snapshot) => snapshot.docs.map((doc) => doc.id).toSet());
   }
 
   Stream<List<LessonNote>> _publicNotesStream() {
@@ -1446,62 +1479,74 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
                         Expanded(
                           child: TabBarView(
                             children: [
-                              _LessonNoteList(
-                                notesStream: _notesStream(),
-                                folders: folders,
-                                query: _query,
-                                emptyText: 'このレッスンのメモはまだありません。',
-                                focusedNoteId: widget.initialFocusNoteId,
-                                onTap: (note) => _openOwnNotePreview(
-                                  note: note,
-                                  folders: folders,
-                                ),
-                                onDeleteNote: _confirmDeleteNote,
-                                onDeleteFolder: _confirmDeleteFolder,
-                                onApprovalNoticeTap:
-                                    _handleOwnPublicApprovalNoticeTap,
-                                action: Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.stretch,
-                                  children: [
-                                    SegmentedButton<LessonNotePublicSort>(
-                                      segments: const [
-                                        ButtonSegment(
-                                          value: LessonNotePublicSort.newest,
-                                          label: Text('新しい順'),
+                              StreamBuilder<Set<String>>(
+                                stream: _teacherHiddenOwnNoteIdsStream(),
+                                builder: (context, hiddenSnapshot) {
+                                  final hiddenOwnNoteIds =
+                                      hiddenSnapshot.data ?? const <String>{};
+                                  return _LessonNoteList(
+                                    notesStream: _notesStream(),
+                                    folders: folders,
+                                    query: _query,
+                                    emptyText: 'このレッスンのメモはまだありません。',
+                                    focusedNoteId: widget.initialFocusNoteId,
+                                    teacherHiddenNoteIds: hiddenOwnNoteIds,
+                                    onTap: (note) => _openOwnNotePreview(
+                                      note: note,
+                                      folders: folders,
+                                    ),
+                                    onDeleteNote: _confirmDeleteNote,
+                                    onDeleteFolder: _confirmDeleteFolder,
+                                    onApprovalNoticeTap:
+                                        _handleOwnPublicApprovalNoticeTap,
+                                    action: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      children: [
+                                        SegmentedButton<LessonNotePublicSort>(
+                                          segments: const [
+                                            ButtonSegment(
+                                              value:
+                                                  LessonNotePublicSort.newest,
+                                              label: Text('新しい順'),
+                                            ),
+                                            ButtonSegment(
+                                              value:
+                                                  LessonNotePublicSort.popular,
+                                              label: Text('人気順'),
+                                            ),
+                                            ButtonSegment(
+                                              value: LessonNotePublicSort
+                                                  .editedNewest,
+                                              label: Text('編集の新しい順'),
+                                            ),
+                                          ],
+                                          selected: {_ownSort},
+                                          onSelectionChanged: (selection) {
+                                            setState(() {
+                                              _ownSort = selection.first;
+                                            });
+                                          },
                                         ),
-                                        ButtonSegment(
-                                          value: LessonNotePublicSort.popular,
-                                          label: Text('人気順'),
+                                        const SizedBox(height: 8),
+                                        FilledButton.icon(
+                                          onPressed: () =>
+                                              _openEditor(folders: folders),
+                                          icon: const Icon(Icons.note_add),
+                                          label: const Text('メモを作成'),
                                         ),
-                                        ButtonSegment(
-                                          value:
-                                              LessonNotePublicSort.editedNewest,
-                                          label: Text('編集の新しい順'),
+                                        const SizedBox(height: 8),
+                                        OutlinedButton.icon(
+                                          onPressed: _createFolder,
+                                          icon: const Icon(
+                                            Icons.create_new_folder,
+                                          ),
+                                          label: const Text('フォルダを作成'),
                                         ),
                                       ],
-                                      selected: {_ownSort},
-                                      onSelectionChanged: (selection) {
-                                        setState(() {
-                                          _ownSort = selection.first;
-                                        });
-                                      },
                                     ),
-                                    const SizedBox(height: 8),
-                                    FilledButton.icon(
-                                      onPressed: () =>
-                                          _openEditor(folders: folders),
-                                      icon: const Icon(Icons.note_add),
-                                      label: const Text('メモを作成'),
-                                    ),
-                                    const SizedBox(height: 8),
-                                    OutlinedButton.icon(
-                                      onPressed: _createFolder,
-                                      icon: const Icon(Icons.create_new_folder),
-                                      label: const Text('フォルダを作成'),
-                                    ),
-                                  ],
-                                ),
+                                  );
+                                },
                               ),
                               _buildPublicNotesTab(),
                             ],
@@ -1655,6 +1700,7 @@ class _LessonNoteList extends StatefulWidget {
     this.isPublicApprovalProcessing,
     this.isPublicApprovalBellSuppressed,
     this.focusedNoteId,
+    this.teacherHiddenNoteIds = const <String>{},
   });
 
   final Stream<List<LessonNote>> notesStream;
@@ -1672,6 +1718,7 @@ class _LessonNoteList extends StatefulWidget {
   final bool Function(LessonNote note)? isPublicApprovalProcessing;
   final bool Function(LessonNote note)? isPublicApprovalBellSuppressed;
   final String? focusedNoteId;
+  final Set<String> teacherHiddenNoteIds;
 
   @override
   State<_LessonNoteList> createState() => _LessonNoteListState();
@@ -1735,11 +1782,16 @@ class _LessonNoteListState extends State<_LessonNoteList> {
     final noteId = note.id;
     final isFocused =
         _safeFocusedNoteId.isNotEmpty && noteId == _safeFocusedNoteId;
+    final showTeacherHiddenNotice =
+        noteId != null &&
+        noteId.isNotEmpty &&
+        widget.teacherHiddenNoteIds.contains(noteId);
     final card = _LessonNoteCard(
       key: noteId == null || noteId.isEmpty ? null : _noteKey(noteId),
       note: note,
       onTap: widget.onTap,
       showAuthor: widget.showAuthor,
+      showTeacherHiddenNotice: showTeacherHiddenNotice,
       onDelete: widget.onDeleteNote,
       onToggleModeration: widget.onToggleModeration,
       onApprovalNoticeTap: widget.onApprovalNoticeTap,
@@ -1938,6 +1990,7 @@ class _LessonNoteCard extends StatelessWidget {
     required this.note,
     required this.onTap,
     this.showAuthor = false,
+    this.showTeacherHiddenNotice = false,
     this.onDelete,
     this.onToggleModeration,
     this.onApprovalNoticeTap,
@@ -1950,6 +2003,7 @@ class _LessonNoteCard extends StatelessWidget {
   final LessonNote note;
   final ValueChanged<LessonNote>? onTap;
   final bool showAuthor;
+  final bool showTeacherHiddenNotice;
   final ValueChanged<LessonNote>? onDelete;
   final ValueChanged<LessonNote>? onToggleModeration;
   final ValueChanged<LessonNote>? onApprovalNoticeTap;
@@ -2039,11 +2093,27 @@ class _LessonNoteCard extends StatelessWidget {
               ),
               Align(
                 alignment: Alignment.centerRight,
-                child: Text(
-                  _noteToggleStatusLabel(note),
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+                child: Wrap(
+                  alignment: WrapAlignment.end,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 8,
+                  runSpacing: 2,
+                  children: [
+                    if (showTeacherHiddenNotice)
+                      Text(
+                        '先生によって非公開中',
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Theme.of(context).colorScheme.error,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    Text(
+                      _noteToggleStatusLabel(note),
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],

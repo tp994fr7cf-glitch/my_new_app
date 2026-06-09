@@ -601,7 +601,7 @@ void main() {
     expect(find.text('先生が非公開化した質問です。'), findsOneWidget);
   });
 
-  testWidgets('Learning records keep hidden answers as static records', (
+  testWidgets('Learning records open hidden answers when parent is available', (
     WidgetTester tester,
   ) async {
     final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
@@ -657,10 +657,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('先生が非公開化した回答です。'), findsOneWidget);
-    expect(
-      find.text('この回答コメントは削除済み、または現在は表示できません。学習記録として内容だけ表示しています。'),
-      findsOneWidget,
-    );
+    expect(find.text('タップしてコメント欄を開けます。'), findsOneWidget);
 
     final answerRecord = find.byKey(
       const ValueKey('answer-record-open-answer-hidden'),
@@ -670,10 +667,104 @@ void main() {
     await tester.tap(answerRecord);
     await tester.pumpAndSettle();
 
-    expect(find.text('質問詳細'), findsNothing);
+    expect(find.text('質問詳細'), findsOneWidget);
     expect(find.text('先生が非公開化した回答です。'), findsOneWidget);
-    expect(find.text('削除'), findsWidgets);
+    expect(find.text('先生により非公開中'), findsOneWidget);
   });
+
+  testWidgets(
+    'Learning records open hidden reply when parent answer is available',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
+      final question = LessonQuestion(
+        id: 'question-reply-hidden',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '親質問は表示できます。',
+        visibility: LessonQuestionVisibility.teacherOnly,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: const [],
+        updatedAt: now,
+      );
+      final parentAnswer = LessonQuestionAnswer(
+        id: 'answer-parent-visible',
+        questionId: 'question-reply-hidden',
+        authorId: 'user-b',
+        authorName: '学習者B',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        body: '親回答は表示できます。',
+        attachmentTypes: const [],
+        parentCommentId: 'question-reply-hidden',
+        parentCommentType: 'question',
+        moderationStatus: lessonInteractionModerationVisible,
+        createdAt: now,
+      );
+      final hiddenReply = LessonQuestionAnswer(
+        id: 'reply-hidden-owned',
+        questionId: 'question-reply-hidden',
+        authorId: 'user-a',
+        authorName: '学習者',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        body: '先生に非公開化された返信です。',
+        attachmentTypes: const [],
+        parentCommentId: 'answer-parent-visible',
+        parentCommentType: 'answer',
+        replyToDisplayName: '学習者B',
+        replyToBodyPreview: '親回答は表示できます。',
+        moderationStatus: lessonInteractionModerationHiddenByTeacher,
+        createdAt: Timestamp.fromDate(DateTime(2026, 5, 31, 13, 31)),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            lessonViewSegmentsStream: const Stream.empty(),
+            learningEventsStream: const Stream.empty(),
+            quizAttemptsStream: const Stream.empty(),
+            lessonNotesStream: const Stream.empty(),
+            lessonQuestionsStream: Stream.value([question]),
+            lessonQuestionAnswersStream: Stream.value([
+              parentAnswer,
+              hiddenReply,
+            ]),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('質問・回答コメントを見る'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('回答コメント'));
+      await tester.pumpAndSettle();
+
+      final replyRecord = find.byKey(
+        const ValueKey('answer-record-open-reply-hidden-owned'),
+      );
+      await tester.ensureVisible(replyRecord);
+      await tester.pumpAndSettle();
+      await tester.tap(replyRecord);
+      await tester.pumpAndSettle();
+
+      expect(find.text('回答への返信'), findsOneWidget);
+      expect(find.text('親回答は表示できます。'), findsOneWidget);
+      expect(find.text('先生に非公開化された返信です。'), findsOneWidget);
+      expect(find.text('先生により非公開中'), findsOneWidget);
+    },
+  );
 
   testWidgets('Learning records hide self-deleted comments', (
     WidgetTester tester,
@@ -737,11 +828,11 @@ void main() {
     );
   });
 
-  testWidgets('Learning records show reply when parent answer is unavailable', (
-    WidgetTester tester,
-  ) async {
-    final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
-    final question = LessonQuestion(
+  testWidgets(
+    'Learning records keep reply static when parent answer is unavailable',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
+      final question = LessonQuestion(
       id: 'question-a',
       authorId: 'user-a',
       authorName: '学習者',
@@ -756,7 +847,7 @@ void main() {
       attachmentTypes: const [],
       updatedAt: now,
     );
-    final hiddenParentAnswer = LessonQuestionAnswer(
+      final hiddenParentAnswer = LessonQuestionAnswer(
       id: 'answer-hidden-parent',
       questionId: 'question-a',
       authorId: 'user-b',
@@ -773,7 +864,7 @@ void main() {
       moderationStatus: lessonInteractionModerationHiddenByTeacher,
       createdAt: now,
     );
-    final reply = LessonQuestionAnswer(
+      final reply = LessonQuestionAnswer(
       id: 'reply-c',
       questionId: 'question-a',
       authorId: 'user-a',
@@ -792,43 +883,47 @@ void main() {
       createdAt: Timestamp.fromDate(DateTime(2026, 5, 31, 13, 31)),
     );
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: LearningRecordsPage(
-          user: _FakeUser(),
-          lessonViewSegmentsStream: const Stream.empty(),
-          learningEventsStream: const Stream.empty(),
-          quizAttemptsStream: const Stream.empty(),
-          lessonNotesStream: const Stream.empty(),
-          lessonQuestionsStream: Stream.value([question]),
-          lessonQuestionAnswersStream: Stream.value([
-            hiddenParentAnswer,
-            reply,
-          ]),
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            lessonViewSegmentsStream: const Stream.empty(),
+            learningEventsStream: const Stream.empty(),
+            quizAttemptsStream: const Stream.empty(),
+            lessonNotesStream: const Stream.empty(),
+            lessonQuestionsStream: Stream.value([question]),
+            lessonQuestionAnswersStream: Stream.value([
+              hiddenParentAnswer,
+              reply,
+            ]),
+          ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.text('質問・回答コメントを見る'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('回答コメント'));
-    await tester.pumpAndSettle();
+      await tester.tap(find.text('質問・回答コメントを見る'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('回答コメント'));
+      await tester.pumpAndSettle();
 
-    final replyRecord = find.byKey(
-      const ValueKey('answer-record-open-reply-c'),
-    );
-    await tester.ensureVisible(replyRecord);
-    await tester.pumpAndSettle();
-    await tester.tap(replyRecord);
-    await tester.pumpAndSettle();
+      final replyRecord = find.byKey(
+        const ValueKey('answer-record-open-reply-c'),
+      );
+      await tester.ensureVisible(replyRecord);
+      await tester.pumpAndSettle();
+      expect(
+        find.text('返信先の回答は削除済み、または現在は表示できません。学習記録として内容だけ表示しています。'),
+        findsOneWidget,
+      );
+      await tester.tap(replyRecord);
+      await tester.pumpAndSettle();
 
-    expect(find.text('質問詳細'), findsOneWidget);
-    expect(find.text('この記録の返信'), findsOneWidget);
-    expect(find.text('返信先の回答は削除済み、または現在は表示できません。'), findsOneWidget);
-    expect(find.text('親回答が見えなくても残したい返信です。'), findsOneWidget);
-    expect(find.text('表示できない親回答です。'), findsNothing);
-  });
+      expect(find.text('質問詳細'), findsNothing);
+      expect(find.text('この記録の返信'), findsNothing);
+      expect(find.text('親回答が見えなくても残したい返信です。'), findsOneWidget);
+      expect(find.text('表示できない親回答です。'), findsOneWidget);
+    },
+  );
 
   testWidgets(
     'Learning records use stored reply timestamp when parent answer is unavailable',

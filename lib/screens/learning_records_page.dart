@@ -1242,18 +1242,51 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
     }
   }
 
-  bool _canOpenQuestionThreadFor(LessonQuestion? question) {
-    return question != null &&
-        _canOpenQuestionFromRecord(question) &&
-        _canOpenAnswerFromRecord(widget.answer);
+  bool _canOpenQuestionThreadFor(
+    LessonQuestion? question,
+    LessonQuestionAnswer? parentAnswer,
+  ) {
+    if (question == null || !_canOpenQuestionFromRecord(question)) {
+      return false;
+    }
+    if (!_canOpenAnswerFromRecord(widget.answer, allowTeacherHidden: true)) {
+      return false;
+    }
+    if (widget.answer.parentCommentType == 'answer') {
+      return parentAnswer != null && _canOpenAnswerFromRecord(parentAnswer);
+    }
+    return true;
   }
 
-  String? _unavailableMessageFor(LessonQuestion? question) {
-    if (!_canOpenAnswerFromRecord(widget.answer)) {
+  LessonQuestionAnswer? _cachedParentAnswerFromList() {
+    if (widget.answer.parentCommentType != 'answer') {
+      return null;
+    }
+    final parentId = widget.answer.parentCommentId;
+    if (parentId == null || parentId.isEmpty) {
+      return null;
+    }
+    for (final answer in widget.answers) {
+      if (answer.id == parentId) {
+        return answer;
+      }
+    }
+    return null;
+  }
+
+  String? _unavailableMessageFor(
+    LessonQuestion? question,
+    LessonQuestionAnswer? parentAnswer,
+  ) {
+    if (!_canOpenAnswerFromRecord(widget.answer, allowTeacherHidden: true)) {
       return 'この回答コメントは削除済み、または現在は表示できません。学習記録として内容だけ表示しています。';
     }
     if (question == null || !_canOpenQuestionFromRecord(question)) {
       return '元の質問は削除済み、または現在は表示できません。学習記録として内容だけ表示しています。';
+    }
+    if (widget.answer.parentCommentType == 'answer' &&
+        (parentAnswer == null || !_canOpenAnswerFromRecord(parentAnswer))) {
+      return '返信先の回答は削除済み、または現在は表示できません。学習記録として内容だけ表示しています。';
     }
     return null;
   }
@@ -1345,14 +1378,17 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
   void _openQuestionThread(
     BuildContext context,
     LessonQuestion? parentQuestion,
+    LessonQuestionAnswer? parentAnswer,
   ) {
-    final question = parentQuestion;
-    if (question == null || !_canOpenQuestionThreadFor(question)) {
+    if (parentQuestion == null) {
+      return;
+    }
+    if (!_canOpenQuestionThreadFor(parentQuestion, parentAnswer)) {
       return;
     }
     _openQuestionThreadPage(
       context: context,
-      question: question,
+      question: parentQuestion,
       questions: widget.questions,
       answers: widget.answers,
       highlightedAnswerId: widget.answer.id,
@@ -1585,18 +1621,25 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
       future: _parentQuestionFuture,
       builder: (context, snapshot) {
         final loadedParentQuestion = snapshot.data;
-        final canOpenQuestionThread = _canOpenQuestionThreadFor(
-          loadedParentQuestion,
-        );
-        final unavailableMessage =
-            snapshot.connectionState == ConnectionState.waiting &&
-                _canOpenAnswerFromRecord(widget.answer)
-            ? null
-            : _unavailableMessageFor(loadedParentQuestion);
         return FutureBuilder<LessonQuestionAnswer?>(
           future: _parentAnswerFuture,
           builder: (context, parentAnswerSnapshot) {
-            final parentAnswer = parentAnswerSnapshot.data;
+            final parentAnswer =
+                parentAnswerSnapshot.data ?? _cachedParentAnswerFromList();
+            final canOpenQuestionThread = _canOpenQuestionThreadFor(
+              loadedParentQuestion,
+              parentAnswer,
+            );
+            final unavailableMessage =
+                (snapshot.connectionState == ConnectionState.waiting ||
+                        parentAnswerSnapshot.connectionState ==
+                            ConnectionState.waiting) &&
+                    _canOpenAnswerFromRecord(
+                      widget.answer,
+                      allowTeacherHidden: true,
+                    )
+                ? null
+                : _unavailableMessageFor(loadedParentQuestion, parentAnswer);
             final replyPreview =
                 _isReplyTargetUnavailable(loadedParentQuestion, parentAnswer)
                 ? _replyTargetRecordSummary(loadedParentQuestion, parentAnswer)
@@ -1607,7 +1650,11 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
                   'answer-record-open-${widget.answer.id ?? widget.answer.body}',
                 ),
                 onTap: canOpenQuestionThread
-                    ? () => _openQuestionThread(context, loadedParentQuestion)
+                    ? () => _openQuestionThread(
+                        context,
+                        loadedParentQuestion,
+                        parentAnswer,
+                      )
                     : null,
                 child: Padding(
                   padding: const EdgeInsets.all(16),
@@ -1678,9 +1725,17 @@ bool _canOpenQuestionFromRecord(LessonQuestion question) {
   return !question.isDeleted && !question.isTeacherHidden;
 }
 
-bool _canOpenAnswerFromRecord(LessonQuestionAnswer answer) {
-  return !answer.isDeleted &&
-      answer.moderationStatus != lessonInteractionModerationHiddenByTeacher;
+bool _canOpenAnswerFromRecord(
+  LessonQuestionAnswer answer, {
+  bool allowTeacherHidden = false,
+}) {
+  if (answer.isDeleted) {
+    return false;
+  }
+  if (answer.moderationStatus == lessonInteractionModerationHiddenByTeacher) {
+    return allowTeacherHidden;
+  }
+  return true;
 }
 
 void _openQuestionThreadPage({
@@ -1701,7 +1756,13 @@ void _openQuestionThreadPage({
       ? Stream.value(
           answers
               .where((answer) => answer.questionId == question.id)
-              .where(_canOpenAnswerFromRecord)
+              .where(
+                (answer) =>
+                    _canOpenAnswerFromRecord(answer) ||
+                    (highlightedAnswerId != null &&
+                        highlightedAnswerId.isNotEmpty &&
+                        answer.id == highlightedAnswerId),
+              )
               .toList(),
         ).asBroadcastStream()
       : null;

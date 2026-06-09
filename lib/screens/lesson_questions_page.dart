@@ -746,7 +746,61 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       return Stream.value(const []);
     }
     if (question.isPublic) {
-      return FirebaseFirestore.instance
+      Future<LessonQuestionAnswer?> resolveSupplementalAnswer({
+        required String answerId,
+        required bool requireCurrentUserAuthor,
+        DocumentSnapshot<Map<String, dynamic>>? preferredPublicSnapshot,
+      }) async {
+        LessonQuestionAnswer? publicAnswer;
+        try {
+          final publicSnapshot =
+              preferredPublicSnapshot ??
+              await FirebaseFirestore.instance
+                  .collection('publicLessonQuestionAnswers')
+                  .doc(answerId)
+                  .get();
+          if (publicSnapshot.exists) {
+            final answer = LessonQuestionAnswer.fromFirestore(publicSnapshot);
+            if (!answer.isDeleted && answer.questionId == question.id) {
+              publicAnswer = answer;
+            }
+          }
+        } on FirebaseException {
+          // Keep fallback checks below.
+        }
+
+        if (publicAnswer != null) {
+          if (!requireCurrentUserAuthor || publicAnswer.authorId == user.uid) {
+            return publicAnswer;
+          }
+        }
+        if (!requireCurrentUserAuthor) {
+          return null;
+        }
+
+        try {
+          final privateSnapshot = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .collection('lessonQuestionAnswers')
+              .doc(answerId)
+              .get();
+          if (!privateSnapshot.exists) {
+            return null;
+          }
+          final answer = LessonQuestionAnswer.fromFirestore(privateSnapshot);
+          if (answer.isDeleted ||
+              answer.questionId != question.id ||
+              answer.authorId != user.uid) {
+            return null;
+          }
+          return answer;
+        } on FirebaseException {
+          return null;
+        }
+      }
+
+      final publicVisibleAnswersStream = FirebaseFirestore.instance
           .collection('publicLessonQuestionAnswers')
           .where('questionId', isEqualTo: question.id)
           .where('isDeleted', isEqualTo: false)
@@ -768,6 +822,86 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
             _lastPublicAnswers = answers;
             return answers;
           });
+      final highlightedAnswerId =
+          (widget.initialHighlightedAnswerId ?? '').trim();
+      if (highlightedAnswerId.isEmpty) {
+        return publicVisibleAnswersStream;
+      }
+      final highlightedSupplementalStream = FirebaseFirestore.instance
+          .collection('publicLessonQuestionAnswers')
+          .doc(highlightedAnswerId)
+          .snapshots(includeMetadataChanges: true)
+          .asyncMap((snapshot) async {
+            final highlighted = await resolveSupplementalAnswer(
+              answerId: highlightedAnswerId,
+              requireCurrentUserAuthor: true,
+              preferredPublicSnapshot: snapshot,
+            );
+            if (highlighted == null) {
+              return const <LessonQuestionAnswer>[];
+            }
+            final supplemental = <LessonQuestionAnswer>[highlighted];
+            if (highlighted.parentCommentType == 'answer') {
+              final parentId = (highlighted.parentCommentId ?? '').trim();
+              if (parentId.isNotEmpty && parentId != highlightedAnswerId) {
+                final parent = await resolveSupplementalAnswer(
+                  answerId: parentId,
+                  requireCurrentUserAuthor: false,
+                );
+                if (parent != null) {
+                  supplemental.add(parent);
+                }
+              }
+            }
+            return supplemental;
+          });
+      return Stream.multi((controller) {
+        var latestPublicAnswers = const <LessonQuestionAnswer>[];
+        var latestSupplementalAnswers = const <LessonQuestionAnswer>[];
+        void emitMergedAnswers() {
+          final mergedById = <String, LessonQuestionAnswer>{};
+          for (final answer in latestPublicAnswers) {
+            final answerId = (answer.id ?? '').trim();
+            if (answerId.isEmpty) {
+              continue;
+            }
+            mergedById[answerId] = answer;
+          }
+          for (final supplemental in latestSupplementalAnswers) {
+            final answerId = (supplemental.id ?? '').trim();
+            if (answerId.isNotEmpty) {
+              mergedById[answerId] = supplemental;
+            }
+          }
+          final answers = mergedById.values.toList()
+            ..sort(
+              (a, b) =>
+                  timestampOrEpoch(a.createdAt).compareTo(
+                    timestampOrEpoch(b.createdAt),
+                  ),
+            );
+          controller.add(answers);
+        }
+
+        final publicSubscription = publicVisibleAnswersStream.listen(
+          (answers) {
+            latestPublicAnswers = answers;
+            emitMergedAnswers();
+          },
+          onError: controller.addError,
+        );
+        final supplementalSubscription = highlightedSupplementalStream.listen(
+          (answers) {
+            latestSupplementalAnswers = answers;
+            emitMergedAnswers();
+          },
+          onError: controller.addError,
+        );
+        controller.onCancel = () async {
+          await publicSubscription.cancel();
+          await supplementalSubscription.cancel();
+        };
+      });
     }
     final ownAnswersStream = FirebaseFirestore.instance
         .collection('users')
@@ -1760,6 +1894,7 @@ class _CommentBubble extends StatelessWidget {
     this.onDelete,
     this.onModerate,
     this.moderateLabel,
+    this.moderationNotice,
     this.bottomInlineAction,
   });
 
@@ -1789,6 +1924,7 @@ class _CommentBubble extends StatelessWidget {
   final VoidCallback? onDelete;
   final VoidCallback? onModerate;
   final String? moderateLabel;
+  final String? moderationNotice;
   final Widget? bottomInlineAction;
 
   @override
@@ -2022,6 +2158,15 @@ class _CommentBubble extends StatelessWidget {
                       leadingLabel: 'メモ',
                     ),
                   ),
+                if ((moderationNotice ?? '').trim().isNotEmpty)
+                  Text(
+                    moderationNotice!,
+                    textAlign: TextAlign.right,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: Theme.of(context).colorScheme.error,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 Text(
                   scopeLabel,
                   textAlign: TextAlign.right,
@@ -2096,6 +2241,13 @@ String answerScopeLabel(
     return '先生だけ表示';
   }
   return questionScopeLabel;
+}
+
+String? answerModerationNotice(LessonQuestionAnswer answer) {
+  if (answer.moderationStatus == lessonNoteModerationHiddenByTeacher) {
+    return '先生により非公開中';
+  }
+  return null;
 }
 
 bool canAnswerLessonQuestion({
@@ -2923,11 +3075,13 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
     _quotedNoteBody = '';
   }
 
-  void _openRepliesThread(String rootId) {
+  void _openRepliesThread(String rootId, {bool scrollToTop = true}) {
     setState(() {
       _openedAnswerThreadRootId = rootId;
     });
-    _scrollToTop();
+    if (scrollToTop) {
+      _scrollToTop();
+    }
   }
 
   void _closeRepliesThread() {
@@ -3037,7 +3191,10 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                       if (!mounted || _openedAnswerThreadRootId != null) {
                         return;
                       }
-                      _openRepliesThread(autoOpenRootId);
+                      _openRepliesThread(
+                        autoOpenRootId,
+                        scrollToTop: false,
+                      );
                     });
                   }
                   _positionHighlightedAnswerAtTopOnce();
@@ -3313,6 +3470,7 @@ class _AnswerThreadView extends StatelessWidget {
           authorRole: root.authorRole,
           postedAt: lessonQuestionAnswerPostedAt(root),
           scopeLabel: answerScopeLabel(root, scopeLabel),
+          moderationNotice: answerModerationNotice(root),
           attachmentTypes: root.attachmentTypes,
           quotedNoteTitle: root.quotedNoteTitle,
           quotedNoteId: root.quotedNoteId,
@@ -3416,6 +3574,7 @@ class _AnswerThreadDetailView extends StatelessWidget {
           authorRole: root.authorRole,
           postedAt: lessonQuestionAnswerPostedAt(root),
           scopeLabel: answerScopeLabel(root, scopeLabel),
+          moderationNotice: answerModerationNotice(root),
           attachmentTypes: root.attachmentTypes,
           quotedNoteTitle: root.quotedNoteTitle,
           quotedNoteId: root.quotedNoteId,
@@ -3473,6 +3632,7 @@ class _AnswerThreadDetailView extends StatelessWidget {
                   authorRole: reply.authorRole,
                   postedAt: lessonQuestionAnswerPostedAt(reply),
                   scopeLabel: answerScopeLabel(reply, scopeLabel),
+                  moderationNotice: answerModerationNotice(reply),
                   attachmentTypes: reply.attachmentTypes,
                   quotedNoteTitle: reply.quotedNoteTitle,
                   quotedNoteId: reply.quotedNoteId,
@@ -3574,6 +3734,7 @@ class _StandaloneRecordReplyView extends StatelessWidget {
               authorRole: answer.authorRole,
               postedAt: lessonQuestionAnswerPostedAt(answer),
               scopeLabel: answerScopeLabel(answer, scopeLabel),
+              moderationNotice: answerModerationNotice(answer),
               attachmentTypes: answer.attachmentTypes,
               quotedNoteTitle: answer.quotedNoteTitle,
               quotedNoteId: answer.quotedNoteId,

@@ -163,6 +163,109 @@ void main() {
     expect(dropdown.initialValue, 'public-note');
   });
 
+  testWidgets(
+    'Own notes show teacher-hidden notice when teacher hides mirror',
+    (tester) async {
+      const hiddenOwnNote = LessonNote(
+        id: 'own-hidden-note',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '先生のみ公開メモ',
+        body: '先生向けの内容です。',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.teacherOnly,
+        tags: [],
+        attachmentTypes: [],
+        hasAudioAttachment: false,
+        isCopied: false,
+        canPublish: true,
+      );
+      const normalOwnNote = LessonNote(
+        id: 'own-normal-note',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '通常のメモ',
+        body: '通常表示です。',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.private,
+        tags: [],
+        attachmentTypes: [],
+        hasAudioAttachment: false,
+        isCopied: false,
+        canPublish: true,
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LessonNotesPage(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            notesStream: Stream.value(const [hiddenOwnNote, normalOwnNote]),
+            teacherHiddenOwnNoteIdsStream: Stream.value(
+              const {'own-hidden-note'},
+            ),
+            foldersStream: Stream.value(const []),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('先生によって非公開中'), findsOneWidget);
+      expect(find.text('公開:先生のみ / 引用:OFF'), findsOneWidget);
+      expect(find.text('公開:OFF / 引用:OFF'), findsOneWidget);
+    },
+  );
+
+  testWidgets('Own notes do not show teacher-hidden notice when visible', (
+    tester,
+  ) async {
+    const ownNote = LessonNote(
+      id: 'own-visible-note',
+      authorId: 'user-a',
+      authorName: '学習者',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '公開メモ',
+      body: '公開中です。',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.public,
+      tags: [],
+      attachmentTypes: [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LessonNotesPage(
+          course: course,
+          lesson: lesson,
+          lessonNumber: 1,
+          notesStream: Stream.value(const [ownNote]),
+          teacherHiddenOwnNoteIdsStream: Stream.value(const <String>{}),
+          foldersStream: Stream.value(const []),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('先生によって非公開中'), findsNothing);
+    expect(find.text('公開:ON / 引用:OFF'), findsOneWidget);
+  });
+
   testWidgets('Teacher preview shows public note moderation actions', (
     tester,
   ) async {
