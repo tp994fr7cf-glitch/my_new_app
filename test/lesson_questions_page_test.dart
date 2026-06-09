@@ -625,6 +625,140 @@ void main() {
     },
   );
 
+  testWidgets(
+    'Teacher-hidden question notice clears when mirror ids stream updates',
+    (tester) async {
+      const question = LessonQuestion(
+        id: 'question-hidden-live',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '公開に戻したら表示が戻る質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: [],
+      );
+      final hiddenIdsController = StreamController<Set<String>>();
+      addTearDown(hiddenIdsController.close);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              questionsStream: Stream.value(const [question]),
+              publicQuestionsStream: Stream.value(const [question]),
+              teacherHiddenOwnQuestionIdsStream: hiddenIdsController.stream,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      hiddenIdsController.add(const {'question-hidden-live'});
+      await tester.pumpAndSettle();
+
+      expect(find.text('先生によって非公開中'), findsOneWidget);
+      expect(find.text('先生だけ表示 / 先生だけ回答可'), findsOneWidget);
+      expect(find.text('学習者にも公開 / 全員が回答可'), findsNothing);
+
+      hiddenIdsController.add(const <String>{});
+      await tester.pumpAndSettle();
+
+      expect(find.text('先生によって非公開中'), findsNothing);
+      expect(find.text('先生だけ表示 / 先生だけ回答可'), findsNothing);
+      expect(find.text('学習者にも公開 / 全員が回答可'), findsOneWidget);
+
+      await tester.tap(find.text('公開質問'));
+      await tester.pumpAndSettle();
+      expect(find.text('先生によって非公開中'), findsNothing);
+      expect(find.text('学習者にも公開 / 全員が回答可'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Hidden answer notice clears when moderation returns to visible',
+    (tester) async {
+      const question = LessonQuestion(
+        id: 'question-answer-live',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '回答の公開復帰を確認する質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: [],
+      );
+      const hiddenAnswer = LessonQuestionAnswer(
+        id: 'answer-live',
+        questionId: 'question-answer-live',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        authorRole: 'student',
+        body: '最初は先生に非公開化された回答です。',
+        attachmentTypes: [],
+        moderationStatus: lessonNoteModerationHiddenByTeacher,
+      );
+      const visibleAnswer = LessonQuestionAnswer(
+        id: 'answer-live',
+        questionId: 'question-answer-live',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        authorRole: 'student',
+        body: '最初は先生に非公開化された回答です。',
+        attachmentTypes: [],
+        moderationStatus: lessonNoteModerationVisible,
+      );
+      final answersController = StreamController<List<LessonQuestionAnswer>>();
+      addTearDown(answersController.close);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              questionsStream: Stream.value(const []),
+              publicQuestionsStream: Stream.value(const [question]),
+              answersStream: answersController.stream,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      answersController.add(const [hiddenAnswer]);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('公開質問'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('回答の公開復帰を確認する質問です。'));
+      await tester.pumpAndSettle();
+      expect(find.text('最初は先生に非公開化された回答です。'), findsOneWidget);
+      expect(find.text('先生によって非公開中'), findsOneWidget);
+      expect(find.text('先生だけ表示'), findsOneWidget);
+
+      answersController.add(const [visibleAnswer]);
+      await tester.pumpAndSettle();
+
+      expect(find.text('最初は先生に非公開化された回答です。'), findsOneWidget);
+      expect(find.text('先生によって非公開中'), findsNothing);
+      expect(find.text('先生だけ表示'), findsNothing);
+      expect(find.text('学習者にも公開 / 先生だけ回答可'), findsWidgets);
+    },
+  );
+
   testWidgets('Quoted note bubble shows memo status action', (tester) async {
     const question = LessonQuestion(
       id: 'question-note-status',

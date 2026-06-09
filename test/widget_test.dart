@@ -673,6 +673,62 @@ void main() {
   });
 
   testWidgets(
+    'Learning records keep answer static with exact parent-question unavailable message',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
+      final orphanAnswer = LessonQuestionAnswer(
+        id: 'answer-orphan',
+        questionId: 'missing-question',
+        authorId: 'user-a',
+        authorName: '学習者',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        body: '元質問が表示できない回答です。',
+        attachmentTypes: const [],
+        createdAt: now,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            lessonViewSegmentsStream: const Stream.empty(),
+            learningEventsStream: const Stream.empty(),
+            quizAttemptsStream: const Stream.empty(),
+            lessonNotesStream: const Stream.empty(),
+            lessonQuestionsStream: const Stream.empty(),
+            lessonQuestionAnswersStream: Stream.value([orphanAnswer]),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('質問・回答コメントを見る'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('回答コメント'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('元質問が表示できない回答です。'), findsOneWidget);
+      expect(
+        find.text('元の質問は削除済み、または現在は表示できません。学習記録として内容だけ表示しています。'),
+        findsOneWidget,
+      );
+
+      final answerRecord = find.byKey(const ValueKey('answer-record-open-answer-orphan'));
+      await tester.ensureVisible(answerRecord);
+      await tester.pumpAndSettle();
+      await tester.tap(answerRecord);
+      await tester.pumpAndSettle();
+
+      expect(find.text('質問詳細'), findsNothing);
+      expect(find.text('元質問が表示できない回答です。'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
     'Learning records open hidden reply when parent answer is available',
     (WidgetTester tester) async {
       final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
