@@ -669,7 +669,7 @@ void main() {
 
     expect(find.text('質問詳細'), findsOneWidget);
     expect(find.text('先生が非公開化した回答です。'), findsOneWidget);
-    expect(find.text('先生により非公開中'), findsOneWidget);
+    expect(find.text('先生によって非公開中'), findsOneWidget);
   });
 
   testWidgets(
@@ -762,7 +762,7 @@ void main() {
       expect(find.text('回答への返信'), findsOneWidget);
       expect(find.text('親回答は表示できます。'), findsOneWidget);
       expect(find.text('先生に非公開化された返信です。'), findsOneWidget);
-      expect(find.text('先生により非公開中'), findsOneWidget);
+      expect(find.text('先生によって非公開中'), findsOneWidget);
     },
   );
 

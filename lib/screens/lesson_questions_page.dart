@@ -33,6 +33,7 @@ class LessonQuestionsPanel extends StatefulWidget {
     this.initialSelectedQuestion,
     this.initialQuotedNote,
     this.initialHighlightedAnswerId,
+    this.teacherHiddenOwnQuestionIdsStream,
   });
 
   final Course course;
@@ -48,6 +49,7 @@ class LessonQuestionsPanel extends StatefulWidget {
   final LessonQuestion? initialSelectedQuestion;
   final LessonNote? initialQuotedNote;
   final String? initialHighlightedAnswerId;
+  final Stream<Set<String>>? teacherHiddenOwnQuestionIdsStream;
 
   @override
   State<LessonQuestionsPanel> createState() => _LessonQuestionsPanelState();
@@ -364,6 +366,33 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
           _lastPublicQuestions = questions;
           return questions;
         });
+  }
+
+  Stream<Set<String>> _teacherHiddenOwnQuestionIdsStream() {
+    final provided = widget.teacherHiddenOwnQuestionIdsStream;
+    if (provided != null) {
+      return provided;
+    }
+    if (Firebase.apps.isEmpty) {
+      return Stream.value(const <String>{});
+    }
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return Stream.value(const <String>{});
+    }
+    return FirebaseFirestore.instance
+        .collection('publicLessonQuestions')
+        .where('courseId', isEqualTo: _courseId)
+        .where('lessonNumber', isEqualTo: widget.lessonNumber)
+        .where('interactionSettingId', isEqualTo: _interactionSettingId)
+        .where('authorId', isEqualTo: user.uid)
+        .where(
+          'moderationStatus',
+          isEqualTo: lessonNoteModerationHiddenByTeacher,
+        )
+        .where('isDeleted', isEqualTo: false)
+        .snapshots(includeMetadataChanges: true)
+        .map((snapshot) => snapshot.docs.map((doc) => doc.id).toSet());
   }
 
   Stream<List<LessonQuestion>> _teacherPreviewPublicQuestionsStream() {
@@ -822,45 +851,68 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
             _lastPublicAnswers = answers;
             return answers;
           });
+      final ownHiddenAnswersStream = FirebaseFirestore.instance
+          .collection('publicLessonQuestionAnswers')
+          .where('questionId', isEqualTo: question.id)
+          .where('authorId', isEqualTo: user.uid)
+          .where('isDeleted', isEqualTo: false)
+          .where(
+            'moderationStatus',
+            isEqualTo: lessonNoteModerationHiddenByTeacher,
+          )
+          .snapshots(includeMetadataChanges: true)
+          .map(
+            (snapshot) => snapshot.docs
+                .map(LessonQuestionAnswer.fromFirestore)
+                .where((answer) => !answer.isDeleted)
+                .toList(),
+          );
       final highlightedAnswerId =
           (widget.initialHighlightedAnswerId ?? '').trim();
-      if (highlightedAnswerId.isEmpty) {
-        return publicVisibleAnswersStream;
-      }
-      final highlightedSupplementalStream = FirebaseFirestore.instance
-          .collection('publicLessonQuestionAnswers')
-          .doc(highlightedAnswerId)
-          .snapshots(includeMetadataChanges: true)
-          .asyncMap((snapshot) async {
-            final highlighted = await resolveSupplementalAnswer(
-              answerId: highlightedAnswerId,
-              requireCurrentUserAuthor: true,
-              preferredPublicSnapshot: snapshot,
-            );
-            if (highlighted == null) {
-              return const <LessonQuestionAnswer>[];
-            }
-            final supplemental = <LessonQuestionAnswer>[highlighted];
-            if (highlighted.parentCommentType == 'answer') {
-              final parentId = (highlighted.parentCommentId ?? '').trim();
-              if (parentId.isNotEmpty && parentId != highlightedAnswerId) {
-                final parent = await resolveSupplementalAnswer(
-                  answerId: parentId,
-                  requireCurrentUserAuthor: false,
-                );
-                if (parent != null) {
-                  supplemental.add(parent);
-                }
-              }
-            }
-            return supplemental;
-          });
+      final highlightedSupplementalStream = highlightedAnswerId.isEmpty
+          ? Stream.value(const <LessonQuestionAnswer>[])
+          : FirebaseFirestore.instance
+                .collection('publicLessonQuestionAnswers')
+                .doc(highlightedAnswerId)
+                .snapshots(includeMetadataChanges: true)
+                .asyncMap((snapshot) async {
+                  final highlighted = await resolveSupplementalAnswer(
+                    answerId: highlightedAnswerId,
+                    requireCurrentUserAuthor: true,
+                    preferredPublicSnapshot: snapshot,
+                  );
+                  if (highlighted == null) {
+                    return const <LessonQuestionAnswer>[];
+                  }
+                  final supplemental = <LessonQuestionAnswer>[highlighted];
+                  if (highlighted.parentCommentType == 'answer') {
+                    final parentId = (highlighted.parentCommentId ?? '').trim();
+                    if (parentId.isNotEmpty && parentId != highlightedAnswerId) {
+                      final parent = await resolveSupplementalAnswer(
+                        answerId: parentId,
+                        requireCurrentUserAuthor: false,
+                      );
+                      if (parent != null) {
+                        supplemental.add(parent);
+                      }
+                    }
+                  }
+                  return supplemental;
+                });
       return Stream.multi((controller) {
         var latestPublicAnswers = const <LessonQuestionAnswer>[];
+        var latestOwnHiddenAnswers = const <LessonQuestionAnswer>[];
         var latestSupplementalAnswers = const <LessonQuestionAnswer>[];
         void emitMergedAnswers() {
           final mergedById = <String, LessonQuestionAnswer>{};
           for (final answer in latestPublicAnswers) {
+            final answerId = (answer.id ?? '').trim();
+            if (answerId.isEmpty) {
+              continue;
+            }
+            mergedById[answerId] = answer;
+          }
+          for (final answer in latestOwnHiddenAnswers) {
             final answerId = (answer.id ?? '').trim();
             if (answerId.isEmpty) {
               continue;
@@ -890,6 +942,13 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
           },
           onError: controller.addError,
         );
+        final ownHiddenSubscription = ownHiddenAnswersStream.listen(
+          (answers) {
+            latestOwnHiddenAnswers = answers;
+            emitMergedAnswers();
+          },
+          onError: controller.addError,
+        );
         final supplementalSubscription = highlightedSupplementalStream.listen(
           (answers) {
             latestSupplementalAnswers = answers;
@@ -899,6 +958,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         );
         controller.onCancel = () async {
           await publicSubscription.cancel();
+          await ownHiddenSubscription.cancel();
           await supplementalSubscription.cancel();
         };
       });
@@ -927,12 +987,36 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
               .where((answer) => !answer.isDeleted)
               .toList(),
         );
+    final ownHiddenMirroredAnswersStream = FirebaseFirestore.instance
+        .collection('publicLessonQuestionAnswers')
+        .where('questionId', isEqualTo: question.id)
+        .where('authorId', isEqualTo: user.uid)
+        .where('isDeleted', isEqualTo: false)
+        .where(
+          'moderationStatus',
+          isEqualTo: lessonNoteModerationHiddenByTeacher,
+        )
+        .snapshots(includeMetadataChanges: true)
+        .map(
+          (snapshot) => snapshot.docs
+              .map(LessonQuestionAnswer.fromFirestore)
+              .where((answer) => !answer.isDeleted)
+              .toList(),
+        );
     return Stream.multi((controller) {
       var latestOwnAnswers = const <LessonQuestionAnswer>[];
       var latestMirroredAnswers = const <LessonQuestionAnswer>[];
+      var latestOwnHiddenMirroredAnswers = const <LessonQuestionAnswer>[];
       void emitMergedAnswers() {
         final mergedById = <String, LessonQuestionAnswer>{};
         for (final answer in latestMirroredAnswers) {
+          final answerId = (answer.id ?? '').trim();
+          if (answerId.isEmpty) {
+            continue;
+          }
+          mergedById[answerId] = answer;
+        }
+        for (final answer in latestOwnHiddenMirroredAnswers) {
           final answerId = (answer.id ?? '').trim();
           if (answerId.isEmpty) {
             continue;
@@ -963,9 +1047,17 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         latestMirroredAnswers = answers;
         emitMergedAnswers();
       }, onError: controller.addError);
+      final ownHiddenMirroredSubscription = ownHiddenMirroredAnswersStream.listen(
+        (answers) {
+          latestOwnHiddenMirroredAnswers = answers;
+          emitMergedAnswers();
+        },
+        onError: controller.addError,
+      );
       controller.onCancel = () async {
         await ownSubscription.cancel();
         await mirroredSubscription.cancel();
+        await ownHiddenMirroredSubscription.cancel();
       };
     });
   }
@@ -1624,102 +1716,113 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
                   ),
                 ),
               Expanded(
-                child: TabBarView(
-                  controller: _questionTabController,
-                  children: [
-                    _QuestionList(
-                      questionsStream: _questionsStream(),
-                      query: _query,
-                      currentUserId: _currentUserId,
-                      isCurrentUserTeacher: _isCurrentUserTeacher,
-                      scrollController: _myQuestionsScrollController,
-                      listStorageKey: 'my-questions',
-                      action: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          _buildQuestionSortSelector(
-                            selectedSort: _myQuestionsSort,
-                            onSelected: (selection) {
-                              setState(() {
-                                _myQuestionsSort = selection;
-                              });
-                            },
-                          ),
-                          const SizedBox(height: 8),
-                          FilledButton.icon(
-                            onPressed: () => setState(
-                              () => _editingQuestion = const LessonQuestion(
-                                authorId: '',
-                                authorName: '',
-                                courseId: '',
-                                courseTitle: '',
-                                lessonNumber: 1,
-                                lessonTitle: '',
-                                title: '',
-                                body: '',
-                                visibility:
-                                    LessonQuestionVisibility.teacherOnly,
-                                target: LessonQuestionTarget.teacher,
-                                attachmentTypes: [],
-                              ),
-                            ),
-                            icon: const Icon(Icons.add_comment),
-                            label: const Text('質問を作成'),
-                          ),
-                        ],
-                      ),
-                      emptyText: 'このレッスンの質問はまだありません。',
-                      onTap: (question) => _openQuestionDetail(
-                        question,
-                        _myQuestionsScrollController,
-                      ),
-                      onDelete: _deleteQuestion,
-                      onEdit: (question) =>
-                          setState(() => _editingQuestion = question),
-                    ),
-                    StreamBuilder<bool>(
-                      stream: _questionPublicPlatformEnabledStream(),
-                      builder: (context, platformSnapshot) {
-                        final enabled = platformSnapshot.data ?? true;
-                        if (!enabled) {
-                          return const Padding(
-                            padding: EdgeInsets.all(16),
-                            child: Text('先生により、このレッスンの公開質問欄は非公開化されています。'),
-                          );
-                        }
-                        return _QuestionList(
-                          questionsStream: _publicQuestionsStream(),
+                child: StreamBuilder<Set<String>>(
+                  stream: _teacherHiddenOwnQuestionIdsStream(),
+                  builder: (context, hiddenSnapshot) {
+                    final hiddenOwnQuestionIds =
+                        hiddenSnapshot.data ?? const <String>{};
+                    return TabBarView(
+                      controller: _questionTabController,
+                      children: [
+                        _QuestionList(
+                          questionsStream: _questionsStream(),
                           query: _query,
                           currentUserId: _currentUserId,
                           isCurrentUserTeacher: _isCurrentUserTeacher,
-                          scrollController: _publicQuestionsScrollController,
-                          listStorageKey: 'public-questions',
+                          scrollController: _myQuestionsScrollController,
+                          listStorageKey: 'my-questions',
+                          teacherHiddenQuestionIds: hiddenOwnQuestionIds,
                           action: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
                               _buildQuestionSortSelector(
-                                selectedSort: _publicQuestionsSort,
+                                selectedSort: _myQuestionsSort,
                                 onSelected: (selection) {
                                   setState(() {
-                                    _publicQuestionsSort = selection;
+                                    _myQuestionsSort = selection;
                                   });
                                 },
                               ),
                               const SizedBox(height: 8),
-                              const Text('回答コメント作成は初期版として後で拡張します。'),
+                              FilledButton.icon(
+                                onPressed: () => setState(
+                                  () => _editingQuestion = const LessonQuestion(
+                                    authorId: '',
+                                    authorName: '',
+                                    courseId: '',
+                                    courseTitle: '',
+                                    lessonNumber: 1,
+                                    lessonTitle: '',
+                                    title: '',
+                                    body: '',
+                                    visibility:
+                                        LessonQuestionVisibility.teacherOnly,
+                                    target: LessonQuestionTarget.teacher,
+                                    attachmentTypes: [],
+                                  ),
+                                ),
+                                icon: const Icon(Icons.add_comment),
+                                label: const Text('質問を作成'),
+                              ),
                             ],
                           ),
-                          emptyText: '公開質問はまだありません。',
+                          emptyText: 'このレッスンの質問はまだありません。',
                           onTap: (question) => _openQuestionDetail(
                             question,
-                            _publicQuestionsScrollController,
+                            _myQuestionsScrollController,
                           ),
-                          onDelete: null,
-                          onEdit: null,
-                        );
-                      },
-                    ),
-                  ],
+                          onDelete: _deleteQuestion,
+                          onEdit: (question) =>
+                              setState(() => _editingQuestion = question),
+                        ),
+                        StreamBuilder<bool>(
+                          stream: _questionPublicPlatformEnabledStream(),
+                          builder: (context, platformSnapshot) {
+                            final enabled = platformSnapshot.data ?? true;
+                            if (!enabled) {
+                              return const Padding(
+                                padding: EdgeInsets.all(16),
+                                child: Text(
+                                  '先生により、このレッスンの公開質問欄は非公開化されています。',
+                                ),
+                              );
+                            }
+                            return _QuestionList(
+                              questionsStream: _publicQuestionsStream(),
+                              query: _query,
+                              currentUserId: _currentUserId,
+                              isCurrentUserTeacher: _isCurrentUserTeacher,
+                              scrollController: _publicQuestionsScrollController,
+                              listStorageKey: 'public-questions',
+                              teacherHiddenQuestionIds: hiddenOwnQuestionIds,
+                              action: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  _buildQuestionSortSelector(
+                                    selectedSort: _publicQuestionsSort,
+                                    onSelected: (selection) {
+                                      setState(() {
+                                        _publicQuestionsSort = selection;
+                                      });
+                                    },
+                                  ),
+                                  const SizedBox(height: 8),
+                                  const Text('回答コメント作成は初期版として後で拡張します。'),
+                                ],
+                              ),
+                              emptyText: '公開質問はまだありません。',
+                              onTap: (question) => _openQuestionDetail(
+                                question,
+                                _publicQuestionsScrollController,
+                              ),
+                              onDelete: null,
+                              onEdit: null,
+                            );
+                          },
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ),
             ],
@@ -1762,6 +1865,7 @@ class _QuestionList extends StatelessWidget {
     required this.scrollController,
     required this.listStorageKey,
     this.onToggleModeration,
+    this.teacherHiddenQuestionIds = const <String>{},
   });
 
   final Stream<List<LessonQuestion>> questionsStream;
@@ -1776,6 +1880,7 @@ class _QuestionList extends StatelessWidget {
   final ScrollController scrollController;
   final String listStorageKey;
   final ValueChanged<LessonQuestion>? onToggleModeration;
+  final Set<String> teacherHiddenQuestionIds;
 
   @override
   Widget build(BuildContext context) {
@@ -1796,33 +1901,52 @@ class _QuestionList extends StatelessWidget {
               Text(emptyText)
             else
               for (final question in questions)
-                _CommentBubble(
-                  body: question.body,
-                  authorId: question.authorId,
-                  authorName: question.authorName,
-                  authorDisplayName: question.authorDisplayName,
-                  authorRole: question.authorRole,
-                  postedAt: lessonQuestionPostedAt(question),
-                  scopeLabel: _questionScopeLabel(question),
-                  attachmentTypes: question.attachmentTypes,
-                  quotedNoteId: question.quotedNoteId,
-                  quotedNoteTitle: question.quotedNoteTitle,
-                  quotedNoteBody: question.quotedNoteBody,
-                  isOwner: isCommentOwnerForActiveRole(
-                    currentUserId: currentUserId,
-                    isCurrentUserTeacher: isCurrentUserTeacher,
-                    authorId: question.authorId,
-                    authorRole: question.authorRole,
-                  ),
-                  isTeacher: isCurrentUserTeacher,
-                  onTap: onTap == null ? null : () => onTap!(question),
-                  onReply: onTap == null ? null : () => onTap!(question),
-                  onEdit: onEdit == null ? null : () => onEdit!(question),
-                  onDelete: onDelete == null ? null : () => onDelete!(question),
-                  onModerate: onToggleModeration == null
-                      ? null
-                      : () => onToggleModeration!(question),
-                  moderateLabel: question.isTeacherHidden ? '公開に戻す' : '非公開にする',
+                Builder(
+                  builder: (context) {
+                    final isOwner = isCommentOwnerForActiveRole(
+                      currentUserId: currentUserId,
+                      isCurrentUserTeacher: isCurrentUserTeacher,
+                      authorId: question.authorId,
+                      authorRole: question.authorRole,
+                    );
+                    final questionId = (question.id ?? '').trim();
+                    final teacherHiddenByMirror =
+                        questionId.isNotEmpty &&
+                        teacherHiddenQuestionIds.contains(questionId);
+                    final isTeacherHidden =
+                        question.isTeacherHidden || teacherHiddenByMirror;
+                    return _CommentBubble(
+                      body: question.body,
+                      authorId: question.authorId,
+                      authorName: question.authorName,
+                      authorDisplayName: question.authorDisplayName,
+                      authorRole: question.authorRole,
+                      postedAt: lessonQuestionPostedAt(question),
+                      scopeLabel: _questionScopeLabel(
+                        question,
+                        forceTeacherHidden: isTeacherHidden,
+                      ),
+                      moderationNotice: !isCurrentUserTeacher && isTeacherHidden
+                          ? '先生によって非公開中'
+                          : null,
+                      attachmentTypes: question.attachmentTypes,
+                      quotedNoteId: question.quotedNoteId,
+                      quotedNoteTitle: question.quotedNoteTitle,
+                      quotedNoteBody: question.quotedNoteBody,
+                      isOwner: isOwner,
+                      isTeacher: isCurrentUserTeacher,
+                      onTap: onTap == null ? null : () => onTap!(question),
+                      onReply: onTap == null ? null : () => onTap!(question),
+                      onEdit: onEdit == null ? null : () => onEdit!(question),
+                      onDelete: onDelete == null ? null : () => onDelete!(question),
+                      onModerate: onToggleModeration == null
+                          ? null
+                          : () => onToggleModeration!(question),
+                      moderateLabel: question.isTeacherHidden
+                          ? '公開に戻す'
+                          : '非公開にする',
+                    );
+                  },
                 ),
           ],
         );
@@ -2158,20 +2282,31 @@ class _CommentBubble extends StatelessWidget {
                       leadingLabel: 'メモ',
                     ),
                   ),
-                if ((moderationNotice ?? '').trim().isNotEmpty)
-                  Text(
-                    moderationNotice!,
-                    textAlign: TextAlign.right,
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: Theme.of(context).colorScheme.error,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                Text(
-                  scopeLabel,
-                  textAlign: TextAlign.right,
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: Wrap(
+                    alignment: WrapAlignment.end,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 8,
+                    runSpacing: 2,
+                    children: [
+                      if ((moderationNotice ?? '').trim().isNotEmpty)
+                        Text(
+                          moderationNotice!,
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(
+                                color: Theme.of(context).colorScheme.error,
+                                fontWeight: FontWeight.w600,
+                              ),
+                        ),
+                      Text(
+                        scopeLabel,
+                        textAlign: TextAlign.right,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
@@ -2224,11 +2359,16 @@ String _formatCommentTimestamp(Timestamp? timestamp) {
   return '${dateTime.month}/${dateTime.day} $hour:$minute';
 }
 
-String _questionScopeLabel(LessonQuestion question) {
-  final visibility = question.isPubliclyVisible ? '学習者にも公開' : '先生だけ表示';
+String _questionScopeLabel(
+  LessonQuestion question, {
+  bool forceTeacherHidden = false,
+}) {
+  final isPubliclyVisible = forceTeacherHidden
+      ? false
+      : question.isPubliclyVisible;
+  final visibility = isPubliclyVisible ? '学習者にも公開' : '先生だけ表示';
   final learnersCanAnswer =
-      question.isPubliclyVisible &&
-      question.target == LessonQuestionTarget.everyone;
+      isPubliclyVisible && question.target == LessonQuestionTarget.everyone;
   final answerScope = learnersCanAnswer ? '全員が回答可' : '先生だけ回答可';
   return '$visibility / $answerScope';
 }
@@ -2245,7 +2385,7 @@ String answerScopeLabel(
 
 String? answerModerationNotice(LessonQuestionAnswer answer) {
   if (answer.moderationStatus == lessonNoteModerationHiddenByTeacher) {
-    return '先生により非公開中';
+    return '先生によって非公開中';
   }
   return null;
 }

@@ -578,6 +578,53 @@ void main() {
     expect(find.text('回答コメントを書く'), findsOneWidget);
   });
 
+  testWidgets(
+    'Own and public question cards show teacher-hidden notice from mirror ids',
+    (tester) async {
+      const question = LessonQuestion(
+        id: 'question-hidden-by-teacher',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '先生が非公開にしたことを表示したい質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: [],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              questionsStream: Stream.value(const [question]),
+              publicQuestionsStream: Stream.value(const [question]),
+              teacherHiddenOwnQuestionIdsStream: Stream.value(
+                const {'question-hidden-by-teacher'},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('先生によって非公開中'), findsOneWidget);
+      expect(find.text('先生だけ表示 / 先生だけ回答可'), findsOneWidget);
+
+      await tester.tap(find.text('公開質問'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('先生によって非公開中'), findsOneWidget);
+      expect(find.text('先生だけ表示 / 先生だけ回答可'), findsOneWidget);
+    },
+  );
+
   testWidgets('Quoted note bubble shows memo status action', (tester) async {
     const question = LessonQuestion(
       id: 'question-note-status',
