@@ -683,6 +683,102 @@ void main() {
   );
 
   testWidgets(
+    'Teacher-hidden mirror notice stays after opening detail and returning',
+    (tester) async {
+      const question = LessonQuestion(
+        id: 'question-hidden-persist',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '戻ったあとも非公開表示を維持したい質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: [],
+      );
+      final hiddenIdsController = StreamController<Set<String>>();
+      addTearDown(hiddenIdsController.close);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              questionsStream: Stream.value(const [question]),
+              publicQuestionsStream: Stream.value(const []),
+              teacherHiddenOwnQuestionIdsStream: hiddenIdsController.stream,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      hiddenIdsController.add(const {'question-hidden-persist'});
+      await tester.pumpAndSettle();
+      expect(find.text('先生によって非公開中'), findsOneWidget);
+      expect(find.text('先生だけ表示 / 先生だけ回答可'), findsOneWidget);
+
+      await tester.tap(find.text('戻ったあとも非公開表示を維持したい質問です。'));
+      await tester.pumpAndSettle();
+      expect(find.text('質問詳細'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('質問一覧に戻る'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('先生によって非公開中'), findsOneWidget);
+      expect(find.text('先生だけ表示 / 先生だけ回答可'), findsOneWidget);
+      expect(find.text('学習者にも公開 / 全員が回答可'), findsNothing);
+    },
+  );
+
+  testWidgets('Question detail shows teacher-hidden moderation notice', (
+    tester,
+  ) async {
+    const hiddenQuestion = LessonQuestion(
+      id: 'question-hidden-detail',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '',
+      body: '詳細画面で非公開注意を表示したい質問です。',
+      visibility: LessonQuestionVisibility.public,
+      target: LessonQuestionTarget.teacher,
+      attachmentTypes: [],
+      moderationStatus: lessonNoteModerationHiddenByTeacher,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonQuestionsPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            questionsStream: Stream.value(const [hiddenQuestion]),
+            publicQuestionsStream: Stream.value(const []),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('詳細画面で非公開注意を表示したい質問です。'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('質問詳細'), findsOneWidget);
+    expect(find.text('先生によって非公開中'), findsOneWidget);
+    expect(find.text('先生だけ表示 / 先生だけ回答可'), findsOneWidget);
+  });
+
+  testWidgets(
     'Hidden answer notice clears when moderation returns to visible',
     (tester) async {
       const question = LessonQuestion(
@@ -825,6 +921,90 @@ void main() {
     expect((afterBackOffset - beforeOpenOffset).abs(), lessThanOrEqualTo(2.0));
   });
 
+  testWidgets('Teacher preview keeps scroll position after returning', (
+    tester,
+  ) async {
+    final publicController = StreamController<List<LessonQuestion>>();
+    addTearDown(publicController.close);
+    final base = DateTime(2026, 6, 1, 10, 0);
+    final questions = List.generate(80, (index) {
+      final postedAt = Timestamp.fromDate(base.add(Duration(minutes: index)));
+      final suffix = index.toString().padLeft(3, '0');
+      return LessonQuestion(
+        id: 'teacher-preview-scroll-$suffix',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '先生プレビュー スクロール確認 $suffix',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: const [],
+        createdAt: postedAt,
+        updatedAt: postedAt,
+      );
+    });
+    const teacherPreviewListKey = PageStorageKey<String>(
+      'teacher-preview-public-questions',
+    );
+
+    double teacherPreviewListOffset() {
+      final scrollable = find.descendant(
+        of: find.byKey(teacherPreviewListKey),
+        matching: find.byType(Scrollable),
+      );
+      return tester.state<ScrollableState>(scrollable).position.pixels;
+    }
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonQuestionsPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            questionsStream: Stream.value(const []),
+            publicQuestionsStream: publicController.stream,
+            isTeacherPreview: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    publicController.add(questions);
+    await tester.pumpAndSettle();
+    await tester.drag(find.byKey(teacherPreviewListKey), const Offset(0, -1800));
+    await tester.pumpAndSettle();
+    const targetQuestionText = '先生プレビュー スクロール確認 045';
+    final teacherPreviewScrollable = find.descendant(
+      of: find.byKey(teacherPreviewListKey),
+      matching: find.byType(Scrollable),
+    );
+    await tester.scrollUntilVisible(
+      find.text(targetQuestionText),
+      300,
+      scrollable: teacherPreviewScrollable,
+    );
+    await tester.pumpAndSettle();
+    final beforeOpenOffset = teacherPreviewListOffset();
+    await tester.tap(find.text(targetQuestionText));
+    await tester.pumpAndSettle();
+    expect(find.text('質問詳細'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('質問一覧に戻る'));
+    await tester.pumpAndSettle();
+
+    final afterBackOffset = teacherPreviewListOffset();
+    expect(
+      (afterBackOffset - beforeOpenOffset).abs(),
+      lessThanOrEqualTo(2.0),
+    );
+  });
+
   testWidgets(
     'Returning from detail keeps public-questions offset after stream re-emits',
     (tester) async {
@@ -903,6 +1083,102 @@ void main() {
       final afterReemitOffset = publicListOffset();
       expect(
         (afterReemitOffset - beforeOpenOffset).abs(),
+        lessThanOrEqualTo(2.0),
+      );
+    },
+  );
+
+  testWidgets(
+    'Public-questions offset stays stable through burst stream updates',
+    (tester) async {
+      final publicController = StreamController<List<LessonQuestion>>();
+      addTearDown(publicController.close);
+      final postedAt = Timestamp.fromDate(DateTime(2026, 6, 1, 12, 0));
+      final questions = List.generate(90, (index) {
+        final suffix = index.toString().padLeft(3, '0');
+        return LessonQuestion(
+          id: 'public-burst-$suffix',
+          authorId: 'student-a',
+          authorName: '学習者A',
+          courseId: 'course-a',
+          courseTitle: '数学 方程式入門',
+          lessonNumber: 1,
+          lessonTitle: '一次方程式の基本',
+          title: '',
+          body: '公開一覧 バースト確認 $suffix',
+          visibility: LessonQuestionVisibility.public,
+          target: LessonQuestionTarget.everyone,
+          attachmentTypes: const [],
+          createdAt: postedAt,
+          updatedAt: postedAt,
+        );
+      });
+      const publicListKey = PageStorageKey<String>('public-questions');
+
+      double publicListOffset() {
+        final scrollable = find.descendant(
+          of: find.byKey(publicListKey),
+          matching: find.byType(Scrollable),
+        );
+        return tester.state<ScrollableState>(scrollable).position.pixels;
+      }
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              questionsStream: Stream.value(const []),
+              publicQuestionsStream: publicController.stream,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('公開質問'));
+      await tester.pumpAndSettle();
+      publicController.add(questions);
+      await tester.pumpAndSettle();
+      await tester.drag(find.byKey(publicListKey), const Offset(0, -2000));
+      await tester.pumpAndSettle();
+      const targetQuestionText = '公開一覧 バースト確認 050';
+      final publicScrollable = find.descendant(
+        of: find.byKey(publicListKey),
+        matching: find.byType(Scrollable),
+      );
+      await tester.scrollUntilVisible(
+        find.text(targetQuestionText),
+        300,
+        scrollable: publicScrollable,
+      );
+      await tester.pumpAndSettle();
+      final beforeOpenOffset = publicListOffset();
+      await tester.tap(find.text(targetQuestionText));
+      await tester.pumpAndSettle();
+      expect(find.text('質問詳細'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('質問一覧に戻る'));
+      await tester.pumpAndSettle();
+      final afterBackOffset = publicListOffset();
+      expect(
+        (afterBackOffset - beforeOpenOffset).abs(),
+        lessThanOrEqualTo(2.0),
+      );
+
+      for (var burstIndex = 0; burstIndex < 6; burstIndex++) {
+        final emission = burstIndex.isEven
+            ? List<LessonQuestion>.from(questions.reversed)
+            : List<LessonQuestion>.from(questions);
+        publicController.add(emission);
+      }
+      await tester.pumpAndSettle();
+
+      final afterBurstOffset = publicListOffset();
+      expect(
+        (afterBurstOffset - beforeOpenOffset).abs(),
         lessThanOrEqualTo(2.0),
       );
     },
@@ -1528,6 +1804,82 @@ void main() {
     expect(find.textContaining('Bさん への返信'), findsOneWidget);
     expect(find.textContaining('Cさん への返信'), findsOneWidget);
   });
+
+  testWidgets(
+    'Highlighted direct answer repositions after delayed answer stream updates',
+    (tester) async {
+      const question = LessonQuestion(
+        id: 'question-highlight-reposition',
+        authorId: 'student-a',
+        authorName: 'Aさん',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '親質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: [],
+      );
+      final answersController = StreamController<List<LessonQuestionAnswer>>();
+      addTearDown(answersController.close);
+      final answersStream = answersController.stream.asBroadcastStream();
+      final quotableNotesStream =
+          Stream<List<LessonNote>>.value(const <LessonNote>[])
+              .asBroadcastStream();
+      final base = DateTime(2026, 6, 5, 10, 0);
+      final answers = List.generate(24, (index) {
+        final suffix = index.toString().padLeft(2, '0');
+        return LessonQuestionAnswer(
+          id: 'answer-$suffix',
+          questionId: 'question-highlight-reposition',
+          authorId: 'student-$suffix',
+          authorName: '学習者$suffix',
+          authorRole: 'student',
+          body: index == 18 ? 'ハイライト対象 18' : '通常回答 $suffix',
+          attachmentTypes: const [],
+          parentCommentId: 'question-highlight-reposition',
+          parentCommentType: 'question',
+          createdAt: Timestamp.fromDate(base.add(Duration(minutes: index))),
+          updatedAt: Timestamp.fromDate(base.add(Duration(minutes: index))),
+        );
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              initialSelectedQuestion: question,
+              initialHighlightedAnswerId: 'answer-18',
+              questionsStream: Stream.value(const []),
+              publicQuestionsStream: Stream.value(const []),
+              answersStream: answersStream,
+              quotableNotesStream: quotableNotesStream,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      answersController.add([answers[18]]);
+      await tester.pumpAndSettle();
+
+      answersController.add(answers);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 80));
+      await tester.pumpAndSettle();
+
+      final highlightedFinder = find.text('ハイライト対象 18');
+      expect(highlightedFinder, findsOneWidget);
+      final highlightedTop = tester.getTopLeft(highlightedFinder).dy;
+      expect(highlightedTop, greaterThanOrEqualTo(0));
+      expect(highlightedTop, lessThanOrEqualTo(260));
+    },
+  );
 
   testWidgets(
     'Reply thread falls back to teacher label when reply target name is missing',

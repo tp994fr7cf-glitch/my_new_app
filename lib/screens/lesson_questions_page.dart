@@ -80,6 +80,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
   List<LessonQuestionAnswer> _lastTeacherPreviewAnswers = const [];
   List<LessonNote> _lastQuotablePublicNotes = const [];
   List<LessonNote> _lastQuotableOwnNotes = const [];
+  Set<String> _lastTeacherHiddenOwnQuestionIds = const <String>{};
   late Stream<List<LessonNote>> _sharedQuotableNotesStream;
   Stream<List<LessonQuestion>>? _providedQuestionsSource;
   Stream<List<LessonQuestion>>? _providedQuestionsBroadcast;
@@ -516,6 +517,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         _cachedTeacherHiddenOwnQuestionIdsStreamKey == cacheKey) {
       return _cachedTeacherHiddenOwnQuestionIdsStream!;
     }
+    _lastTeacherHiddenOwnQuestionIds = const <String>{};
     final provided = widget.teacherHiddenOwnQuestionIdsStream;
     late final Stream<Set<String>> stream;
     if (provided != null) {
@@ -542,7 +544,11 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
             .map((snapshot) => snapshot.docs.map((doc) => doc.id).toSet());
       }
     }
-    final broadcast = stream.asBroadcastStream();
+    final tracked = stream.map((ids) {
+      _lastTeacherHiddenOwnQuestionIds = Set<String>.from(ids);
+      return _lastTeacherHiddenOwnQuestionIds;
+    });
+    final broadcast = tracked.asBroadcastStream();
     _cachedTeacherHiddenOwnQuestionIdsStream = broadcast;
     _cachedTeacherHiddenOwnQuestionIdsStreamKey = cacheKey;
     return broadcast;
@@ -1892,7 +1898,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
                   stream: _teacherHiddenOwnQuestionIdsStream(),
                   builder: (context, hiddenSnapshot) {
                     final hiddenOwnQuestionIds =
-                        hiddenSnapshot.data ?? const <String>{};
+                        hiddenSnapshot.data ??
+                        _lastTeacherHiddenOwnQuestionIds;
                     return TabBarView(
                       controller: _questionTabController,
                       children: [
@@ -3252,6 +3259,7 @@ class _LessonQuestionDetail extends StatefulWidget {
 }
 
 class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
+  static const Duration _highlightAutoPositionWindow = Duration(seconds: 2);
   final TextEditingController _answerController = TextEditingController();
   final ScrollController _threadScrollController = ScrollController();
   final GlobalKey _highlightedAnswerBubbleKey = GlobalKey();
@@ -3267,12 +3275,23 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
   Timestamp? _replyToCreatedAt;
   String? _openedAnswerThreadRootId;
   bool _openedInitialHighlightedThread = false;
-  bool _didAutoPositionHighlightedAnswer = false;
+  bool _highlightAutoPositionCancelledByUser = false;
+  bool _highlightAutoPositionPending = false;
+  bool _applyingHighlightAutoPosition = false;
+  String _lastAutoPositionSignature = '';
+  DateTime? _highlightAutoPositionStartedAt;
   bool _isSaving = false;
   List<LessonQuestionAnswer> _lastNonEmptyAnswers = const [];
 
   @override
+  void initState() {
+    super.initState();
+    _threadScrollController.addListener(_handleThreadScrollChange);
+  }
+
+  @override
   void dispose() {
+    _threadScrollController.removeListener(_handleThreadScrollChange);
     _answerController.dispose();
     _threadScrollController.dispose();
     super.dispose();
@@ -3285,34 +3304,105 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
       _lastNonEmptyAnswers = const [];
       _openedAnswerThreadRootId = null;
       _openedInitialHighlightedThread = false;
-      _didAutoPositionHighlightedAnswer = false;
+      _resetHighlightAutoPositionState();
       _scrollToTop();
+    }
+    if (oldWidget.highlightedAnswerId != widget.highlightedAnswerId) {
+      _resetHighlightAutoPositionState();
     }
   }
 
-  void _positionHighlightedAnswerAtTopOnce() {
-    if (_didAutoPositionHighlightedAnswer) {
+  void _handleThreadScrollChange() {
+    if (_applyingHighlightAutoPosition || !_threadScrollController.hasClients) {
       return;
     }
-    final highlightedId = widget.highlightedAnswerId;
-    if (highlightedId == null || highlightedId.isEmpty) {
-      _didAutoPositionHighlightedAnswer = true;
+    if (_threadScrollController.position.userScrollDirection !=
+        ScrollDirection.idle) {
+      _highlightAutoPositionCancelledByUser = true;
+    }
+  }
+
+  void _resetHighlightAutoPositionState() {
+    _highlightAutoPositionCancelledByUser = false;
+    _highlightAutoPositionPending = false;
+    _applyingHighlightAutoPosition = false;
+    _lastAutoPositionSignature = '';
+    _highlightAutoPositionStartedAt = null;
+  }
+
+  String _highlightPositionSignature({
+    required List<LessonQuestionAnswer> answers,
+    required String? pendingAutoOpenRootId,
+  }) {
+    final buffer = StringBuffer();
+    for (final answer in answers) {
+      final id = (answer.id ?? '').trim();
+      final updatedAt = timestampOrEpoch(answer.updatedAt).millisecondsSinceEpoch;
+      buffer
+        ..write(id)
+        ..write(':')
+        ..write(answer.parentCommentType ?? '')
+        ..write(':')
+        ..write(answer.parentCommentId ?? '')
+        ..write(':')
+        ..write(answer.moderationStatus)
+        ..write(':')
+        ..write(updatedAt)
+        ..write('|');
+    }
+    buffer
+      ..write('opened=')
+      ..write(_openedAnswerThreadRootId ?? '')
+      ..write('|pending=')
+      ..write(pendingAutoOpenRootId ?? '');
+    return buffer.toString();
+  }
+
+  void _scheduleHighlightedAnswerAutoPosition({
+    required String signature,
+  }) {
+    final highlightedId = (widget.highlightedAnswerId ?? '').trim();
+    if (highlightedId.isEmpty ||
+        _highlightAutoPositionCancelledByUser ||
+        _lastAutoPositionSignature == signature ||
+        _highlightAutoPositionPending) {
       return;
     }
+    _highlightAutoPositionStartedAt ??= DateTime.now();
+    final startedAt = _highlightAutoPositionStartedAt;
+    if (startedAt != null &&
+        DateTime.now().difference(startedAt) > _highlightAutoPositionWindow) {
+      return;
+    }
+    _highlightAutoPositionPending = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _didAutoPositionHighlightedAnswer) {
+      _highlightAutoPositionPending = false;
+      if (!mounted || _highlightAutoPositionCancelledByUser) {
+        return;
+      }
+      final startedAt = _highlightAutoPositionStartedAt;
+      if (startedAt != null &&
+          DateTime.now().difference(startedAt) > _highlightAutoPositionWindow) {
         return;
       }
       final targetContext = _highlightedAnswerBubbleKey.currentContext;
       if (targetContext == null) {
+        Future<void>.delayed(const Duration(milliseconds: 50), () {
+          if (!mounted) {
+            return;
+          }
+          _scheduleHighlightedAnswerAutoPosition(signature: signature);
+        });
         return;
       }
+      _applyingHighlightAutoPosition = true;
       Scrollable.ensureVisible(
         targetContext,
         alignment: 0,
         duration: Duration.zero,
       );
-      _didAutoPositionHighlightedAnswer = true;
+      _applyingHighlightAutoPosition = false;
+      _lastAutoPositionSignature = signature;
     });
   }
 
@@ -3495,6 +3585,10 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                   final autoOpenRootId = shouldAutoOpenHighlightedThread
                       ? highlightedRootId
                       : null;
+                  final highlightPositionSignature = _highlightPositionSignature(
+                    answers: answers,
+                    pendingAutoOpenRootId: autoOpenRootId,
+                  );
                   final standaloneHighlightedReply =
                       _standaloneHighlightedReply(
                         answers,
@@ -3512,7 +3606,9 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                       _openRepliesThread(autoOpenRootId, scrollToTop: false);
                     });
                   }
-                  _positionHighlightedAnswerAtTopOnce();
+                  _scheduleHighlightedAnswerAutoPosition(
+                    signature: highlightPositionSignature,
+                  );
                   _AnswerThread? openedThread;
                   if (_openedAnswerThreadRootId != null) {
                     for (final thread in answerThreads) {
@@ -3594,6 +3690,11 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                               authorRole: question.authorRole,
                               postedAt: lessonQuestionPostedAt(question),
                               scopeLabel: _questionScopeLabel(question),
+                              moderationNotice:
+                                  !widget.isCurrentUserTeacher &&
+                                      question.isTeacherHidden
+                                  ? '先生によって非公開中'
+                                  : null,
                               attachmentTypes: question.attachmentTypes,
                               quotedNoteId: question.quotedNoteId,
                               quotedNoteTitle: question.quotedNoteTitle,
