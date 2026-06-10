@@ -605,9 +605,9 @@ void main() {
               lessonNumber: 1,
               questionsStream: Stream.value(const [question]),
               publicQuestionsStream: Stream.value(const [question]),
-              teacherHiddenOwnQuestionIdsStream: Stream.value(
-                const {'question-hidden-by-teacher'},
-              ),
+              teacherHiddenOwnQuestionIdsStream: Stream.value(const {
+                'question-hidden-by-teacher',
+              }),
             ),
           ),
         ),
@@ -756,6 +756,155 @@ void main() {
       expect(find.text('先生によって非公開中'), findsNothing);
       expect(find.text('先生だけ表示'), findsNothing);
       expect(find.text('学習者にも公開 / 先生だけ回答可'), findsWidgets);
+    },
+  );
+
+  testWidgets('Returning from detail keeps my-questions scroll position', (
+    tester,
+  ) async {
+    final base = DateTime(2026, 6, 1, 9, 0);
+    final questions = List.generate(60, (index) {
+      final postedAt = Timestamp.fromDate(base.add(Duration(minutes: index)));
+      return LessonQuestion(
+        id: 'my-scroll-$index',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '自分一覧 スクロール確認 $index',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: const [],
+        createdAt: postedAt,
+        updatedAt: postedAt,
+      );
+    });
+    const myListKey = PageStorageKey<String>('my-questions');
+
+    double myListOffset() {
+      final scrollable = find.descendant(
+        of: find.byKey(myListKey),
+        matching: find.byType(Scrollable),
+      );
+      return tester.state<ScrollableState>(scrollable).position.pixels;
+    }
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonQuestionsPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            questionsStream: Stream.value(questions),
+            publicQuestionsStream: Stream.value(const []),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.drag(find.byKey(myListKey), const Offset(0, -1600));
+    await tester.pumpAndSettle();
+
+    final visibleQuestion = find.textContaining('自分一覧 スクロール確認').first;
+    await tester.ensureVisible(visibleQuestion);
+    await tester.pumpAndSettle();
+    final beforeOpenOffset = myListOffset();
+    await tester.tap(visibleQuestion);
+    await tester.pumpAndSettle();
+    expect(find.text('質問詳細'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('質問一覧に戻る'));
+    await tester.pumpAndSettle();
+
+    final afterBackOffset = myListOffset();
+    expect((afterBackOffset - beforeOpenOffset).abs(), lessThanOrEqualTo(2.0));
+  });
+
+  testWidgets(
+    'Returning from detail keeps public-questions offset after stream re-emits',
+    (tester) async {
+      final publicController = StreamController<List<LessonQuestion>>();
+      addTearDown(publicController.close);
+      final base = DateTime(2026, 6, 1, 11, 0);
+      final questions = List.generate(70, (index) {
+        final postedAt = Timestamp.fromDate(base.add(Duration(minutes: index)));
+        return LessonQuestion(
+          id: 'public-scroll-$index',
+          authorId: 'student-a',
+          authorName: '学習者A',
+          courseId: 'course-a',
+          courseTitle: '数学 方程式入門',
+          lessonNumber: 1,
+          lessonTitle: '一次方程式の基本',
+          title: '',
+          body: '公開一覧 スクロール確認 $index',
+          visibility: LessonQuestionVisibility.public,
+          target: LessonQuestionTarget.everyone,
+          attachmentTypes: const [],
+          createdAt: postedAt,
+          updatedAt: postedAt,
+        );
+      });
+      const publicListKey = PageStorageKey<String>('public-questions');
+
+      double publicListOffset() {
+        final scrollable = find.descendant(
+          of: find.byKey(publicListKey),
+          matching: find.byType(Scrollable),
+        );
+        return tester.state<ScrollableState>(scrollable).position.pixels;
+      }
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              questionsStream: Stream.value(const []),
+              publicQuestionsStream: publicController.stream,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('公開質問'));
+      await tester.pumpAndSettle();
+      publicController.add(questions);
+      await tester.pumpAndSettle();
+      await tester.drag(find.byKey(publicListKey), const Offset(0, -1800));
+      await tester.pumpAndSettle();
+
+      final visibleQuestion = find.textContaining('公開一覧 スクロール確認').first;
+      await tester.ensureVisible(visibleQuestion);
+      await tester.pumpAndSettle();
+      final beforeOpenOffset = publicListOffset();
+      await tester.tap(visibleQuestion);
+      await tester.pumpAndSettle();
+      expect(find.text('質問詳細'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('質問一覧に戻る'));
+      await tester.pumpAndSettle();
+      final afterBackOffset = publicListOffset();
+      expect(
+        (afterBackOffset - beforeOpenOffset).abs(),
+        lessThanOrEqualTo(2.0),
+      );
+
+      publicController.add(List<LessonQuestion>.from(questions));
+      await tester.pumpAndSettle();
+      final afterReemitOffset = publicListOffset();
+      expect(
+        (afterReemitOffset - beforeOpenOffset).abs(),
+        lessThanOrEqualTo(2.0),
+      );
     },
   );
 

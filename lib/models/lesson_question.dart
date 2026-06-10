@@ -289,15 +289,23 @@ List<LessonQuestion> sortLessonQuestions(
   return [...questions]..sort((a, b) {
     switch (sort) {
       case LessonQuestionSort.newest:
-        return compareTimestampDescWithUnknownLast(
+        final postedCompare = compareTimestampDescWithUnknownLast(
           lessonQuestionPostedAt(a),
           lessonQuestionPostedAt(b),
         );
+        if (postedCompare != 0) {
+          return postedCompare;
+        }
+        return _compareLessonQuestionIdentity(a, b);
       case LessonQuestionSort.editedNewest:
-        return compareTimestampDescWithUnknownLast(
+        final editedCompare = compareTimestampDescWithUnknownLast(
           lessonQuestionEditedAt(a),
           lessonQuestionEditedAt(b),
         );
+        if (editedCompare != 0) {
+          return editedCompare;
+        }
+        return _compareLessonQuestionIdentity(a, b);
       case LessonQuestionSort.popular:
         if (enablePopularity) {
           final answerCountCompare = b.answerCount.compareTo(a.answerCount);
@@ -305,10 +313,38 @@ List<LessonQuestion> sortLessonQuestions(
             return answerCountCompare;
           }
         }
-        return compareTimestampDescWithUnknownLast(
+        final postedCompare = compareTimestampDescWithUnknownLast(
           lessonQuestionPostedAt(a),
           lessonQuestionPostedAt(b),
         );
+        if (postedCompare != 0) {
+          return postedCompare;
+        }
+        return _compareLessonQuestionIdentity(a, b);
     }
   });
+}
+
+int _compareLessonQuestionIdentity(LessonQuestion a, LessonQuestion b) {
+  final aId = (a.id ?? '').trim();
+  final bId = (b.id ?? '').trim();
+  if (aId.isNotEmpty && bId.isNotEmpty) {
+    final idCompare = aId.compareTo(bId);
+    if (idCompare != 0) {
+      return idCompare;
+    }
+  }
+  final authorCompare = a.authorId.compareTo(b.authorId);
+  if (authorCompare != 0) {
+    return authorCompare;
+  }
+  final courseCompare = a.courseId.compareTo(b.courseId);
+  if (courseCompare != 0) {
+    return courseCompare;
+  }
+  final lessonCompare = a.lessonNumber.compareTo(b.lessonNumber);
+  if (lessonCompare != 0) {
+    return lessonCompare;
+  }
+  return a.body.compareTo(b.body);
 }

@@ -30,6 +30,7 @@ class PublicNoteEditStatusButton extends StatelessWidget {
     required this.fallbackBody,
     this.icon = Icons.note_alt_outlined,
     this.leadingLabel = 'メモ状態',
+    this.compact = false,
   });
 
   final String? noteId;
@@ -37,6 +38,7 @@ class PublicNoteEditStatusButton extends StatelessWidget {
   final String fallbackBody;
   final IconData icon;
   final String leadingLabel;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -45,18 +47,7 @@ class PublicNoteEditStatusButton extends StatelessWidget {
       return const SizedBox.shrink();
     }
     if (Firebase.apps.isEmpty) {
-      return TextButton.icon(
-        onPressed: () {
-          showPublicNoteEditHistorySheet(
-            context,
-            noteId: safeNoteId,
-            fallbackTitle: fallbackTitle,
-            fallbackBody: fallbackBody,
-          );
-        },
-        icon: Icon(icon, size: 18),
-        label: Text('$leadingLabel: 状態確認'),
-      );
+      return _buildStatusButton(context, noteId: safeNoteId, label: '状態確認');
     }
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       stream: FirebaseFirestore.instance
@@ -70,19 +61,49 @@ class PublicNoteEditStatusButton extends StatelessWidget {
             : LessonNote.fromMap(noteData, id: snapshot.data?.id);
         final hasEdits = note?.hasCitationEdits == true;
         final label = hasEdits ? '編集済' : '未編集';
-        return TextButton.icon(
-          onPressed: () {
-            showPublicNoteEditHistorySheet(
-              context,
-              noteId: safeNoteId,
-              fallbackTitle: note?.title ?? fallbackTitle,
-              fallbackBody: note?.body ?? fallbackBody,
-            );
-          },
-          icon: Icon(icon, size: 18),
-          label: Text('$leadingLabel: $label'),
+        return _buildStatusButton(
+          context,
+          noteId: safeNoteId,
+          fallbackTitleOverride: note?.title,
+          fallbackBodyOverride: note?.body,
+          label: label,
         );
       },
+    );
+  }
+
+  Widget _buildStatusButton(
+    BuildContext context, {
+    required String noteId,
+    required String label,
+    String? fallbackTitleOverride,
+    String? fallbackBodyOverride,
+  }) {
+    final fullLabel = '$leadingLabel: $label';
+    final onPressed = () {
+      showPublicNoteEditHistorySheet(
+        context,
+        noteId: noteId,
+        fallbackTitle: fallbackTitleOverride ?? fallbackTitle,
+        fallbackBody: fallbackBodyOverride ?? fallbackBody,
+      );
+    };
+    if (compact) {
+      return TextButton(
+        onPressed: onPressed,
+        style: TextButton.styleFrom(
+          minimumSize: const Size(0, 32),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+        ),
+        child: Text(fullLabel),
+      );
+    }
+    return TextButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon, size: 18),
+      label: Text(fullLabel),
     );
   }
 }
@@ -103,12 +124,12 @@ class _PublicNoteEditHistorySheet extends StatelessWidget {
     final historyStream = Firebase.apps.isEmpty
         ? const Stream<QuerySnapshot<Map<String, dynamic>>>.empty()
         : FirebaseFirestore.instance
-            .collection('publicLessonNotes')
-            .doc(noteId)
-            .collection(publicLessonNoteEditHistoryCollection)
-            .orderBy('editedAt', descending: true)
-            .limit(100)
-            .snapshots();
+              .collection('publicLessonNotes')
+              .doc(noteId)
+              .collection(publicLessonNoteEditHistoryCollection)
+              .orderBy('editedAt', descending: true)
+              .limit(100)
+              .snapshots();
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
@@ -127,9 +148,9 @@ class _PublicNoteEditHistorySheet extends StatelessWidget {
               stream: Firebase.apps.isEmpty
                   ? const Stream<DocumentSnapshot<Map<String, dynamic>>>.empty()
                   : FirebaseFirestore.instance
-                      .collection('publicLessonNotes')
-                      .doc(noteId)
-                      .snapshots(),
+                        .collection('publicLessonNotes')
+                        .doc(noteId)
+                        .snapshots(),
               builder: (context, noteSnapshot) {
                 final noteData = noteSnapshot.data?.data();
                 final note = noteData == null
@@ -152,14 +173,15 @@ class _PublicNoteEditHistorySheet extends StatelessWidget {
               child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                 stream: historyStream,
                 builder: (context, snapshot) {
-                  final entries = (snapshot.data?.docs ?? const [])
-                      .map(LessonNoteEditHistoryEntry.fromFirestore)
-                      .toList()
-                    ..sort((a, b) {
-                      final aAt = a.editedAt?.toDate() ?? DateTime(1970);
-                      final bAt = b.editedAt?.toDate() ?? DateTime(1970);
-                      return bAt.compareTo(aAt);
-                    });
+                  final entries =
+                      (snapshot.data?.docs ?? const [])
+                          .map(LessonNoteEditHistoryEntry.fromFirestore)
+                          .toList()
+                        ..sort((a, b) {
+                          final aAt = a.editedAt?.toDate() ?? DateTime(1970);
+                          final bAt = b.editedAt?.toDate() ?? DateTime(1970);
+                          return bAt.compareTo(aAt);
+                        });
                   if (entries.isEmpty) {
                     return ListView(
                       shrinkWrap: true,
@@ -189,9 +211,7 @@ class _PublicNoteEditHistorySheet extends StatelessWidget {
                       return ListTile(
                         contentPadding: EdgeInsets.zero,
                         title: Text('編集日時: $editedAt'),
-                        subtitle: Text(
-                          canCompare ? '比較可能（7日以内）' : '比較データなし',
-                        ),
+                        subtitle: Text(canCompare ? '比較可能（7日以内）' : '比較データなし'),
                         trailing: canCompare
                             ? TextButton(
                                 onPressed: () {
@@ -229,7 +249,9 @@ void _showHistoryCompareDialog(
   final beforeTitle = (entry.beforeTitle ?? '').isEmpty
       ? '無題のメモ'
       : entry.beforeTitle!;
-  final beforeBody = (entry.beforeBody ?? '').isEmpty ? '本文なし' : entry.beforeBody!;
+  final beforeBody = (entry.beforeBody ?? '').isEmpty
+      ? '本文なし'
+      : entry.beforeBody!;
   final afterTitle = (entry.afterTitle ?? '').isEmpty
       ? (fallbackTitle.isEmpty ? '無題のメモ' : fallbackTitle)
       : entry.afterTitle!;
@@ -246,18 +268,12 @@ void _showHistoryCompareDialog(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                '編集前',
-                style: Theme.of(context).textTheme.labelLarge,
-              ),
+              Text('編集前', style: Theme.of(context).textTheme.labelLarge),
               const SizedBox(height: 4),
               Text('タイトル: $beforeTitle'),
               Text('本文: $beforeBody'),
               const SizedBox(height: 12),
-              Text(
-                '編集後',
-                style: Theme.of(context).textTheme.labelLarge,
-              ),
+              Text('編集後', style: Theme.of(context).textTheme.labelLarge),
               const SizedBox(height: 4),
               Text('タイトル: $afterTitle'),
               Text('本文: $afterBody'),
