@@ -363,6 +363,52 @@ void main() {
     expect(answerScopeLabel(hiddenAnswer, '学習者にも公開 / 先生だけ回答可'), '先生だけ表示');
   });
 
+  test('answer popular sort follows edited timestamp order', () {
+    final oldestEdited = LessonQuestionAnswer(
+      id: 'answer-oldest-edited',
+      questionId: 'question-a',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      authorRole: 'student',
+      body: 'oldest',
+      attachmentTypes: const [],
+      createdAt: Timestamp.fromDate(DateTime(2026, 6, 1, 10, 0)),
+      updatedAt: Timestamp.fromDate(DateTime(2026, 6, 1, 10, 1)),
+    );
+    final newestEdited = LessonQuestionAnswer(
+      id: 'answer-newest-edited',
+      questionId: 'question-a',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      authorRole: 'student',
+      body: 'newest',
+      attachmentTypes: const [],
+      createdAt: Timestamp.fromDate(DateTime(2026, 6, 1, 10, 2)),
+      updatedAt: Timestamp.fromDate(DateTime(2026, 6, 1, 10, 30)),
+    );
+    final middleEdited = LessonQuestionAnswer(
+      id: 'answer-middle-edited',
+      questionId: 'question-a',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      authorRole: 'student',
+      body: 'middle',
+      attachmentTypes: const [],
+      createdAt: Timestamp.fromDate(DateTime(2026, 6, 1, 10, 1)),
+      updatedAt: Timestamp.fromDate(DateTime(2026, 6, 1, 10, 20)),
+    );
+
+    final sorted = sortLessonQuestionAnswers(
+      [oldestEdited, newestEdited, middleEdited],
+      LessonQuestionSort.popular,
+    );
+
+    expect(
+      sorted.map((answer) => answer.id).toList(),
+      ['answer-newest-edited', 'answer-middle-edited', 'answer-oldest-edited'],
+    );
+  });
+
   test('comment owner is decided by uid and active role', () {
     expect(
       isCommentOwnerForActiveRole(
@@ -577,6 +623,256 @@ void main() {
     expect(find.text('質問詳細'), findsOneWidget);
     expect(find.text('回答コメントを書く'), findsOneWidget);
   });
+
+  testWidgets(
+    'My comments tab switches to answers and shows own answer records',
+    (tester) async {
+      const question = LessonQuestion(
+        id: 'my-answer-parent-question',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '回答一覧の親質問です。',
+        visibility: LessonQuestionVisibility.public,
+        studentVisibility: LessonQuestionVisibility.teacherOnly,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: [],
+      );
+      const directAnswer = LessonQuestionAnswer(
+        id: 'my-answer-direct',
+        questionId: 'my-answer-parent-question',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        authorRole: 'student',
+        body: '自分の直接回答です。',
+        attachmentTypes: [],
+        parentCommentId: 'my-answer-parent-question',
+        parentCommentType: 'question',
+      );
+      const hiddenReplyAnswer = LessonQuestionAnswer(
+        id: 'my-answer-reply-hidden',
+        questionId: 'my-answer-parent-question',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        authorRole: 'student',
+        body: '自分の返信回答です。',
+        attachmentTypes: [],
+        parentCommentId: 'my-answer-direct',
+        parentCommentType: 'answer',
+        replyToDisplayName: '学習者A',
+        moderationStatus: lessonNoteModerationHiddenByTeacher,
+      );
+      const deletedAnswer = LessonQuestionAnswer(
+        id: 'my-answer-deleted',
+        questionId: 'my-answer-parent-question',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        authorRole: 'student',
+        body: '削除済み回答です。',
+        attachmentTypes: [],
+        isDeleted: true,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              questionsStream: Stream.value(const [question]),
+              publicQuestionsStream: Stream.value(const []),
+              answersStream: Stream.value(
+                const [directAnswer, hiddenReplyAnswer, deletedAnswer],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('自分の質問・回答'), findsOneWidget);
+      await tester.tap(find.widgetWithText(ChoiceChip, '回答'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('自分の直接回答です。'), findsOneWidget);
+      expect(find.text('自分の返信回答です。'), findsOneWidget);
+      expect(find.text('削除済み回答です。'), findsNothing);
+      expect(find.text('先生だけ表示'), findsWidgets);
+      expect(find.text('先生によって非公開中'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Opening my direct answer from my answers list opens question detail',
+    (tester) async {
+      const question = LessonQuestion(
+        id: 'my-answer-open-question',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: 'タップ遷移を確認する質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: [],
+      );
+      final answers = [
+        LessonQuestionAnswer(
+          id: 'my-open-root',
+          questionId: 'my-answer-open-question',
+          authorId: 'student-a',
+          authorName: '学習者A',
+          authorRole: 'student',
+          body: '遷移元の自分の回答です。',
+          attachmentTypes: const [],
+          parentCommentId: 'my-answer-open-question',
+          parentCommentType: 'question',
+          createdAt: Timestamp.fromDate(DateTime(2026, 6, 1, 11, 0)),
+        ),
+        LessonQuestionAnswer(
+          id: 'my-open-reply',
+          questionId: 'my-answer-open-question',
+          authorId: 'student-a',
+          authorName: '学習者A',
+          authorRole: 'student',
+          body: '自分の返信です。',
+          attachmentTypes: const [],
+          parentCommentId: 'my-open-root',
+          parentCommentType: 'answer',
+          replyToDisplayName: '学習者A',
+          createdAt: Timestamp.fromDate(DateTime(2026, 6, 1, 11, 1)),
+        ),
+      ];
+      final answersController = StreamController<List<LessonQuestionAnswer>>.broadcast();
+      addTearDown(answersController.close);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              questionsStream: Stream.value(const [question]),
+              publicQuestionsStream: Stream.value(const []),
+              answersStream: answersController.stream,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(ChoiceChip, '回答'));
+      await tester.pumpAndSettle();
+      answersController.add(answers);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('遷移元の自分の回答です。'));
+      await tester.pumpAndSettle();
+      answersController.add(answers);
+      await tester.pumpAndSettle();
+
+      final openedQuestionDetail =
+          find.byTooltip('質問一覧に戻る').evaluate().isNotEmpty;
+      final openedReplyDetail =
+          find.byTooltip('質問詳細に戻る').evaluate().isNotEmpty;
+      expect(openedQuestionDetail || openedReplyDetail, isTrue);
+      expect(find.text('遷移元の自分の回答です。'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Teacher preview can open own answers from my comments tab',
+    (tester) async {
+      const publicQuestion = LessonQuestion(
+        id: 'teacher-preview-open-public-question',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '公開質問タブ側の質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: [],
+      );
+      const teacherQuestion = LessonQuestion(
+        id: 'teacher-own-question',
+        authorId: 'teacher-a',
+        authorName: '先生',
+        authorRole: 'teacher',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '先生の質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: [],
+      );
+      const teacherAnswer = LessonQuestionAnswer(
+        id: 'teacher-own-answer',
+        questionId: 'teacher-own-question',
+        authorId: 'teacher-a',
+        authorName: '先生',
+        authorRole: 'teacher',
+        body: '先生の回答です。',
+        attachmentTypes: [],
+        parentCommentId: 'teacher-own-question',
+        parentCommentType: 'question',
+      );
+      const studentAnswer = LessonQuestionAnswer(
+        id: 'student-answer-hidden-in-teacher-own-list',
+        questionId: 'teacher-own-question',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        authorRole: 'student',
+        body: '学習者の回答です。',
+        attachmentTypes: [],
+        parentCommentId: 'teacher-own-question',
+        parentCommentType: 'question',
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              questionsStream: Stream.value(const [teacherQuestion]),
+              publicQuestionsStream: Stream.value(const [publicQuestion]),
+              answersStream: Stream.value(const [teacherAnswer, studentAnswer]),
+              isTeacherPreview: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('公開質問タブ側の質問です。'), findsOneWidget);
+      await tester.tap(find.text('自分の質問・回答'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ChoiceChip, '回答'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('先生の回答です。'), findsOneWidget);
+      expect(find.text('学習者の回答です。'), findsNothing);
+    },
+  );
 
   testWidgets(
     'Own and public question cards show teacher-hidden notice from mirror ids',

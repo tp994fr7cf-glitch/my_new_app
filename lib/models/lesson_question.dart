@@ -281,6 +281,35 @@ Timestamp? lessonQuestionAnswerEditedAt(LessonQuestionAnswer answer) {
   return editedTimestamp(answer.createdAt, answer.updatedAt);
 }
 
+List<LessonQuestionAnswer> sortLessonQuestionAnswers(
+  List<LessonQuestionAnswer> answers,
+  LessonQuestionSort sort,
+) {
+  return [...answers]..sort((a, b) {
+    switch (sort) {
+      case LessonQuestionSort.newest:
+        final postedCompare = compareTimestampDescWithUnknownLast(
+          lessonQuestionAnswerPostedAt(a),
+          lessonQuestionAnswerPostedAt(b),
+        );
+        if (postedCompare != 0) {
+          return postedCompare;
+        }
+        return _compareLessonQuestionAnswerIdentity(a, b);
+      case LessonQuestionSort.editedNewest:
+      case LessonQuestionSort.popular:
+        final editedCompare = compareTimestampDescWithUnknownLast(
+          lessonQuestionAnswerEditedAt(a),
+          lessonQuestionAnswerEditedAt(b),
+        );
+        if (editedCompare != 0) {
+          return editedCompare;
+        }
+        return _compareLessonQuestionAnswerIdentity(a, b);
+    }
+  });
+}
+
 List<LessonQuestion> sortLessonQuestions(
   List<LessonQuestion> questions,
   LessonQuestionSort sort, {
@@ -345,6 +374,29 @@ int _compareLessonQuestionIdentity(LessonQuestion a, LessonQuestion b) {
   final lessonCompare = a.lessonNumber.compareTo(b.lessonNumber);
   if (lessonCompare != 0) {
     return lessonCompare;
+  }
+  return a.body.compareTo(b.body);
+}
+
+int _compareLessonQuestionAnswerIdentity(
+  LessonQuestionAnswer a,
+  LessonQuestionAnswer b,
+) {
+  final aId = (a.id ?? '').trim();
+  final bId = (b.id ?? '').trim();
+  if (aId.isNotEmpty && bId.isNotEmpty) {
+    final idCompare = aId.compareTo(bId);
+    if (idCompare != 0) {
+      return idCompare;
+    }
+  }
+  final questionCompare = a.questionId.compareTo(b.questionId);
+  if (questionCompare != 0) {
+    return questionCompare;
+  }
+  final authorCompare = a.authorId.compareTo(b.authorId);
+  if (authorCompare != 0) {
+    return authorCompare;
   }
   return a.body.compareTo(b.body);
 }
