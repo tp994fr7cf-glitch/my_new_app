@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../models/course.dart';
 import '../models/lesson_note.dart';
 import '../models/lesson_question.dart';
+import '../models/public_user_profile.dart';
 import 'lesson_notes_page.dart';
 import 'lesson_questions_page.dart';
 
@@ -1346,10 +1347,11 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
 
   String _replyTargetRecordSummary(
     LessonQuestion? question,
-    LessonQuestionAnswer? parentAnswer,
-  ) {
+    LessonQuestionAnswer? parentAnswer, {
+    String? overrideDisplayName,
+  }) {
     final replyTo = _safeReplyTargetDisplayName(
-      widget.answer.replyToDisplayName,
+      overrideDisplayName ?? widget.answer.replyToDisplayName,
       role: widget.answer.replyToAuthorRole,
     );
     final replyToRole = (widget.answer.replyToAuthorRole ?? '').trim();
@@ -1373,6 +1375,132 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
       '2. いつ投稿されたコメントに対して: $parentTimestampText',
       '3. いつ自分が返信したか: $repliedAtText',
     ].join('\n');
+  }
+
+  String? _usableDisplayNameOrNull(String? value) {
+    final text = (value ?? '').trim();
+    if (text.isEmpty || _looksLikeEmail(text)) {
+      return null;
+    }
+    return text;
+  }
+
+  String? _replyTimeDisplayNameOrNull() {
+    return _usableDisplayNameOrNull(widget.answer.replyToDisplayName);
+  }
+
+  String? _parentPostedDisplayNameOrNull(
+    LessonQuestion? parentQuestion,
+    LessonQuestionAnswer? parentAnswer,
+  ) {
+    if (widget.answer.parentCommentType == 'answer') {
+      return _usableDisplayNameOrNull(parentAnswer?.authorName);
+    }
+    return _usableDisplayNameOrNull(parentQuestion?.authorName);
+  }
+
+  bool _canLinkLatestReplyTargetName(
+    LessonQuestion? parentQuestion,
+    LessonQuestionAnswer? parentAnswer,
+  ) {
+    final role = (widget.answer.replyToAuthorRole ?? '').trim();
+    if (role == publicUserProfileRoleTeacher) {
+      return true;
+    }
+    if (role != publicUserProfileRoleStudent) {
+      return false;
+    }
+    if (widget.answer.parentCommentType == 'answer') {
+      return parentAnswer != null && parentAnswer.authorProfileVisible;
+    }
+    return parentQuestion != null && parentQuestion.authorProfileVisible;
+  }
+
+  String _fallbackReplyTargetDisplayName(
+    LessonQuestion? parentQuestion,
+    LessonQuestionAnswer? parentAnswer,
+  ) {
+    final replyTime = _replyTimeDisplayNameOrNull();
+    if (replyTime != null) {
+      return replyTime;
+    }
+    final parentPosted = _parentPostedDisplayNameOrNull(
+      parentQuestion,
+      parentAnswer,
+    );
+    if (parentPosted != null) {
+      return parentPosted;
+    }
+    return _safeReplyTargetDisplayName(
+      null,
+      role: widget.answer.replyToAuthorRole,
+    );
+  }
+
+  Stream<String?> _linkedReplyTargetDisplayNameStream(
+    LessonQuestion? parentQuestion,
+    LessonQuestionAnswer? parentAnswer, {
+    required String fallbackDisplayName,
+  }) {
+    final safeAuthorId = (widget.answer.replyToAuthorId ?? '').trim();
+    if (Firebase.apps.isEmpty ||
+        safeAuthorId.isEmpty ||
+        !_canLinkLatestReplyTargetName(parentQuestion, parentAnswer)) {
+      return Stream.value(null);
+    }
+    final profileRole =
+        (widget.answer.replyToAuthorRole ?? '').trim() ==
+            publicUserProfileRoleTeacher
+        ? publicUserProfileRoleTeacher
+        : publicUserProfileRoleStudent;
+    return publicUserProfileStream(
+      userId: safeAuthorId,
+      role: profileRole,
+      fallbackDisplayName: fallbackDisplayName,
+    ).map((profile) {
+      final linked = _usableDisplayNameOrNull(profile.displayName);
+      return linked;
+    });
+  }
+
+  Widget _buildReplyPreviewWidget(
+    LessonQuestion? parentQuestion,
+    LessonQuestionAnswer? parentAnswer, {
+    required bool isReplyTargetUnavailable,
+    required bool selectable,
+  }) {
+    final fallbackDisplayName = _fallbackReplyTargetDisplayName(
+      parentQuestion,
+      parentAnswer,
+    );
+    return StreamBuilder<String?>(
+      stream: _linkedReplyTargetDisplayNameStream(
+        parentQuestion,
+        parentAnswer,
+        fallbackDisplayName: fallbackDisplayName,
+      ),
+      builder: (context, snapshot) {
+        final resolvedDisplayName = _safeReplyTargetDisplayName(
+          snapshot.data ?? fallbackDisplayName,
+          role: widget.answer.replyToAuthorRole,
+        );
+        final previewText = isReplyTargetUnavailable
+            ? _replyTargetRecordSummary(
+                parentQuestion,
+                parentAnswer,
+                overrideDisplayName: resolvedDisplayName,
+              )
+            : _replyPreviewText(
+                widget.answer,
+                hideBodyPreview: false,
+                overrideDisplayName: resolvedDisplayName,
+              );
+        if (selectable) {
+          return SelectableText(previewText);
+        }
+        return Text(previewText);
+      },
+    );
   }
 
   void _openQuestionThread(
@@ -1481,6 +1609,10 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
               future: _parentAnswerFuture,
               builder: (context, parentAnswerSnapshot) {
                 final parentAnswer = parentAnswerSnapshot.data;
+                final isReplyTargetUnavailable = _isReplyTargetUnavailable(
+                  parentQuestion,
+                  parentAnswer,
+                );
                 return AlertDialog(
                   title: const Text('回答コメントの記録'),
                   content: SingleChildScrollView(
@@ -1500,19 +1632,11 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
                           style: TextStyle(fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 8),
-                        SelectableText(
-                          _isReplyTargetUnavailable(
-                                parentQuestion,
-                                parentAnswer,
-                              )
-                              ? _replyTargetRecordSummary(
-                                  parentQuestion,
-                                  parentAnswer,
-                                )
-                              : _replyPreviewText(
-                                  widget.answer,
-                                  hideBodyPreview: false,
-                                ),
+                        _buildReplyPreviewWidget(
+                          parentQuestion,
+                          parentAnswer,
+                          isReplyTargetUnavailable: isReplyTargetUnavailable,
+                          selectable: true,
                         ),
                         const SizedBox(height: 16),
                         const Text(
@@ -1640,10 +1764,10 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
                     )
                 ? null
                 : _unavailableMessageFor(loadedParentQuestion, parentAnswer);
-            final replyPreview =
-                _isReplyTargetUnavailable(loadedParentQuestion, parentAnswer)
-                ? _replyTargetRecordSummary(loadedParentQuestion, parentAnswer)
-                : _replyPreviewText(widget.answer, hideBodyPreview: false);
+            final isReplyTargetUnavailable = _isReplyTargetUnavailable(
+              loadedParentQuestion,
+              parentAnswer,
+            );
             return Card(
               child: InkWell(
                 key: ValueKey(
@@ -1676,7 +1800,13 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
                       const SizedBox(height: 8),
                       Text(widget.answer.body),
                       const SizedBox(height: 8),
-                      Text('返信先の控え:\n$replyPreview'),
+                      const Text('返信先の控え:'),
+                      _buildReplyPreviewWidget(
+                        loadedParentQuestion,
+                        parentAnswer,
+                        isReplyTargetUnavailable: isReplyTargetUnavailable,
+                        selectable: false,
+                      ),
                       if (unavailableMessage != null) ...[
                         const SizedBox(height: 8),
                         Text(unavailableMessage),
@@ -1809,9 +1939,10 @@ Course _courseFromQuestion(LessonQuestion question) {
 String _replyPreviewText(
   LessonQuestionAnswer answer, {
   bool hideBodyPreview = false,
+  String? overrideDisplayName,
 }) {
   final displayName = _safeReplyTargetDisplayName(
-    answer.replyToDisplayName,
+    overrideDisplayName ?? answer.replyToDisplayName,
     role: answer.replyToAuthorRole,
   );
   final bodyPreview = hideBodyPreview

@@ -1697,6 +1697,140 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     return true;
   }
 
+  Future<LessonQuestion?> _loadLatestReplyParentQuestion({
+    required String questionId,
+    required String currentUserId,
+    required String expectedAuthorId,
+  }) async {
+    if (Firebase.apps.isEmpty || questionId.isEmpty) {
+      return null;
+    }
+    final firestore = FirebaseFirestore.instance;
+    try {
+      final publicSnapshot = await firestore
+          .collection('publicLessonQuestions')
+          .doc(questionId)
+          .get();
+      if (publicSnapshot.exists) {
+        return LessonQuestion.fromFirestore(publicSnapshot);
+      }
+    } on FirebaseException {
+      // Fall back to private copy below.
+    }
+    if (expectedAuthorId != currentUserId) {
+      return null;
+    }
+    try {
+      final privateSnapshot = await firestore
+          .collection('users')
+          .doc(currentUserId)
+          .collection('lessonQuestions')
+          .doc(questionId)
+          .get();
+      if (privateSnapshot.exists) {
+        return LessonQuestion.fromFirestore(privateSnapshot);
+      }
+    } on FirebaseException {
+      return null;
+    }
+    return null;
+  }
+
+  Future<LessonQuestionAnswer?> _loadLatestReplyParentAnswer({
+    required String answerId,
+    required String currentUserId,
+    required String expectedAuthorId,
+  }) async {
+    if (Firebase.apps.isEmpty || answerId.isEmpty) {
+      return null;
+    }
+    final firestore = FirebaseFirestore.instance;
+    try {
+      final publicSnapshot = await firestore
+          .collection('publicLessonQuestionAnswers')
+          .doc(answerId)
+          .get();
+      if (publicSnapshot.exists) {
+        return LessonQuestionAnswer.fromFirestore(publicSnapshot);
+      }
+    } on FirebaseException {
+      // Fall back to private copy below.
+    }
+    if (expectedAuthorId != currentUserId) {
+      return null;
+    }
+    try {
+      final privateSnapshot = await firestore
+          .collection('users')
+          .doc(currentUserId)
+          .collection('lessonQuestionAnswers')
+          .doc(answerId)
+          .get();
+      if (privateSnapshot.exists) {
+        return LessonQuestionAnswer.fromFirestore(privateSnapshot);
+      }
+    } on FirebaseException {
+      return null;
+    }
+    return null;
+  }
+
+  Future<String> _resolveReplyTargetDisplayNameForPersist({
+    required LessonQuestion question,
+    required _LessonQuestionAnswerDraft draft,
+    required String currentUserId,
+  }) async {
+    // Keep the reply-time snapshot if we already resolved a usable name
+    // before save. Parent authorName is only a last-resort fallback.
+    final replyTimeResolved = _nonEmailDisplayName(draft.replyToDisplayName);
+    if (replyTimeResolved != null) {
+      return replyTimeResolved;
+    }
+    final fallback = _safeReplyTargetDisplayName(
+      draft.replyToDisplayName,
+      role: draft.replyToAuthorRole,
+    );
+    if (Firebase.apps.isEmpty) {
+      return fallback;
+    }
+    final expectedAuthorId = (draft.replyToAuthorId ?? '').trim();
+    if (draft.parentCommentType == 'answer') {
+      final parentAnswerId = (draft.parentCommentId ?? '').trim();
+      if (parentAnswerId.isEmpty) {
+        return fallback;
+      }
+      final parentAnswer = await _loadLatestReplyParentAnswer(
+        answerId: parentAnswerId,
+        currentUserId: currentUserId,
+        expectedAuthorId: expectedAuthorId,
+      );
+      if (parentAnswer == null) {
+        return fallback;
+      }
+      return _safeReplyTargetDisplayName(
+        parentAnswer.authorName,
+        role: parentAnswer.authorRole,
+      );
+    }
+    final parentQuestionId = (draft.parentCommentId ?? question.id ?? '')
+        .trim();
+    if (parentQuestionId.isEmpty) {
+      return fallback;
+    }
+    final parentQuestion = await _loadLatestReplyParentQuestion(
+      questionId: parentQuestionId,
+      currentUserId: currentUserId,
+      expectedAuthorId: expectedAuthorId,
+    );
+    if (parentQuestion == null) {
+      return fallback;
+    }
+    return _safeReplyTargetDisplayName(
+      parentQuestion.authorName,
+      role: parentQuestion.authorRole,
+    );
+  }
+
   Future<void> _saveAnswer(
     LessonQuestion question,
     _LessonQuestionAnswerDraft draft,
@@ -1711,6 +1845,12 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     if (user == null) {
       return;
     }
+    final latestReplyTargetDisplayName =
+        await _resolveReplyTargetDisplayNameForPersist(
+          question: question,
+          draft: draft,
+          currentUserId: user.uid,
+        );
     final isQuotedNoteValid = await _validateQuotedNoteForAnswer(
       userId: user.uid,
       question: question,
@@ -1763,7 +1903,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       'replyToAuthorId': draft.replyToAuthorId,
       'replyToAuthorRole': draft.replyToAuthorRole,
       'replyToDisplayName': _safeReplyTargetDisplayName(
-        draft.replyToDisplayName,
+        latestReplyTargetDisplayName,
         role: draft.replyToAuthorRole,
       ),
       'replyToBodyPreview': draft.replyToBodyPreview,
@@ -2851,6 +2991,11 @@ class _AnswerList extends StatelessWidget {
             final questionMap = questionSnapshot.hasData
                 ? (questionSnapshot.data ?? const <String, LessonQuestion>{})
                 : fallbackQuestionMap;
+            final answerMap = <String, LessonQuestionAnswer>{
+              for (final answer in answers)
+                if ((answer.id ?? '').trim().isNotEmpty)
+                  answer.id!.trim(): answer,
+            };
             return ListView(
               key: PageStorageKey<String>(listStorageKey),
               controller: scrollController,
@@ -2865,6 +3010,17 @@ class _AnswerList extends StatelessWidget {
                     Builder(
                       builder: (context) {
                         final parentQuestion = questionMap[answer.questionId];
+                        final parentAnswerId = (answer.parentCommentId ?? '')
+                            .trim();
+                        final parentAnswer =
+                            answer.parentCommentType == 'answer'
+                            ? answerMap[parentAnswerId]
+                            : null;
+                        final resolvedReplyTarget = _resolvedReplyTargetDisplay(
+                          answer: answer,
+                          parentQuestion: parentQuestion,
+                          parentAnswer: parentAnswer,
+                        );
                         final parentQuestionId = (parentQuestion?.id ?? '')
                             .trim();
                         final parentHiddenByMirror =
@@ -2904,7 +3060,9 @@ class _AnswerList extends StatelessWidget {
                           quotedNoteTitle: answer.quotedNoteTitle,
                           quotedNoteBody: answer.quotedNoteBody,
                           replyToAuthorId: answer.replyToAuthorId,
-                          replyToDisplayName: answer.replyToDisplayName,
+                          replyToDisplayName: resolvedReplyTarget.displayName,
+                          replyToLinkCurrentProfile:
+                              resolvedReplyTarget.linkToCurrentProfile,
                           replyToAuthorRole: answer.replyToAuthorRole,
                           replyToBodyPreview: answer.replyToBodyPreview,
                           isOwner: isOwner,
@@ -2992,6 +3150,7 @@ class _CommentBubble extends StatelessWidget {
     this.quotedNoteBody,
     this.replyToAuthorId,
     this.replyToDisplayName,
+    this.replyToLinkCurrentProfile = false,
     this.replyToAuthorRole,
     this.replyToBodyPreview,
     this.isHighlighted = false,
@@ -3022,6 +3181,7 @@ class _CommentBubble extends StatelessWidget {
   final String? quotedNoteBody;
   final String? replyToAuthorId;
   final String? replyToDisplayName;
+  final bool replyToLinkCurrentProfile;
   final String? replyToAuthorRole;
   final String? replyToBodyPreview;
   final bool isHighlighted;
@@ -3183,6 +3343,8 @@ class _CommentBubble extends StatelessWidget {
                                 _ReplyLine(
                                   authorId: replyToAuthorId,
                                   displayName: replyToDisplayName!,
+                                  linkToCurrentProfile:
+                                      replyToLinkCurrentProfile,
                                   role: replyToAuthorRole,
                                   bodyPreview: replyToBodyPreview ?? '',
                                 ),
@@ -3536,12 +3698,14 @@ class _ReplyLine extends StatelessWidget {
   const _ReplyLine({
     this.authorId,
     required this.displayName,
+    this.linkToCurrentProfile = false,
     required this.bodyPreview,
     this.role,
   });
 
   final String? authorId;
   final String displayName;
+  final bool linkToCurrentProfile;
   final String bodyPreview;
   final String? role;
 
@@ -3551,12 +3715,11 @@ class _ReplyLine extends StatelessWidget {
       displayName,
       role: role,
     );
+    final safeAuthorId = (authorId ?? '').trim();
     final profileRole = role == publicUserProfileRoleTeacher
         ? publicUserProfileRoleTeacher
         : publicUserProfileRoleStudent;
-    final safeAuthorId = (authorId ?? '').trim();
-    final showProfileLookup = safeAuthorId.isNotEmpty;
-    if (showProfileLookup) {
+    if (linkToCurrentProfile && safeAuthorId.isNotEmpty) {
       return StreamBuilder<PublicUserProfile>(
         stream: publicUserProfileStream(
           userId: safeAuthorId,
@@ -3571,12 +3734,12 @@ class _ReplyLine extends StatelessWidget {
                 role: profileRole,
                 displayName: fallbackDisplayName,
               );
-          final resolvedDisplayName = _sanitizeDisplayNameForUi(
+          final linkedDisplayName = _sanitizeDisplayNameForUi(
             profile.displayName,
             role: role,
             fallback: fallbackDisplayName,
           );
-          return _buildLine(context, resolvedDisplayName);
+          return _buildLine(context, linkedDisplayName);
         },
       );
     }
@@ -3608,6 +3771,7 @@ class _ReplyTargetPreview extends StatelessWidget {
   const _ReplyTargetPreview({
     this.authorId,
     required this.displayName,
+    this.linkToCurrentProfile = false,
     required this.bodyPreview,
     required this.onClear,
     this.role,
@@ -3615,6 +3779,7 @@ class _ReplyTargetPreview extends StatelessWidget {
 
   final String? authorId;
   final String displayName;
+  final bool linkToCurrentProfile;
   final String bodyPreview;
   final VoidCallback onClear;
   final String? role;
@@ -3625,11 +3790,11 @@ class _ReplyTargetPreview extends StatelessWidget {
       displayName,
       role: role,
     );
+    final safeAuthorId = (authorId ?? '').trim();
     final profileRole = role == publicUserProfileRoleTeacher
         ? publicUserProfileRoleTeacher
         : publicUserProfileRoleStudent;
-    final safeAuthorId = (authorId ?? '').trim();
-    if (safeAuthorId.isNotEmpty) {
+    if (linkToCurrentProfile && safeAuthorId.isNotEmpty) {
       return StreamBuilder<PublicUserProfile>(
         stream: publicUserProfileStream(
           userId: safeAuthorId,
@@ -3644,12 +3809,12 @@ class _ReplyTargetPreview extends StatelessWidget {
                 role: profileRole,
                 displayName: fallbackDisplayName,
               );
-          final safeDisplayName = _sanitizeDisplayNameForUi(
+          final linkedDisplayName = _sanitizeDisplayNameForUi(
             profile.displayName,
             role: role,
             fallback: fallbackDisplayName,
           );
-          return _buildPreview(safeDisplayName);
+          return _buildPreview(linkedDisplayName);
         },
       );
     }
@@ -4037,6 +4202,96 @@ String _displayNameForAnswer(LessonQuestionAnswer answer) {
   );
 }
 
+bool _canUseLatestQuestionReplyTargetDisplayName(LessonQuestion? question) {
+  if (question == null) {
+    return false;
+  }
+  return !question.isDeleted && !question.isTeacherHidden;
+}
+
+bool _canUseLatestAnswerReplyTargetDisplayName(LessonQuestionAnswer? answer) {
+  if (answer == null) {
+    return false;
+  }
+  if (answer.isDeleted) {
+    return false;
+  }
+  return answer.moderationStatus != lessonInteractionModerationHiddenByTeacher;
+}
+
+String _storedReplyTargetDisplayName(String? value, {String? role}) {
+  final text = (value ?? '').trim();
+  if (text.isNotEmpty && !_isLikelyEmailText(text)) {
+    return text;
+  }
+  if (role == 'teacher') {
+    return '先生';
+  }
+  if (role == 'student') {
+    return '学習者';
+  }
+  return '学習者';
+}
+
+class _ResolvedReplyTargetDisplay {
+  const _ResolvedReplyTargetDisplay({
+    required this.displayName,
+    required this.linkToCurrentProfile,
+  });
+
+  final String displayName;
+  final bool linkToCurrentProfile;
+}
+
+_ResolvedReplyTargetDisplay _resolvedReplyTargetDisplay({
+  required LessonQuestionAnswer answer,
+  LessonQuestion? parentQuestion,
+  LessonQuestionAnswer? parentAnswer,
+}) {
+  final storedDisplayName = (answer.replyToDisplayName ?? '').trim();
+  if (storedDisplayName.isEmpty || _isLikelyEmailText(storedDisplayName)) {
+    return _ResolvedReplyTargetDisplay(
+      displayName: _storedReplyTargetDisplayName(
+        storedDisplayName,
+        role: answer.replyToAuthorRole,
+      ),
+      linkToCurrentProfile: false,
+    );
+  }
+  if (answer.parentCommentType == 'answer') {
+    if (_canUseLatestAnswerReplyTargetDisplayName(parentAnswer)) {
+      final resolved = _storedReplyTargetDisplayName(
+        parentAnswer!.authorName,
+        role: parentAnswer.authorRole,
+      );
+      return _ResolvedReplyTargetDisplay(
+        displayName: resolved,
+        linkToCurrentProfile:
+            parentAnswer.authorRole == publicUserProfileRoleTeacher ||
+            parentAnswer.authorProfileVisible,
+      );
+    }
+  } else if (_canUseLatestQuestionReplyTargetDisplayName(parentQuestion)) {
+    final resolved = _storedReplyTargetDisplayName(
+      parentQuestion!.authorName,
+      role: parentQuestion.authorRole,
+    );
+    return _ResolvedReplyTargetDisplay(
+      displayName: resolved,
+      linkToCurrentProfile:
+          parentQuestion.authorRole == publicUserProfileRoleTeacher ||
+          parentQuestion.authorProfileVisible,
+    );
+  }
+  return _ResolvedReplyTargetDisplay(
+    displayName: _storedReplyTargetDisplayName(
+      answer.replyToDisplayName,
+      role: answer.replyToAuthorRole,
+    ),
+    linkToCurrentProfile: false,
+  );
+}
+
 String _sanitizeDisplayNameForUi(
   String? value, {
   String? role,
@@ -4120,6 +4375,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
   String? _replyToAuthorId;
   String? _replyToAuthorRole;
   String? _replyToDisplayName;
+  bool _replyToLinkCurrentProfile = false;
   String? _replyToBodyPreview;
   Timestamp? _replyToCreatedAt;
   String? _openedAnswerThreadRootId;
@@ -4255,8 +4511,49 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
     });
   }
 
+  Future<String> _resolveReplyTargetDisplayNameForSave({
+    required String fallbackDisplayName,
+  }) async {
+    final role = _replyToAuthorRole ?? widget.question.authorRole;
+    final safeFallback = _storedReplyTargetDisplayName(
+      fallbackDisplayName,
+      role: role,
+    );
+    if (!_replyToLinkCurrentProfile) {
+      return safeFallback;
+    }
+    final safeAuthorId = (_replyToAuthorId ?? widget.question.authorId).trim();
+    if (safeAuthorId.isEmpty || Firebase.apps.isEmpty) {
+      return safeFallback;
+    }
+    final profileRole = role == publicUserProfileRoleTeacher
+        ? publicUserProfileRoleTeacher
+        : publicUserProfileRoleStudent;
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('publicUserProfiles')
+          .doc(publicUserProfileDocumentId(safeAuthorId, profileRole))
+          .get();
+      if (!snapshot.exists) {
+        return safeFallback;
+      }
+      final profile = PublicUserProfile.fromFirestore(snapshot);
+      return _storedReplyTargetDisplayName(profile.displayName, role: role);
+    } on FirebaseException {
+      return safeFallback;
+    }
+  }
+
   Future<void> _saveAnswer() async {
     if (!widget.canAnswer) {
+      return;
+    }
+    final resolvedReplyTargetDisplayName =
+        await _resolveReplyTargetDisplayNameForSave(
+          fallbackDisplayName:
+              _replyToDisplayName ?? _displayNameForQuestion(widget.question),
+        );
+    if (!mounted) {
       return;
     }
     setState(() => _isSaving = true);
@@ -4267,8 +4564,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
         parentCommentType: _replyParentType,
         replyToAuthorId: _replyToAuthorId ?? widget.question.authorId,
         replyToAuthorRole: _replyToAuthorRole ?? widget.question.authorRole,
-        replyToDisplayName:
-            _replyToDisplayName ?? _displayNameForQuestion(widget.question),
+        replyToDisplayName: resolvedReplyTargetDisplayName,
         replyToBodyPreview:
             _replyToBodyPreview ?? _previewText(widget.question.body),
         replyToCreatedAt:
@@ -4298,6 +4594,9 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
       _replyToAuthorId = widget.question.authorId;
       _replyToAuthorRole = widget.question.authorRole;
       _replyToDisplayName = _displayNameForQuestion(widget.question);
+      _replyToLinkCurrentProfile =
+          widget.question.authorRole == publicUserProfileRoleTeacher ||
+          widget.question.authorProfileVisible;
       _replyToBodyPreview = _previewText(widget.question.body);
       _replyToCreatedAt =
           widget.question.createdAt ?? widget.question.updatedAt;
@@ -4314,6 +4613,9 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
       _replyToAuthorId = answer.authorId;
       _replyToAuthorRole = answer.authorRole;
       _replyToDisplayName = _displayNameForAnswer(answer);
+      _replyToLinkCurrentProfile =
+          answer.authorRole == publicUserProfileRoleTeacher ||
+          answer.authorProfileVisible;
       _replyToBodyPreview = _previewText(answer.body);
       _replyToCreatedAt = answer.createdAt ?? answer.updatedAt;
     });
@@ -4325,6 +4627,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
     _replyToAuthorId = null;
     _replyToAuthorRole = null;
     _replyToDisplayName = null;
+    _replyToLinkCurrentProfile = false;
     _replyToBodyPreview = null;
     _replyToCreatedAt = null;
     _quotedNoteId = '';
@@ -4472,6 +4775,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                   if (openedThread != null) {
                     answersSection = _AnswerThreadDetailView(
                       thread: openedThread,
+                      parentQuestion: question,
                       scopeLabel: _questionScopeLabel(question),
                       currentUserId: widget.currentUserId,
                       isCurrentUserTeacher: widget.isCurrentUserTeacher,
@@ -4492,6 +4796,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                         for (final thread in answerThreads)
                           _AnswerThreadView(
                             thread: thread,
+                            parentQuestion: question,
                             scopeLabel: _questionScopeLabel(question),
                             currentUserId: widget.currentUserId,
                             isCurrentUserTeacher: widget.isCurrentUserTeacher,
@@ -4609,6 +4914,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                   _ReplyTargetPreview(
                     authorId: _replyToAuthorId,
                     displayName: _replyToDisplayName!,
+                    linkToCurrentProfile: _replyToLinkCurrentProfile,
                     role: _replyToAuthorRole,
                     bodyPreview: _replyToBodyPreview ?? '',
                     onClear: () => setState(_clearReplyTarget),
@@ -4698,6 +5004,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
 class _AnswerThreadView extends StatelessWidget {
   const _AnswerThreadView({
     required this.thread,
+    required this.parentQuestion,
     required this.scopeLabel,
     required this.currentUserId,
     required this.isCurrentUserTeacher,
@@ -4712,6 +5019,7 @@ class _AnswerThreadView extends StatelessWidget {
   });
 
   final _AnswerThread thread;
+  final LessonQuestion parentQuestion;
   final String scopeLabel;
   final String? currentUserId;
   final bool isCurrentUserTeacher;
@@ -4729,6 +5037,19 @@ class _AnswerThreadView extends StatelessWidget {
   Widget build(BuildContext context) {
     final root = thread.root;
     final replyCount = thread.replies.length;
+    final answerMap = <String, LessonQuestionAnswer>{
+      for (final answer in <LessonQuestionAnswer>[root, ...thread.replies])
+        if ((answer.id ?? '').trim().isNotEmpty) answer.id!.trim(): answer,
+    };
+    final rootParentAnswerId = (root.parentCommentId ?? '').trim();
+    final rootParentAnswer = root.parentCommentType == 'answer'
+        ? answerMap[rootParentAnswerId]
+        : null;
+    final rootReplyTarget = _resolvedReplyTargetDisplay(
+      answer: root,
+      parentQuestion: parentQuestion,
+      parentAnswer: rootParentAnswer,
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -4748,7 +5069,8 @@ class _AnswerThreadView extends StatelessWidget {
           quotedNoteId: root.quotedNoteId,
           quotedNoteBody: root.quotedNoteBody,
           replyToAuthorId: root.replyToAuthorId,
-          replyToDisplayName: root.replyToDisplayName,
+          replyToDisplayName: rootReplyTarget.displayName,
+          replyToLinkCurrentProfile: rootReplyTarget.linkToCurrentProfile,
           replyToAuthorRole: root.replyToAuthorRole,
           replyToBodyPreview: root.replyToBodyPreview,
           isHighlighted: root.id == highlightedAnswerId,
@@ -4806,6 +5128,7 @@ class _AnswerThreadView extends StatelessWidget {
 class _AnswerThreadDetailView extends StatelessWidget {
   const _AnswerThreadDetailView({
     required this.thread,
+    required this.parentQuestion,
     required this.scopeLabel,
     required this.currentUserId,
     required this.isCurrentUserTeacher,
@@ -4819,6 +5142,7 @@ class _AnswerThreadDetailView extends StatelessWidget {
   });
 
   final _AnswerThread thread;
+  final LessonQuestion parentQuestion;
   final String scopeLabel;
   final String? currentUserId;
   final bool isCurrentUserTeacher;
@@ -4835,6 +5159,19 @@ class _AnswerThreadDetailView extends StatelessWidget {
   Widget build(BuildContext context) {
     final root = thread.root;
     final replies = thread.replies;
+    final answerMap = <String, LessonQuestionAnswer>{
+      for (final answer in <LessonQuestionAnswer>[root, ...replies])
+        if ((answer.id ?? '').trim().isNotEmpty) answer.id!.trim(): answer,
+    };
+    final rootParentAnswerId = (root.parentCommentId ?? '').trim();
+    final rootParentAnswer = root.parentCommentType == 'answer'
+        ? answerMap[rootParentAnswerId]
+        : null;
+    final rootReplyTarget = _resolvedReplyTargetDisplay(
+      answer: root,
+      parentQuestion: parentQuestion,
+      parentAnswer: rootParentAnswer,
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -4854,7 +5191,8 @@ class _AnswerThreadDetailView extends StatelessWidget {
           quotedNoteId: root.quotedNoteId,
           quotedNoteBody: root.quotedNoteBody,
           replyToAuthorId: root.replyToAuthorId,
-          replyToDisplayName: root.replyToDisplayName,
+          replyToDisplayName: rootReplyTarget.displayName,
+          replyToLinkCurrentProfile: rootReplyTarget.linkToCurrentProfile,
           replyToAuthorRole: root.replyToAuthorRole,
           replyToBodyPreview: root.replyToBodyPreview,
           isHighlighted: root.id == highlightedAnswerId,
@@ -4898,59 +5236,72 @@ class _AnswerThreadDetailView extends StatelessWidget {
           Column(
             children: [
               for (final reply in replies)
-                _CommentBubble(
-                  body: reply.body,
-                  authorId: reply.authorId,
-                  authorName: reply.authorName,
-                  authorDisplayName: reply.authorDisplayName,
-                  authorAvatarColorName: reply.authorAvatarColorName,
-                  authorProfileVisible: reply.authorProfileVisible,
-                  authorRole: reply.authorRole,
-                  postedAt: lessonQuestionAnswerPostedAt(reply),
-                  scopeLabel: answerScopeLabel(reply, scopeLabel),
-                  moderationNotice: answerModerationNotice(reply),
-                  attachmentTypes: reply.attachmentTypes,
-                  quotedNoteTitle: reply.quotedNoteTitle,
-                  quotedNoteId: reply.quotedNoteId,
-                  quotedNoteBody: reply.quotedNoteBody,
-                  replyToAuthorId: reply.replyToAuthorId,
-                  replyToDisplayName: reply.replyToDisplayName,
-                  replyToAuthorRole: reply.replyToAuthorRole,
-                  replyToBodyPreview: reply.replyToBodyPreview,
-                  isHighlighted: reply.id == highlightedAnswerId,
-                  isParentHighlighted:
-                      reply.id != highlightedAnswerId &&
-                      reply.id == parentHighlightedAnswerId,
-                  bubbleKey: reply.id == highlightedAnswerId
-                      ? highlightedBubbleKey
-                      : reply.id == parentHighlightedAnswerId
-                      ? ValueKey('parent-highlighted-answer-${reply.id}')
-                      : null,
-                  isOwner: isCommentOwnerForActiveRole(
-                    currentUserId: currentUserId,
-                    isCurrentUserTeacher: isCurrentUserTeacher,
-                    authorId: reply.authorId,
-                    authorRole: reply.authorRole,
-                  ),
-                  isTeacher: isCurrentUserTeacher,
-                  onReply: canAnswer ? () => onReply(reply) : null,
-                  onDelete:
-                      isCommentOwnerForActiveRole(
+                Builder(
+                  builder: (context) {
+                    final replyTarget = _resolvedReplyTargetDisplay(
+                      answer: reply,
+                      parentQuestion: parentQuestion,
+                      parentAnswer: reply.parentCommentType == 'answer'
+                          ? answerMap[(reply.parentCommentId ?? '').trim()]
+                          : null,
+                    );
+                    return _CommentBubble(
+                      body: reply.body,
+                      authorId: reply.authorId,
+                      authorName: reply.authorName,
+                      authorDisplayName: reply.authorDisplayName,
+                      authorAvatarColorName: reply.authorAvatarColorName,
+                      authorProfileVisible: reply.authorProfileVisible,
+                      authorRole: reply.authorRole,
+                      postedAt: lessonQuestionAnswerPostedAt(reply),
+                      scopeLabel: answerScopeLabel(reply, scopeLabel),
+                      moderationNotice: answerModerationNotice(reply),
+                      attachmentTypes: reply.attachmentTypes,
+                      quotedNoteTitle: reply.quotedNoteTitle,
+                      quotedNoteId: reply.quotedNoteId,
+                      quotedNoteBody: reply.quotedNoteBody,
+                      replyToAuthorId: reply.replyToAuthorId,
+                      replyToDisplayName: replyTarget.displayName,
+                      replyToLinkCurrentProfile:
+                          replyTarget.linkToCurrentProfile,
+                      replyToAuthorRole: reply.replyToAuthorRole,
+                      replyToBodyPreview: reply.replyToBodyPreview,
+                      isHighlighted: reply.id == highlightedAnswerId,
+                      isParentHighlighted:
+                          reply.id != highlightedAnswerId &&
+                          reply.id == parentHighlightedAnswerId,
+                      bubbleKey: reply.id == highlightedAnswerId
+                          ? highlightedBubbleKey
+                          : reply.id == parentHighlightedAnswerId
+                          ? ValueKey('parent-highlighted-answer-${reply.id}')
+                          : null,
+                      isOwner: isCommentOwnerForActiveRole(
                         currentUserId: currentUserId,
                         isCurrentUserTeacher: isCurrentUserTeacher,
                         authorId: reply.authorId,
                         authorRole: reply.authorRole,
-                      )
-                      ? () => onDeleteAnswer(reply)
-                      : null,
-                  onModerate: onToggleAnswerModeration == null
-                      ? null
-                      : () => onToggleAnswerModeration!(reply),
-                  moderateLabel:
-                      reply.moderationStatus ==
-                          lessonNoteModerationHiddenByTeacher
-                      ? '公開に戻す'
-                      : '非公開にする',
+                      ),
+                      isTeacher: isCurrentUserTeacher,
+                      onReply: canAnswer ? () => onReply(reply) : null,
+                      onDelete:
+                          isCommentOwnerForActiveRole(
+                            currentUserId: currentUserId,
+                            isCurrentUserTeacher: isCurrentUserTeacher,
+                            authorId: reply.authorId,
+                            authorRole: reply.authorRole,
+                          )
+                          ? () => onDeleteAnswer(reply)
+                          : null,
+                      onModerate: onToggleAnswerModeration == null
+                          ? null
+                          : () => onToggleAnswerModeration!(reply),
+                      moderateLabel:
+                          reply.moderationStatus ==
+                              lessonNoteModerationHiddenByTeacher
+                          ? '公開に戻す'
+                          : '非公開にする',
+                    );
+                  },
                 ),
             ],
           ),
