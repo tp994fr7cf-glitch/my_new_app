@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import '../models/course.dart';
 import '../models/lesson_note.dart';
 import '../models/public_user_profile.dart';
+import '../services/course_identity_service.dart';
 import '../services/lesson_interaction_service.dart';
 import 'lesson_questions_page.dart';
 import 'public_note_edit_history_sheet.dart';
@@ -103,6 +104,8 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   final Set<String> _suppressedPublicApprovalBellNoteIds = <String>{};
   final LessonInteractionService _lessonInteractionService =
       const LessonInteractionService();
+  final CourseIdentityService _courseIdentityService =
+      const CourseIdentityService();
 
   String get _courseId => widget.course.storageId;
 
@@ -877,10 +880,19 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
                 .limit(100)
                 .get()
           : null;
+      final authorSnapshot = await _courseIdentityService.resolveAuthorSnapshot(
+        courseId: _courseId,
+        userId: user.uid,
+        fallbackDisplayName: authorName,
+        role: publicUserProfileRoleStudent,
+      );
       final data = {
         'userId': user.uid,
         'authorId': user.uid,
-        'authorName': authorName,
+        'authorName': authorSnapshot.displayName,
+        'authorAvatarColorName': authorSnapshot.avatarColorName,
+        'authorProfileVisible': authorSnapshot.profileVisible,
+        'authorIdentityMode': authorSnapshot.identityMode,
         'title': draft.title,
         'body': draft.body,
         'folderId': draft.folderId,
@@ -1023,8 +1035,8 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
               error.code == 'failed-precondition');
       if (shouldRetryForApprovalRace) {
         final approvedByTeacherNow = await _isNoteApprovedByTeacherNow(
-          noteRef: noteRefForApprovalRaceCheck!,
-          publicRef: publicRefForApprovalRaceCheck!,
+          noteRef: noteRefForApprovalRaceCheck,
+          publicRef: publicRefForApprovalRaceCheck,
         );
         if (approvedByTeacherNow) {
           await _showPublicApprovalMessageDialog('先生により既に許可されています。');
@@ -2143,6 +2155,222 @@ class _PublicLessonNoteCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    PublicUserProfile fallbackProfile() {
+      final fallback = fallbackPublicUserProfile(
+        userId: note.authorId,
+        role: publicUserProfileRoleStudent,
+        displayName: note.authorName,
+      );
+      final avatarColorName = (note.authorAvatarColorName ?? '').trim();
+      if (!profileAvatarColors.containsKey(avatarColorName)) {
+        return fallback;
+      }
+      return PublicUserProfile(
+        userId: fallback.userId,
+        role: fallback.role,
+        displayName: fallback.displayName,
+        avatarColorName: avatarColorName,
+        bio: fallback.bio,
+        updatedAt: fallback.updatedAt,
+      );
+    }
+
+    Widget buildCard(PublicUserProfile profile) {
+      return Card(
+        child: InkWell(
+          onTap: onTap == null ? null : () => onTap!(note),
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: note.authorProfileVisible
+                      ? () {
+                          showPublicUserProfilePreview(
+                            context: context,
+                            userId: note.authorId,
+                            role: publicUserProfileRoleStudent,
+                            fallbackDisplayName: note.authorName,
+                            isOwner: false,
+                          );
+                        }
+                      : null,
+                  child: PublicProfileAvatar(profile: profile),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              profile.displayName,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.labelMedium,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            _formatPublicNoteTimestamp(note),
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Stack(
+                        children: [
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.surfaceContainerHighest,
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  note.title.isEmpty ? '無題のメモ' : note.title,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(note.body.isEmpty ? '本文なし' : note.body),
+                                if (note.tags.isNotEmpty) ...[
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    note.tags.map((tag) => '#$tag').join(' '),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                          if (note.hasCitationEdits &&
+                              (note.id ?? '').isNotEmpty)
+                            Positioned(
+                              top: 8,
+                              right: 8,
+                              child: InkWell(
+                                onTap: () {
+                                  showPublicNoteEditHistorySheet(
+                                    context,
+                                    noteId: note.id!,
+                                    fallbackTitle: note.title,
+                                    fallbackBody: note.body,
+                                  );
+                                },
+                                borderRadius: BorderRadius.circular(999),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.tertiaryContainer,
+                                    borderRadius: BorderRadius.circular(999),
+                                  ),
+                                  child: Text(
+                                    '編集済',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelSmall
+                                        ?.copyWith(
+                                          color: Theme.of(
+                                            context,
+                                          ).colorScheme.onTertiaryContainer,
+                                        ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          if (onResolvePublicApproval != null &&
+                              note.isPublicApprovalPending &&
+                              !suppressPublicApprovalBell &&
+                              !isPublicApprovalProcessing)
+                            Positioned(
+                              top: 8,
+                              right: note.hasCitationEdits ? 56 : 8,
+                              child: _AnimatedAttentionIconButton(
+                                icon: Icons.notifications_active_outlined,
+                                color: Colors.red.shade400,
+                                tooltip: '公開申請の確認',
+                                animate: true,
+                                onPressed: () => onResolvePublicApproval!(note),
+                              ),
+                            ),
+                          if (isPublicApprovalProcessing)
+                            Positioned(
+                              top: 14,
+                              right: note.hasCitationEdits ? 62 : 14,
+                              child: const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Text(
+                            note.isTeacherHidden
+                                ? '先生が非公開化中'
+                                : note.isPublicApprovalPending
+                                ? '公開申請中'
+                                : note.isPublicApprovalRejected
+                                ? '公開申請が不許可'
+                                : note.isStudentPublic
+                                ? '学習者にも公開'
+                                : '先生にだけ公開',
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
+                          ),
+                          const Spacer(),
+                          if (onToggleModeration != null)
+                            TextButton(
+                              onPressed: () => onToggleModeration!(note),
+                              child: Text(
+                                note.isTeacherHidden ? '公開に戻す' : '非公開にする',
+                              ),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final fallback = fallbackProfile();
+    if (!note.authorProfileVisible) {
+      return buildCard(fallback);
+    }
     return StreamBuilder<PublicUserProfile>(
       stream: publicUserProfileStream(
         userId: note.authorId,
@@ -2150,201 +2378,7 @@ class _PublicLessonNoteCard extends StatelessWidget {
         fallbackDisplayName: note.authorName,
       ),
       builder: (context, snapshot) {
-        final profile =
-            snapshot.data ??
-            fallbackPublicUserProfile(
-              userId: note.authorId,
-              role: publicUserProfileRoleStudent,
-              displayName: note.authorName,
-            );
-        return Card(
-          child: InkWell(
-            onTap: onTap == null ? null : () => onTap!(note),
-            borderRadius: BorderRadius.circular(12),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  InkWell(
-                    customBorder: const CircleBorder(),
-                    onTap: () {
-                      showPublicUserProfilePreview(
-                        context: context,
-                        userId: note.authorId,
-                        role: publicUserProfileRoleStudent,
-                        fallbackDisplayName: note.authorName,
-                        isOwner: false,
-                      );
-                    },
-                    child: PublicProfileAvatar(profile: profile),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Flexible(
-                              child: Text(
-                                profile.displayName,
-                                overflow: TextOverflow.ellipsis,
-                                style: Theme.of(context).textTheme.labelMedium,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              _formatPublicNoteTimestamp(note),
-                              style: Theme.of(context).textTheme.labelSmall
-                                  ?.copyWith(
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.onSurfaceVariant,
-                                  ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Stack(
-                          children: [
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.surfaceContainerHighest,
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    note.title.isEmpty ? '無題のメモ' : note.title,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(note.body.isEmpty ? '本文なし' : note.body),
-                                  if (note.tags.isNotEmpty) ...[
-                                    const SizedBox(height: 8),
-                                    Text(
-                                      note.tags.map((tag) => '#$tag').join(' '),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                            ),
-                            if (note.hasCitationEdits &&
-                                (note.id ?? '').isNotEmpty)
-                              Positioned(
-                                top: 8,
-                                right: 8,
-                                child: InkWell(
-                                  onTap: () {
-                                    showPublicNoteEditHistorySheet(
-                                      context,
-                                      noteId: note.id!,
-                                      fallbackTitle: note.title,
-                                      fallbackBody: note.body,
-                                    );
-                                  },
-                                  borderRadius: BorderRadius.circular(999),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 4,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.tertiaryContainer,
-                                      borderRadius: BorderRadius.circular(999),
-                                    ),
-                                    child: Text(
-                                      '編集済',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .labelSmall
-                                          ?.copyWith(
-                                            color: Theme.of(
-                                              context,
-                                            ).colorScheme.onTertiaryContainer,
-                                          ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            if (onResolvePublicApproval != null &&
-                                note.isPublicApprovalPending &&
-                                !suppressPublicApprovalBell &&
-                                !isPublicApprovalProcessing)
-                              Positioned(
-                                top: 8,
-                                right: note.hasCitationEdits ? 56 : 8,
-                                child: _AnimatedAttentionIconButton(
-                                  icon: Icons.notifications_active_outlined,
-                                  color: Colors.red.shade400,
-                                  tooltip: '公開申請の確認',
-                                  animate: true,
-                                  onPressed: () =>
-                                      onResolvePublicApproval!(note),
-                                ),
-                              ),
-                            if (isPublicApprovalProcessing)
-                              Positioned(
-                                top: 14,
-                                right: note.hasCitationEdits ? 62 : 14,
-                                child: const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Text(
-                              note.isTeacherHidden
-                                  ? '先生が非公開化中'
-                                  : note.isPublicApprovalPending
-                                  ? '公開申請中'
-                                  : note.isPublicApprovalRejected
-                                  ? '公開申請が不許可'
-                                  : note.isStudentPublic
-                                  ? '学習者にも公開'
-                                  : '先生にだけ公開',
-                              style: Theme.of(context).textTheme.labelSmall
-                                  ?.copyWith(
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.onSurfaceVariant,
-                                  ),
-                            ),
-                            const Spacer(),
-                            if (onToggleModeration != null)
-                              TextButton(
-                                onPressed: () => onToggleModeration!(note),
-                                child: Text(
-                                  note.isTeacherHidden ? '公開に戻す' : '非公開にする',
-                                ),
-                              ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
+        return buildCard(snapshot.data ?? fallback);
       },
     );
   }

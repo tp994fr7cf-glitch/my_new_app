@@ -76,6 +76,19 @@ service cloud.firestore {
       return hasActiveTeacherRole();
     }
 
+    function validCoursePrivacyPolicyMap(data) {
+      return !data.keys().hasAny(['privacyPolicy'])
+        || (data.privacyPolicy is map
+          && data.privacyPolicy.shareLegalNameWithInstructor is bool
+          && data.privacyPolicy.shareLegalNameAmongLearners is bool
+          && data.privacyPolicy.consentPolicyVersion is int
+          && data.privacyPolicy.consentPolicyVersion >= 1
+          && (data.privacyPolicy.shareLegalNameAmongLearners == false
+            || data.privacyPolicy.shareLegalNameWithInstructor == true)
+          && (!data.privacyPolicy.keys().hasAny(['updatedAt'])
+            || data.privacyPolicy.updatedAt is timestamp));
+    }
+
     function canUpdateOwnTeacherCourse() {
       return isTeacher()
         && resource.data.instructorId == request.auth.uid
@@ -84,13 +97,66 @@ service cloud.firestore {
         && request.resource.data.source == resource.data.source
         && request.resource.data.status == resource.data.status
         && request.resource.data.lessons is list
-        && request.resource.data.lessonCount is int;
+        && request.resource.data.lessonCount is int
+        && validCoursePrivacyPolicyMap(request.resource.data);
     }
 
     function isCourseInstructor(courseId) {
       return hasActiveTeacherRole()
         && exists(/databases/$(database)/documents/courses/$(courseId))
         && get(/databases/$(database)/documents/courses/$(courseId)).data.instructorId == request.auth.uid;
+    }
+
+    function userHasCourseEnrollment(courseId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid)/enrollments/$(courseId));
+    }
+
+    function coursePolicyAllowsInstructorLegalNameShare(courseId) {
+      return exists(/databases/$(database)/documents/courses/$(courseId))
+        && get(/databases/$(database)/documents/courses/$(courseId)).data.keys().hasAny(['privacyPolicy'])
+        && get(/databases/$(database)/documents/courses/$(courseId)).data.privacyPolicy is map
+        && get(/databases/$(database)/documents/courses/$(courseId)).data.privacyPolicy.shareLegalNameWithInstructor == true;
+    }
+
+    function coursePolicyAllowsPeerLegalNameShare(courseId) {
+      return exists(/databases/$(database)/documents/courses/$(courseId))
+        && get(/databases/$(database)/documents/courses/$(courseId)).data.keys().hasAny(['privacyPolicy'])
+        && get(/databases/$(database)/documents/courses/$(courseId)).data.privacyPolicy is map
+        && get(/databases/$(database)/documents/courses/$(courseId)).data.privacyPolicy.shareLegalNameAmongLearners == true;
+    }
+
+    function validLegalNameValue(value) {
+      return value is string
+        && value.size() > 0
+        && value.size() <= 80;
+    }
+
+    function validLegalNameOnCreate() {
+      return (!request.resource.data.keys().hasAny(['legalName'])
+          && !request.resource.data.keys().hasAny(['legalNameLockedAt']))
+        || (request.resource.data.keys().hasAny(['legalName'])
+          && request.resource.data.keys().hasAny(['legalNameLockedAt'])
+          && validLegalNameValue(request.resource.data.legalName)
+          && request.resource.data.legalNameLockedAt is timestamp);
+    }
+
+    function legalNameUnchangedOrInitialSet() {
+      let hadLegalName = resource.data.keys().hasAny(['legalName'])
+        && validLegalNameValue(resource.data.legalName);
+      let hasLegalName = request.resource.data.keys().hasAny(['legalName'])
+        && validLegalNameValue(request.resource.data.legalName);
+      return (!hadLegalName
+          && !hasLegalName
+          && !request.resource.data.keys().hasAny(['legalNameLockedAt']))
+        || (!hadLegalName
+          && hasLegalName
+          && request.resource.data.keys().hasAny(['legalNameLockedAt'])
+          && request.resource.data.legalNameLockedAt is timestamp)
+        || (hadLegalName
+          && hasLegalName
+          && request.resource.data.legalName == resource.data.legalName
+          && request.resource.data.legalNameLockedAt == resource.data.legalNameLockedAt);
     }
 
     function lessonNotesPublicEnabled(settingId) {
@@ -244,6 +310,41 @@ service cloud.firestore {
         && request.resource.data.bio.size() <= 160;
     }
 
+    function validAuthorAvatarColorName(value) {
+      return value in [
+        'blue',
+        'green',
+        'orange',
+        'purple',
+        'pink',
+        'teal',
+        'brown',
+        'indigo'
+      ];
+    }
+
+    function canUpdateAuthorSnapshotForCourseContent() {
+      return signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'authorName',
+          'authorAvatarColorName',
+          'authorProfileVisible',
+          'authorIdentityMode',
+          'updatedAt'
+        ])
+        && request.resource.data.authorName is string
+        && request.resource.data.authorAvatarColorName is string
+        && validAuthorAvatarColorName(request.resource.data.authorAvatarColorName)
+        && request.resource.data.authorProfileVisible is bool
+        && request.resource.data.authorIdentityMode in ['profile', 'courseAlias']
+        && request.resource.data.authorId == resource.data.authorId
+        && request.resource.data.courseId == resource.data.courseId
+        && (
+          resource.data.authorId == request.auth.uid
+          || isCourseInstructor(resource.data.courseId)
+        );
+    }
+
     match /publicUserProfiles/{profileId} {
       allow read: if signedIn();
       allow create, update: if signedIn()
@@ -261,7 +362,8 @@ service cloud.firestore {
         && request.resource.data.intendedUse in ['learner', 'teacher', 'organization']
         && validWritableApplicationStatus(request.resource.data.teacherApplicationStatus)
         && validWritableApplicationStatus(request.resource.data.organizationApplicationStatus)
-        && validTeacherApplication();
+        && validTeacherApplication()
+        && validLegalNameOnCreate();
 
       allow update: if isOwner(userId)
         && request.resource.data.uid == resource.data.uid
@@ -274,7 +376,8 @@ service cloud.firestore {
           request.resource.data.organizationApplicationStatus,
           resource.data.organizationApplicationStatus
         )
-        && validTeacherApplication();
+        && validTeacherApplication()
+        && legalNameUnchangedOrInitialSet();
 
       allow update: if canSubmitTeacherApplication(userId);
 
@@ -288,6 +391,27 @@ service cloud.firestore {
           && request.resource.data.course is map
           && request.resource.data.lastLessonNumber is int
           && request.resource.data.lastLessonTitle is string;
+      }
+
+      match /coursePrivacyConsents/{courseId} {
+        allow read: if isOwner(userId);
+
+        allow create, update: if isOwner(userId)
+          && request.resource.data.courseId == courseId
+          && request.resource.data.userId == userId
+          && request.resource.data.acceptedPolicyVersion is int
+          && request.resource.data.acceptedPolicyVersion >= 1
+          && request.resource.data.acceptedInstructorLegalNameShare is bool
+          && request.resource.data.acceptedPeerLegalNameShare is bool
+          && (request.resource.data.acceptedPeerLegalNameShare == false
+            || request.resource.data.acceptedInstructorLegalNameShare == true)
+          && (!request.resource.data.keys().hasAny(['peerShareToken'])
+            || request.resource.data.peerShareToken == null
+            || (request.resource.data.peerShareToken is string
+              && request.resource.data.peerShareToken.size() >= 6
+              && request.resource.data.peerShareToken.size() <= 120));
+
+        allow delete: if isOwner(userId);
       }
 
       match /learningEvents/{eventId} {
@@ -782,6 +906,8 @@ service cloud.firestore {
         ])
         && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
 
+      allow update: if canUpdateAuthorSnapshotForCourseContent();
+
       allow delete: if signedIn()
         && resource.data.authorId == request.auth.uid
         && (!resource.data.keys().hasAny(['moderationStatus'])
@@ -911,6 +1037,8 @@ service cloud.firestore {
         ])
         && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
 
+      allow update: if canUpdateAuthorSnapshotForCourseContent();
+
       allow delete: if signedIn()
         && resource.data.authorId == request.auth.uid
         && resource.data.moderationStatus != 'hiddenByTeacher';
@@ -1034,6 +1162,8 @@ service cloud.firestore {
           'moderatedAt'
         ])
         && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher'];
+
+      allow update: if canUpdateAuthorSnapshotForCourseContent();
     }
 
     match /lessonInteractionSettings/{settingId} {
@@ -1067,6 +1197,85 @@ service cloud.firestore {
         && request.resource.data.lessons is list;
 
       allow update: if canUpdateOwnTeacherCourse();
+
+      match /participantIdentities/{userId} {
+        function validIdentityPayload() {
+          return request.resource.data.courseId == courseId
+            && request.resource.data.userId == userId
+            && request.resource.data.identityMode in ['profile', 'courseAlias']
+            && request.resource.data.aliasConfiguredAtEnrollment is bool
+            && request.resource.data.aliasRetired is bool
+            && (!request.resource.data.keys().hasAny(['aliasDisplayName'])
+              || request.resource.data.aliasDisplayName is string)
+            && (!request.resource.data.keys().hasAny(['aliasAvatarColorName'])
+              || request.resource.data.aliasAvatarColorName in [
+                'blue',
+                'green',
+                'orange',
+                'purple',
+                'pink',
+                'teal',
+                'brown',
+                'indigo'
+              ])
+            && (!request.resource.data.keys().hasAny(['updatedByUserId'])
+              || request.resource.data.updatedByUserId is string)
+            && (!request.resource.data.keys().hasAny(['updatedByRole'])
+              || request.resource.data.updatedByRole in ['student', 'teacher'])
+            && (!request.resource.data.aliasConfiguredAtEnrollment
+              || request.resource.data.aliasDisplayName is string);
+        }
+
+        allow read: if signedIn()
+          && (request.auth.uid == userId || isCourseInstructor(courseId));
+
+        allow create, update: if signedIn()
+          && validIdentityPayload()
+          && (
+            (request.auth.uid == userId
+              && request.resource.data.updatedByUserId == userId)
+            || (isCourseInstructor(courseId)
+              && request.resource.data.updatedByRole == 'teacher')
+          );
+      }
+
+      match /teacherLegalNameShares/{userId} {
+        allow read: if signedIn()
+          && (request.auth.uid == userId
+            || (isCourseInstructor(courseId)
+              && coursePolicyAllowsInstructorLegalNameShare(courseId)));
+
+        allow create, update: if signedIn()
+          && request.auth.uid == userId
+          && request.resource.data.courseId == courseId
+          && request.resource.data.userId == userId
+          && validLegalNameValue(request.resource.data.legalName)
+          && request.resource.data.acceptedPolicyVersion is int
+          && request.resource.data.acceptedPolicyVersion >= 1;
+
+        allow delete: if signedIn()
+          && (request.auth.uid == userId || isCourseInstructor(courseId));
+      }
+
+      match /peerLegalNames/{token} {
+        allow read: if signedIn()
+          && coursePolicyAllowsPeerLegalNameShare(courseId)
+          && (userHasCourseEnrollment(courseId) || isCourseInstructor(courseId));
+
+        allow create, update: if signedIn()
+          && userHasCourseEnrollment(courseId)
+          && validLegalNameValue(request.resource.data.legalName)
+          && request.resource.data.courseId == courseId
+          && request.resource.data.acceptedPolicyVersion is int
+          && request.resource.data.acceptedPolicyVersion >= 1
+          && exists(/databases/$(database)/documents/users/$(request.auth.uid)/coursePrivacyConsents/$(courseId))
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)/coursePrivacyConsents/$(courseId)).data.peerShareToken == token
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)/coursePrivacyConsents/$(courseId)).data.acceptedPeerLegalNameShare == true;
+
+        allow delete: if signedIn()
+          && exists(/databases/$(database)/documents/users/$(request.auth.uid)/coursePrivacyConsents/$(courseId))
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)/coursePrivacyConsents/$(courseId)).data.peerShareToken == token;
+      }
     }
   }
 }

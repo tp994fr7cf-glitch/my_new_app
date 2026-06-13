@@ -20,6 +20,99 @@ class LessonNotePreviewBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    PublicUserProfile fallbackProfile() {
+      final fallback = fallbackPublicUserProfile(
+        userId: note.authorId,
+        role: publicUserProfileRoleStudent,
+        displayName: note.authorName,
+      );
+      final avatarColorName = (note.authorAvatarColorName ?? '').trim();
+      if (!profileAvatarColors.containsKey(avatarColorName)) {
+        return fallback;
+      }
+      return PublicUserProfile(
+        userId: fallback.userId,
+        role: fallback.role,
+        displayName: fallback.displayName,
+        avatarColorName: avatarColorName,
+        bio: fallback.bio,
+        updatedAt: fallback.updatedAt,
+      );
+    }
+
+    Widget buildBody(PublicUserProfile profile) {
+      return ListView(
+        padding: const EdgeInsets.all(24),
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              PublicProfileAvatar(profile: profile),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      profile.displayName,
+                      style: Theme.of(context).textTheme.labelMedium,
+                    ),
+                    Text(
+                      formatPublicNoteTimestamp(note),
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          Text(
+            note.title.isEmpty ? '無題のメモ' : note.title,
+            style: Theme.of(context).textTheme.headlineSmall,
+          ),
+          const SizedBox(height: 16),
+          Text(note.body.isEmpty ? '本文なし' : note.body),
+          if (note.tags.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Text(note.tags.map((tag) => '#$tag').join(' ')),
+          ],
+          if (note.attachmentTypes.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Text('添付予定: ${note.attachmentTypes.join(', ')}'),
+          ],
+          const SizedBox(height: 24),
+          if (canCreateQuestion &&
+              note.allowsQuestionCitation &&
+              onCreateQuestion != null) ...[
+            FilledButton.icon(
+              onPressed: onCreateQuestion,
+              icon: const Icon(Icons.add_comment),
+              label: const Text('このメモを引用して質問する'),
+            ),
+          ] else if (canCreateQuestion && !note.allowsQuestionCitation) ...[
+            const Text('このメモの作成者は引用を許可していません。'),
+          ],
+          if (onEdit != null) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () async {
+                await onEdit!.call(context);
+              },
+              icon: const Icon(Icons.edit),
+              label: const Text('このメモを編集'),
+            ),
+          ],
+        ],
+      );
+    }
+
+    final fallback = fallbackProfile();
+    if (!note.authorProfileVisible) {
+      return buildBody(fallback);
+    }
     return StreamBuilder<PublicUserProfile>(
       stream: publicUserProfileStream(
         userId: note.authorId,
@@ -27,79 +120,7 @@ class LessonNotePreviewBody extends StatelessWidget {
         fallbackDisplayName: note.authorName,
       ),
       builder: (context, snapshot) {
-        final profile =
-            snapshot.data ??
-            fallbackPublicUserProfile(
-              userId: note.authorId,
-              role: publicUserProfileRoleStudent,
-              displayName: note.authorName,
-            );
-        return ListView(
-          padding: const EdgeInsets.all(24),
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                PublicProfileAvatar(profile: profile),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        profile.displayName,
-                        style: Theme.of(context).textTheme.labelMedium,
-                      ),
-                      Text(
-                        formatPublicNoteTimestamp(note),
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 24),
-            Text(
-              note.title.isEmpty ? '無題のメモ' : note.title,
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-            const SizedBox(height: 16),
-            Text(note.body.isEmpty ? '本文なし' : note.body),
-            if (note.tags.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Text(note.tags.map((tag) => '#$tag').join(' ')),
-            ],
-            if (note.attachmentTypes.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Text('添付予定: ${note.attachmentTypes.join(', ')}'),
-            ],
-            const SizedBox(height: 24),
-            if (canCreateQuestion &&
-                note.allowsQuestionCitation &&
-                onCreateQuestion != null) ...[
-              FilledButton.icon(
-                onPressed: onCreateQuestion,
-                icon: const Icon(Icons.add_comment),
-                label: const Text('このメモを引用して質問する'),
-              ),
-            ] else if (canCreateQuestion && !note.allowsQuestionCitation) ...[
-              const Text('このメモの作成者は引用を許可していません。'),
-            ],
-            if (onEdit != null) ...[
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: () async {
-                  await onEdit!.call(context);
-                },
-                icon: const Icon(Icons.edit),
-                label: const Text('このメモを編集'),
-              ),
-            ],
-          ],
-        );
+        return buildBody(snapshot.data ?? fallback);
       },
     );
   }

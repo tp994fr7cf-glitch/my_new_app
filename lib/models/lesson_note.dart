@@ -66,6 +66,9 @@ class LessonNote {
     this.id,
     required this.authorId,
     required this.authorName,
+    this.authorAvatarColorName,
+    this.authorProfileVisible = true,
+    this.authorIdentityMode = 'profile',
     required this.courseId,
     required this.courseTitle,
     required this.lessonNumber,
@@ -105,6 +108,9 @@ class LessonNote {
   final String? id;
   final String authorId;
   final String authorName;
+  final String? authorAvatarColorName;
+  final bool authorProfileVisible;
+  final String authorIdentityMode;
   final String courseId;
   final String courseTitle;
   final int lessonNumber;
@@ -172,6 +178,9 @@ class LessonNote {
       id: id ?? data['id'] as String?,
       authorId: data['authorId'] as String? ?? data['userId'] as String? ?? '',
       authorName: data['authorName'] as String? ?? '',
+      authorAvatarColorName: data['authorAvatarColorName'] as String?,
+      authorProfileVisible: data['authorProfileVisible'] != false,
+      authorIdentityMode: data['authorIdentityMode'] as String? ?? 'profile',
       courseId: data['courseId'] as String? ?? '',
       courseTitle: data['courseTitle'] as String? ?? '',
       lessonNumber: (data['lessonNumber'] as num?)?.toInt() ?? 1,

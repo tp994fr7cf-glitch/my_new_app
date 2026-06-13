@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 
 import '../models/course.dart';
 import '../models/public_user_profile.dart';
+import '../services/course_privacy_service.dart';
+import 'course_entry_gate.dart';
 import 'course_create_page.dart';
 import 'course_list_page.dart';
 import 'learning_records_page.dart';
@@ -82,68 +84,71 @@ class StudentHomePage extends StatelessWidget {
       title: '学習者ホーム',
       user: user,
       roles: roles,
-      child: ListView(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
-        children: [
-          const Text(
-            'おかえりなさい',
-            style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 8),
-          Text(user.displayName ?? user.email ?? '学習者さん'),
-          const SizedBox(height: 24),
-          _ProfileSummaryCard(user: user, profile: profile, roles: roles),
-          const SizedBox(height: 16),
-          _ResumeLearningCard(
-            user: user,
-            enrollmentRecordsStream: enrollmentRecordsStream,
-          ),
-          _HomeActionCard(
-            icon: Icons.timeline,
-            title: '学習記録',
-            description: '視聴記録、クイズ回答、質問コメントの記録を振り返れます。',
-            buttonText: '学習記録を見る',
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => LearningRecordsPage(user: user),
-                ),
-              );
-            },
-          ),
-          _HomeActionCard(
-            icon: Icons.search,
-            title: '講座を探す',
-            description: '次に作る講座一覧画面への入口です。Udemyのようなカード一覧に育てます。',
-            buttonText: '講座一覧へ',
-            onPressed: () {
-              Navigator.of(
-                context,
-              ).push(MaterialPageRoute(builder: (_) => const CourseListPage()));
-            },
-          ),
-          _HomeActionCard(
-            icon: Icons.star,
-            title: 'おすすめ講座',
-            description: 'あなたに合いそうな講座を表示する予定です。今は仮の枠だけ用意しています。',
-            buttonText: 'おすすめを見る',
-            onPressed: () {},
-          ),
-          _HomeActionCard(
-            icon: Icons.school,
-            title: '先生として活動したい場合',
-            description: '先生申請の状況確認や、申請の送信ができます。',
-            buttonText: '申請状況を見る',
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) =>
-                      TeacherApplicationPage(user: user, profile: profile),
-                ),
-              );
-            },
-          ),
-        ],
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'おかえりなさい',
+              style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(user.displayName ?? user.email ?? '学習者さん'),
+            const SizedBox(height: 24),
+            _ProfileSummaryCard(user: user, profile: profile, roles: roles),
+            const SizedBox(height: 16),
+            _ResumeLearningCard(
+              user: user,
+              enrollmentRecordsStream: enrollmentRecordsStream,
+            ),
+            _HomeActionCard(
+              icon: Icons.timeline,
+              title: '学習記録',
+              description: '視聴記録、クイズ回答、質問コメントの記録を振り返れます。',
+              buttonText: '学習記録を見る',
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => LearningRecordsPage(user: user),
+                  ),
+                );
+              },
+            ),
+            _HomeActionCard(
+              icon: Icons.search,
+              title: '講座を探す',
+              description: '次に作る講座一覧画面への入口です。Udemyのようなカード一覧に育てます。',
+              buttonText: '講座一覧へ',
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const CourseListPage()),
+                );
+              },
+            ),
+            _HomeActionCard(
+              icon: Icons.star,
+              title: 'おすすめ講座',
+              description: 'あなたに合いそうな講座を表示する予定です。今は仮の枠だけ用意しています。',
+              buttonText: 'おすすめを見る',
+              onPressed: () {},
+            ),
+            _HomeActionCard(
+              icon: Icons.school,
+              title: '先生として活動したい場合',
+              description: '先生申請の状況確認や、申請の送信ができます。',
+              buttonText: '申請状況を見る',
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        TeacherApplicationPage(user: user, profile: profile),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -237,11 +242,13 @@ Future<void> _saveResumeLearningEvent({
   await batch.commit();
 }
 
-void _resumeLearningFromEnrollment(
+Future<void> _resumeLearningFromEnrollment(
   BuildContext context, {
   required User user,
   required _ResumeEnrollment enrollment,
-}) {
+}) async {
+  final navigator = Navigator.of(context);
+  final messenger = ScaffoldMessenger.maybeOf(context);
   final data = enrollment.data;
   final courseData = data['course'];
   if (courseData is! Map) {
@@ -258,7 +265,26 @@ void _resumeLearningFromEnrollment(
   final lesson = course.lessons[lessonNumber - 1];
   final courseId = data['courseId'] as String? ?? course.id ?? enrollment.id;
 
-  Navigator.of(context).push(
+  final bool canEnter;
+  try {
+    canEnter = await ensureCourseEntryAccess(
+      context,
+      course: course,
+      user: user,
+    );
+  } catch (_) {
+    messenger
+      ?..clearSnackBars()
+      ..showSnackBar(
+        const SnackBar(content: Text('受講状態の確認中にエラーが発生しました。もう一度お試しください。')),
+      );
+    return;
+  }
+  if (!canEnter) {
+    return;
+  }
+
+  navigator.push(
     MaterialPageRoute(
       builder: (_) => VideoLessonPage(
         course: course,
@@ -275,13 +301,11 @@ void _resumeLearningFromEnrollment(
     lesson: lesson,
     lessonNumber: lessonNumber,
   ).catchError((_) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context)
-        ..clearSnackBars()
-        ..showSnackBar(
-          const SnackBar(content: Text('学習記録の保存に失敗しました。後でもう一度お試しください。')),
-        );
-    }
+    messenger
+      ?..clearSnackBars()
+      ..showSnackBar(
+        const SnackBar(content: Text('学習記録の保存に失敗しました。後でもう一度お試しください。')),
+      );
   });
 }
 
@@ -326,8 +350,8 @@ class _ResumeLearningCard extends StatelessWidget {
                   for (final enrollment in previewEnrollments) ...[
                     _EnrollmentResumeTile(
                       enrollment: enrollment,
-                      onResume: () {
-                        _resumeLearningFromEnrollment(
+                      onResume: () async {
+                        await _resumeLearningFromEnrollment(
                           context,
                           user: user,
                           enrollment: enrollment,
@@ -412,8 +436,8 @@ class _AllResumeLearningPage extends StatelessWidget {
                 for (final enrollment in enrollments) ...[
                   _EnrollmentResumeTile(
                     enrollment: enrollment,
-                    onResume: () {
-                      _resumeLearningFromEnrollment(
+                    onResume: () async {
+                      await _resumeLearningFromEnrollment(
                         context,
                         user: user,
                         enrollment: enrollment,
@@ -510,7 +534,7 @@ class TeacherHomePage extends StatelessWidget {
           _HomeActionCard(
             icon: Icons.video_library,
             title: '自分の講座',
-            description: '作成した講座の一覧と講座コードを確認できます。',
+            description: '作成した講座の一覧と講座コードを確認できます。講座詳細から本名同意設定も管理できます。',
             buttonText: '講座を管理',
             onPressed: () {
               Navigator.of(context).push(
@@ -654,6 +678,7 @@ class _ProfileSummaryCard extends StatelessWidget {
   final User user;
   final Map<String, dynamic> profile;
   final List<String> roles;
+  static const _coursePrivacyService = CoursePrivacyService();
 
   String _roleLabel(String role) {
     return switch (role) {
@@ -695,6 +720,8 @@ class _ProfileSummaryCard extends StatelessWidget {
         profile['teacherApplicationStatus'] as String?;
     final organizationApplicationStatus =
         profile['organizationApplicationStatus'] as String?;
+    final legalName = (profile['legalName'] as String?)?.trim() ?? '';
+    final hasLegalName = legalName.isNotEmpty;
 
     return StreamBuilder<PublicUserProfile>(
       stream: publicUserProfileStream(
@@ -767,12 +794,113 @@ class _ProfileSummaryCard extends StatelessWidget {
                 Text(
                   '組織申請: ${_applicationStatusLabel(organizationApplicationStatus)}',
                 ),
+                const SizedBox(height: 8),
+                if (hasLegalName)
+                  Text('本名（本人のみ表示）: $legalName')
+                else
+                  Row(
+                    children: [
+                      const Expanded(child: Text('本名（氏名）は未登録です（任意）。')),
+                      OutlinedButton(
+                        onPressed: () {
+                          _showLegalNameRegisterDialog(context, user.uid);
+                        },
+                        child: const Text('本名を登録'),
+                      ),
+                    ],
+                  ),
               ],
             ),
           ),
         );
       },
     );
+  }
+
+  Future<void> _showLegalNameRegisterDialog(
+    BuildContext context,
+    String userId,
+  ) async {
+    final controller = TextEditingController();
+    var isSaving = false;
+    String? errorText;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            return AlertDialog(
+              title: const Text('本名（氏名）を登録'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('本名は一度登録すると、本人では変更できません。'),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: controller,
+                    enabled: !isSaving,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      labelText: '本名（氏名）',
+                    ),
+                  ),
+                  if (errorText != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      errorText!,
+                      style: TextStyle(
+                        color: Theme.of(dialogContext).colorScheme.error,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isSaving
+                      ? null
+                      : () => Navigator.of(dialogContext).pop(),
+                  child: const Text('キャンセル'),
+                ),
+                FilledButton(
+                  onPressed: isSaving
+                      ? null
+                      : () async {
+                          final legalName = controller.text.trim();
+                          if (legalName.isEmpty) {
+                            setDialogState(() {
+                              errorText = '本名を入力してください。';
+                            });
+                            return;
+                          }
+                          setDialogState(() {
+                            isSaving = true;
+                            errorText = null;
+                          });
+                          try {
+                            await _coursePrivacyService.setLegalNameIfAbsent(
+                              userId: userId,
+                              legalName: legalName,
+                            );
+                            if (dialogContext.mounted) {
+                              Navigator.of(dialogContext).pop();
+                            }
+                          } catch (error) {
+                            setDialogState(() {
+                              errorText = '$error';
+                              isSaving = false;
+                            });
+                          }
+                        },
+                  child: const Text('登録する'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    controller.dispose();
   }
 }
 

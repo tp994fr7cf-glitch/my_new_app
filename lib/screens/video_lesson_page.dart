@@ -10,8 +10,11 @@ import '../models/course.dart';
 import '../models/lesson_cycle_display.dart';
 import '../models/lesson_player_view_state.dart';
 import '../models/lesson_segment_boundary.dart';
+import '../models/course_privacy_consent.dart';
 import '../models/quiz_answer_key.dart';
 import '../models/watched_range.dart';
+import '../services/course_privacy_service.dart';
+import 'course_entry_gate.dart';
 import 'lesson_questions_page.dart';
 import 'lesson_notes_page.dart';
 
@@ -73,9 +76,11 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   Timer? _playbackTimer;
   Timer? _studyTimer;
   Timer? _activeLearningHeartbeatTimer;
+  StreamSubscription<CourseEntryRequirement>? _entryRequirementSubscription;
   String? _sessionId;
   String? _segmentId;
   bool _hasActiveLearningLock = false;
+  bool _isHandlingEntryRequirementBlock = false;
   final Map<String, int> _selectedChoices = {};
   final Map<String, bool> _answerResults = {};
   final Set<String> _answeredQuizEventIds = {};
@@ -136,6 +141,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _isLoadingLearningState = Firebase.apps.isNotEmpty && !_isTeacherPreview;
+    _listenEntryRequirement();
     if (_isLoadingLearningState) {
       unawaited(_resumeLearningTimeOnOpen());
     }
@@ -146,6 +152,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _playbackTimer?.cancel();
     _studyTimer?.cancel();
     _activeLearningHeartbeatTimer?.cancel();
+    _entryRequirementSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     if (!_isTeacherPreview) {
       if (_pendingCompletion && !_sessionCompleted) {
@@ -284,6 +291,51 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   String _courseId() {
     return course.storageId;
+  }
+
+  void _listenEntryRequirement() {
+    if (_isTeacherPreview || Firebase.apps.isEmpty) {
+      return;
+    }
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+    _entryRequirementSubscription?.cancel();
+    _entryRequirementSubscription = const CoursePrivacyService()
+        .watchEntryRequirement(userId: user.uid, courseId: _courseId())
+        .listen((requirement) {
+          if (!mounted || _isHandlingEntryRequirementBlock) {
+            return;
+          }
+          if (requirement.canEnter) {
+            return;
+          }
+          _isHandlingEntryRequirementBlock = true;
+          final message = requirement.policy.shareAmongLearnersEnabled
+              ? '講座設定が更新され、受講者同士の本名公開を含む同意が必要になりました。'
+              : '講座設定が更新され、先生への本名提供の同意が必要になりました。';
+          unawaited(
+            () async {
+              _pausePlayback();
+              final canContinue = await showCoursePolicyBlockDialog(
+                context,
+                course: course,
+                message: '$message\n同意しない場合は講座画面から退出します。',
+              );
+              if (!mounted) {
+                return;
+              }
+              if (!canContinue) {
+                Navigator.of(context).pop();
+                return;
+              }
+              _isHandlingEntryRequirementBlock = false;
+            }().whenComplete(() {
+              _isHandlingEntryRequirementBlock = false;
+            }),
+          );
+        });
   }
 
   DocumentReference<Map<String, dynamic>> _activeLearningLockRef(User user) {

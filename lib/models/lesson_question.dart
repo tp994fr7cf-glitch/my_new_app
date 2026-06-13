@@ -22,6 +22,9 @@ class LessonQuestion {
     required this.authorId,
     required this.authorName,
     this.authorDisplayName,
+    this.authorAvatarColorName,
+    this.authorProfileVisible = true,
+    this.authorIdentityMode = 'profile',
     this.authorRole = 'student',
     required this.courseId,
     required this.courseTitle,
@@ -49,6 +52,9 @@ class LessonQuestion {
   final String authorId;
   final String authorName;
   final String? authorDisplayName;
+  final String? authorAvatarColorName;
+  final bool authorProfileVisible;
+  final String authorIdentityMode;
   final String authorRole;
   final String courseId;
   final String courseTitle;
@@ -96,6 +102,9 @@ class LessonQuestion {
       authorId: data['authorId'] as String? ?? data['userId'] as String? ?? '',
       authorName: data['authorName'] as String? ?? '',
       authorDisplayName: data['authorDisplayName'] as String?,
+      authorAvatarColorName: data['authorAvatarColorName'] as String?,
+      authorProfileVisible: data['authorProfileVisible'] != false,
+      authorIdentityMode: data['authorIdentityMode'] as String? ?? 'profile',
       authorRole:
           data['authorRole'] as String? ??
           (data['authorDisplayName'] == '先生' ? 'teacher' : 'student'),
@@ -138,6 +147,9 @@ class LessonQuestionAnswer {
     required this.authorId,
     required this.authorName,
     this.authorDisplayName,
+    this.authorAvatarColorName,
+    this.authorProfileVisible = true,
+    this.authorIdentityMode = 'profile',
     required this.authorRole,
     this.courseId = '',
     this.courseTitle = '',
@@ -167,6 +179,9 @@ class LessonQuestionAnswer {
   final String authorId;
   final String authorName;
   final String? authorDisplayName;
+  final String? authorAvatarColorName;
+  final bool authorProfileVisible;
+  final String authorIdentityMode;
   final String authorRole;
   final String courseId;
   final String courseTitle;
@@ -200,6 +215,9 @@ class LessonQuestionAnswer {
       authorId: data['authorId'] as String? ?? '',
       authorName: data['authorName'] as String? ?? '',
       authorDisplayName: data['authorDisplayName'] as String?,
+      authorAvatarColorName: data['authorAvatarColorName'] as String?,
+      authorProfileVisible: data['authorProfileVisible'] != false,
+      authorIdentityMode: data['authorIdentityMode'] as String? ?? 'profile',
       authorRole: data['authorRole'] as String? ?? 'student',
       courseId: data['courseId'] as String? ?? '',
       courseTitle: data['courseTitle'] as String? ?? '',
