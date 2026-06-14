@@ -1243,20 +1243,75 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
     }
   }
 
+  bool _isQuestionOpenable(LessonQuestion? question) {
+    return question != null && _canOpenQuestionFromRecord(question);
+  }
+
+  bool _isRecordAnswerOpenable() {
+    return _canOpenAnswerFromRecord(widget.answer, allowTeacherHidden: true);
+  }
+
+  LessonQuestionAnswer? _effectiveParentAnswer(
+    LessonQuestionAnswer? parentAnswer,
+  ) {
+    return parentAnswer ?? _cachedParentAnswerFromList();
+  }
+
+  bool _isParentAnswerOpenable(LessonQuestionAnswer? parentAnswer) {
+    final resolvedParentAnswer = _effectiveParentAnswer(parentAnswer);
+    return resolvedParentAnswer != null &&
+        _canOpenAnswerFromRecord(resolvedParentAnswer);
+  }
+
+  bool _isReplyTargetOpenable(
+    LessonQuestion? question,
+    LessonQuestionAnswer? parentAnswer,
+  ) {
+    if (widget.answer.parentCommentType == 'answer') {
+      return _isParentAnswerOpenable(parentAnswer);
+    }
+    return _isQuestionOpenable(question);
+  }
+
+  bool _futureContextAllowsLinkAndNavigation(LessonQuestion? question) {
+    // Future gates for course deletion/private/suspension states are wired
+    // here so both linkability and thread navigation share one decision point.
+    // Until those states are persisted on learning records, keep defaults safe.
+    final courseAccessible = question != null;
+    final interactionFeatureEnabled = question != null;
+    const currentUserActiveInCourse = true;
+    const targetUserActiveInCourse = true;
+    return courseAccessible &&
+        interactionFeatureEnabled &&
+        currentUserActiveInCourse &&
+        targetUserActiveInCourse;
+  }
+
+  bool _canOpenThreadGate(
+    LessonQuestion? question,
+    LessonQuestionAnswer? _,
+  ) {
+    if (!_futureContextAllowsLinkAndNavigation(question)) {
+      return false;
+    }
+    if (!_isQuestionOpenable(question)) {
+      return false;
+    }
+    if (!_isRecordAnswerOpenable()) {
+      return false;
+    }
+    // Product decision: learners can reopen the thread from records as long as
+    // the parent question is openable, even when the immediate parent answer
+    // is deleted/hidden/unavailable.
+    // This keeps "question-level continuity" for old replies.
+    return true;
+  }
+
   bool _canOpenQuestionThreadFor(
     LessonQuestion? question,
     LessonQuestionAnswer? parentAnswer,
   ) {
-    if (question == null || !_canOpenQuestionFromRecord(question)) {
-      return false;
-    }
-    if (!_canOpenAnswerFromRecord(widget.answer, allowTeacherHidden: true)) {
-      return false;
-    }
-    if (widget.answer.parentCommentType == 'answer') {
-      return parentAnswer != null && _canOpenAnswerFromRecord(parentAnswer);
-    }
-    return true;
+    return _canOpenThreadGate(question, parentAnswer);
   }
 
   LessonQuestionAnswer? _cachedParentAnswerFromList() {
@@ -1279,46 +1334,24 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
     LessonQuestion? question,
     LessonQuestionAnswer? parentAnswer,
   ) {
-    if (!_canOpenAnswerFromRecord(widget.answer, allowTeacherHidden: true)) {
+    if (!_isRecordAnswerOpenable()) {
       return 'この回答コメントは削除済み、または現在は表示できません。学習記録として内容だけ表示しています。';
     }
-    if (question == null || !_canOpenQuestionFromRecord(question)) {
+    if (!_isQuestionOpenable(question)) {
       return '元の質問は削除済み、または現在は表示できません。学習記録として内容だけ表示しています。';
     }
     if (widget.answer.parentCommentType == 'answer' &&
-        (parentAnswer == null || !_canOpenAnswerFromRecord(parentAnswer))) {
+        !_isParentAnswerOpenable(parentAnswer)) {
       return '返信先の回答は削除済み、または現在は表示できません。学習記録として内容だけ表示しています。';
     }
     return null;
-  }
-
-  bool _shouldHideReplyTargetPreview() {
-    if (widget.answer.parentCommentType != 'answer') {
-      return false;
-    }
-    final parentId = widget.answer.parentCommentId;
-    if (parentId == null || parentId.isEmpty) {
-      return true;
-    }
-    for (final answer in widget.answers) {
-      if (answer.id == parentId) {
-        return !_canOpenAnswerFromRecord(answer);
-      }
-    }
-    return true;
   }
 
   bool _isReplyTargetUnavailable(
     LessonQuestion? question,
     LessonQuestionAnswer? parentAnswer,
   ) {
-    if (widget.answer.parentCommentType == 'answer') {
-      if (parentAnswer == null) {
-        return _shouldHideReplyTargetPreview();
-      }
-      return !_canOpenAnswerFromRecord(parentAnswer);
-    }
-    return question == null || !_canOpenQuestionFromRecord(question);
+    return !_isReplyTargetOpenable(question, parentAnswer);
   }
 
   Timestamp? _parentCommentTimestamp(
@@ -1326,8 +1359,9 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
     LessonQuestionAnswer? parentAnswer,
   ) {
     if (widget.answer.parentCommentType == 'answer') {
-      if (parentAnswer != null) {
-        return parentAnswer.createdAt ?? parentAnswer.updatedAt;
+      final resolvedParentAnswer = _effectiveParentAnswer(parentAnswer);
+      if (resolvedParentAnswer != null) {
+        return resolvedParentAnswer.createdAt ?? resolvedParentAnswer.updatedAt;
       }
       final parentId = widget.answer.parentCommentId;
       if (parentId == null || parentId.isEmpty) {
@@ -1394,7 +1428,9 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
     LessonQuestionAnswer? parentAnswer,
   ) {
     if (widget.answer.parentCommentType == 'answer') {
-      return _usableDisplayNameOrNull(parentAnswer?.authorName);
+      return _usableDisplayNameOrNull(
+        _effectiveParentAnswer(parentAnswer)?.authorName,
+      );
     }
     return _usableDisplayNameOrNull(parentQuestion?.authorName);
   }
@@ -1403,6 +1439,12 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
     LessonQuestion? parentQuestion,
     LessonQuestionAnswer? parentAnswer,
   ) {
+    if (!_futureContextAllowsLinkAndNavigation(parentQuestion)) {
+      return false;
+    }
+    if (!_isReplyTargetOpenable(parentQuestion, parentAnswer)) {
+      return false;
+    }
     final role = (widget.answer.replyToAuthorRole ?? '').trim();
     if (role == publicUserProfileRoleTeacher) {
       return true;
@@ -1411,9 +1453,9 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
       return false;
     }
     if (widget.answer.parentCommentType == 'answer') {
-      return parentAnswer != null && parentAnswer.authorProfileVisible;
+      return _effectiveParentAnswer(parentAnswer)?.authorProfileVisible == true;
     }
-    return parentQuestion != null && parentQuestion.authorProfileVisible;
+    return parentQuestion?.authorProfileVisible == true;
   }
 
   String _fallbackReplyTargetDisplayName(
@@ -1758,10 +1800,7 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
                 (snapshot.connectionState == ConnectionState.waiting ||
                         parentAnswerSnapshot.connectionState ==
                             ConnectionState.waiting) &&
-                    _canOpenAnswerFromRecord(
-                      widget.answer,
-                      allowTeacherHidden: true,
-                    )
+                    _isRecordAnswerOpenable()
                 ? null
                 : _unavailableMessageFor(loadedParentQuestion, parentAnswer);
             final isReplyTargetUnavailable = _isReplyTargetUnavailable(

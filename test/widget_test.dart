@@ -885,7 +885,7 @@ void main() {
   });
 
   testWidgets(
-    'Learning records keep reply static when parent answer is unavailable',
+    'Learning records open thread even when parent answer is unavailable',
     (WidgetTester tester) async {
       final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
       final question = LessonQuestion(
@@ -974,8 +974,7 @@ void main() {
       await tester.tap(replyRecord);
       await tester.pumpAndSettle();
 
-      expect(find.text('質問詳細'), findsNothing);
-      expect(find.text('この記録の返信'), findsNothing);
+      expect(find.text('質問詳細'), findsOneWidget);
       expect(find.text('親回答が見えなくても残したい返信です。'), findsOneWidget);
       expect(find.text('表示できない親回答です。'), findsOneWidget);
     },
@@ -1048,6 +1047,169 @@ void main() {
         find.text('2. いつ投稿されたコメントに対して: 不明'),
         findsNothing,
       );
+    },
+  );
+
+  testWidgets(
+    'Learning records prefer reply-time name over parent posted name when reply target is unavailable',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
+      final question = LessonQuestion(
+        id: 'question-a',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '親質問は表示できます。',
+        visibility: LessonQuestionVisibility.teacherOnly,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: const [],
+        updatedAt: now,
+      );
+      final hiddenParentAnswer = LessonQuestionAnswer(
+        id: 'answer-hidden-parent-name-priority',
+        questionId: 'question-a',
+        authorId: 'user-b',
+        authorName: '親投稿時点名',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        body: '表示できない親回答です。',
+        attachmentTypes: const [],
+        parentCommentId: 'question-a',
+        parentCommentType: 'question',
+        moderationStatus: lessonInteractionModerationHiddenByTeacher,
+        createdAt: now,
+      );
+      final reply = LessonQuestionAnswer(
+        id: 'reply-priority-reply-time',
+        questionId: 'question-a',
+        authorId: 'user-a',
+        authorName: '学習者',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        body: '返信時点名を優先したい返信です。',
+        attachmentTypes: const [],
+        parentCommentId: 'answer-hidden-parent-name-priority',
+        parentCommentType: 'answer',
+        replyToDisplayName: '返信時点名',
+        replyToBodyPreview: '表示できない親回答です。',
+        createdAt: Timestamp.fromDate(DateTime(2026, 5, 31, 13, 31)),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            lessonViewSegmentsStream: const Stream.empty(),
+            learningEventsStream: const Stream.empty(),
+            quizAttemptsStream: const Stream.empty(),
+            lessonNotesStream: const Stream.empty(),
+            lessonQuestionsStream: Stream.value([question]),
+            lessonQuestionAnswersStream: Stream.value([
+              hiddenParentAnswer,
+              reply,
+            ]),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('質問・回答コメントを見る'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('回答コメント'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('1. 誰に対して: 返信時点名'), findsOneWidget);
+      expect(find.textContaining('1. 誰に対して: 親投稿時点名'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'Learning records use parent posted name when reply-time name is unavailable',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
+      final question = LessonQuestion(
+        id: 'question-a',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '親質問は表示できます。',
+        visibility: LessonQuestionVisibility.teacherOnly,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: const [],
+        updatedAt: now,
+      );
+      final parentAnswer = LessonQuestionAnswer(
+        id: 'answer-parent-fallback-name',
+        questionId: 'question-a',
+        authorId: 'user-b',
+        authorName: '親投稿時点名',
+        authorRole: 'student',
+        authorProfileVisible: false,
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        body: '親回答本文',
+        attachmentTypes: const [],
+        parentCommentId: 'question-a',
+        parentCommentType: 'question',
+        createdAt: now,
+      );
+      final reply = LessonQuestionAnswer(
+        id: 'reply-parent-posted-fallback',
+        questionId: 'question-a',
+        authorId: 'user-a',
+        authorName: '学習者',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        body: '返信時点名が欠けた返信です。',
+        attachmentTypes: const [],
+        parentCommentId: 'answer-parent-fallback-name',
+        parentCommentType: 'answer',
+        replyToDisplayName: '',
+        replyToAuthorRole: 'student',
+        replyToBodyPreview: '親回答本文',
+        createdAt: Timestamp.fromDate(DateTime(2026, 5, 31, 13, 31)),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            lessonViewSegmentsStream: const Stream.empty(),
+            learningEventsStream: const Stream.empty(),
+            quizAttemptsStream: const Stream.empty(),
+            lessonNotesStream: const Stream.empty(),
+            lessonQuestionsStream: Stream.value([question]),
+            lessonQuestionAnswersStream: Stream.value([parentAnswer, reply]),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('質問・回答コメントを見る'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('回答コメント'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('親投稿時点名 の「親回答本文」への返信'), findsOneWidget);
     },
   );
 
