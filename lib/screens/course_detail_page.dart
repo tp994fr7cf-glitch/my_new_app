@@ -251,6 +251,14 @@ class CourseDetailPage extends StatelessWidget {
       });
 
     await batch.commit();
+    try {
+      await _coursePrivacyService.syncPeerLegalNameShareForEnrollment(
+        userId: user.uid,
+        courseId: _courseId,
+      );
+    } on FirebaseException {
+      // Do not block lesson opening if peer-share sync fails.
+    }
   }
 
   Future<void> _openLesson(

@@ -162,6 +162,7 @@ class CoursePrivacyService {
       policy: policy,
       consent: consent,
       legalName: legalName,
+      isResolved: true,
     );
   }
 
@@ -175,6 +176,7 @@ class CoursePrivacyService {
           policy: CoursePrivacyPolicy.empty,
           consent: null,
           legalName: null,
+          isResolved: true,
         ),
       );
     }
@@ -182,28 +184,35 @@ class CoursePrivacyService {
       CoursePrivacyPolicy? latestPolicy;
       CoursePrivacyConsent? latestConsent;
       String? latestLegalName;
+      var hasPolicy = false;
+      var hasConsent = false;
+      var hasLegalName = false;
 
       void emitIfReady() {
-        if (latestPolicy == null) {
+        if (!hasPolicy || latestPolicy == null) {
           return;
         }
+        final isResolved = hasPolicy && hasConsent && hasLegalName;
         controller.add(
           CourseEntryRequirement(
             policy: latestPolicy!,
             consent: latestConsent,
             legalName: latestLegalName,
+            isResolved: isResolved,
           ),
         );
       }
 
       final policySub = policyStream(courseId).listen((policy) {
         latestPolicy = policy;
+        hasPolicy = true;
         emitIfReady();
       }, onError: controller.addError);
 
       final consentSub = consentStream(userId: userId, courseId: courseId)
           .listen((consent) {
             latestConsent = consent;
+            hasConsent = true;
             emitIfReady();
           }, onError: controller.addError);
 
@@ -214,6 +223,7 @@ class CoursePrivacyService {
           .listen((snapshot) {
             final value = (snapshot.data()?['legalName'] as String?)?.trim();
             latestLegalName = (value ?? '').isEmpty ? null : value;
+            hasLegalName = true;
             emitIfReady();
           }, onError: controller.addError);
 
@@ -293,18 +303,87 @@ class CoursePrivacyService {
       courseId: courseId,
       token: token,
     );
-    if (agreePeerShare) {
-      batch.set(peerShareRef, {
-        'courseId': courseId,
-        'legalName': safeLegalName,
-        'acceptedPolicyVersion': normalizedPolicy.consentPolicyVersion,
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-    } else if (existingToken != null && existingToken.isNotEmpty) {
+    if (!agreePeerShare && existingToken != null && existingToken.isNotEmpty) {
       batch.delete(peerShareRef);
     }
 
     await batch.commit();
+    try {
+      await syncPeerLegalNameShareForEnrollment(
+        userId: userId,
+        courseId: courseId,
+      );
+    } on FirebaseException {
+      // Consent completion should not fail when peer-share sync is delayed.
+    }
+  }
+
+  Future<bool> _hasCourseEnrollment({
+    required String userId,
+    required String courseId,
+  }) async {
+    if (Firebase.apps.isEmpty || userId.isEmpty || courseId.isEmpty) {
+      return false;
+    }
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('enrollments')
+          .doc(courseId)
+          .get();
+      return snapshot.exists;
+    } on FirebaseException {
+      return false;
+    }
+  }
+
+  Future<void> syncPeerLegalNameShareForEnrollment({
+    required String userId,
+    required String courseId,
+  }) async {
+    if (Firebase.apps.isEmpty || userId.isEmpty || courseId.isEmpty) {
+      return;
+    }
+    final policy = await loadPolicy(courseId);
+    final consent = await loadConsent(userId: userId, courseId: courseId);
+    if (consent == null) {
+      return;
+    }
+    final token = (consent.peerShareToken ?? '').trim();
+    if (token.isEmpty) {
+      return;
+    }
+    final peerShareRef = _peerLegalNameShareRef(courseId: courseId, token: token);
+    final normalizedPolicy = policy.normalized();
+    final shouldSharePeerLegalName =
+        normalizedPolicy.shareAmongLearnersEnabled &&
+        consent.covers(normalizedPolicy);
+    if (!shouldSharePeerLegalName) {
+      try {
+        await peerShareRef.delete();
+      } on FirebaseException {
+        // Keep consent flow resilient even if cleanup is blocked.
+      }
+      return;
+    }
+    final hasEnrollment = await _hasCourseEnrollment(
+      userId: userId,
+      courseId: courseId,
+    );
+    if (!hasEnrollment) {
+      return;
+    }
+    final legalName = (await loadLegalName(userId))?.trim() ?? '';
+    if (legalName.isEmpty) {
+      return;
+    }
+    await peerShareRef.set({
+      'courseId': courseId,
+      'legalName': legalName,
+      'acceptedPolicyVersion': normalizedPolicy.consentPolicyVersion,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   Future<void> updatePolicy({
