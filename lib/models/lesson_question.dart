@@ -159,6 +159,7 @@ class LessonQuestionAnswer {
     required this.attachmentTypes,
     this.parentCommentId,
     this.parentCommentType,
+    this.threadRootAnswerId,
     this.replyToAuthorId,
     this.replyToAuthorRole,
     this.replyToDisplayName,
@@ -191,6 +192,7 @@ class LessonQuestionAnswer {
   final List<String> attachmentTypes;
   final String? parentCommentId;
   final String? parentCommentType;
+  final String? threadRootAnswerId;
   final String? replyToAuthorId;
   final String? replyToAuthorRole;
   final String? replyToDisplayName;
@@ -227,6 +229,7 @@ class LessonQuestionAnswer {
       attachmentTypes: parseStringList(data['attachmentTypes']),
       parentCommentId: data['parentCommentId'] as String?,
       parentCommentType: data['parentCommentType'] as String?,
+      threadRootAnswerId: data['threadRootAnswerId'] as String?,
       replyToAuthorId: data['replyToAuthorId'] as String?,
       replyToAuthorRole: data['replyToAuthorRole'] as String?,
       replyToDisplayName: data['replyToDisplayName'] as String?,

@@ -910,7 +910,7 @@ void main() {
   );
 
   testWidgets(
-    'My answers list shows message when parent answer cannot be resolved',
+    'My answers list shows message when root answer cannot be resolved',
     (tester) async {
       const question = LessonQuestion(
         id: 'missing-parent-answer-question',
@@ -960,7 +960,7 @@ void main() {
       await tester.tap(find.text('返信先回答が見つからない返信です。'));
       await tester.pumpAndSettle();
 
-      expect(find.text('返信先の回答は削除済み、または現在は表示できません。'), findsWidgets);
+      expect(find.text('基準となる回答が削除済み、または現在は表示できません。'), findsWidgets);
       expect(find.text('質問詳細'), findsNothing);
     },
   );
@@ -1654,6 +1654,226 @@ void main() {
     },
   );
 
+  testWidgets(
+    'Switching question detail ignores answers from previous question stream emissions',
+    (tester) async {
+      final questionsController = StreamController<List<LessonQuestion>>.broadcast();
+      final answersController =
+          StreamController<List<LessonQuestionAnswer>>.broadcast();
+      addTearDown(questionsController.close);
+      addTearDown(answersController.close);
+
+      const questionA = LessonQuestion(
+        id: 'switch-question-a',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: 'Aの質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: [],
+      );
+      const questionB = LessonQuestion(
+        id: 'switch-question-b',
+        authorId: 'student-b',
+        authorName: '学習者B',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: 'Bの質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: [],
+      );
+      final answerA = LessonQuestionAnswer(
+        id: 'switch-answer-a',
+        questionId: 'switch-question-a',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        authorRole: 'student',
+        body: 'Aだけに属する回答本文です。',
+        attachmentTypes: const [],
+        parentCommentId: 'switch-question-a',
+        parentCommentType: 'question',
+        createdAt: Timestamp.fromDate(DateTime(2026, 6, 2, 10, 0)),
+      );
+      final answerB = LessonQuestionAnswer(
+        id: 'switch-answer-b',
+        questionId: 'switch-question-b',
+        authorId: 'student-b',
+        authorName: '学習者B',
+        authorRole: 'student',
+        body: 'Bだけに属する回答本文です。',
+        attachmentTypes: const [],
+        parentCommentId: 'switch-question-b',
+        parentCommentType: 'question',
+        createdAt: Timestamp.fromDate(DateTime(2026, 6, 2, 10, 1)),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              questionsStream: Stream.value(const []),
+              publicQuestionsStream: questionsController.stream,
+              answersStream: answersController.stream,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('公開質問'));
+      await tester.pumpAndSettle();
+
+      questionsController.add(const [questionA, questionB]);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Aの質問です。'));
+      await tester.pumpAndSettle();
+      answersController.add([answerA]);
+      await tester.pumpAndSettle();
+      expect(find.text('Aだけに属する回答本文です。'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('質問一覧に戻る'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Bの質問です。'));
+      await tester.pumpAndSettle();
+
+      answersController.add([answerA]);
+      await tester.pump();
+
+      expect(find.text('Aだけに属する回答本文です。'), findsNothing);
+      expect(find.text('回答コメントはまだありません。'), findsOneWidget);
+
+      answersController.add([answerB]);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Aだけに属する回答本文です。'), findsNothing);
+      expect(find.text('Bだけに属する回答本文です。'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Switching question detail does not revive previous answers on empty transitions',
+    (tester) async {
+      final questionsController = StreamController<List<LessonQuestion>>.broadcast();
+      final answersController =
+          StreamController<List<LessonQuestionAnswer>>.broadcast();
+      addTearDown(questionsController.close);
+      addTearDown(answersController.close);
+
+      const questionA = LessonQuestion(
+        id: 'switch-empty-question-a',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '空遷移 A',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: [],
+      );
+      const questionB = LessonQuestion(
+        id: 'switch-empty-question-b',
+        authorId: 'student-b',
+        authorName: '学習者B',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '空遷移 B',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: [],
+      );
+      final answerA = LessonQuestionAnswer(
+        id: 'switch-empty-answer-a',
+        questionId: 'switch-empty-question-a',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        authorRole: 'student',
+        body: '空遷移Aの回答',
+        attachmentTypes: const [],
+        parentCommentId: 'switch-empty-question-a',
+        parentCommentType: 'question',
+        createdAt: Timestamp.fromDate(DateTime(2026, 6, 2, 10, 10)),
+      );
+      final answerB = LessonQuestionAnswer(
+        id: 'switch-empty-answer-b',
+        questionId: 'switch-empty-question-b',
+        authorId: 'student-b',
+        authorName: '学習者B',
+        authorRole: 'student',
+        body: '空遷移Bの回答',
+        attachmentTypes: const [],
+        parentCommentId: 'switch-empty-question-b',
+        parentCommentType: 'question',
+        createdAt: Timestamp.fromDate(DateTime(2026, 6, 2, 10, 11)),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              questionsStream: Stream.value(const []),
+              publicQuestionsStream: questionsController.stream,
+              answersStream: answersController.stream,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('公開質問'));
+      await tester.pumpAndSettle();
+      questionsController.add(const [questionA, questionB]);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('空遷移 A'));
+      await tester.pumpAndSettle();
+      answersController.add([answerA]);
+      await tester.pumpAndSettle();
+      expect(find.text('空遷移Aの回答'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('質問一覧に戻る'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('空遷移 B'));
+      await tester.pumpAndSettle();
+
+      answersController.add([answerA]);
+      await tester.pump();
+      answersController.add(const []);
+      await tester.pump();
+
+      expect(find.text('空遷移Aの回答'), findsNothing);
+      expect(find.text('回答コメントはまだありません。'), findsOneWidget);
+
+      answersController.add([answerB]);
+      await tester.pumpAndSettle();
+
+      expect(find.text('空遷移Aの回答'), findsNothing);
+      expect(find.text('空遷移Bの回答'), findsOneWidget);
+    },
+  );
+
   testWidgets('Quoted note bubble shows memo status action', (tester) async {
     const question = LessonQuestion(
       id: 'question-note-status',
@@ -2274,6 +2494,83 @@ void main() {
     expect(find.textContaining('Bさん への返信'), findsOneWidget);
     expect(find.textContaining('Cさん への返信'), findsOneWidget);
   });
+
+  testWidgets(
+    'Reply stays under root thread when parent answer is unavailable but root is visible',
+    (tester) async {
+      const question = LessonQuestion(
+        id: 'question-thread-missing-parent',
+        authorId: 'student-a',
+        authorName: 'Aさん',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '親質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: [],
+      );
+      final answers = [
+        LessonQuestionAnswer(
+          id: 'answer-root-visible',
+          questionId: 'question-thread-missing-parent',
+          authorId: 'student-b',
+          authorName: 'Bさん',
+          authorRole: 'student',
+          body: 'Bさんの直接回答です。',
+          attachmentTypes: const [],
+          parentCommentId: 'question-thread-missing-parent',
+          parentCommentType: 'question',
+          replyToDisplayName: 'Aさん',
+          createdAt: Timestamp.fromDate(DateTime(2026, 6, 1, 9, 0)),
+        ),
+        LessonQuestionAnswer(
+          id: 'reply-orphaned-parent',
+          questionId: 'question-thread-missing-parent',
+          authorId: 'student-c',
+          authorName: 'Cさん',
+          authorRole: 'student',
+          body: '親回答が消えても表示したい返信です。',
+          attachmentTypes: const [],
+          parentCommentId: 'answer-hidden-missing',
+          parentCommentType: 'answer',
+          threadRootAnswerId: 'answer-root-visible',
+          replyToDisplayName: 'Bさん',
+          createdAt: Timestamp.fromDate(DateTime(2026, 6, 1, 9, 5)),
+        ),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              initialSelectedQuestion: question,
+              questionsStream: Stream.value(const []),
+              publicQuestionsStream: Stream.value(const []),
+              answersStream: Stream.value(answers),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Bさんの直接回答です。'), findsOneWidget);
+      expect(find.text('返信 1件表示'), findsOneWidget);
+      expect(find.text('親回答が消えても表示したい返信です。'), findsNothing);
+
+      await tester.tap(find.text('返信 1件表示'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('回答への返信'), findsOneWidget);
+      expect(find.text('Bさんの直接回答です。'), findsOneWidget);
+      expect(find.text('親回答が消えても表示したい返信です。'), findsOneWidget);
+    },
+  );
 
   testWidgets(
     'Highlighted direct answer repositions after delayed answer stream updates',

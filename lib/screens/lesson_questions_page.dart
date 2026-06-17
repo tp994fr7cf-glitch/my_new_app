@@ -363,6 +363,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     _restoreCancelledByUser = false;
     _restorePostCorrectionPending = false;
     setState(() {
+      _lastPublicAnswers = const [];
+      _lastTeacherPreviewAnswers = const [];
       _selectedQuestion = question;
       _currentHighlightedAnswerId = _normalizedAnswerId(highlightedAnswerId);
     });
@@ -1359,9 +1361,6 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
           .where('moderationStatus', isEqualTo: lessonNoteModerationVisible)
           .snapshots(includeMetadataChanges: true)
           .map((snapshot) {
-            if (snapshot.metadata.isFromCache) {
-              return _lastPublicAnswers;
-            }
             final answers = snapshot.docs
                 .map(LessonQuestionAnswer.fromFirestore)
                 .where((answer) => !answer.isDeleted)
@@ -1591,9 +1590,6 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         .where('isDeleted', isEqualTo: false)
         .snapshots(includeMetadataChanges: true)
         .map((snapshot) {
-          if (snapshot.metadata.isFromCache) {
-            return _lastTeacherPreviewAnswers;
-          }
           final answers = snapshot.docs
               .map(LessonQuestionAnswer.fromFirestore)
               .where((answer) => !answer.isDeleted)
@@ -1775,6 +1771,111 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     return null;
   }
 
+  Future<LessonQuestionAnswer?> _loadAnswerForThreadRoot({
+    required String answerId,
+    required String currentUserId,
+  }) async {
+    if (Firebase.apps.isEmpty || answerId.isEmpty) {
+      return null;
+    }
+    final firestore = FirebaseFirestore.instance;
+    try {
+      final publicSnapshot = await firestore
+          .collection('publicLessonQuestionAnswers')
+          .doc(answerId)
+          .get();
+      if (publicSnapshot.exists) {
+        return LessonQuestionAnswer.fromFirestore(publicSnapshot);
+      }
+    } on FirebaseException {
+      // Fall back to private copy below.
+    }
+    try {
+      final privateSnapshot = await firestore
+          .collection('users')
+          .doc(currentUserId)
+          .collection('lessonQuestionAnswers')
+          .doc(answerId)
+          .get();
+      if (privateSnapshot.exists) {
+        return LessonQuestionAnswer.fromFirestore(privateSnapshot);
+      }
+    } on FirebaseException {
+      return null;
+    }
+    return null;
+  }
+
+  Future<String?> _resolveThreadRootAnswerIdForPersist({
+    required LessonQuestion question,
+    required _LessonQuestionAnswerDraft draft,
+    required String currentUserId,
+  }) async {
+    if (draft.parentCommentType != 'answer') {
+      return null;
+    }
+    final parentAnswerId = (draft.parentCommentId ?? '').trim();
+    if (parentAnswerId.isEmpty) {
+      return null;
+    }
+
+    final cachedAnswers = _fallbackAnswerMap();
+
+    Future<LessonQuestionAnswer?> resolveAnswer(String answerId) async {
+      final cached = cachedAnswers[answerId];
+      if (cached != null) {
+        return cached;
+      }
+      final loaded = await _loadAnswerForThreadRoot(
+        answerId: answerId,
+        currentUserId: currentUserId,
+      );
+      if (loaded != null) {
+        final loadedId = (loaded.id ?? '').trim();
+        if (loadedId.isNotEmpty) {
+          cachedAnswers[loadedId] = loaded;
+        }
+      }
+      return loaded;
+    }
+
+    var currentAnswerId = parentAnswerId;
+    final visited = <String>{};
+    for (var depth = 0; depth < 20; depth += 1) {
+      if (!visited.add(currentAnswerId)) {
+        return null;
+      }
+      final currentAnswer = await resolveAnswer(currentAnswerId);
+      if (currentAnswer == null) {
+        return null;
+      }
+
+      final explicitRootId = (currentAnswer.threadRootAnswerId ?? '').trim();
+      if (explicitRootId.isNotEmpty) {
+        final explicitRoot = await resolveAnswer(explicitRootId);
+        if (explicitRoot == null ||
+            !_isDirectAnswerToQuestion(explicitRoot, question)) {
+          return null;
+        }
+        return explicitRootId;
+      }
+
+      if (_isDirectAnswerToQuestion(currentAnswer, question)) {
+        final directId = (currentAnswer.id ?? '').trim();
+        return directId.isEmpty ? null : directId;
+      }
+      if (currentAnswer.parentCommentType != 'answer') {
+        return null;
+      }
+      final nextId = (currentAnswer.parentCommentId ?? '').trim();
+      if (nextId.isEmpty) {
+        return null;
+      }
+      currentAnswerId = nextId;
+    }
+    return null;
+  }
+
   Future<String> _resolveReplyTargetDisplayNameForPersist({
     required LessonQuestion question,
     required _LessonQuestionAnswerDraft draft,
@@ -1845,6 +1946,11 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     if (user == null) {
       return;
     }
+    final threadRootAnswerId = await _resolveThreadRootAnswerIdForPersist(
+      question: question,
+      draft: draft,
+      currentUserId: user.uid,
+    );
     final latestReplyTargetDisplayName =
         await _resolveReplyTargetDisplayNameForPersist(
           question: question,
@@ -1906,6 +2012,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         latestReplyTargetDisplayName,
         role: draft.replyToAuthorRole,
       ),
+      if ((threadRootAnswerId ?? '').isNotEmpty)
+        'threadRootAnswerId': threadRootAnswerId,
       'replyToCreatedAt': draft.replyToCreatedAt,
       'quotedNoteId': draft.quotedNoteId,
       'quotedNoteTitle': draft.quotedNoteTitle,
@@ -2289,6 +2397,99 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     }
   }
 
+  Future<LessonQuestionAnswer?> _resolveAnswerByIdForList(
+    String answerId,
+  ) async {
+    final normalizedId = answerId.trim();
+    if (normalizedId.isEmpty || Firebase.apps.isEmpty) {
+      return null;
+    }
+    final cached = _fallbackAnswerMap()[normalizedId];
+    if (cached != null) {
+      return cached;
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    try {
+      if (user != null) {
+        final privateSnapshot = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .collection('lessonQuestionAnswers')
+            .doc(normalizedId)
+            .get();
+        if (privateSnapshot.exists) {
+          return LessonQuestionAnswer.fromFirestore(privateSnapshot);
+        }
+      }
+      final publicSnapshot = await FirebaseFirestore.instance
+          .collection('publicLessonQuestionAnswers')
+          .doc(normalizedId)
+          .get();
+      if (publicSnapshot.exists) {
+        return LessonQuestionAnswer.fromFirestore(publicSnapshot);
+      }
+      return null;
+    } on FirebaseException {
+      return null;
+    }
+  }
+
+  Future<LessonQuestionAnswer?> _resolveThreadRootAnswerForList({
+    required LessonQuestionAnswer answer,
+    required LessonQuestion question,
+    LessonQuestionAnswer? parentAnswer,
+  }) async {
+    if (answer.parentCommentType != 'answer') {
+      return _isDirectAnswerToQuestion(answer, question) ? answer : null;
+    }
+
+    final explicitRootId = (answer.threadRootAnswerId ?? '').trim();
+    if (explicitRootId.isNotEmpty) {
+      final explicitRoot = await _resolveAnswerByIdForList(explicitRootId);
+      if (explicitRoot == null ||
+          !_isDirectAnswerToQuestion(explicitRoot, question)) {
+        return null;
+      }
+      return explicitRoot;
+    }
+
+    var current = parentAnswer;
+    final visitedIds = <String>{};
+    for (var depth = 0; depth < 20; depth += 1) {
+      if (current == null) {
+        return null;
+      }
+      final currentId = (current.id ?? '').trim();
+      if (currentId.isEmpty || !visitedIds.add(currentId)) {
+        return null;
+      }
+      final currentExplicitRootId = (current.threadRootAnswerId ?? '').trim();
+      if (currentExplicitRootId.isNotEmpty) {
+        final currentExplicitRoot = await _resolveAnswerByIdForList(
+          currentExplicitRootId,
+        );
+        if (currentExplicitRoot == null ||
+            !_isDirectAnswerToQuestion(currentExplicitRoot, question)) {
+          return null;
+        }
+        return currentExplicitRoot;
+      }
+      if (_isDirectAnswerToQuestion(current, question)) {
+        return current;
+      }
+      if (current.parentCommentType != 'answer') {
+        return null;
+      }
+      final nextId = (current.parentCommentId ?? '').trim();
+      if (nextId.isEmpty) {
+        return null;
+      }
+      current = await _resolveAnswerByIdForList(nextId);
+    }
+    return null;
+  }
+
   Map<String, LessonQuestionAnswer> _fallbackAnswerMap() {
     final merged = <String, LessonQuestionAnswer>{};
     for (final answer in _lastMyAnswers) {
@@ -2315,7 +2516,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
   String? _answerTapUnavailableMessage({
     required LessonQuestionAnswer answer,
     required LessonQuestion? question,
-    required LessonQuestionAnswer? parentAnswer,
+    required LessonQuestionAnswer? threadRootAnswer,
   }) {
     if (!_canOpenAnswerFromAnswerList(answer, allowTeacherHidden: true)) {
       return 'この回答コメントは削除済み、または現在は表示できません。';
@@ -2324,8 +2525,9 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       return '元の質問は削除済み、または現在は表示できません。';
     }
     if (answer.parentCommentType == 'answer' &&
-        (parentAnswer == null || !_canOpenAnswerFromAnswerList(parentAnswer))) {
-      return '返信先の回答は削除済み、または現在は表示できません。';
+        (threadRootAnswer == null ||
+            !_canOpenAnswerFromAnswerList(threadRootAnswer))) {
+      return '基準となる回答が削除済み、または現在は表示できません。';
     }
     return null;
   }
@@ -2354,10 +2556,17 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         fallbackAnswer:
             _fallbackAnswerMap()[(answer.parentCommentId ?? '').trim()],
       );
+      final threadRootAnswer = question == null
+          ? null
+          : await _resolveThreadRootAnswerForList(
+              answer: answer,
+              question: question,
+              parentAnswer: parentAnswer,
+            );
       final unavailableMessage = _answerTapUnavailableMessage(
         answer: answer,
         question: question,
-        parentAnswer: parentAnswer,
+        threadRootAnswer: threadRootAnswer,
       );
       if (unavailableMessage != null || question == null) {
         _showMessage(unavailableMessage ?? '元の質問を確認できませんでした。');
@@ -4417,6 +4626,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
   DateTime? _highlightAutoPositionStartedAt;
   bool _isSaving = false;
   List<LessonQuestionAnswer> _lastNonEmptyAnswers = const [];
+  String? _lastNonEmptyAnswersQuestionId;
 
   @override
   void initState() {
@@ -4437,6 +4647,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.question.id != widget.question.id) {
       _lastNonEmptyAnswers = const [];
+      _lastNonEmptyAnswersQuestionId = null;
       _openedAnswerThreadRootId = null;
       _openedInitialHighlightedThread = false;
       _resetHighlightAutoPositionState();
@@ -4723,13 +4934,24 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                 builder: (context, snapshot) {
                   final incomingAnswers =
                       snapshot.data ?? const <LessonQuestionAnswer>[];
-                  if (incomingAnswers.isNotEmpty) {
-                    _lastNonEmptyAnswers = incomingAnswers;
+                  final questionId = question.id;
+                  final scopedIncomingAnswers = questionId == null
+                      ? incomingAnswers
+                      : incomingAnswers
+                            .where((answer) => answer.questionId == questionId)
+                            .toList();
+                  if (scopedIncomingAnswers.isNotEmpty) {
+                    _lastNonEmptyAnswers = scopedIncomingAnswers;
+                    _lastNonEmptyAnswersQuestionId = questionId;
                   }
-                  final answers =
-                      incomingAnswers.isEmpty && _lastNonEmptyAnswers.isNotEmpty
+                  final canUseFallback =
+                      questionId != null &&
+                      scopedIncomingAnswers.isEmpty &&
+                      _lastNonEmptyAnswers.isNotEmpty &&
+                      _lastNonEmptyAnswersQuestionId == questionId;
+                  final answers = canUseFallback
                       ? _lastNonEmptyAnswers
-                      : incomingAnswers;
+                      : scopedIncomingAnswers;
                   final answerThreads = _buildAnswerThreads(
                     question: question,
                     answers: answers,
@@ -5594,6 +5816,15 @@ String? _rootAnswerIdFor({
   required LessonQuestion question,
   required Map<String, LessonQuestionAnswer> answersById,
 }) {
+  final explicitRootId = (answer.threadRootAnswerId ?? '').trim();
+  if (explicitRootId.isNotEmpty) {
+    final explicitRoot = answersById[explicitRootId];
+    if (explicitRoot == null ||
+        !_isDirectAnswerToQuestion(explicitRoot, question)) {
+      return null;
+    }
+    return explicitRootId;
+  }
   var current = answer;
   final visitedIds = <String>{};
   while (true) {
