@@ -342,10 +342,8 @@ void main() {
 
     expect(find.text('回答コメント'), findsWidgets);
     expect(find.text('両辺に同じ計算をするからです。'), findsOneWidget);
-    expect(
-      find.text('返信先の控え:\n学習者2 の「なぜ符号が変わりますか？」への返信'),
-      findsOneWidget,
-    );
+    expect(find.text('返信先の控え:'), findsOneWidget);
+    expect(find.text('学習者2 の「なぜ符号が変わりますか？」への返信'), findsOneWidget);
 
     final answerRecord = find.byKey(
       const ValueKey('answer-record-open-answer-a'),
@@ -594,7 +592,10 @@ void main() {
     expect(find.text('タップしてコメント欄を開けます。'), findsNothing);
     expect(find.text('削除'), findsOneWidget);
 
-    await tester.tap(find.text('先生が非公開化した質問です。'));
+    final hiddenQuestionText = find.text('先生が非公開化した質問です。');
+    await tester.ensureVisible(hiddenQuestionText);
+    await tester.pumpAndSettle();
+    await tester.tap(hiddenQuestionText);
     await tester.pumpAndSettle();
 
     expect(find.text('質問詳細'), findsNothing);
@@ -885,6 +886,181 @@ void main() {
   });
 
   testWidgets(
+    'Learning records open thread when parent answer is deleted but question is available',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
+      final question = LessonQuestion(
+        id: 'question-parent-deleted',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '親質問は表示できます。',
+        visibility: LessonQuestionVisibility.teacherOnly,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: const [],
+        updatedAt: now,
+      );
+      final deletedParentAnswer = LessonQuestionAnswer(
+        id: 'answer-deleted-parent',
+        questionId: 'question-parent-deleted',
+        authorId: 'user-b',
+        authorName: '学習者B',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        body: '削除された親回答です。',
+        attachmentTypes: const [],
+        parentCommentId: 'question-parent-deleted',
+        parentCommentType: 'question',
+        isDeleted: true,
+        createdAt: now,
+      );
+      final reply = LessonQuestionAnswer(
+        id: 'reply-to-deleted-parent',
+        questionId: 'question-parent-deleted',
+        authorId: 'user-a',
+        authorName: '学習者',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        body: '親回答が削除されても開きたい返信です。',
+        attachmentTypes: const [],
+        parentCommentId: 'answer-deleted-parent',
+        parentCommentType: 'answer',
+        replyToDisplayName: '学習者B',
+        replyToBodyPreview: '削除された親回答です。',
+        createdAt: Timestamp.fromDate(DateTime(2026, 5, 31, 13, 31)),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            lessonViewSegmentsStream: const Stream.empty(),
+            learningEventsStream: const Stream.empty(),
+            quizAttemptsStream: const Stream.empty(),
+            lessonNotesStream: const Stream.empty(),
+            lessonQuestionsStream: Stream.value([question]),
+            lessonQuestionAnswersStream: Stream.value([
+              deletedParentAnswer,
+              reply,
+            ]),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('質問・回答コメントを見る'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('回答コメント'));
+      await tester.pumpAndSettle();
+
+      final replyRecord = find.byKey(
+        const ValueKey('answer-record-open-reply-to-deleted-parent'),
+      );
+      await tester.ensureVisible(replyRecord);
+      await tester.pumpAndSettle();
+      expect(
+        find.text('返信先の回答は削除済み、または現在は表示できません。学習記録として内容だけ表示しています。'),
+        findsOneWidget,
+      );
+
+      await tester.tap(replyRecord);
+      await tester.pumpAndSettle();
+
+      expect(find.text('質問詳細'), findsOneWidget);
+      expect(find.text('親回答が削除されても開きたい返信です。'), findsOneWidget);
+      expect(find.text('削除された親回答です。'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'Learning records keep thread closed when parent question is unavailable',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
+      final hiddenQuestion = LessonQuestion(
+        id: 'question-hidden-parent',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '現在は表示できない親質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: const [],
+        moderationStatus: lessonInteractionModerationHiddenByTeacher,
+        updatedAt: now,
+      );
+      final reply = LessonQuestionAnswer(
+        id: 'reply-parent-question-hidden',
+        questionId: 'question-hidden-parent',
+        authorId: 'user-a',
+        authorName: '学習者',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        body: '親質問が見えない返信です。',
+        attachmentTypes: const [],
+        parentCommentId: 'missing-answer',
+        parentCommentType: 'answer',
+        replyToDisplayName: '学習者B',
+        replyToBodyPreview: '見えない親回答です。',
+        createdAt: Timestamp.fromDate(DateTime(2026, 5, 31, 13, 31)),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            lessonViewSegmentsStream: const Stream.empty(),
+            learningEventsStream: const Stream.empty(),
+            quizAttemptsStream: const Stream.empty(),
+            lessonNotesStream: const Stream.empty(),
+            lessonQuestionsStream: Stream.value([hiddenQuestion]),
+            lessonQuestionAnswersStream: Stream.value([reply]),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('質問・回答コメントを見る'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('回答コメント'));
+      await tester.pumpAndSettle();
+
+      final replyRecord = find.byKey(
+        const ValueKey('answer-record-open-reply-parent-question-hidden'),
+      );
+      await tester.ensureVisible(replyRecord);
+      await tester.pumpAndSettle();
+      expect(
+        find.text('元の質問は削除済み、または現在は表示できません。学習記録として内容だけ表示しています。'),
+        findsOneWidget,
+      );
+      expect(find.text('タップしてコメント欄を開けます。'), findsNothing);
+
+      await tester.tap(replyRecord);
+      await tester.pumpAndSettle();
+
+      expect(find.text('質問詳細'), findsNothing);
+      expect(find.text('親質問が見えない返信です。'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
     'Learning records open thread even when parent answer is unavailable',
     (WidgetTester tester) async {
       final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
@@ -976,7 +1152,7 @@ void main() {
 
       expect(find.text('質問詳細'), findsOneWidget);
       expect(find.text('親回答が見えなくても残したい返信です。'), findsOneWidget);
-      expect(find.text('表示できない親回答です。'), findsOneWidget);
+      expect(find.text('表示できない親回答です。'), findsNothing);
     },
   );
 

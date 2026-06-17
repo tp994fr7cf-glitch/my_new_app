@@ -81,11 +81,13 @@ class CourseEntryRequirement {
     required this.policy,
     required this.consent,
     required this.legalName,
+    this.isResolved = true,
   });
 
   final CoursePrivacyPolicy policy;
   final CoursePrivacyConsent? consent;
   final String? legalName;
+  final bool isResolved;
 
   bool get hasLegalName => (legalName ?? '').trim().isNotEmpty;
 
@@ -95,5 +97,7 @@ class CourseEntryRequirement {
       !policy.requiresAnyConsent || (consent?.covers(policy) ?? false);
 
   bool get canEnter =>
-      (!policy.requiresLegalName || hasLegalName) && isConsentSatisfied;
+      isResolved &&
+      (!policy.requiresLegalName || hasLegalName) &&
+      isConsentSatisfied;
 }

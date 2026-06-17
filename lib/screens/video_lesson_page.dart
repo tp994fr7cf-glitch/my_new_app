@@ -308,6 +308,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           if (!mounted || _isHandlingEntryRequirementBlock) {
             return;
           }
+          if (!requirement.isResolved) {
+            return;
+          }
           if (requirement.canEnter) {
             return;
           }

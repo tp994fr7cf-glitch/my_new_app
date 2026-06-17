@@ -19,3 +19,4 @@ samples, guidance on mobile development, and a full API reference.
 ## Project Checklist
 
 - [Teacher preview quick checklist](docs/teacher_preview_checklist.md)
+- [Learning records reply-name rules matrix](docs/reply-name-resolution.md)
