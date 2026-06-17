@@ -271,7 +271,6 @@ bool lessonQuestionAnswerMatchesQuery(
   return [
     answer.body,
     answer.replyToDisplayName ?? '',
-    answer.replyToBodyPreview ?? '',
     answer.quotedNoteTitle ?? '',
     answer.quotedNoteBody ?? '',
   ].any((value) => value.toLowerCase().contains(normalized));

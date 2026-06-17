@@ -1215,14 +1215,8 @@ void main() {
       await tester.tap(find.text('回答コメント'));
       await tester.pumpAndSettle();
 
-      expect(
-        find.textContaining('2. いつ投稿されたコメントに対して: 2026/05/31 13:30'),
-        findsOneWidget,
-      );
-      expect(
-        find.text('2. いつ投稿されたコメントに対して: 不明'),
-        findsNothing,
-      );
+      expect(find.textContaining('学習者B への返信'), findsOneWidget);
+      expect(find.textContaining('現在は見ることができません。'), findsOneWidget);
     },
   );
 
@@ -1304,8 +1298,9 @@ void main() {
       await tester.tap(find.text('回答コメント'));
       await tester.pumpAndSettle();
 
-      expect(find.textContaining('1. 誰に対して: 返信時点名'), findsOneWidget);
-      expect(find.textContaining('1. 誰に対して: 親投稿時点名'), findsNothing);
+      expect(find.textContaining('返信時点名 への返信'), findsOneWidget);
+      expect(find.textContaining('親投稿時点名 への返信'), findsNothing);
+      expect(find.textContaining('現在は見ることができません。'), findsOneWidget);
     },
   );
 
@@ -1448,7 +1443,8 @@ void main() {
       await tester.tap(find.text('回答コメント'));
       await tester.pumpAndSettle();
 
-      expect(find.textContaining('1. 誰に対して: 先生'), findsOneWidget);
+      expect(find.textContaining('先生 への返信'), findsOneWidget);
+      expect(find.textContaining('現在は見ることができません。'), findsOneWidget);
     },
   );
 
@@ -1510,7 +1506,10 @@ void main() {
       await tester.tap(find.text('回答コメント'));
       await tester.pumpAndSettle();
 
-      expect(find.textContaining('学習者 への返信'), findsOneWidget);
+      expect(
+        find.textContaining('学習者 の「親質問は表示できます。」への返信'),
+        findsOneWidget,
+      );
       expect(find.textContaining('private-user@example.com'), findsNothing);
     },
   );

@@ -1906,7 +1906,6 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         latestReplyTargetDisplayName,
         role: draft.replyToAuthorRole,
       ),
-      'replyToBodyPreview': draft.replyToBodyPreview,
       'replyToCreatedAt': draft.replyToCreatedAt,
       'quotedNoteId': draft.quotedNoteId,
       'quotedNoteTitle': draft.quotedNoteTitle,
@@ -3064,7 +3063,11 @@ class _AnswerList extends StatelessWidget {
                           replyToLinkCurrentProfile:
                               resolvedReplyTarget.linkToCurrentProfile,
                           replyToAuthorRole: answer.replyToAuthorRole,
-                          replyToBodyPreview: answer.replyToBodyPreview,
+                          replyToBodyPreview: _replyBodyPreviewForDisplay(
+                            answer: answer,
+                            parentQuestion: parentQuestion,
+                            parentAnswer: parentAnswer,
+                          ),
                           isOwner: isOwner,
                           isTeacher: isCurrentUserTeacher,
                           onTap: onTap == null || isOpeningAnswerDetail
@@ -3501,6 +3504,8 @@ class _CommentBubble extends StatelessWidget {
 }
 
 enum _CommentAction { reply, edit, delete, moderate }
+
+const String _replyBodyUnavailableText = '現在は見ることができません。';
 
 String _commentDisplayName({
   required PublicUserProfile profile,
@@ -4292,6 +4297,31 @@ _ResolvedReplyTargetDisplay _resolvedReplyTargetDisplay({
   );
 }
 
+String _replyBodyPreviewForDisplay({
+  required LessonQuestionAnswer answer,
+  LessonQuestion? parentQuestion,
+  LessonQuestionAnswer? parentAnswer,
+}) {
+  if (answer.parentCommentType == 'answer') {
+    if (_canUseLatestAnswerReplyTargetDisplayName(parentAnswer)) {
+      final body = parentAnswer!.body.trim();
+      if (body.isEmpty) {
+        return _replyBodyUnavailableText;
+      }
+      return _previewText(body);
+    }
+    return _replyBodyUnavailableText;
+  }
+  if (_canUseLatestQuestionReplyTargetDisplayName(parentQuestion)) {
+    final body = parentQuestion!.body.trim();
+    if (body.isEmpty) {
+      return _replyBodyUnavailableText;
+    }
+    return _previewText(body);
+  }
+  return _replyBodyUnavailableText;
+}
+
 String _sanitizeDisplayNameForUi(
   String? value, {
   String? role,
@@ -4565,8 +4595,6 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
         replyToAuthorId: _replyToAuthorId ?? widget.question.authorId,
         replyToAuthorRole: _replyToAuthorRole ?? widget.question.authorRole,
         replyToDisplayName: resolvedReplyTargetDisplayName,
-        replyToBodyPreview:
-            _replyToBodyPreview ?? _previewText(widget.question.body),
         replyToCreatedAt:
             _replyToCreatedAt ??
             widget.question.createdAt ??
@@ -5072,7 +5100,11 @@ class _AnswerThreadView extends StatelessWidget {
           replyToDisplayName: rootReplyTarget.displayName,
           replyToLinkCurrentProfile: rootReplyTarget.linkToCurrentProfile,
           replyToAuthorRole: root.replyToAuthorRole,
-          replyToBodyPreview: root.replyToBodyPreview,
+          replyToBodyPreview: _replyBodyPreviewForDisplay(
+            answer: root,
+            parentQuestion: parentQuestion,
+            parentAnswer: rootParentAnswer,
+          ),
           isHighlighted: root.id == highlightedAnswerId,
           isParentHighlighted:
               root.id != highlightedAnswerId &&
@@ -5194,7 +5226,11 @@ class _AnswerThreadDetailView extends StatelessWidget {
           replyToDisplayName: rootReplyTarget.displayName,
           replyToLinkCurrentProfile: rootReplyTarget.linkToCurrentProfile,
           replyToAuthorRole: root.replyToAuthorRole,
-          replyToBodyPreview: root.replyToBodyPreview,
+          replyToBodyPreview: _replyBodyPreviewForDisplay(
+            answer: root,
+            parentQuestion: parentQuestion,
+            parentAnswer: rootParentAnswer,
+          ),
           isHighlighted: root.id == highlightedAnswerId,
           isParentHighlighted:
               root.id != highlightedAnswerId &&
@@ -5265,7 +5301,13 @@ class _AnswerThreadDetailView extends StatelessWidget {
                       replyToLinkCurrentProfile:
                           replyTarget.linkToCurrentProfile,
                       replyToAuthorRole: reply.replyToAuthorRole,
-                      replyToBodyPreview: reply.replyToBodyPreview,
+                      replyToBodyPreview: _replyBodyPreviewForDisplay(
+                        answer: reply,
+                        parentQuestion: parentQuestion,
+                        parentAnswer: reply.parentCommentType == 'answer'
+                            ? answerMap[(reply.parentCommentId ?? '').trim()]
+                            : null,
+                      ),
                       isHighlighted: reply.id == highlightedAnswerId,
                       isParentHighlighted:
                           reply.id != highlightedAnswerId &&
@@ -5369,9 +5411,12 @@ class _StandaloneRecordReplyView extends StatelessWidget {
               quotedNoteId: answer.quotedNoteId,
               quotedNoteBody: answer.quotedNoteBody,
               replyToAuthorId: answer.replyToAuthorId,
-              replyToDisplayName: answer.replyToDisplayName,
+              replyToDisplayName: _storedReplyTargetDisplayName(
+                answer.replyToDisplayName,
+                role: answer.replyToAuthorRole,
+              ),
               replyToAuthorRole: answer.replyToAuthorRole,
-              replyToBodyPreview: answer.replyToBodyPreview,
+              replyToBodyPreview: _replyBodyUnavailableText,
               isHighlighted: true,
               bubbleKey: highlightedBubbleKey,
               isOwner: isCommentOwnerForActiveRole(
@@ -5926,7 +5971,6 @@ class _LessonQuestionAnswerDraft {
     required this.replyToAuthorId,
     required this.replyToAuthorRole,
     required this.replyToDisplayName,
-    required this.replyToBodyPreview,
     required this.replyToCreatedAt,
     required this.quotedNoteId,
     required this.quotedNoteTitle,
@@ -5939,7 +5983,6 @@ class _LessonQuestionAnswerDraft {
   final String? replyToAuthorId;
   final String? replyToAuthorRole;
   final String? replyToDisplayName;
-  final String? replyToBodyPreview;
   final Timestamp? replyToCreatedAt;
   final String? quotedNoteId;
   final String? quotedNoteTitle;

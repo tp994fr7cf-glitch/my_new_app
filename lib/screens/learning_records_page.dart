@@ -1354,61 +1354,29 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
     return !_isReplyTargetOpenable(question, parentAnswer);
   }
 
-  Timestamp? _parentCommentTimestamp(
+  String? _latestReplyTargetBodyPreview(
     LessonQuestion? question,
     LessonQuestionAnswer? parentAnswer,
   ) {
     if (widget.answer.parentCommentType == 'answer') {
       final resolvedParentAnswer = _effectiveParentAnswer(parentAnswer);
-      if (resolvedParentAnswer != null) {
-        return resolvedParentAnswer.createdAt ?? resolvedParentAnswer.updatedAt;
-      }
-      final parentId = widget.answer.parentCommentId;
-      if (parentId == null || parentId.isEmpty) {
+      if (!_isParentAnswerOpenable(resolvedParentAnswer)) {
         return null;
       }
-      for (final answer in widget.answers) {
-        if (answer.id == parentId) {
-          return answer.createdAt ?? answer.updatedAt;
-        }
+      final body = (resolvedParentAnswer?.body ?? '').trim();
+      if (body.isEmpty) {
+        return null;
       }
-      return widget.answer.replyToCreatedAt;
+      return _shortReplyPreview(body);
     }
-    return question?.createdAt ??
-        question?.updatedAt ??
-        widget.answer.replyToCreatedAt;
-  }
-
-  String _replyTargetRecordSummary(
-    LessonQuestion? question,
-    LessonQuestionAnswer? parentAnswer, {
-    String? overrideDisplayName,
-  }) {
-    final replyTo = _safeReplyTargetDisplayName(
-      overrideDisplayName ?? widget.answer.replyToDisplayName,
-      role: widget.answer.replyToAuthorRole,
-    );
-    final replyToRole = (widget.answer.replyToAuthorRole ?? '').trim();
-    final replyToLabel = replyTo.isNotEmpty
-        ? replyTo
-        : replyToRole == 'teacher'
-        ? '先生'
-        : replyToRole == 'student'
-        ? '学習者'
-        : '不明';
-    final parentTimestamp = _parentCommentTimestamp(question, parentAnswer);
-    final repliedAt = widget.answer.createdAt ?? widget.answer.updatedAt;
-    final parentTimestampText = parentTimestamp == null
-        ? '不明'
-        : _formatTimestamp(parentTimestamp);
-    final repliedAtText = repliedAt == null
-        ? '不明'
-        : _formatTimestamp(repliedAt);
-    return [
-      '1. 誰に対して: $replyToLabel',
-      '2. いつ投稿されたコメントに対して: $parentTimestampText',
-      '3. いつ自分が返信したか: $repliedAtText',
-    ].join('\n');
+    if (!_isQuestionOpenable(question)) {
+      return null;
+    }
+    final body = (question?.body ?? '').trim();
+    if (body.isEmpty) {
+      return null;
+    }
+    return _shortReplyPreview(body);
   }
 
   String? _usableDisplayNameOrNull(String? value) {
@@ -1526,16 +1494,17 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
           snapshot.data ?? fallbackDisplayName,
           role: widget.answer.replyToAuthorRole,
         );
+        final latestBodyPreview = _latestReplyTargetBodyPreview(
+          parentQuestion,
+          parentAnswer,
+        );
         final previewText = isReplyTargetUnavailable
-            ? _replyTargetRecordSummary(
-                parentQuestion,
-                parentAnswer,
-                overrideDisplayName: resolvedDisplayName,
-              )
+            ? '$resolvedDisplayName への返信\n現在は見ることができません。'
             : _replyPreviewText(
                 widget.answer,
                 hideBodyPreview: false,
                 overrideDisplayName: resolvedDisplayName,
+                overrideBodyPreview: latestBodyPreview,
               );
         if (selectable) {
           return SelectableText(previewText);
@@ -1979,14 +1948,13 @@ String _replyPreviewText(
   LessonQuestionAnswer answer, {
   bool hideBodyPreview = false,
   String? overrideDisplayName,
+  String? overrideBodyPreview,
 }) {
   final displayName = _safeReplyTargetDisplayName(
     overrideDisplayName ?? answer.replyToDisplayName,
     role: answer.replyToAuthorRole,
   );
-  final bodyPreview = hideBodyPreview
-      ? null
-      : answer.replyToBodyPreview?.trim();
+  final bodyPreview = hideBodyPreview ? null : overrideBodyPreview?.trim();
   if (displayName.isEmpty && (bodyPreview ?? '').isEmpty) {
     return '返信先の控えはありません。';
   }
@@ -1997,6 +1965,14 @@ String _replyPreviewText(
     return '$displayName への返信';
   }
   return '$displayName の「$bodyPreview」への返信';
+}
+
+String _shortReplyPreview(String value) {
+  final normalized = value.replaceAll('\n', ' ').trim();
+  if (normalized.length <= 36) {
+    return normalized;
+  }
+  return '${normalized.substring(0, 36)}...';
 }
 
 String _safeReplyTargetDisplayName(String? value, {String? role}) {
