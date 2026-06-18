@@ -94,6 +94,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
   List<LessonQuestionAnswer> _lastMyAnswers = const [];
   Map<String, LessonQuestion> _lastMyAnswerQuestions =
       const <String, LessonQuestion>{};
+  Map<String, LessonQuestionAnswer> _lastMyAnswerParentAnswers =
+      const <String, LessonQuestionAnswer>{};
   List<LessonQuestion> _lastPublicQuestions = const [];
   List<LessonQuestion> _lastTeacherPreviewPublicQuestions = const [];
   List<LessonQuestionAnswer> _lastPublicAnswers = const [];
@@ -114,6 +116,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
   Object? _cachedMyAnswersStreamKey;
   Stream<Map<String, LessonQuestion>>? _cachedMyAnswerQuestionsStream;
   Object? _cachedMyAnswerQuestionsStreamKey;
+  Stream<Map<String, LessonQuestionAnswer>>? _cachedMyAnswerParentsStream;
+  Object? _cachedMyAnswerParentsStreamKey;
   Stream<List<LessonQuestion>>? _cachedPublicQuestionsStream;
   Object? _cachedPublicQuestionsStreamKey;
   Stream<Set<String>>? _cachedTeacherHiddenOwnQuestionIdsStream;
@@ -772,6 +776,157 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     final broadcast = tracked.asBroadcastStream();
     _cachedMyAnswerQuestionsStream = broadcast;
     _cachedMyAnswerQuestionsStreamKey = cacheKey;
+    return broadcast;
+  }
+
+  Stream<LessonQuestionAnswer?> _myAnswerParentSnapshotStream({
+    required String answerId,
+    required String currentUserId,
+  }) {
+    if (Firebase.apps.isEmpty || answerId.isEmpty) {
+      return Stream.value(null);
+    }
+    final firestore = FirebaseFirestore.instance;
+    final privateStream = firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('lessonQuestionAnswers')
+        .doc(answerId)
+        .snapshots(includeMetadataChanges: true)
+        .map(
+          (snapshot) =>
+              snapshot.exists ? LessonQuestionAnswer.fromFirestore(snapshot) : null,
+        );
+    final publicStream = firestore
+        .collection('publicLessonQuestionAnswers')
+        .doc(answerId)
+        .snapshots(includeMetadataChanges: true)
+        .map(
+          (snapshot) =>
+              snapshot.exists ? LessonQuestionAnswer.fromFirestore(snapshot) : null,
+        );
+    return Stream.multi((controller) {
+      LessonQuestionAnswer? latestPrivate;
+      LessonQuestionAnswer? latestPublic;
+      void emitResolved() {
+        final resolved = latestPublic ?? latestPrivate;
+        if (resolved == null || resolved.isDeleted) {
+          controller.add(null);
+          return;
+        }
+        controller.add(resolved);
+      }
+
+      final privateSubscription = privateStream.listen((answer) {
+        latestPrivate = answer;
+        emitResolved();
+      }, onError: controller.addError);
+      final publicSubscription = publicStream.listen((answer) {
+        latestPublic = answer;
+        emitResolved();
+      }, onError: controller.addError);
+      controller.onCancel = () async {
+        await privateSubscription.cancel();
+        await publicSubscription.cancel();
+      };
+    });
+  }
+
+  Stream<Map<String, LessonQuestionAnswer>> _myAnswerParentAnswersStream() {
+    final cacheKey = Object.hash(
+      widget.answersStream,
+      _questionStreamScopeKey,
+      'myAnswerParentAnswers',
+    );
+    if (_cachedMyAnswerParentsStream != null &&
+        _cachedMyAnswerParentsStreamKey == cacheKey) {
+      return _cachedMyAnswerParentsStream!;
+    }
+    final provided = widget.answersStream;
+    late final Stream<Map<String, LessonQuestionAnswer>> stream;
+    if (provided != null) {
+      stream = _asBroadcastAnswersStream(provided).map((answers) {
+        final map = <String, LessonQuestionAnswer>{};
+        for (final answer in answers) {
+          final answerId = (answer.id ?? '').trim();
+          if (answerId.isEmpty || answer.isDeleted) {
+            continue;
+          }
+          map[answerId] = answer;
+        }
+        return map;
+      });
+    } else if (Firebase.apps.isEmpty) {
+      stream = Stream.value(const <String, LessonQuestionAnswer>{});
+    } else {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        stream = Stream.value(const <String, LessonQuestionAnswer>{});
+      } else {
+        stream = Stream.multi((controller) {
+          final parentSubscriptions =
+              <String, StreamSubscription<LessonQuestionAnswer?>>{};
+          final parentAnswers = <String, LessonQuestionAnswer>{};
+
+          void emitParentAnswers() {
+            controller.add(Map<String, LessonQuestionAnswer>.from(parentAnswers));
+          }
+
+          void syncParentIds(Set<String> parentIds) {
+            final activeIds = parentSubscriptions.keys.toSet();
+            for (final removedId in activeIds.difference(parentIds)) {
+              final removedSubscription = parentSubscriptions.remove(removedId);
+              if (removedSubscription != null) {
+                unawaited(removedSubscription.cancel());
+              }
+              parentAnswers.remove(removedId);
+            }
+            for (final addedId in parentIds.difference(activeIds)) {
+              parentSubscriptions[addedId] = _myAnswerParentSnapshotStream(
+                answerId: addedId,
+                currentUserId: user.uid,
+              ).listen((resolvedParent) {
+                if (resolvedParent == null) {
+                  parentAnswers.remove(addedId);
+                } else {
+                  parentAnswers[addedId] = resolvedParent;
+                }
+                emitParentAnswers();
+              }, onError: controller.addError);
+            }
+            emitParentAnswers();
+          }
+
+          final answersSubscription = _myAnswersStream().listen((answers) {
+            final parentIds = <String>{};
+            for (final answer in answers) {
+              if (answer.parentCommentType != 'answer') {
+                continue;
+              }
+              final parentId = (answer.parentCommentId ?? '').trim();
+              if (parentId.isNotEmpty) {
+                parentIds.add(parentId);
+              }
+            }
+            syncParentIds(parentIds);
+          }, onError: controller.addError);
+
+          controller.onCancel = () async {
+            await answersSubscription.cancel();
+            for (final subscription in parentSubscriptions.values) {
+              await subscription.cancel();
+            }
+          };
+        });
+      }
+    }
+    final tracked = stream.map((answersById) {
+      _lastMyAnswerParentAnswers = answersById;
+      return answersById;
+    });
+    final broadcast = tracked.asBroadcastStream();
+    _cachedMyAnswerParentsStream = broadcast;
+    _cachedMyAnswerParentsStreamKey = cacheKey;
     return broadcast;
   }
 
@@ -2012,6 +2167,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         latestReplyTargetDisplayName,
         role: draft.replyToAuthorRole,
       ),
+      if ((draft.replyToBodyPreview ?? '').trim().isNotEmpty)
+        'replyToBodyPreview': _previewText(draft.replyToBodyPreview!),
       if ((threadRootAnswerId ?? '').isNotEmpty)
         'threadRootAnswerId': threadRootAnswerId,
       'replyToCreatedAt': draft.replyToCreatedAt,
@@ -2613,6 +2770,13 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     return merged;
   }
 
+  Map<String, LessonQuestionAnswer> _fallbackMyAnswerParentAnswerMap() {
+    final merged = <String, LessonQuestionAnswer>{};
+    merged.addAll(_fallbackAnswerMap());
+    merged.addAll(_lastMyAnswerParentAnswers);
+    return merged;
+  }
+
   @override
   Widget build(BuildContext context) {
     final height = widget.isTeacherPreview ? 420.0 : 560.0;
@@ -2853,6 +3017,10 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
                               questionMapStream: _myAnswerQuestionsStream(),
                               fallbackQuestionMap:
                                   _fallbackMyAnswerQuestionMap(),
+                              parentAnswerMapStream:
+                                  _myAnswerParentAnswersStream(),
+                              fallbackParentAnswerMap:
+                                  _fallbackMyAnswerParentAnswerMap(),
                               teacherHiddenQuestionIds: hiddenOwnQuestionIds,
                               answerFilter: _matchesActiveAnswerRole,
                               query: _query,
@@ -3141,6 +3309,8 @@ class _AnswerList extends StatelessWidget {
     required this.fallbackAnswers,
     required this.questionMapStream,
     required this.fallbackQuestionMap,
+    required this.parentAnswerMapStream,
+    required this.fallbackParentAnswerMap,
     required this.teacherHiddenQuestionIds,
     required this.query,
     required this.currentUserId,
@@ -3161,6 +3331,8 @@ class _AnswerList extends StatelessWidget {
   final List<LessonQuestionAnswer> fallbackAnswers;
   final Stream<Map<String, LessonQuestion>> questionMapStream;
   final Map<String, LessonQuestion> fallbackQuestionMap;
+  final Stream<Map<String, LessonQuestionAnswer>> parentAnswerMapStream;
+  final Map<String, LessonQuestionAnswer> fallbackParentAnswerMap;
   final Set<String> teacherHiddenQuestionIds;
   final String query;
   final String? currentUserId;
@@ -3199,107 +3371,119 @@ class _AnswerList extends StatelessWidget {
             final questionMap = questionSnapshot.hasData
                 ? (questionSnapshot.data ?? const <String, LessonQuestion>{})
                 : fallbackQuestionMap;
-            final answerMap = <String, LessonQuestionAnswer>{
-              for (final answer in answers)
-                if ((answer.id ?? '').trim().isNotEmpty)
-                  answer.id!.trim(): answer,
-            };
-            return ListView(
-              key: PageStorageKey<String>(listStorageKey),
-              controller: scrollController,
-              padding: const EdgeInsets.all(16),
-              children: [
-                action,
-                const SizedBox(height: 16),
-                if (answers.isEmpty)
-                  Text(emptyText)
-                else
+            return StreamBuilder<Map<String, LessonQuestionAnswer>>(
+              stream: parentAnswerMapStream,
+              builder: (context, parentAnswerLookupSnapshot) {
+                final parentAnswerLookup = parentAnswerLookupSnapshot.hasData
+                    ? (parentAnswerLookupSnapshot.data ??
+                          const <String, LessonQuestionAnswer>{})
+                    : fallbackParentAnswerMap;
+                final answerMap = <String, LessonQuestionAnswer>{
                   for (final answer in answers)
-                    Builder(
-                      builder: (context) {
-                        final parentQuestion = questionMap[answer.questionId];
-                        final parentAnswerId = (answer.parentCommentId ?? '')
-                            .trim();
-                        final parentAnswer =
-                            answer.parentCommentType == 'answer'
-                            ? answerMap[parentAnswerId]
-                            : null;
-                        final resolvedReplyTarget = _resolvedReplyTargetDisplay(
-                          answer: answer,
-                          parentQuestion: parentQuestion,
-                          parentAnswer: parentAnswer,
-                        );
-                        final parentQuestionId = (parentQuestion?.id ?? '')
-                            .trim();
-                        final parentHiddenByMirror =
-                            parentQuestionId.isNotEmpty &&
-                            teacherHiddenQuestionIds.contains(parentQuestionId);
-                        final questionScopeLabel = parentQuestion == null
-                            ? '先生だけ表示'
-                            : _questionScopeLabel(
-                                parentQuestion,
-                                forceTeacherHidden: parentHiddenByMirror,
-                              );
-                        final isOwner = isCommentOwnerForActiveRole(
-                          currentUserId: currentUserId,
-                          isCurrentUserTeacher: isCurrentUserTeacher,
-                          authorId: answer.authorId,
-                          authorRole: answer.authorRole,
-                        );
-                        return _CommentBubble(
-                          body: answer.body,
-                          authorId: answer.authorId,
-                          authorName: answer.authorName,
-                          authorDisplayName: answer.authorDisplayName,
-                          authorAvatarColorName: answer.authorAvatarColorName,
-                          authorProfileVisible: answer.authorProfileVisible,
-                          authorRole: answer.authorRole,
-                          postedAt: lessonQuestionAnswerPostedAt(answer),
-                          scopeLabel: answerScopeLabel(
-                            answer,
-                            questionScopeLabel,
-                          ),
-                          moderationNotice:
-                              isTeacherPreview && isCurrentUserTeacher
-                              ? null
-                              : answerModerationNotice(answer),
-                          attachmentTypes: answer.attachmentTypes,
-                          quotedNoteId: answer.quotedNoteId,
-                          quotedNoteTitle: answer.quotedNoteTitle,
-                          quotedNoteBody: answer.quotedNoteBody,
-                          replyToAuthorId: answer.replyToAuthorId,
-                          replyToDisplayName: resolvedReplyTarget.displayName,
-                          replyToLinkCurrentProfile:
-                              resolvedReplyTarget.linkToCurrentProfile,
-                          replyToAuthorRole: answer.replyToAuthorRole,
-                          replyToBodyPreview: _replyBodyPreviewForDisplay(
-                            answer: answer,
-                            parentQuestion: parentQuestion,
-                            parentAnswer: parentAnswer,
-                          ),
-                          isOwner: isOwner,
-                          isTeacher: isCurrentUserTeacher,
-                          onTap: onTap == null || isOpeningAnswerDetail
-                              ? null
-                              : () => onTap!(answer, parentQuestion),
-                          onReply: onTap == null || isOpeningAnswerDetail
-                              ? null
-                              : () => onTap!(answer, parentQuestion),
-                          onDelete: !isOwner || onDelete == null
-                              ? null
-                              : () => onDelete!(answer),
-                          onModerate: onToggleModeration == null
-                              ? null
-                              : () => onToggleModeration!(answer),
-                          moderateLabel:
-                              answer.moderationStatus ==
-                                  lessonNoteModerationHiddenByTeacher
-                              ? '公開に戻す'
-                              : '非公開にする',
-                        );
-                      },
-                    ),
-              ],
+                    if ((answer.id ?? '').trim().isNotEmpty)
+                      answer.id!.trim(): answer,
+                };
+                return ListView(
+                  key: PageStorageKey<String>(listStorageKey),
+                  controller: scrollController,
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    action,
+                    const SizedBox(height: 16),
+                    if (answers.isEmpty)
+                      Text(emptyText)
+                    else
+                      for (final answer in answers)
+                        Builder(
+                          builder: (context) {
+                            final parentQuestion = questionMap[answer.questionId];
+                            final parentAnswerId = (answer.parentCommentId ?? '')
+                                .trim();
+                            final parentAnswer =
+                                answer.parentCommentType == 'answer'
+                                ? answerMap[parentAnswerId] ??
+                                      parentAnswerLookup[parentAnswerId]
+                                : null;
+                            final resolvedReplyTarget = _resolvedReplyTargetDisplay(
+                              answer: answer,
+                              parentQuestion: parentQuestion,
+                              parentAnswer: parentAnswer,
+                            );
+                            final parentQuestionId = (parentQuestion?.id ?? '')
+                                .trim();
+                            final parentHiddenByMirror =
+                                parentQuestionId.isNotEmpty &&
+                                teacherHiddenQuestionIds.contains(
+                                  parentQuestionId,
+                                );
+                            final questionScopeLabel = parentQuestion == null
+                                ? '先生だけ表示'
+                                : _questionScopeLabel(
+                                    parentQuestion,
+                                    forceTeacherHidden: parentHiddenByMirror,
+                                  );
+                            final isOwner = isCommentOwnerForActiveRole(
+                              currentUserId: currentUserId,
+                              isCurrentUserTeacher: isCurrentUserTeacher,
+                              authorId: answer.authorId,
+                              authorRole: answer.authorRole,
+                            );
+                            return _CommentBubble(
+                              body: answer.body,
+                              authorId: answer.authorId,
+                              authorName: answer.authorName,
+                              authorDisplayName: answer.authorDisplayName,
+                              authorAvatarColorName: answer.authorAvatarColorName,
+                              authorProfileVisible: answer.authorProfileVisible,
+                              authorRole: answer.authorRole,
+                              postedAt: lessonQuestionAnswerPostedAt(answer),
+                              scopeLabel: answerScopeLabel(
+                                answer,
+                                questionScopeLabel,
+                              ),
+                              moderationNotice:
+                                  isTeacherPreview && isCurrentUserTeacher
+                                  ? null
+                                  : answerModerationNotice(answer),
+                              attachmentTypes: answer.attachmentTypes,
+                              quotedNoteId: answer.quotedNoteId,
+                              quotedNoteTitle: answer.quotedNoteTitle,
+                              quotedNoteBody: answer.quotedNoteBody,
+                              replyToAuthorId: answer.replyToAuthorId,
+                              replyToDisplayName: resolvedReplyTarget.displayName,
+                              replyToLinkCurrentProfile:
+                                  resolvedReplyTarget.linkToCurrentProfile,
+                              replyToAuthorRole: answer.replyToAuthorRole,
+                              replyToBodyPreview: _replyBodyPreviewForDisplay(
+                                answer: answer,
+                                parentQuestion: parentQuestion,
+                                parentAnswer: parentAnswer,
+                              ),
+                              isOwner: isOwner,
+                              isTeacher: isCurrentUserTeacher,
+                              onTap: onTap == null || isOpeningAnswerDetail
+                                  ? null
+                                  : () => onTap!(answer, parentQuestion),
+                              onReply: onTap == null || isOpeningAnswerDetail
+                                  ? null
+                                  : () => onTap!(answer, parentQuestion),
+                              onDelete: !isOwner || onDelete == null
+                                  ? null
+                                  : () => onDelete!(answer),
+                              onModerate: onToggleModeration == null
+                                  ? null
+                                  : () => onToggleModeration!(answer),
+                              moderateLabel:
+                                  answer.moderationStatus ==
+                                      lessonNoteModerationHiddenByTeacher
+                                  ? '公開に戻す'
+                                  : '非公開にする',
+                            );
+                          },
+                        ),
+                  ],
+                );
+              },
             );
           },
         );
@@ -4511,24 +4695,31 @@ String _replyBodyPreviewForDisplay({
   LessonQuestion? parentQuestion,
   LessonQuestionAnswer? parentAnswer,
 }) {
+  final storedPreview = (answer.replyToBodyPreview ?? '').trim();
+  String fallbackPreview() {
+    if (storedPreview.isNotEmpty) {
+      return _previewText(storedPreview);
+    }
+    return _replyBodyUnavailableText;
+  }
   if (answer.parentCommentType == 'answer') {
     if (_canUseLatestAnswerReplyTargetDisplayName(parentAnswer)) {
       final body = parentAnswer!.body.trim();
       if (body.isEmpty) {
-        return _replyBodyUnavailableText;
+        return fallbackPreview();
       }
       return _previewText(body);
     }
-    return _replyBodyUnavailableText;
+    return fallbackPreview();
   }
   if (_canUseLatestQuestionReplyTargetDisplayName(parentQuestion)) {
     final body = parentQuestion!.body.trim();
     if (body.isEmpty) {
-      return _replyBodyUnavailableText;
+      return fallbackPreview();
     }
     return _previewText(body);
   }
-  return _replyBodyUnavailableText;
+  return fallbackPreview();
 }
 
 String _sanitizeDisplayNameForUi(
@@ -4806,6 +4997,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
         replyToAuthorId: _replyToAuthorId ?? widget.question.authorId,
         replyToAuthorRole: _replyToAuthorRole ?? widget.question.authorRole,
         replyToDisplayName: resolvedReplyTargetDisplayName,
+        replyToBodyPreview: _replyToBodyPreview,
         replyToCreatedAt:
             _replyToCreatedAt ??
             widget.question.createdAt ??
@@ -6202,6 +6394,7 @@ class _LessonQuestionAnswerDraft {
     required this.replyToAuthorId,
     required this.replyToAuthorRole,
     required this.replyToDisplayName,
+    required this.replyToBodyPreview,
     required this.replyToCreatedAt,
     required this.quotedNoteId,
     required this.quotedNoteTitle,
@@ -6214,6 +6407,7 @@ class _LessonQuestionAnswerDraft {
   final String? replyToAuthorId;
   final String? replyToAuthorRole;
   final String? replyToDisplayName;
+  final String? replyToBodyPreview;
   final Timestamp? replyToCreatedAt;
   final String? quotedNoteId;
   final String? quotedNoteTitle;

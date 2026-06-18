@@ -713,6 +713,83 @@ void main() {
   );
 
   testWidgets(
+    'My answers list resolves parent answer preview from supplemental answer stream',
+    (tester) async {
+      const question = LessonQuestion(
+        id: 'my-answer-parent-preview-question',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '返信先プレビュー確認用の質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: [],
+      );
+      const parentAnswer = LessonQuestionAnswer(
+        id: 'supplemental-parent-answer',
+        questionId: 'my-answer-parent-preview-question',
+        authorId: 'teacher-a',
+        authorName: '担当の先生',
+        authorRole: 'teacher',
+        body: 'いまは公開されている親回答です。',
+        attachmentTypes: [],
+        parentCommentId: 'my-answer-parent-preview-question',
+        parentCommentType: 'question',
+        moderationStatus: lessonNoteModerationVisible,
+      );
+      const replyAnswer = LessonQuestionAnswer(
+        id: 'my-answer-needs-supplemental-parent',
+        questionId: 'my-answer-parent-preview-question',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        authorRole: 'student',
+        body: '補完された親回答プレビューを確認したい返信です。',
+        attachmentTypes: [],
+        parentCommentId: 'supplemental-parent-answer',
+        parentCommentType: 'answer',
+        replyToDisplayName: '担当の先生',
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              questionsStream: Stream.value(const [question]),
+              publicQuestionsStream: Stream.value(const []),
+              answersStream: Stream.value(const [replyAnswer, parentAnswer]),
+              activeRoleStateStream: Stream.value(
+                const LessonQuestionsActiveRoleState(
+                  isResolved: true,
+                  isTeacher: false,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(ChoiceChip, '回答'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('補完された親回答プレビューを確認したい返信です。'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('現在は見ることができません。'), findsNothing);
+      expect(find.textContaining('いまは公開されている親回答です。'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
     'Opening my direct answer from my answers list opens question detail',
     (tester) async {
       const question = LessonQuestion(
