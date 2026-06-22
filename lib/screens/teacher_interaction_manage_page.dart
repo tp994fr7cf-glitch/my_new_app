@@ -426,9 +426,15 @@ class TeacherInteractionManagePage extends StatelessWidget {
       return;
     }
     final messenger = ScaffoldMessenger.maybeOf(context);
+    final currentlyBulkHidden = await _lessonInteractionService
+        .hasBulkHiddenPublicPosts(
+          courseId: _courseId,
+          lessonNumber: lessonNumber,
+          learnerId: identity.userId,
+        );
     var selectedMode = _lessonInteractionService
         .normalizeLearnerRestrictionMode(currentMode);
-    var bulkHide = false;
+    var bulkHide = currentlyBulkHidden;
     var bulkUnhide = false;
     var bulkUnhidePolicy =
         LessonInteractionService.bulkUnhideKeepIndividualHidden;
@@ -439,7 +445,7 @@ class TeacherInteractionManagePage extends StatelessWidget {
         return StatefulBuilder(
           builder: (dialogContext, setDialogState) {
             return AlertDialog(
-              title: const Text('受講者の公開欄制限を設定'),
+              title: const Text('非公開詳細設定'),
               content: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -710,7 +716,7 @@ class TeacherInteractionManagePage extends StatelessWidget {
             ),
             const SizedBox(height: 24),
             const Text(
-              '受講者ごとの公開欄制限（レッスン別）',
+              '受講者ごとの非公開詳細設定（レッスン別）',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
@@ -740,7 +746,7 @@ class TeacherInteractionManagePage extends StatelessWidget {
                               title: Text(
                                 'レッスン${entry.$1 + 1}: ${entry.$2.title}',
                               ),
-                              subtitle: const Text('タップして受講者ごとの制限設定を開く'),
+                              subtitle: const Text('タップして受講者ごとの非公開詳細設定を開く'),
                               initiallyExpanded: entry.$1 == 0,
                               children: [
                                 for (final identity in identities)

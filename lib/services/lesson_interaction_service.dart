@@ -176,6 +176,11 @@ class LessonInteractionService {
       courseId: courseId,
       lessonNumber: lessonNumber,
     );
+    await _ensureInteractionSettingDocumentExists(
+      courseId: courseId,
+      lessonNumber: lessonNumber,
+      settingId: settingId,
+    );
     await FirebaseFirestore.instance
         .collection('lessonInteractionSettings')
         .doc(settingId)
@@ -189,6 +194,30 @@ class LessonInteractionService {
           'updatedByUserId': updatedByUserId,
           'updatedAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
+  }
+
+  Future<void> _ensureInteractionSettingDocumentExists({
+    required String courseId,
+    required int lessonNumber,
+    required String settingId,
+  }) async {
+    final firestore = FirebaseFirestore.instance;
+    final settingRef = firestore
+        .collection('lessonInteractionSettings')
+        .doc(settingId);
+    await firestore.runTransaction((transaction) async {
+      final snapshot = await transaction.get(settingRef);
+      if (snapshot.exists) {
+        return;
+      }
+      transaction.set(settingRef, {
+        'courseId': courseId,
+        'lessonNumber': lessonNumber,
+        lessonNotesPublicEnabledField: true,
+        lessonQuestionsPublicEnabledField: true,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    });
   }
 
   bool _resolveIndividualHidden(Map<String, dynamic> data) {
@@ -442,6 +471,64 @@ class LessonInteractionService {
       unhidePolicy: unhidePolicy,
     );
     return totalUpdated;
+  }
+
+  Future<bool> hasBulkHiddenPublicPosts({
+    required String courseId,
+    required int lessonNumber,
+    required String learnerId,
+  }) async {
+    if (Firebase.apps.isEmpty || courseId.isEmpty || learnerId.isEmpty) {
+      return false;
+    }
+    try {
+      if (await _hasBulkHiddenInCollection(
+        collectionPath: 'publicLessonNotes',
+        courseId: courseId,
+        lessonNumber: lessonNumber,
+        authorId: learnerId,
+      )) {
+        return true;
+      }
+      if (await _hasBulkHiddenInCollection(
+        collectionPath: 'publicLessonQuestions',
+        courseId: courseId,
+        lessonNumber: lessonNumber,
+        authorId: learnerId,
+      )) {
+        return true;
+      }
+      return _hasBulkHiddenInCollection(
+        collectionPath: 'publicLessonQuestionAnswers',
+        courseId: courseId,
+        lessonNumber: lessonNumber,
+        authorId: learnerId,
+      );
+    } on FirebaseException {
+      return false;
+    }
+  }
+
+  Future<bool> _hasBulkHiddenInCollection({
+    required String collectionPath,
+    required String courseId,
+    required int lessonNumber,
+    required String authorId,
+  }) async {
+    final querySnapshot = await FirebaseFirestore.instance
+        .collection(collectionPath)
+        .where('courseId', isEqualTo: courseId)
+        .where('lessonNumber', isEqualTo: lessonNumber)
+        .where('authorId', isEqualTo: authorId)
+        .where('isDeleted', isEqualTo: false)
+        .get();
+    for (final doc in querySnapshot.docs) {
+      final data = doc.data();
+      if (_resolveBulkHidden(data)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   bool _isLegacyModerationFallbackTarget(FirebaseException error) {

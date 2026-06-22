@@ -1383,9 +1383,15 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     if (user == null) {
       return;
     }
+    final currentlyBulkHidden = await _lessonInteractionService
+        .hasBulkHiddenPublicPosts(
+          courseId: _courseId,
+          lessonNumber: lessonNumber,
+          learnerId: identity.userId,
+        );
     var selectedMode = _lessonInteractionService
         .normalizeLearnerRestrictionMode(currentMode);
-    var bulkHide = false;
+    var bulkHide = currentlyBulkHidden;
     var bulkUnhide = false;
     var bulkUnhidePolicy =
         LessonInteractionService.bulkUnhideKeepIndividualHidden;
