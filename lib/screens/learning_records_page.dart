@@ -988,11 +988,11 @@ class _LessonQuestionRecordCard extends StatelessWidget {
       ? null
       : 'この質問コメントは削除済み、または現在は表示できません。学習記録として内容だけ表示しています。';
 
-  void _openQuestionThread(BuildContext context) {
+  Future<void> _openQuestionThread(BuildContext context) async {
     if (!_canOpenQuestionThread) {
       return;
     }
-    _openQuestionThreadPage(
+    await _openQuestionThreadPage(
       context: context,
       question: question,
       questions: questions,
@@ -1287,10 +1287,7 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
         targetUserActiveInCourse;
   }
 
-  bool _canOpenThreadGate(
-    LessonQuestion? question,
-    LessonQuestionAnswer? _,
-  ) {
+  bool _canOpenThreadGate(LessonQuestion? question, LessonQuestionAnswer? _) {
     if (!_futureContextAllowsLinkAndNavigation(question)) {
       return false;
     }
@@ -1514,18 +1511,18 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
     );
   }
 
-  void _openQuestionThread(
+  Future<void> _openQuestionThread(
     BuildContext context,
     LessonQuestion? parentQuestion,
     LessonQuestionAnswer? parentAnswer,
-  ) {
+  ) async {
     if (parentQuestion == null) {
       return;
     }
     if (!_canOpenQuestionThreadFor(parentQuestion, parentAnswer)) {
       return;
     }
-    _openQuestionThreadPage(
+    await _openQuestionThreadPage(
       context: context,
       question: parentQuestion,
       questions: widget.questions,
@@ -1876,13 +1873,46 @@ bool _canOpenAnswerFromRecord(
   return true;
 }
 
-void _openQuestionThreadPage({
+Future<LessonQuestion?> _resolveLatestQuestionForThreadNavigation(
+  LessonQuestion question,
+) async {
+  if (question.id == null || Firebase.apps.isEmpty) {
+    return _canOpenQuestionFromRecord(question) ? question : null;
+  }
+  try {
+    final publicSnapshot = await FirebaseFirestore.instance
+        .collection('publicLessonQuestions')
+        .doc(question.id)
+        .get();
+    if (publicSnapshot.exists) {
+      final publicQuestion = LessonQuestion.fromFirestore(publicSnapshot);
+      return _canOpenQuestionFromRecord(publicQuestion) ? publicQuestion : null;
+    }
+  } on FirebaseException {
+    // Keep fallback below.
+  }
+  return _canOpenQuestionFromRecord(question) ? question : null;
+}
+
+Future<void> _openQuestionThreadPage({
   required BuildContext context,
   required LessonQuestion question,
   required List<LessonQuestion> questions,
   required List<LessonQuestionAnswer> answers,
   String? highlightedAnswerId,
-}) {
+}) async {
+  final latestQuestion = await _resolveLatestQuestionForThreadNavigation(
+    question,
+  );
+  if (latestQuestion == null) {
+    if (!context.mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(const SnackBar(content: Text('元の質問は削除済み、または現在は表示できません。')));
+    return;
+  }
   final useRecordStreams = Firebase.apps.isEmpty;
   final recordQuestionsStream = useRecordStreams
       ? Stream.value(questions).asBroadcastStream()
@@ -1893,7 +1923,7 @@ void _openQuestionThreadPage({
   final recordAnswersStream = useRecordStreams
       ? Stream.value(
           answers
-              .where((answer) => answer.questionId == question.id)
+              .where((answer) => answer.questionId == latestQuestion.id)
               .where(
                 (answer) =>
                     _canOpenAnswerFromRecord(answer) ||
@@ -1904,19 +1934,22 @@ void _openQuestionThreadPage({
               .toList(),
         ).asBroadcastStream()
       : null;
+  if (!context.mounted) {
+    return;
+  }
   Navigator.of(context).push(
     MaterialPageRoute(
       builder: (_) => Scaffold(
         appBar: AppBar(title: const Text('質問コメント')),
         body: SafeArea(
           child: LessonQuestionsPanel(
-            course: _courseFromQuestion(question),
+            course: _courseFromQuestion(latestQuestion),
             lesson: CourseLesson(
-              title: question.lessonTitle,
+              title: latestQuestion.lessonTitle,
               duration: '1分30秒',
             ),
-            lessonNumber: question.lessonNumber,
-            initialSelectedQuestion: question,
+            lessonNumber: latestQuestion.lessonNumber,
+            initialSelectedQuestion: latestQuestion,
             questionsStream: recordQuestionsStream,
             publicQuestionsStream: recordPublicQuestionsStream,
             answersStream: recordAnswersStream,
