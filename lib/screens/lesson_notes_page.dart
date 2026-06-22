@@ -2701,7 +2701,7 @@ class _PublicLessonNoteCard extends StatelessWidget {
                         children: [
                           Text(
                             note.isTeacherHidden
-                                ? '先生が非公開化中'
+                                ? '先生によって非公開中'
                                 : note.isPublicApprovalPending
                                 ? '公開申請中'
                                 : note.isPublicApprovalRejected
@@ -2711,9 +2711,14 @@ class _PublicLessonNoteCard extends StatelessWidget {
                                 : '先生にだけ公開',
                             style: Theme.of(context).textTheme.labelSmall
                                 ?.copyWith(
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.onSurfaceVariant,
+                                  fontWeight: note.isTeacherHidden
+                                      ? FontWeight.w600
+                                      : null,
+                                  color: note.isTeacherHidden
+                                      ? Theme.of(context).colorScheme.error
+                                      : Theme.of(
+                                          context,
+                                        ).colorScheme.onSurfaceVariant,
                                 ),
                           ),
                           const Spacer(),

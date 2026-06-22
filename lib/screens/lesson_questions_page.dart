@@ -3658,9 +3658,7 @@ class _QuestionList extends StatelessWidget {
                         question,
                         forceTeacherHidden: isTeacherHidden,
                       ),
-                      moderationNotice: !isCurrentUserTeacher && isTeacherHidden
-                          ? '先生によって非公開中'
-                          : null,
+                      moderationNotice: isTeacherHidden ? '先生によって非公開中' : null,
                       attachmentTypes: question.attachmentTypes,
                       quotedNoteId: question.quotedNoteId,
                       quotedNoteTitle: question.quotedNoteTitle,
@@ -3835,10 +3833,7 @@ class _AnswerList extends StatelessWidget {
                                 answer,
                                 questionScopeLabel,
                               ),
-                              moderationNotice:
-                                  isTeacherPreview && isCurrentUserTeacher
-                                  ? null
-                                  : answerModerationNotice(answer),
+                              moderationNotice: answerModerationNotice(answer),
                               attachmentTypes: answer.attachmentTypes,
                               quotedNoteId: answer.quotedNoteId,
                               quotedNoteTitle: answer.quotedNoteTitle,
@@ -5704,9 +5699,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                               authorRole: question.authorRole,
                               postedAt: lessonQuestionPostedAt(question),
                               scopeLabel: _questionScopeLabel(question),
-                              moderationNotice:
-                                  !widget.isCurrentUserTeacher &&
-                                      question.isTeacherHidden
+                              moderationNotice: question.isTeacherHidden
                                   ? '先生によって非公開中'
                                   : null,
                               attachmentTypes: question.attachmentTypes,
