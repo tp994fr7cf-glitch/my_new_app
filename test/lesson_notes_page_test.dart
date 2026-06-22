@@ -5,6 +5,7 @@ import 'package:my_new_app/models/course.dart';
 import 'package:my_new_app/models/lesson_note.dart';
 import 'package:my_new_app/screens/lesson_notes_page.dart';
 import 'package:my_new_app/screens/video_lesson_page.dart';
+import 'package:my_new_app/services/lesson_interaction_service.dart';
 
 void main() {
   const course = Course(
@@ -1200,4 +1201,53 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('自分のメモ', skipOffstage: false), findsWidgets);
   });
+
+  testWidgets(
+    'Public notes tab is blocked when restriction mode disables public read',
+    (tester) async {
+      const publicNote = LessonNote(
+        id: 'restricted-public-note',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '表示されない公開メモ',
+        body: '公開メモ本文',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.public,
+        tags: ['公開'],
+        attachmentTypes: [],
+        hasAudioAttachment: false,
+        isCopied: false,
+        canPublish: true,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonNotesPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              notesStream: Stream.value(const []),
+              publicNotesStream: Stream.value(const [publicNote]),
+              publicRestrictionModeStream: Stream.value(
+                LessonInteractionService.learnerRestrictionModeNoPublicReadOrPost,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('公開メモ'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('先生により、このレッスンの公開メモ閲覧は制限されています。'), findsOneWidget);
+      expect(find.text('表示されない公開メモ'), findsNothing);
+    },
+  );
 }

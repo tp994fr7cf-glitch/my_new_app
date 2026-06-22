@@ -8,6 +8,7 @@ import 'package:flutter/rendering.dart';
 
 import '../models/comment_identity.dart';
 import '../models/course.dart';
+import '../models/course_participant_identity.dart';
 import '../models/lesson_note.dart';
 import '../models/lesson_question.dart';
 import '../models/public_user_profile.dart';
@@ -47,6 +48,7 @@ class LessonQuestionsPanel extends StatefulWidget {
     this.initialHighlightedAnswerId,
     this.teacherHiddenOwnQuestionIdsStream,
     this.activeRoleStateStream,
+    this.publicRestrictionModeStream,
   });
 
   final Course course;
@@ -64,6 +66,7 @@ class LessonQuestionsPanel extends StatefulWidget {
   final String? initialHighlightedAnswerId;
   final Stream<Set<String>>? teacherHiddenOwnQuestionIdsStream;
   final Stream<LessonQuestionsActiveRoleState>? activeRoleStateStream;
+  final Stream<String>? publicRestrictionModeStream;
 
   @override
   State<LessonQuestionsPanel> createState() => _LessonQuestionsPanelState();
@@ -124,6 +127,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
   Object? _cachedTeacherHiddenOwnQuestionIdsStreamKey;
   Stream<List<LessonQuestion>>? _cachedTeacherPreviewPublicQuestionsStream;
   Object? _cachedTeacherPreviewPublicQuestionsStreamKey;
+  Stream<String>? _cachedLearnerRestrictionModeStream;
+  Object? _cachedLearnerRestrictionModeStreamKey;
   Stream<bool>? _cachedQuestionPublicPlatformEnabledStream;
   String? _cachedQuestionPublicPlatformEnabledStreamKey;
   LessonQuestionSort _myQuestionsSort = LessonQuestionSort.newest;
@@ -156,6 +161,60 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
 
   bool get _canAccessTeacherOnlyQuotablePublicNotes =>
       widget.isTeacherPreview || _isCurrentUserTeacher;
+
+  Stream<String> _learnerRestrictionModeStream() {
+    final cacheKey = Object.hash(
+      widget.publicRestrictionModeStream,
+      _questionStreamScopeKey,
+      'learnerRestrictionMode',
+    );
+    if (_cachedLearnerRestrictionModeStream != null &&
+        _cachedLearnerRestrictionModeStreamKey == cacheKey) {
+      return _cachedLearnerRestrictionModeStream!;
+    }
+    final provided = widget.publicRestrictionModeStream;
+    late final Stream<String> stream;
+    if (provided != null) {
+      stream = provided.map(
+        _lessonInteractionService.normalizeLearnerRestrictionMode,
+      );
+    } else {
+      final userId = _currentUserId;
+      if (widget.isTeacherPreview ||
+          _isCurrentUserTeacher ||
+          userId == null ||
+          userId.isEmpty) {
+        stream = Stream.value(
+          LessonInteractionService.learnerRestrictionModeNone,
+        );
+      } else {
+        stream = _lessonInteractionService.learnerRestrictionModeStream(
+          courseId: _courseId,
+          lessonNumber: widget.lessonNumber,
+          learnerId: userId,
+        );
+      }
+    }
+    final broadcast = stream.asBroadcastStream();
+    _cachedLearnerRestrictionModeStream = broadcast;
+    _cachedLearnerRestrictionModeStreamKey = cacheKey;
+    return broadcast;
+  }
+
+  Future<String> _currentLearnerRestrictionMode() async {
+    final userId = _currentUserId;
+    if (widget.isTeacherPreview ||
+        _isCurrentUserTeacher ||
+        userId == null ||
+        userId.isEmpty) {
+      return LessonInteractionService.learnerRestrictionModeNone;
+    }
+    return _lessonInteractionService.learnerRestrictionMode(
+      courseId: _courseId,
+      lessonNumber: widget.lessonNumber,
+      learnerId: userId,
+    );
+  }
 
   @override
   void initState() {
@@ -794,16 +853,18 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         .doc(answerId)
         .snapshots(includeMetadataChanges: true)
         .map(
-          (snapshot) =>
-              snapshot.exists ? LessonQuestionAnswer.fromFirestore(snapshot) : null,
+          (snapshot) => snapshot.exists
+              ? LessonQuestionAnswer.fromFirestore(snapshot)
+              : null,
         );
     final publicStream = firestore
         .collection('publicLessonQuestionAnswers')
         .doc(answerId)
         .snapshots(includeMetadataChanges: true)
         .map(
-          (snapshot) =>
-              snapshot.exists ? LessonQuestionAnswer.fromFirestore(snapshot) : null,
+          (snapshot) => snapshot.exists
+              ? LessonQuestionAnswer.fromFirestore(snapshot)
+              : null,
         );
     return Stream.multi((controller) {
       LessonQuestionAnswer? latestPrivate;
@@ -869,7 +930,9 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
           final parentAnswers = <String, LessonQuestionAnswer>{};
 
           void emitParentAnswers() {
-            controller.add(Map<String, LessonQuestionAnswer>.from(parentAnswers));
+            controller.add(
+              Map<String, LessonQuestionAnswer>.from(parentAnswers),
+            );
           }
 
           void syncParentIds(Set<String> parentIds) {
@@ -882,17 +945,18 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
               parentAnswers.remove(removedId);
             }
             for (final addedId in parentIds.difference(activeIds)) {
-              parentSubscriptions[addedId] = _myAnswerParentSnapshotStream(
-                answerId: addedId,
-                currentUserId: user.uid,
-              ).listen((resolvedParent) {
-                if (resolvedParent == null) {
-                  parentAnswers.remove(addedId);
-                } else {
-                  parentAnswers[addedId] = resolvedParent;
-                }
-                emitParentAnswers();
-              }, onError: controller.addError);
+              parentSubscriptions[addedId] =
+                  _myAnswerParentSnapshotStream(
+                    answerId: addedId,
+                    currentUserId: user.uid,
+                  ).listen((resolvedParent) {
+                    if (resolvedParent == null) {
+                      parentAnswers.remove(addedId);
+                    } else {
+                      parentAnswers[addedId] = resolvedParent;
+                    }
+                    emitParentAnswers();
+                  }, onError: controller.addError);
             }
             emitParentAnswers();
           }
@@ -1244,6 +1308,252 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     );
   }
 
+  Future<CourseParticipantIdentity> _loadParticipantIdentity(
+    String learnerId,
+  ) async {
+    final safeLearnerId = learnerId.trim();
+    if (Firebase.apps.isEmpty || safeLearnerId.isEmpty) {
+      return CourseParticipantIdentity(
+        courseId: _courseId,
+        userId: safeLearnerId,
+        identityMode: courseIdentityModeProfile,
+        aliasConfiguredAtEnrollment: false,
+        aliasRetired: false,
+      );
+    }
+    final doc = await FirebaseFirestore.instance
+        .collection('courses')
+        .doc(_courseId)
+        .collection('participantIdentities')
+        .doc(safeLearnerId)
+        .get();
+    if (doc.exists) {
+      return CourseParticipantIdentity.fromFirestore(doc);
+    }
+    return CourseParticipantIdentity(
+      courseId: _courseId,
+      userId: safeLearnerId,
+      identityMode: courseIdentityModeProfile,
+      aliasConfiguredAtEnrollment: false,
+      aliasRetired: false,
+    );
+  }
+
+  Future<void> _openRestrictionDetailsForAuthor({
+    required String authorId,
+    required String authorRole,
+    required int lessonNumber,
+  }) async {
+    if (!widget.isTeacherPreview || !_isCurrentUserTeacher) {
+      return;
+    }
+    final safeAuthorId = authorId.trim();
+    if (safeAuthorId.isEmpty) {
+      _showMessage('受講者情報を特定できないため設定を開けません。');
+      return;
+    }
+    if (safeAuthorId == widget.course.instructorId || authorRole == 'teacher') {
+      _showMessage('先生投稿は受講者制限の対象外です。');
+      return;
+    }
+    final identity = await _loadParticipantIdentity(safeAuthorId);
+    final currentMode = await _lessonInteractionService.learnerRestrictionMode(
+      courseId: _courseId,
+      lessonNumber: lessonNumber,
+      learnerId: identity.userId,
+    );
+    if (!mounted) {
+      return;
+    }
+    await _openLearnerRestrictionDialog(
+      lessonNumber: lessonNumber,
+      identity: identity,
+      currentMode: currentMode,
+    );
+  }
+
+  Future<void> _openLearnerRestrictionDialog({
+    required int lessonNumber,
+    required CourseParticipantIdentity identity,
+    required String currentMode,
+  }) async {
+    final user = Firebase.apps.isEmpty
+        ? null
+        : FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+    var selectedMode = _lessonInteractionService
+        .normalizeLearnerRestrictionMode(currentMode);
+    var bulkHide = false;
+    var bulkUnhide = false;
+    var bulkUnhidePolicy =
+        LessonInteractionService.bulkUnhideKeepIndividualHidden;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            return AlertDialog(
+              title: const Text('非公開詳細設定'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('対象ユーザー: ${identity.userId}'),
+                    const SizedBox(height: 8),
+                    Text('レッスン$lessonNumber'),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: selectedMode,
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        labelText: '制限モード',
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: LessonInteractionService
+                              .learnerRestrictionModeNone,
+                          child: Text('制限なし'),
+                        ),
+                        DropdownMenuItem(
+                          value: LessonInteractionService
+                              .learnerRestrictionModeNoPublicReadOrPost,
+                          child: Text('公開欄の閲覧と投稿を制限'),
+                        ),
+                        DropdownMenuItem(
+                          value: LessonInteractionService
+                              .learnerRestrictionModeNoPublicPost,
+                          child: Text('公開欄への投稿のみ制限'),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        setDialogState(() {
+                          selectedMode = _lessonInteractionService
+                              .normalizeLearnerRestrictionMode(value);
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: bulkHide,
+                      title: const Text('既存公開投稿を一括で非公開にする'),
+                      onChanged: (value) {
+                        setDialogState(() {
+                          bulkHide = value == true;
+                          if (bulkHide) {
+                            bulkUnhide = false;
+                          }
+                        });
+                      },
+                    ),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: bulkUnhide,
+                      title: const Text('既存公開投稿を一括で公開に戻す'),
+                      onChanged: (value) {
+                        setDialogState(() {
+                          bulkUnhide = value == true;
+                          if (bulkUnhide) {
+                            bulkHide = false;
+                          }
+                        });
+                      },
+                    ),
+                    if (bulkUnhide) ...[
+                      const SizedBox(height: 8),
+                      const Text('一括公開の方針'),
+                      RadioListTile<String>(
+                        contentPadding: EdgeInsets.zero,
+                        value: LessonInteractionService
+                            .bulkUnhideKeepIndividualHidden,
+                        groupValue: bulkUnhidePolicy,
+                        title: const Text('A: 個別非公開は維持'),
+                        onChanged: (value) {
+                          setDialogState(() {
+                            bulkUnhidePolicy =
+                                value ??
+                                LessonInteractionService
+                                    .bulkUnhideKeepIndividualHidden;
+                          });
+                        },
+                      ),
+                      RadioListTile<String>(
+                        contentPadding: EdgeInsets.zero,
+                        value:
+                            LessonInteractionService.bulkUnhideForceAllVisible,
+                        groupValue: bulkUnhidePolicy,
+                        title: const Text('B: すべて公開に戻す'),
+                        onChanged: (value) {
+                          setDialogState(() {
+                            bulkUnhidePolicy =
+                                value ??
+                                LessonInteractionService
+                                    .bulkUnhideKeepIndividualHidden;
+                          });
+                        },
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(false),
+                  child: const Text('キャンセル'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(true),
+                  child: const Text('保存する'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (confirmed != true) {
+      return;
+    }
+    try {
+      await _lessonInteractionService.setLearnerRestrictionMode(
+        courseId: _courseId,
+        lessonNumber: lessonNumber,
+        learnerId: identity.userId,
+        restrictionMode: selectedMode,
+        updatedByUserId: user.uid,
+      );
+      var affected = 0;
+      if (bulkHide) {
+        affected = await _lessonInteractionService
+            .setBulkModerationForLearnerPublicPosts(
+              courseId: _courseId,
+              lessonNumber: lessonNumber,
+              learnerId: identity.userId,
+              hide: true,
+            );
+      } else if (bulkUnhide) {
+        affected = await _lessonInteractionService
+            .setBulkModerationForLearnerPublicPosts(
+              courseId: _courseId,
+              lessonNumber: lessonNumber,
+              learnerId: identity.userId,
+              hide: false,
+              unhidePolicy: bulkUnhidePolicy,
+            );
+      }
+      _showMessage(
+        affected > 0 ? '設定を保存しました。公開状態更新: $affected件' : '設定を保存しました。',
+      );
+    } on FirebaseException catch (error) {
+      _showMessage(error.message ?? '設定の保存に失敗しました。');
+    } catch (error) {
+      _showMessage('設定の保存に失敗しました: $error');
+    }
+  }
+
   void _showMessage(String message) {
     if (!mounted) {
       return;
@@ -1302,9 +1612,20 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         return true;
       }
       final platformEnabled = await _isQuestionPublicPlatformEnabled();
+      final restrictionMode = await _currentLearnerRestrictionMode();
+      final blocksPublicPost = _lessonInteractionService.blocksPublicPost(
+        restrictionMode,
+      );
       final requestedPublic =
           draft.target == LessonQuestionTarget.everyone ||
           draft.visibility == LessonQuestionVisibility.public;
+      if (requestedPublic &&
+          blocksPublicPost &&
+          !widget.isTeacherPreview &&
+          !_isCurrentUserTeacher) {
+        _showMessage('先生により公開質問への投稿が制限されています。先生のみ公開で投稿してください。');
+        return false;
+      }
       final target = draft.target == LessonQuestionTarget.everyone
           ? lessonQuestionTargetEveryone
           : lessonQuestionTargetTeacher;
@@ -2101,6 +2422,15 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     if (user == null) {
       return;
     }
+    final isTeacherAnswer = widget.isTeacherPreview || _isCurrentUserTeacher;
+    final restrictionMode = await _currentLearnerRestrictionMode();
+    final blocksPublicPost = _lessonInteractionService.blocksPublicPost(
+      restrictionMode,
+    );
+    if (!isTeacherAnswer && blocksPublicPost && question.isPubliclyVisible) {
+      _showMessage('先生により公開回答への投稿が制限されています。先生のみ公開の質問には回答できます。');
+      return;
+    }
     final threadRootAnswerId = await _resolveThreadRootAnswerIdForPersist(
       question: question,
       draft: draft,
@@ -2121,7 +2451,6 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       return;
     }
     final firestore = FirebaseFirestore.instance;
-    final isTeacherAnswer = widget.isTeacherPreview || _isCurrentUserTeacher;
     final teacherDisplayName = isTeacherAnswer
         ? await _teacherCommentDisplayName(user)
         : null;
@@ -3009,6 +3338,15 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
                                 onToggleModeration: isTeacherPreviewMode
                                     ? _setPublicQuestionModeration
                                     : null,
+                                onOpenRestrictionSettings:
+                                    isTeacherPreviewMode && effectiveIsTeacher
+                                    ? (question) =>
+                                          _openRestrictionDetailsForAuthor(
+                                            authorId: question.authorId,
+                                            authorRole: question.authorRole,
+                                            lessonNumber: question.lessonNumber,
+                                          )
+                                    : null,
                               );
                             }
                             return _AnswerList(
@@ -3059,6 +3397,15 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
                               onToggleModeration: isTeacherPreviewMode
                                   ? _setPublicAnswerModeration
                                   : null,
+                              onOpenRestrictionSettings:
+                                  isTeacherPreviewMode && effectiveIsTeacher
+                                  ? (answer) =>
+                                        _openRestrictionDetailsForAuthor(
+                                          authorId: answer.authorId,
+                                          authorRole: answer.authorRole,
+                                          lessonNumber: answer.lessonNumber,
+                                        )
+                                  : null,
                               isOpeningAnswerDetail:
                                   _openingAnswerDetailFromList,
                             );
@@ -3068,63 +3415,100 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
                           stream: _questionPublicPlatformEnabledStream(),
                           builder: (context, platformSnapshot) {
                             final enabled = platformSnapshot.data ?? true;
-                            if (!enabled && !isTeacherPreviewMode) {
-                              return const Padding(
-                                padding: EdgeInsets.all(16),
-                                child: Text('先生により、このレッスンの公開質問欄は非公開化されています。'),
-                              );
-                            }
-                            return _QuestionList(
-                              questionsStream:
-                                  isTeacherPreviewMode &&
-                                      widget.publicQuestionsStream == null
-                                  ? _teacherPreviewPublicQuestionsStream()
-                                  : _publicQuestionsStream(),
-                              fallbackQuestions:
-                                  isTeacherPreviewMode &&
-                                      widget.publicQuestionsStream == null
-                                  ? _lastTeacherPreviewPublicQuestions
-                                  : _lastPublicQuestions,
-                              query: _query,
-                              currentUserId: _currentUserId,
-                              isCurrentUserTeacher: effectiveIsTeacher,
-                              scrollController: isTeacherPreviewMode
-                                  ? _teacherPreviewPublicScrollController
-                                  : _publicQuestionsScrollController,
-                              listStorageKey: isTeacherPreviewMode
-                                  ? 'teacher-preview-public-questions'
-                                  : 'public-questions',
-                              teacherHiddenQuestionIds: hiddenOwnQuestionIds,
-                              action: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  _buildQuestionSortSelector(
-                                    selectedSort: _publicQuestionsSort,
-                                    onSelected: (selection) {
-                                      setState(() {
-                                        _publicQuestionsSort = selection;
-                                      });
-                                    },
+                            return StreamBuilder<String>(
+                              stream: _learnerRestrictionModeStream(),
+                              builder: (context, restrictionSnapshot) {
+                                final restrictionMode =
+                                    restrictionSnapshot.data ??
+                                    LessonInteractionService
+                                        .learnerRestrictionModeNone;
+                                final blocksPublicRead =
+                                    _lessonInteractionService.blocksPublicRead(
+                                      restrictionMode,
+                                    );
+                                if (!enabled && !isTeacherPreviewMode) {
+                                  return const Padding(
+                                    padding: EdgeInsets.all(16),
+                                    child: Text(
+                                      '先生により、このレッスンの公開質問欄は非公開化されています。',
+                                    ),
+                                  );
+                                }
+                                if (blocksPublicRead && !isTeacherPreviewMode) {
+                                  return const Padding(
+                                    padding: EdgeInsets.all(16),
+                                    child: Text(
+                                      '先生により、このレッスンの公開質問の閲覧は制限されています。',
+                                    ),
+                                  );
+                                }
+                                return _QuestionList(
+                                  questionsStream:
+                                      isTeacherPreviewMode &&
+                                          widget.publicQuestionsStream == null
+                                      ? _teacherPreviewPublicQuestionsStream()
+                                      : _publicQuestionsStream(),
+                                  fallbackQuestions:
+                                      isTeacherPreviewMode &&
+                                          widget.publicQuestionsStream == null
+                                      ? _lastTeacherPreviewPublicQuestions
+                                      : _lastPublicQuestions,
+                                  query: _query,
+                                  currentUserId: _currentUserId,
+                                  isCurrentUserTeacher: effectiveIsTeacher,
+                                  scrollController: isTeacherPreviewMode
+                                      ? _teacherPreviewPublicScrollController
+                                      : _publicQuestionsScrollController,
+                                  listStorageKey: isTeacherPreviewMode
+                                      ? 'teacher-preview-public-questions'
+                                      : 'public-questions',
+                                  teacherHiddenQuestionIds:
+                                      hiddenOwnQuestionIds,
+                                  action: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      _buildQuestionSortSelector(
+                                        selectedSort: _publicQuestionsSort,
+                                        onSelected: (selection) {
+                                          setState(() {
+                                            _publicQuestionsSort = selection;
+                                          });
+                                        },
+                                      ),
+                                      const SizedBox(height: 8),
+                                      if (isTeacherPreviewMode)
+                                        const Text(
+                                          '質問コメントを確認し、返信や公開状態の管理ができます。',
+                                        )
+                                      else
+                                        const Text('公開質問の一覧を確認できます。'),
+                                    ],
                                   ),
-                                  const SizedBox(height: 8),
-                                  if (isTeacherPreviewMode)
-                                    const Text('質問コメントを確認し、返信や公開状態の管理ができます。')
-                                  else
-                                    const Text('公開質問の一覧を確認できます。'),
-                                ],
-                              ),
-                              emptyText: '公開質問はまだありません。',
-                              onTap: (question) => _openQuestionDetail(
-                                question,
-                                isTeacherPreviewMode
-                                    ? _teacherPreviewPublicScrollController
-                                    : _publicQuestionsScrollController,
-                              ),
-                              onDelete: null,
-                              onEdit: null,
-                              onToggleModeration: isTeacherPreviewMode
-                                  ? _setPublicQuestionModeration
-                                  : null,
+                                  emptyText: '公開質問はまだありません。',
+                                  onTap: (question) => _openQuestionDetail(
+                                    question,
+                                    isTeacherPreviewMode
+                                        ? _teacherPreviewPublicScrollController
+                                        : _publicQuestionsScrollController,
+                                  ),
+                                  onDelete: null,
+                                  onEdit: null,
+                                  onToggleModeration: isTeacherPreviewMode
+                                      ? _setPublicQuestionModeration
+                                      : null,
+                                  onOpenRestrictionSettings:
+                                      isTeacherPreviewMode && effectiveIsTeacher
+                                      ? (question) =>
+                                            _openRestrictionDetailsForAuthor(
+                                              authorId: question.authorId,
+                                              authorRole: question.authorRole,
+                                              lessonNumber:
+                                                  question.lessonNumber,
+                                            )
+                                      : null,
+                                );
+                              },
                             );
                           },
                         ),
@@ -3201,6 +3585,7 @@ class _QuestionList extends StatelessWidget {
     required this.listStorageKey,
     this.fallbackQuestions = const <LessonQuestion>[],
     this.onToggleModeration,
+    this.onOpenRestrictionSettings,
     this.teacherHiddenQuestionIds = const <String>{},
     this.questionFilter,
   });
@@ -3218,6 +3603,7 @@ class _QuestionList extends StatelessWidget {
   final String listStorageKey;
   final List<LessonQuestion> fallbackQuestions;
   final ValueChanged<LessonQuestion>? onToggleModeration;
+  final ValueChanged<LessonQuestion>? onOpenRestrictionSettings;
   final Set<String> teacherHiddenQuestionIds;
   final bool Function(LessonQuestion question)? questionFilter;
 
@@ -3290,6 +3676,9 @@ class _QuestionList extends StatelessWidget {
                       onModerate: onToggleModeration == null
                           ? null
                           : () => onToggleModeration!(question),
+                      onModerateDetails: onOpenRestrictionSettings == null
+                          ? null
+                          : () => onOpenRestrictionSettings!(question),
                       moderateLabel: question.isTeacherHidden
                           ? '公開に戻す'
                           : '非公開にする',
@@ -3323,6 +3712,7 @@ class _AnswerList extends StatelessWidget {
     required this.onTap,
     required this.onDelete,
     required this.onToggleModeration,
+    required this.onOpenRestrictionSettings,
     this.isOpeningAnswerDetail = false,
     this.answerFilter,
   });
@@ -3349,6 +3739,7 @@ class _AnswerList extends StatelessWidget {
   onTap;
   final Future<void> Function(LessonQuestionAnswer answer)? onDelete;
   final ValueChanged<LessonQuestionAnswer>? onToggleModeration;
+  final ValueChanged<LessonQuestionAnswer>? onOpenRestrictionSettings;
   final bool isOpeningAnswerDetail;
   final bool Function(LessonQuestionAnswer answer)? answerFilter;
 
@@ -3396,19 +3787,21 @@ class _AnswerList extends StatelessWidget {
                       for (final answer in answers)
                         Builder(
                           builder: (context) {
-                            final parentQuestion = questionMap[answer.questionId];
-                            final parentAnswerId = (answer.parentCommentId ?? '')
-                                .trim();
+                            final parentQuestion =
+                                questionMap[answer.questionId];
+                            final parentAnswerId =
+                                (answer.parentCommentId ?? '').trim();
                             final parentAnswer =
                                 answer.parentCommentType == 'answer'
                                 ? answerMap[parentAnswerId] ??
                                       parentAnswerLookup[parentAnswerId]
                                 : null;
-                            final resolvedReplyTarget = _resolvedReplyTargetDisplay(
-                              answer: answer,
-                              parentQuestion: parentQuestion,
-                              parentAnswer: parentAnswer,
-                            );
+                            final resolvedReplyTarget =
+                                _resolvedReplyTargetDisplay(
+                                  answer: answer,
+                                  parentQuestion: parentQuestion,
+                                  parentAnswer: parentAnswer,
+                                );
                             final parentQuestionId = (parentQuestion?.id ?? '')
                                 .trim();
                             final parentHiddenByMirror =
@@ -3433,7 +3826,8 @@ class _AnswerList extends StatelessWidget {
                               authorId: answer.authorId,
                               authorName: answer.authorName,
                               authorDisplayName: answer.authorDisplayName,
-                              authorAvatarColorName: answer.authorAvatarColorName,
+                              authorAvatarColorName:
+                                  answer.authorAvatarColorName,
                               authorProfileVisible: answer.authorProfileVisible,
                               authorRole: answer.authorRole,
                               postedAt: lessonQuestionAnswerPostedAt(answer),
@@ -3450,7 +3844,8 @@ class _AnswerList extends StatelessWidget {
                               quotedNoteTitle: answer.quotedNoteTitle,
                               quotedNoteBody: answer.quotedNoteBody,
                               replyToAuthorId: answer.replyToAuthorId,
-                              replyToDisplayName: resolvedReplyTarget.displayName,
+                              replyToDisplayName:
+                                  resolvedReplyTarget.displayName,
                               replyToLinkCurrentProfile:
                                   resolvedReplyTarget.linkToCurrentProfile,
                               replyToAuthorRole: answer.replyToAuthorRole,
@@ -3473,6 +3868,10 @@ class _AnswerList extends StatelessWidget {
                               onModerate: onToggleModeration == null
                                   ? null
                                   : () => onToggleModeration!(answer),
+                              onModerateDetails:
+                                  onOpenRestrictionSettings == null
+                                  ? null
+                                  : () => onOpenRestrictionSettings!(answer),
                               moderateLabel:
                                   answer.moderationStatus ==
                                       lessonNoteModerationHiddenByTeacher
@@ -3557,6 +3956,7 @@ class _CommentBubble extends StatelessWidget {
     this.onEdit,
     this.onDelete,
     this.onModerate,
+    this.onModerateDetails,
     this.moderateLabel,
     this.moderationNotice,
     this.bottomInlineAction,
@@ -3590,6 +3990,7 @@ class _CommentBubble extends StatelessWidget {
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
   final VoidCallback? onModerate;
+  final VoidCallback? onModerateDetails;
   final String? moderateLabel;
   final String? moderationNotice;
   final Widget? bottomInlineAction;
@@ -3677,7 +4078,11 @@ class _CommentBubble extends StatelessWidget {
     final createdAtText = _formatCommentTimestamp(postedAt);
     final safeModerationNotice = (moderationNotice ?? '').trim();
     final canOperate =
-        isOwner || isTeacher || onReply != null || onModerate != null;
+        isOwner ||
+        isTeacher ||
+        onReply != null ||
+        onModerate != null ||
+        onModerateDetails != null;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
@@ -3848,6 +4253,8 @@ class _CommentBubble extends StatelessWidget {
                                 onDelete?.call();
                               case _CommentAction.moderate:
                                 onModerate?.call();
+                              case _CommentAction.moderateDetails:
+                                onModerateDetails?.call();
                             }
                           },
                           itemBuilder: (context) => [
@@ -3870,6 +4277,11 @@ class _CommentBubble extends StatelessWidget {
                               PopupMenuItem(
                                 value: _CommentAction.moderate,
                                 child: Text(moderateLabel ?? '公開状態を変更'),
+                              ),
+                            if (onModerateDetails != null)
+                              const PopupMenuItem(
+                                value: _CommentAction.moderateDetails,
+                                child: Text('非公開詳細設定'),
                               ),
                           ],
                         ),
@@ -3896,7 +4308,7 @@ class _CommentBubble extends StatelessWidget {
   }
 }
 
-enum _CommentAction { reply, edit, delete, moderate }
+enum _CommentAction { reply, edit, delete, moderate, moderateDetails }
 
 const String _replyBodyUnavailableText = '現在は見ることができません。';
 
@@ -4702,6 +5114,7 @@ String _replyBodyPreviewForDisplay({
     }
     return _replyBodyUnavailableText;
   }
+
   if (answer.parentCommentType == 'answer') {
     if (_canUseLatestAnswerReplyTargetDisplayName(parentAnswer)) {
       final body = parentAnswer!.body.trim();

@@ -6,6 +6,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
+import '../models/course_participant_identity.dart';
 import '../models/lesson_note.dart';
 import '../models/public_user_profile.dart';
 import '../services/course_identity_service.dart';
@@ -26,6 +27,7 @@ class LessonNotesPage extends StatelessWidget {
     this.foldersStream,
     this.initialFocusNoteId,
     this.teacherHiddenOwnNoteIdsStream,
+    this.publicRestrictionModeStream,
   });
 
   final Course course;
@@ -36,6 +38,7 @@ class LessonNotesPage extends StatelessWidget {
   final Stream<List<LessonNoteFolder>>? foldersStream;
   final String? initialFocusNoteId;
   final Stream<Set<String>>? teacherHiddenOwnNoteIdsStream;
+  final Stream<String>? publicRestrictionModeStream;
 
   @override
   Widget build(BuildContext context) {
@@ -50,6 +53,7 @@ class LessonNotesPage extends StatelessWidget {
         foldersStream: foldersStream,
         initialFocusNoteId: initialFocusNoteId,
         teacherHiddenOwnNoteIdsStream: teacherHiddenOwnNoteIdsStream,
+        publicRestrictionModeStream: publicRestrictionModeStream,
       ),
     );
   }
@@ -68,6 +72,7 @@ class LessonNotesPanel extends StatefulWidget {
     this.isTeacherPreview = false,
     this.initialFocusNoteId,
     this.teacherHiddenOwnNoteIdsStream,
+    this.publicRestrictionModeStream,
   });
 
   final Course course;
@@ -80,6 +85,7 @@ class LessonNotesPanel extends StatefulWidget {
   final bool isTeacherPreview;
   final String? initialFocusNoteId;
   final Stream<Set<String>>? teacherHiddenOwnNoteIdsStream;
+  final Stream<String>? publicRestrictionModeStream;
 
   @override
   State<LessonNotesPanel> createState() => _LessonNotesPanelState();
@@ -98,6 +104,10 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   Stream<List<LessonNote>>? _providedNotesBroadcast;
   Stream<List<LessonNote>>? _providedPublicNotesSource;
   Stream<List<LessonNote>>? _providedPublicNotesBroadcast;
+  Stream<bool>? _cachedNotePublicPlatformEnabledStream;
+  String? _cachedNotePublicPlatformEnabledStreamKey;
+  Stream<String>? _cachedLearnerRestrictionModeStream;
+  Object? _cachedLearnerRestrictionModeStreamKey;
   LessonNotePublicSort _ownSort = LessonNotePublicSort.newest;
   LessonNotePublicSort _publicSort = LessonNotePublicSort.newest;
   final Set<String> _processingPublicApprovalNoteIds = <String>{};
@@ -114,6 +124,73 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
         courseId: _courseId,
         lessonNumber: widget.lessonNumber,
       );
+
+  String? get _currentUserId =>
+      Firebase.apps.isEmpty ? null : FirebaseAuth.instance.currentUser?.uid;
+
+  bool get _isCurrentUserInstructor {
+    final userId = _currentUserId;
+    return userId != null &&
+        userId.isNotEmpty &&
+        widget.course.instructorId == userId;
+  }
+
+  Stream<String> _learnerRestrictionModeStream() {
+    final cacheKey = Object.hash(
+      widget.publicRestrictionModeStream,
+      widget.lessonNumber,
+      _currentUserId,
+      widget.isTeacherPreview,
+      _isCurrentUserInstructor,
+      _courseId,
+    );
+    if (_cachedLearnerRestrictionModeStream != null &&
+        _cachedLearnerRestrictionModeStreamKey == cacheKey) {
+      return _cachedLearnerRestrictionModeStream!;
+    }
+    final provided = widget.publicRestrictionModeStream;
+    late final Stream<String> stream;
+    if (provided != null) {
+      stream = provided.map(
+        _lessonInteractionService.normalizeLearnerRestrictionMode,
+      );
+    } else {
+      final userId = _currentUserId;
+      if (widget.isTeacherPreview ||
+          _isCurrentUserInstructor ||
+          userId == null ||
+          userId.isEmpty) {
+        stream = Stream.value(
+          LessonInteractionService.learnerRestrictionModeNone,
+        );
+      } else {
+        stream = _lessonInteractionService.learnerRestrictionModeStream(
+          courseId: _courseId,
+          lessonNumber: widget.lessonNumber,
+          learnerId: userId,
+        );
+      }
+    }
+    final broadcast = stream.asBroadcastStream();
+    _cachedLearnerRestrictionModeStream = broadcast;
+    _cachedLearnerRestrictionModeStreamKey = cacheKey;
+    return broadcast;
+  }
+
+  Future<String> _currentLearnerRestrictionMode() async {
+    final userId = _currentUserId;
+    if (widget.isTeacherPreview ||
+        _isCurrentUserInstructor ||
+        userId == null ||
+        userId.isEmpty) {
+      return LessonInteractionService.learnerRestrictionModeNone;
+    }
+    return _lessonInteractionService.learnerRestrictionMode(
+      courseId: _courseId,
+      lessonNumber: widget.lessonNumber,
+      learnerId: userId,
+    );
+  }
 
   @override
   void dispose() {
@@ -293,11 +370,22 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   }
 
   Stream<bool> _notePublicPlatformEnabledStream() {
-    return _lessonInteractionService.publicFeatureEnabledStream(
-      courseId: _courseId,
-      lessonNumber: widget.lessonNumber,
-      fieldName: LessonInteractionService.lessonNotesPublicEnabledField,
-    );
+    final cacheKey =
+        '$_courseId:${widget.lessonNumber}:${widget.isTeacherPreview}';
+    if (_cachedNotePublicPlatformEnabledStream != null &&
+        _cachedNotePublicPlatformEnabledStreamKey == cacheKey) {
+      return _cachedNotePublicPlatformEnabledStream!;
+    }
+    final stream = _lessonInteractionService
+        .publicFeatureEnabledStream(
+          courseId: _courseId,
+          lessonNumber: widget.lessonNumber,
+          fieldName: LessonInteractionService.lessonNotesPublicEnabledField,
+        )
+        .asBroadcastStream();
+    _cachedNotePublicPlatformEnabledStream = stream;
+    _cachedNotePublicPlatformEnabledStreamKey = cacheKey;
+    return stream;
   }
 
   Future<bool> _isNotePublicPlatformEnabled() async {
@@ -306,6 +394,248 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       lessonNumber: widget.lessonNumber,
       fieldName: LessonInteractionService.lessonNotesPublicEnabledField,
     );
+  }
+
+  Future<CourseParticipantIdentity> _loadParticipantIdentity(
+    String learnerId,
+  ) async {
+    final safeLearnerId = learnerId.trim();
+    if (Firebase.apps.isEmpty || safeLearnerId.isEmpty) {
+      return CourseParticipantIdentity(
+        courseId: _courseId,
+        userId: safeLearnerId,
+        identityMode: courseIdentityModeProfile,
+        aliasConfiguredAtEnrollment: false,
+        aliasRetired: false,
+      );
+    }
+    final doc = await FirebaseFirestore.instance
+        .collection('courses')
+        .doc(_courseId)
+        .collection('participantIdentities')
+        .doc(safeLearnerId)
+        .get();
+    if (doc.exists) {
+      return CourseParticipantIdentity.fromFirestore(doc);
+    }
+    return CourseParticipantIdentity(
+      courseId: _courseId,
+      userId: safeLearnerId,
+      identityMode: courseIdentityModeProfile,
+      aliasConfiguredAtEnrollment: false,
+      aliasRetired: false,
+    );
+  }
+
+  Future<void> _openRestrictionDetailsFromNote(LessonNote note) async {
+    if (!widget.isTeacherPreview) {
+      return;
+    }
+    final learnerId = note.authorId.trim();
+    if (learnerId.isEmpty) {
+      _showMessage('受講者情報を特定できないため設定を開けません。');
+      return;
+    }
+    if (learnerId == widget.course.instructorId) {
+      _showMessage('先生投稿は受講者制限の対象外です。');
+      return;
+    }
+    final identity = await _loadParticipantIdentity(learnerId);
+    final currentMode = await _lessonInteractionService.learnerRestrictionMode(
+      courseId: _courseId,
+      lessonNumber: note.lessonNumber,
+      learnerId: identity.userId,
+    );
+    if (!mounted) {
+      return;
+    }
+    await _openLearnerRestrictionDialog(
+      lessonNumber: note.lessonNumber,
+      identity: identity,
+      currentMode: currentMode,
+    );
+  }
+
+  Future<void> _openLearnerRestrictionDialog({
+    required int lessonNumber,
+    required CourseParticipantIdentity identity,
+    required String currentMode,
+  }) async {
+    final user = Firebase.apps.isEmpty
+        ? null
+        : FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return;
+    }
+    var selectedMode = _lessonInteractionService
+        .normalizeLearnerRestrictionMode(currentMode);
+    var bulkHide = false;
+    var bulkUnhide = false;
+    var bulkUnhidePolicy =
+        LessonInteractionService.bulkUnhideKeepIndividualHidden;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            return AlertDialog(
+              title: const Text('非公開詳細設定'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('対象ユーザー: ${identity.userId}'),
+                    const SizedBox(height: 8),
+                    Text('レッスン$lessonNumber'),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: selectedMode,
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        labelText: '制限モード',
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: LessonInteractionService
+                              .learnerRestrictionModeNone,
+                          child: Text('制限なし'),
+                        ),
+                        DropdownMenuItem(
+                          value: LessonInteractionService
+                              .learnerRestrictionModeNoPublicReadOrPost,
+                          child: Text('公開欄の閲覧と投稿を制限'),
+                        ),
+                        DropdownMenuItem(
+                          value: LessonInteractionService
+                              .learnerRestrictionModeNoPublicPost,
+                          child: Text('公開欄への投稿のみ制限'),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        setDialogState(() {
+                          selectedMode = _lessonInteractionService
+                              .normalizeLearnerRestrictionMode(value);
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: bulkHide,
+                      title: const Text('既存公開投稿を一括で非公開にする'),
+                      onChanged: (value) {
+                        setDialogState(() {
+                          bulkHide = value == true;
+                          if (bulkHide) {
+                            bulkUnhide = false;
+                          }
+                        });
+                      },
+                    ),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: bulkUnhide,
+                      title: const Text('既存公開投稿を一括で公開に戻す'),
+                      onChanged: (value) {
+                        setDialogState(() {
+                          bulkUnhide = value == true;
+                          if (bulkUnhide) {
+                            bulkHide = false;
+                          }
+                        });
+                      },
+                    ),
+                    if (bulkUnhide) ...[
+                      const SizedBox(height: 8),
+                      const Text('一括公開の方針'),
+                      RadioListTile<String>(
+                        contentPadding: EdgeInsets.zero,
+                        value: LessonInteractionService
+                            .bulkUnhideKeepIndividualHidden,
+                        groupValue: bulkUnhidePolicy,
+                        title: const Text('A: 個別非公開は維持'),
+                        onChanged: (value) {
+                          setDialogState(() {
+                            bulkUnhidePolicy =
+                                value ??
+                                LessonInteractionService
+                                    .bulkUnhideKeepIndividualHidden;
+                          });
+                        },
+                      ),
+                      RadioListTile<String>(
+                        contentPadding: EdgeInsets.zero,
+                        value:
+                            LessonInteractionService.bulkUnhideForceAllVisible,
+                        groupValue: bulkUnhidePolicy,
+                        title: const Text('B: すべて公開に戻す'),
+                        onChanged: (value) {
+                          setDialogState(() {
+                            bulkUnhidePolicy =
+                                value ??
+                                LessonInteractionService
+                                    .bulkUnhideKeepIndividualHidden;
+                          });
+                        },
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(false),
+                  child: const Text('キャンセル'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(true),
+                  child: const Text('保存する'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (confirmed != true) {
+      return;
+    }
+    try {
+      await _lessonInteractionService.setLearnerRestrictionMode(
+        courseId: _courseId,
+        lessonNumber: lessonNumber,
+        learnerId: identity.userId,
+        restrictionMode: selectedMode,
+        updatedByUserId: user.uid,
+      );
+      var affected = 0;
+      if (bulkHide) {
+        affected = await _lessonInteractionService
+            .setBulkModerationForLearnerPublicPosts(
+              courseId: _courseId,
+              lessonNumber: lessonNumber,
+              learnerId: identity.userId,
+              hide: true,
+            );
+      } else if (bulkUnhide) {
+        affected = await _lessonInteractionService
+            .setBulkModerationForLearnerPublicPosts(
+              courseId: _courseId,
+              lessonNumber: lessonNumber,
+              learnerId: identity.userId,
+              hide: false,
+              unhidePolicy: bulkUnhidePolicy,
+            );
+      }
+      _showMessage(
+        affected > 0 ? '設定を保存しました。公開状態更新: $affected件' : '設定を保存しました。',
+      );
+    } on FirebaseException catch (error) {
+      _showMessage(error.message ?? '設定の保存に失敗しました。');
+    } catch (error) {
+      _showMessage('設定の保存に失敗しました: $error');
+    }
   }
 
   void _showMessage(String message) {
@@ -693,6 +1023,14 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
           : draft.visibility == LessonNoteVisibility.teacherOnly
           ? lessonNoteVisibilityTeacherOnly
           : lessonNoteVisibilityPrivate;
+      final restrictionMode = await _currentLearnerRestrictionMode();
+      final blocksPublicPost = _lessonInteractionService.blocksPublicPost(
+        restrictionMode,
+      );
+      if (blocksPublicPost && visibility == lessonNoteVisibilityPublic) {
+        _showMessage('先生により公開メモへの投稿が制限されています。非公開または先生のみ公開で保存してください。');
+        return false;
+      }
       final now = FieldValue.serverTimestamp();
       final authorName = user.displayName ?? user.email ?? '学習者';
       final courseInstructorId = widget.course.instructorId?.trim() ?? '';
@@ -1581,63 +1919,86 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       stream: _notePublicPlatformEnabledStream(),
       builder: (context, platformSnapshot) {
         final enabled = platformSnapshot.data == true;
-        return _LessonNoteList(
-          notesStream: enabled
-              ? widget.isTeacherPreview && widget.publicNotesStream == null
-                    ? _teacherPreviewPublicNotesStream()
-                    : _publicNotesStream()
-              : Stream.value(const []),
-          query: _query,
-          emptyText: enabled ? '公開メモはまだありません。' : '公開メモ欄は非公開化されています。',
-          onTap: _openPublicNotePreview,
-          showAuthor: true,
-          onToggleModeration: widget.isTeacherPreview
-              ? _setPublicNoteModeration
-              : null,
-          onResolvePublicApproval: widget.isTeacherPreview
-              ? _handleTeacherPublicApprovalTap
-              : null,
-          isPublicApprovalProcessing: widget.isTeacherPreview
-              ? _isPublicApprovalProcessing
-              : null,
-          isPublicApprovalBellSuppressed: widget.isTeacherPreview
-              ? _isPublicApprovalBellSuppressed
-              : null,
-          action: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              SegmentedButton<LessonNotePublicSort>(
-                segments: const [
-                  ButtonSegment(
-                    value: LessonNotePublicSort.newest,
-                    label: Text('新しい順'),
+        return StreamBuilder<String>(
+          stream: _learnerRestrictionModeStream(),
+          builder: (context, restrictionSnapshot) {
+            final restrictionMode =
+                restrictionSnapshot.data ??
+                LessonInteractionService.learnerRestrictionModeNone;
+            final blocksPublicRead = _lessonInteractionService.blocksPublicRead(
+              restrictionMode,
+            );
+            final canReadPublic = enabled && !blocksPublicRead;
+            return _LessonNoteList(
+              notesStream: canReadPublic
+                  ? widget.isTeacherPreview && widget.publicNotesStream == null
+                        ? _teacherPreviewPublicNotesStream()
+                        : _publicNotesStream()
+                  : Stream.value(const []),
+              query: _query,
+              emptyText: !enabled
+                  ? '公開メモ欄は非公開化されています。'
+                  : blocksPublicRead
+                  ? '先生により公開メモの閲覧が制限されています。'
+                  : '公開メモはまだありません。',
+              onTap: _openPublicNotePreview,
+              showAuthor: true,
+              onToggleModeration: widget.isTeacherPreview
+                  ? _setPublicNoteModeration
+                  : null,
+              onOpenRestrictionSettings: widget.isTeacherPreview
+                  ? _openRestrictionDetailsFromNote
+                  : null,
+              onResolvePublicApproval: widget.isTeacherPreview
+                  ? _handleTeacherPublicApprovalTap
+                  : null,
+              isPublicApprovalProcessing: widget.isTeacherPreview
+                  ? _isPublicApprovalProcessing
+                  : null,
+              isPublicApprovalBellSuppressed: widget.isTeacherPreview
+                  ? _isPublicApprovalBellSuppressed
+                  : null,
+              action: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  SegmentedButton<LessonNotePublicSort>(
+                    segments: const [
+                      ButtonSegment(
+                        value: LessonNotePublicSort.newest,
+                        label: Text('新しい順'),
+                      ),
+                      ButtonSegment(
+                        value: LessonNotePublicSort.popular,
+                        label: Text('人気順'),
+                      ),
+                      ButtonSegment(
+                        value: LessonNotePublicSort.editedNewest,
+                        label: Text('編集の新しい順'),
+                      ),
+                    ],
+                    selected: {_publicSort},
+                    onSelectionChanged: canReadPublic
+                        ? (selection) {
+                            setState(() {
+                              _publicSort = selection.first;
+                            });
+                          }
+                        : null,
                   ),
-                  ButtonSegment(
-                    value: LessonNotePublicSort.popular,
-                    label: Text('人気順'),
-                  ),
-                  ButtonSegment(
-                    value: LessonNotePublicSort.editedNewest,
-                    label: Text('編集の新しい順'),
-                  ),
+                  if (!enabled) ...[
+                    const SizedBox(height: 8),
+                    const Text('先生により、このレッスンの公開メモ欄は非公開化されています。'),
+                  ],
+                  if (blocksPublicRead) ...[
+                    const SizedBox(height: 8),
+                    const Text('先生により、このレッスンの公開メモ閲覧は制限されています。'),
+                  ],
+                  const SizedBox(height: 8),
+                  const Text('コピー・評価・お気に入りは後で追加します。'),
                 ],
-                selected: {_publicSort},
-                onSelectionChanged: enabled
-                    ? (selection) {
-                        setState(() {
-                          _publicSort = selection.first;
-                        });
-                      }
-                    : null,
               ),
-              if (!enabled) ...[
-                const SizedBox(height: 8),
-                const Text('先生により、このレッスンの公開メモ欄は非公開化されています。'),
-              ],
-              const SizedBox(height: 8),
-              const Text('コピー・評価・お気に入りは後で追加します。'),
-            ],
-          ),
+            );
+          },
         );
       },
     );
@@ -1707,6 +2068,7 @@ class _LessonNoteList extends StatefulWidget {
     this.onDeleteNote,
     this.onDeleteFolder,
     this.onToggleModeration,
+    this.onOpenRestrictionSettings,
     this.onApprovalNoticeTap,
     this.onResolvePublicApproval,
     this.isPublicApprovalProcessing,
@@ -1725,6 +2087,7 @@ class _LessonNoteList extends StatefulWidget {
   final ValueChanged<LessonNote>? onDeleteNote;
   final ValueChanged<LessonNoteFolder>? onDeleteFolder;
   final ValueChanged<LessonNote>? onToggleModeration;
+  final ValueChanged<LessonNote>? onOpenRestrictionSettings;
   final ValueChanged<LessonNote>? onApprovalNoticeTap;
   final ValueChanged<LessonNote>? onResolvePublicApproval;
   final bool Function(LessonNote note)? isPublicApprovalProcessing;
@@ -1806,6 +2169,7 @@ class _LessonNoteListState extends State<_LessonNoteList> {
       showTeacherHiddenNotice: showTeacherHiddenNotice,
       onDelete: widget.onDeleteNote,
       onToggleModeration: widget.onToggleModeration,
+      onOpenRestrictionSettings: widget.onOpenRestrictionSettings,
       onApprovalNoticeTap: widget.onApprovalNoticeTap,
       onResolvePublicApproval: widget.onResolvePublicApproval,
       isPublicApprovalProcessing:
@@ -2005,6 +2369,7 @@ class _LessonNoteCard extends StatelessWidget {
     this.showTeacherHiddenNotice = false,
     this.onDelete,
     this.onToggleModeration,
+    this.onOpenRestrictionSettings,
     this.onApprovalNoticeTap,
     this.onResolvePublicApproval,
     this.isPublicApprovalProcessing = false,
@@ -2018,6 +2383,7 @@ class _LessonNoteCard extends StatelessWidget {
   final bool showTeacherHiddenNotice;
   final ValueChanged<LessonNote>? onDelete;
   final ValueChanged<LessonNote>? onToggleModeration;
+  final ValueChanged<LessonNote>? onOpenRestrictionSettings;
   final ValueChanged<LessonNote>? onApprovalNoticeTap;
   final ValueChanged<LessonNote>? onResolvePublicApproval;
   final bool isPublicApprovalProcessing;
@@ -2031,6 +2397,7 @@ class _LessonNoteCard extends StatelessWidget {
         note: note,
         onTap: onTap,
         onToggleModeration: onToggleModeration,
+        onOpenRestrictionSettings: onOpenRestrictionSettings,
         onResolvePublicApproval: onResolvePublicApproval,
         isPublicApprovalProcessing: isPublicApprovalProcessing,
         suppressPublicApprovalBell: suppressPublicApprovalBell,
@@ -2141,6 +2508,7 @@ class _PublicLessonNoteCard extends StatelessWidget {
     required this.note,
     required this.onTap,
     required this.onToggleModeration,
+    required this.onOpenRestrictionSettings,
     required this.onResolvePublicApproval,
     required this.isPublicApprovalProcessing,
     required this.suppressPublicApprovalBell,
@@ -2149,6 +2517,7 @@ class _PublicLessonNoteCard extends StatelessWidget {
   final LessonNote note;
   final ValueChanged<LessonNote>? onTap;
   final ValueChanged<LessonNote>? onToggleModeration;
+  final ValueChanged<LessonNote>? onOpenRestrictionSettings;
   final ValueChanged<LessonNote>? onResolvePublicApproval;
   final bool isPublicApprovalProcessing;
   final bool suppressPublicApprovalBell;
@@ -2354,6 +2723,11 @@ class _PublicLessonNoteCard extends StatelessWidget {
                               child: Text(
                                 note.isTeacherHidden ? '公開に戻す' : '非公開にする',
                               ),
+                            ),
+                          if (onOpenRestrictionSettings != null)
+                            TextButton(
+                              onPressed: () => onOpenRestrictionSettings!(note),
+                              child: const Text('非公開詳細設定'),
                             ),
                         ],
                       ),
