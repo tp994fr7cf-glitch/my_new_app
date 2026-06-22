@@ -104,6 +104,32 @@ class LessonInteractionService {
         normalized == learnerRestrictionModeNoPublicReadOrPost;
   }
 
+  bool blocksOthersFromAnsweringPublicQuestion({
+    required String questionAuthorId,
+    required String questionAuthorRole,
+    required String? actingUserId,
+    required String questionAuthorRestrictionMode,
+    required bool questionIsPubliclyVisible,
+    required bool isActingUserTeacher,
+    required bool isTeacherPreview,
+  }) {
+    if (isTeacherPreview || isActingUserTeacher) {
+      return false;
+    }
+    if (!questionIsPubliclyVisible || questionAuthorRole == 'teacher') {
+      return false;
+    }
+    final safeAuthorId = questionAuthorId.trim();
+    final safeActingUserId = (actingUserId ?? '').trim();
+    if (safeAuthorId.isEmpty || safeActingUserId.isEmpty) {
+      return false;
+    }
+    if (safeAuthorId == safeActingUserId) {
+      return false;
+    }
+    return blocksPublicPost(questionAuthorRestrictionMode);
+  }
+
   Stream<String> learnerRestrictionModeStream({
     required String courseId,
     required int lessonNumber,

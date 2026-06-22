@@ -781,10 +781,7 @@ void main() {
       await tester.tap(find.widgetWithText(ChoiceChip, '回答'));
       await tester.pumpAndSettle();
 
-      expect(
-        find.text('補完された親回答プレビューを確認したい返信です。'),
-        findsOneWidget,
-      );
+      expect(find.text('補完された親回答プレビューを確認したい返信です。'), findsOneWidget);
       expect(find.textContaining('現在は見ることができません。'), findsNothing);
       expect(find.textContaining('いまは公開されている親回答です。'), findsOneWidget);
     },
@@ -1735,7 +1732,8 @@ void main() {
   testWidgets(
     'Switching question detail ignores answers from previous question stream emissions',
     (tester) async {
-      final questionsController = StreamController<List<LessonQuestion>>.broadcast();
+      final questionsController =
+          StreamController<List<LessonQuestion>>.broadcast();
       final answersController =
           StreamController<List<LessonQuestionAnswer>>.broadcast();
       addTearDown(questionsController.close);
@@ -1845,7 +1843,8 @@ void main() {
   testWidgets(
     'Switching question detail does not revive previous answers on empty transitions',
     (tester) async {
-      final questionsController = StreamController<List<LessonQuestion>>.broadcast();
+      final questionsController =
+          StreamController<List<LessonQuestion>>.broadcast();
       final answersController =
           StreamController<List<LessonQuestionAnswer>>.broadcast();
       addTearDown(questionsController.close);
@@ -2088,6 +2087,95 @@ void main() {
     expect(find.text('回答コメントを書く'), findsNothing);
     expect(find.text('先生からの公開回答です。'), findsOneWidget);
     expect(find.text('学習者にも公開 / 先生だけ回答可'), findsWidgets);
+  });
+
+  testWidgets('Learner cannot answer restricted author public question', (
+    tester,
+  ) async {
+    const question = LessonQuestion(
+      id: 'restricted-author-public-question',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '',
+      body: '制限中の受講者が投稿した公開質問です。',
+      visibility: LessonQuestionVisibility.public,
+      target: LessonQuestionTarget.everyone,
+      attachmentTypes: [],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonQuestionsPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            currentUserIdOverride: 'student-b',
+            initialSelectedQuestion: question,
+            answersStream: Stream.value(const []),
+            questionAuthorRestrictionModeStreamBuilder: (_) {
+              return Stream.value(
+                LessonInteractionService.learnerRestrictionModeNoPublicPost,
+              );
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('質問詳細'), findsOneWidget);
+    expect(find.text('回答コメントを書く'), findsNothing);
+    expect(find.text('回答を投稿'), findsNothing);
+  });
+
+  testWidgets('Teacher preview can answer restricted author public question', (
+    tester,
+  ) async {
+    const question = LessonQuestion(
+      id: 'restricted-author-public-question-teacher',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '',
+      body: '制限中の受講者が投稿した公開質問です。',
+      visibility: LessonQuestionVisibility.public,
+      target: LessonQuestionTarget.everyone,
+      attachmentTypes: [],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonQuestionsPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            isTeacherPreview: true,
+            currentUserIdOverride: 'teacher-a',
+            initialSelectedQuestion: question,
+            answersStream: Stream.value(const []),
+            questionAuthorRestrictionModeStreamBuilder: (_) {
+              return Stream.value(
+                LessonInteractionService.learnerRestrictionModeNoPublicPost,
+              );
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('質問詳細'), findsOneWidget);
+    expect(find.text('回答コメントを書く'), findsOneWidget);
+    expect(find.text('回答を投稿'), findsOneWidget);
   });
 
   testWidgets('Teacher preview opens public question detail with moderation', (
@@ -2906,7 +2994,8 @@ void main() {
               publicQuestionsStream: Stream.value(const [publicQuestion]),
               answersStream: Stream.value(const []),
               publicRestrictionModeStream: Stream.value(
-                LessonInteractionService.learnerRestrictionModeNoPublicReadOrPost,
+                LessonInteractionService
+                    .learnerRestrictionModeNoPublicReadOrPost,
               ),
             ),
           ),
@@ -2917,10 +3006,7 @@ void main() {
       await tester.tap(find.text('公開質問'));
       await tester.pumpAndSettle();
 
-      expect(
-        find.text('先生により、このレッスンの公開質問の閲覧は制限されています。'),
-        findsOneWidget,
-      );
+      expect(find.text('先生により、このレッスンの公開質問の閲覧は制限されています。'), findsOneWidget);
       expect(find.text('制限時に表示されない公開質問'), findsNothing);
     },
   );

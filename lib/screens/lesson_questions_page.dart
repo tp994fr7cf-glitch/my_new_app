@@ -49,6 +49,8 @@ class LessonQuestionsPanel extends StatefulWidget {
     this.teacherHiddenOwnQuestionIdsStream,
     this.activeRoleStateStream,
     this.publicRestrictionModeStream,
+    this.questionAuthorRestrictionModeStreamBuilder,
+    this.currentUserIdOverride,
   });
 
   final Course course;
@@ -67,6 +69,9 @@ class LessonQuestionsPanel extends StatefulWidget {
   final Stream<Set<String>>? teacherHiddenOwnQuestionIdsStream;
   final Stream<LessonQuestionsActiveRoleState>? activeRoleStateStream;
   final Stream<String>? publicRestrictionModeStream;
+  final Stream<String> Function(LessonQuestion question)?
+  questionAuthorRestrictionModeStreamBuilder;
+  final String? currentUserIdOverride;
 
   @override
   State<LessonQuestionsPanel> createState() => _LessonQuestionsPanelState();
@@ -151,8 +156,15 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
 
   String get _courseId => widget.course.storageId;
 
-  String? get _currentUserId =>
-      Firebase.apps.isEmpty ? null : FirebaseAuth.instance.currentUser?.uid;
+  String? get _currentUserId {
+    final override = (widget.currentUserIdOverride ?? '').trim();
+    if (override.isNotEmpty) {
+      return override;
+    }
+    return Firebase.apps.isEmpty
+        ? null
+        : FirebaseAuth.instance.currentUser?.uid;
+  }
 
   bool get _isCurrentUserTeacher =>
       _activeRoleIsTeacher &&
@@ -213,6 +225,75 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       courseId: _courseId,
       lessonNumber: widget.lessonNumber,
       learnerId: userId,
+    );
+  }
+
+  Stream<String> _questionAuthorRestrictionModeStream(LessonQuestion question) {
+    final providedBuilder = widget.questionAuthorRestrictionModeStreamBuilder;
+    if (providedBuilder != null) {
+      return providedBuilder(
+        question,
+      ).map(_lessonInteractionService.normalizeLearnerRestrictionMode);
+    }
+    final safeAuthorId = question.authorId.trim();
+    if (widget.isTeacherPreview ||
+        _isCurrentUserTeacher ||
+        !question.isPubliclyVisible ||
+        question.authorRole == 'teacher' ||
+        safeAuthorId.isEmpty ||
+        Firebase.apps.isEmpty) {
+      return Stream.value(LessonInteractionService.learnerRestrictionModeNone);
+    }
+    return _lessonInteractionService.learnerRestrictionModeStream(
+      courseId: _courseId,
+      lessonNumber: widget.lessonNumber,
+      learnerId: safeAuthorId,
+    );
+  }
+
+  Future<String> _currentQuestionAuthorRestrictionMode(
+    LessonQuestion question,
+  ) async {
+    final providedBuilder = widget.questionAuthorRestrictionModeStreamBuilder;
+    if (providedBuilder != null) {
+      try {
+        return _lessonInteractionService.normalizeLearnerRestrictionMode(
+          await providedBuilder(question).first,
+        );
+      } catch (_) {
+        return LessonInteractionService.learnerRestrictionModeNone;
+      }
+    }
+    final safeAuthorId = question.authorId.trim();
+    if (widget.isTeacherPreview ||
+        _isCurrentUserTeacher ||
+        !question.isPubliclyVisible ||
+        question.authorRole == 'teacher' ||
+        safeAuthorId.isEmpty ||
+        Firebase.apps.isEmpty) {
+      return LessonInteractionService.learnerRestrictionModeNone;
+    }
+    return _lessonInteractionService.learnerRestrictionMode(
+      courseId: _courseId,
+      lessonNumber: widget.lessonNumber,
+      learnerId: safeAuthorId,
+    );
+  }
+
+  bool _isAnswerBlockedByQuestionAuthorRestriction({
+    required LessonQuestion question,
+    required String questionAuthorRestrictionMode,
+    required String? actingUserId,
+    required bool isActingUserTeacher,
+  }) {
+    return _lessonInteractionService.blocksOthersFromAnsweringPublicQuestion(
+      questionAuthorId: question.authorId,
+      questionAuthorRole: question.authorRole,
+      actingUserId: actingUserId,
+      questionAuthorRestrictionMode: questionAuthorRestrictionMode,
+      questionIsPubliclyVisible: question.isPubliclyVisible,
+      isActingUserTeacher: isActingUserTeacher,
+      isTeacherPreview: widget.isTeacherPreview,
     );
   }
 
@@ -2437,6 +2518,19 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       _showMessage('先生により公開回答への投稿が制限されています。先生のみ公開の質問には回答できます。');
       return;
     }
+    final questionAuthorRestrictionMode =
+        await _currentQuestionAuthorRestrictionMode(question);
+    final blockedByQuestionAuthorRestriction =
+        _isAnswerBlockedByQuestionAuthorRestriction(
+          question: question,
+          questionAuthorRestrictionMode: questionAuthorRestrictionMode,
+          actingUserId: user.uid,
+          isActingUserTeacher: isTeacherAnswer,
+        );
+    if (blockedByQuestionAuthorRestriction) {
+      _showMessage('この公開質問は、質問投稿者が先生により公開欄への投稿を制限されているため、他の受講者は回答コメントできません。');
+      return;
+    }
     final threadRootAnswerId = await _resolveThreadRootAnswerIdForPersist(
       question: question,
       draft: draft,
@@ -3139,33 +3233,53 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
           if (currentQuestion.isDeleted) {
             return _DeletedQuestionNotice(onBack: _backToQuestionList);
           }
-          return _LessonQuestionDetail(
-            question: currentQuestion,
-            answersStream: widget.isTeacherPreview
-                ? _teacherPreviewAnswersStream(currentQuestion)
-                : _answersStream(currentQuestion),
-            quotableNotesStream: _sharedQuotableNotesStream,
-            currentUserId: _currentUserId,
-            isCurrentUserTeacher: widget.isTeacherPreview
-                ? true
-                : _isCurrentUserTeacher,
-            canAnswer: _canCurrentUserAnswerQuestion(currentQuestion),
-            highlightedAnswerId: _currentHighlightedAnswerId,
-            onBack: _backToQuestionList,
-            onSaveAnswer: (draft) => _saveAnswer(currentQuestion, draft),
-            onToggleQuestionModeration: widget.isTeacherPreview
-                ? () => _setPublicQuestionModeration(currentQuestion)
-                : null,
-            onDeleteQuestion: () async {
-              await _deleteQuestion(currentQuestion);
-              if (mounted) {
-                _backToQuestionList();
-              }
+          final isCurrentUserTeacher = widget.isTeacherPreview
+              ? true
+              : _isCurrentUserTeacher;
+          return StreamBuilder<String>(
+            stream: _questionAuthorRestrictionModeStream(currentQuestion),
+            builder: (context, restrictionSnapshot) {
+              final questionAuthorRestrictionMode =
+                  restrictionSnapshot.data ??
+                  LessonInteractionService.learnerRestrictionModeNone;
+              final blockedByQuestionAuthorRestriction =
+                  _isAnswerBlockedByQuestionAuthorRestriction(
+                    question: currentQuestion,
+                    questionAuthorRestrictionMode:
+                        questionAuthorRestrictionMode,
+                    actingUserId: _currentUserId,
+                    isActingUserTeacher: isCurrentUserTeacher,
+                  );
+              return _LessonQuestionDetail(
+                question: currentQuestion,
+                answersStream: widget.isTeacherPreview
+                    ? _teacherPreviewAnswersStream(currentQuestion)
+                    : _answersStream(currentQuestion),
+                quotableNotesStream: _sharedQuotableNotesStream,
+                currentUserId: _currentUserId,
+                isCurrentUserTeacher: isCurrentUserTeacher,
+                canAnswer:
+                    _canCurrentUserAnswerQuestion(currentQuestion) &&
+                    !blockedByQuestionAuthorRestriction,
+                highlightedAnswerId: _currentHighlightedAnswerId,
+                onBack: _backToQuestionList,
+                onSaveAnswer: (draft) => _saveAnswer(currentQuestion, draft),
+                onToggleQuestionModeration: widget.isTeacherPreview
+                    ? () => _setPublicQuestionModeration(currentQuestion)
+                    : null,
+                onDeleteQuestion: () async {
+                  await _deleteQuestion(currentQuestion);
+                  if (mounted) {
+                    _backToQuestionList();
+                  }
+                },
+                onDeleteAnswer: (answer) =>
+                    _deleteAnswer(currentQuestion, answer),
+                onToggleAnswerModeration: widget.isTeacherPreview
+                    ? _setPublicAnswerModeration
+                    : null,
+              );
             },
-            onDeleteAnswer: (answer) => _deleteAnswer(currentQuestion, answer),
-            onToggleAnswerModeration: widget.isTeacherPreview
-                ? _setPublicAnswerModeration
-                : null,
           );
         },
       );

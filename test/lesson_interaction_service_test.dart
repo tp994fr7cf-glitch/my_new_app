@@ -68,17 +68,71 @@ void main() {
         isFalse,
       );
     });
+
+    test('blocksOthersFromAnsweringPublicQuestion blocks other learners', () {
+      expect(
+        service.blocksOthersFromAnsweringPublicQuestion(
+          questionAuthorId: 'student-a',
+          questionAuthorRole: 'student',
+          actingUserId: 'student-b',
+          questionAuthorRestrictionMode:
+              LessonInteractionService.learnerRestrictionModeNoPublicPost,
+          questionIsPubliclyVisible: true,
+          isActingUserTeacher: false,
+          isTeacherPreview: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test(
+      'blocksOthersFromAnsweringPublicQuestion allows author and teacher',
+      () {
+        expect(
+          service.blocksOthersFromAnsweringPublicQuestion(
+            questionAuthorId: 'student-a',
+            questionAuthorRole: 'student',
+            actingUserId: 'student-a',
+            questionAuthorRestrictionMode: LessonInteractionService
+                .learnerRestrictionModeNoPublicReadOrPost,
+            questionIsPubliclyVisible: true,
+            isActingUserTeacher: false,
+            isTeacherPreview: false,
+          ),
+          isFalse,
+        );
+        expect(
+          service.blocksOthersFromAnsweringPublicQuestion(
+            questionAuthorId: 'student-a',
+            questionAuthorRole: 'student',
+            actingUserId: 'teacher-a',
+            questionAuthorRestrictionMode: LessonInteractionService
+                .learnerRestrictionModeNoPublicReadOrPost,
+            questionIsPubliclyVisible: true,
+            isActingUserTeacher: true,
+            isTeacherPreview: false,
+          ),
+          isFalse,
+        );
+      },
+    );
   });
 
   group('LessonInteractionService moderation state helpers', () {
-    test('moderationStateFromData treats legacy hidden status as individual hide', () {
-      final state = service.moderationStateFromData(const {
-        'moderationStatus': lessonInteractionModerationHiddenByTeacher,
-      });
-      expect(state.hiddenByTeacherIndividual, isTrue);
-      expect(state.hiddenByTeacherBulk, isFalse);
-      expect(state.moderationStatus, lessonInteractionModerationHiddenByTeacher);
-    });
+    test(
+      'moderationStateFromData treats legacy hidden status as individual hide',
+      () {
+        final state = service.moderationStateFromData(const {
+          'moderationStatus': lessonInteractionModerationHiddenByTeacher,
+        });
+        expect(state.hiddenByTeacherIndividual, isTrue);
+        expect(state.hiddenByTeacherBulk, isFalse);
+        expect(
+          state.moderationStatus,
+          lessonInteractionModerationHiddenByTeacher,
+        );
+      },
+    );
 
     test('applyIndividualModeration hide keeps existing bulk flag', () {
       const current = LessonPublicModerationState(
@@ -86,7 +140,10 @@ void main() {
         hiddenByTeacherBulk: true,
         moderationStatus: lessonInteractionModerationHiddenByTeacher,
       );
-      final next = service.applyIndividualModeration(current: current, hide: true);
+      final next = service.applyIndividualModeration(
+        current: current,
+        hide: true,
+      );
       expect(next.hiddenByTeacherIndividual, isTrue);
       expect(next.hiddenByTeacherBulk, isTrue);
       expect(next.moderationStatus, lessonInteractionModerationHiddenByTeacher);
@@ -98,7 +155,10 @@ void main() {
         hiddenByTeacherBulk: true,
         moderationStatus: lessonInteractionModerationHiddenByTeacher,
       );
-      final next = service.applyIndividualModeration(current: current, hide: false);
+      final next = service.applyIndividualModeration(
+        current: current,
+        hide: false,
+      );
       expect(next.hiddenByTeacherIndividual, isFalse);
       expect(next.hiddenByTeacherBulk, isFalse);
       expect(next.moderationStatus, lessonInteractionModerationVisible);

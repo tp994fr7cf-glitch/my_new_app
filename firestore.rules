@@ -171,13 +171,18 @@ service cloud.firestore {
           || get(/databases/$(database)/documents/lessonInteractionSettings/$(settingId)).data.lessonQuestionsPublicEnabled != false);
     }
 
-    function learnerRestrictionMode(settingId) {
+    function learnerRestrictionModeForLearner(settingId, learnerId) {
       return signedIn()
         && settingId is string
-        && exists(/databases/$(database)/documents/lessonInteractionSettings/$(settingId)/learnerRestrictions/$(request.auth.uid))
-        && get(/databases/$(database)/documents/lessonInteractionSettings/$(settingId)/learnerRestrictions/$(request.auth.uid)).data.restrictionMode in ['none', 'noPublicPost', 'noPublicReadOrPost']
-          ? get(/databases/$(database)/documents/lessonInteractionSettings/$(settingId)/learnerRestrictions/$(request.auth.uid)).data.restrictionMode
+        && learnerId is string
+        && exists(/databases/$(database)/documents/lessonInteractionSettings/$(settingId)/learnerRestrictions/$(learnerId))
+        && get(/databases/$(database)/documents/lessonInteractionSettings/$(settingId)/learnerRestrictions/$(learnerId)).data.restrictionMode in ['none', 'noPublicPost', 'noPublicReadOrPost']
+          ? get(/databases/$(database)/documents/lessonInteractionSettings/$(settingId)/learnerRestrictions/$(learnerId)).data.restrictionMode
           : 'none';
+    }
+
+    function learnerRestrictionMode(settingId) {
+      return learnerRestrictionModeForLearner(settingId, request.auth.uid);
     }
 
     function learnerPublicReadBlocked(settingId) {
@@ -186,6 +191,11 @@ service cloud.firestore {
 
     function learnerPublicPostBlocked(settingId) {
       let mode = learnerRestrictionMode(settingId);
+      return mode == 'noPublicPost' || mode == 'noPublicReadOrPost';
+    }
+
+    function learnerPublicPostBlockedForLearner(settingId, learnerId) {
+      let mode = learnerRestrictionModeForLearner(settingId, learnerId);
       return mode == 'noPublicPost' || mode == 'noPublicReadOrPost';
     }
 
@@ -762,9 +772,22 @@ service cloud.firestore {
             && isCourseInstructor(get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.courseId);
         }
 
+        function parentPublicQuestionBlocksOtherLearnerAnswers(questionId) {
+          return parentPublicQuestionVisible(questionId)
+            && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.studentVisibility == 'public'
+            && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.authorRole != 'teacher'
+            && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.authorId != request.auth.uid
+            && !parentQuestionInstructorCanAnswer(questionId)
+            && learnerPublicPostBlockedForLearner(
+              get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.interactionSettingId,
+              get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.authorId
+            );
+        }
+
         function parentQuestionAllowsWrite(questionId) {
           return parentPublicQuestionVisible(questionId)
             && parentQuestionMatchesCourseLesson(questionId)
+            && !parentPublicQuestionBlocksOtherLearnerAnswers(questionId)
             && (
               (get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.studentVisibility == 'public'
                 && validQuotedNoteCitationForPublicAudience(
@@ -1120,6 +1143,20 @@ service cloud.firestore {
           && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.authorRole != 'teacher';
       }
 
+      function publicParentQuestionBlocksOtherLearnerAnswers(questionId) {
+        return exists(/databases/$(database)/documents/publicLessonQuestions/$(questionId))
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.studentVisibility == 'public'
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.moderationStatus == 'visible'
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.isDeleted == false
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.authorRole != 'teacher'
+          && get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.authorId != request.auth.uid
+          && !isCourseInstructor(get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.courseId)
+          && learnerPublicPostBlockedForLearner(
+            get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.interactionSettingId,
+            get(/databases/$(database)/documents/publicLessonQuestions/$(questionId)).data.authorId
+          );
+      }
+
       function isPublicParentQuestionAuthor() {
         return exists(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId))
           && get(/databases/$(database)/documents/publicLessonQuestions/$(resource.data.questionId)).data.authorId == request.auth.uid
@@ -1176,6 +1213,7 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId))
         && get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.moderationStatus == 'visible'
         && get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.isDeleted == false
+        && !publicParentQuestionBlocksOtherLearnerAnswers(request.resource.data.questionId)
         && (
           (get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.studentVisibility == 'public'
             && validQuotedNoteCitationForPublicAudience(
