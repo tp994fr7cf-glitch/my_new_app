@@ -602,6 +602,179 @@ void main() {
     expect(find.text('先生が非公開化した質問です。'), findsOneWidget);
   });
 
+  testWidgets(
+    'Learning records block public question thread when question platform is disabled',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
+      final question = LessonQuestion(
+        id: 'question-public-disabled',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '公開質問欄がオフのときは開けない質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: const [],
+        updatedAt: now,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            lessonViewSegmentsStream: const Stream.empty(),
+            learningEventsStream: const Stream.empty(),
+            quizAttemptsStream: const Stream.empty(),
+            lessonNotesStream: const Stream.empty(),
+            lessonQuestionsStream: Stream.value([question]),
+            lessonQuestionAnswersStream: const Stream.empty(),
+            questionPublicEnabledResolver: (_) async => false,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('質問・回答コメントを見る'));
+      await tester.pumpAndSettle();
+
+      final questionRecord = find.byKey(
+        const ValueKey('question-record-open-question-public-disabled'),
+      );
+      await tester.ensureVisible(questionRecord);
+      await tester.pumpAndSettle();
+      await tester.tap(questionRecord);
+      await tester.pumpAndSettle();
+
+      expect(find.text('質問詳細'), findsNothing);
+      expect(find.text('先生により、このレッスンの公開質問欄は非公開化されています。'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Learning records block public answer thread when question platform is disabled',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
+      final question = LessonQuestion(
+        id: 'question-public-answer-disabled',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '公開質問に対する回答カードの遷移確認です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: const [],
+        updatedAt: now,
+      );
+      final answer = LessonQuestionAnswer(
+        id: 'answer-public-disabled',
+        questionId: 'question-public-answer-disabled',
+        authorId: 'user-a',
+        authorName: '学習者',
+        authorRole: 'student',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        body: '公開質問への回答です。',
+        attachmentTypes: const [],
+        parentCommentId: 'question-public-answer-disabled',
+        parentCommentType: 'question',
+        createdAt: now,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            lessonViewSegmentsStream: const Stream.empty(),
+            learningEventsStream: const Stream.empty(),
+            quizAttemptsStream: const Stream.empty(),
+            lessonNotesStream: const Stream.empty(),
+            lessonQuestionsStream: Stream.value([question]),
+            lessonQuestionAnswersStream: Stream.value([answer]),
+            questionPublicEnabledResolver: (_) async => false,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('質問・回答コメントを見る'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('回答コメント'));
+      await tester.pumpAndSettle();
+
+      final answerRecord = find.byKey(
+        const ValueKey('answer-record-open-answer-public-disabled'),
+      );
+      await tester.ensureVisible(answerRecord);
+      await tester.pumpAndSettle();
+      await tester.tap(answerRecord);
+      await tester.pumpAndSettle();
+
+      expect(find.text('質問詳細'), findsNothing);
+      expect(find.text('先生により、このレッスンの公開質問欄は非公開化されています。'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Learning records keep teacher-only question thread open even when question platform is disabled',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime(2026, 5, 31, 13, 30));
+      final teacherOnlyQuestion = LessonQuestion(
+        id: 'question-teacher-only-open',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '先生にだけ公開の質問は開けるままにします。',
+        visibility: LessonQuestionVisibility.teacherOnly,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: const [],
+        updatedAt: now,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            lessonViewSegmentsStream: const Stream.empty(),
+            learningEventsStream: const Stream.empty(),
+            quizAttemptsStream: const Stream.empty(),
+            lessonNotesStream: const Stream.empty(),
+            lessonQuestionsStream: Stream.value([teacherOnlyQuestion]),
+            lessonQuestionAnswersStream: const Stream.empty(),
+            questionPublicEnabledResolver: (_) async => false,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('質問・回答コメントを見る'));
+      await tester.pumpAndSettle();
+      final teacherOnlyRecord = find.byKey(
+        const ValueKey('question-record-open-question-teacher-only-open'),
+      );
+      await tester.ensureVisible(teacherOnlyRecord);
+      await tester.pumpAndSettle();
+      await tester.tap(teacherOnlyRecord);
+      await tester.pumpAndSettle();
+
+      expect(find.text('質問詳細'), findsOneWidget);
+      expect(find.text('先生にだけ公開の質問は開けるままにします。'), findsOneWidget);
+    },
+  );
+
   testWidgets('Learning records open hidden answers when parent is available', (
     WidgetTester tester,
   ) async {

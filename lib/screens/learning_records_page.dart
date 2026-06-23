@@ -7,6 +7,7 @@ import '../models/course.dart';
 import '../models/lesson_note.dart';
 import '../models/lesson_question.dart';
 import '../models/public_user_profile.dart';
+import '../services/lesson_interaction_service.dart';
 import 'lesson_notes_page.dart';
 import 'lesson_questions_page.dart';
 
@@ -20,6 +21,7 @@ class LearningRecordsPage extends StatefulWidget {
     this.lessonNotesStream,
     this.lessonQuestionsStream,
     this.lessonQuestionAnswersStream,
+    this.questionPublicEnabledResolver,
   });
 
   final User user;
@@ -29,6 +31,8 @@ class LearningRecordsPage extends StatefulWidget {
   final Stream<List<LessonNote>>? lessonNotesStream;
   final Stream<List<LessonQuestion>>? lessonQuestionsStream;
   final Stream<List<LessonQuestionAnswer>>? lessonQuestionAnswersStream;
+  final Future<bool> Function(LessonQuestion question)?
+  questionPublicEnabledResolver;
 
   @override
   State<LearningRecordsPage> createState() => _LearningRecordsPageState();
@@ -309,6 +313,8 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
                   });
                 },
                 user: widget.user,
+                questionPublicEnabledResolver:
+                    widget.questionPublicEnabledResolver,
               ),
             },
           ],
@@ -742,6 +748,7 @@ class _LessonQuestionRecordsList extends StatelessWidget {
     required this.selectedSort,
     required this.onSelectedSort,
     required this.user,
+    this.questionPublicEnabledResolver,
   });
 
   final Stream<List<LessonQuestion>> questionsStream;
@@ -755,6 +762,8 @@ class _LessonQuestionRecordsList extends StatelessWidget {
   final LessonQuestionSort selectedSort;
   final ValueChanged<LessonQuestionSort> onSelectedSort;
   final User user;
+  final Future<bool> Function(LessonQuestion question)?
+  questionPublicEnabledResolver;
 
   @override
   Widget build(BuildContext context) {
@@ -813,6 +822,8 @@ class _LessonQuestionRecordsList extends StatelessWidget {
                       questions: allQuestions,
                       answers: answers,
                       user: user,
+                      questionPublicEnabledResolver:
+                          questionPublicEnabledResolver,
                     ),
                     const SizedBox(height: 12),
                   ]
@@ -827,6 +838,8 @@ class _LessonQuestionRecordsList extends StatelessWidget {
                       ),
                       questions: allQuestions,
                       answers: answers,
+                      questionPublicEnabledResolver:
+                          questionPublicEnabledResolver,
                     ),
                     const SizedBox(height: 12),
                   ],
@@ -976,12 +989,15 @@ class _LessonQuestionRecordCard extends StatelessWidget {
     required this.questions,
     required this.answers,
     required this.user,
+    this.questionPublicEnabledResolver,
   });
 
   final LessonQuestion question;
   final List<LessonQuestion> questions;
   final List<LessonQuestionAnswer> answers;
   final User user;
+  final Future<bool> Function(LessonQuestion question)?
+  questionPublicEnabledResolver;
 
   bool get _canOpenQuestionThread => _canOpenQuestionFromRecord(question);
   String? get _unavailableMessage => _canOpenQuestionThread
@@ -997,6 +1013,7 @@ class _LessonQuestionRecordCard extends StatelessWidget {
       question: question,
       questions: questions,
       answers: answers,
+      questionPublicEnabledResolver: questionPublicEnabledResolver,
     );
   }
 
@@ -1205,6 +1222,7 @@ class _LessonAnswerRecordCard extends StatefulWidget {
     required this.questions,
     required this.answers,
     this.parentQuestion,
+    this.questionPublicEnabledResolver,
   });
 
   final LessonQuestionAnswer answer;
@@ -1212,6 +1230,8 @@ class _LessonAnswerRecordCard extends StatefulWidget {
   final List<LessonQuestion> questions;
   final List<LessonQuestionAnswer> answers;
   final LessonQuestion? parentQuestion;
+  final Future<bool> Function(LessonQuestion question)?
+  questionPublicEnabledResolver;
 
   @override
   State<_LessonAnswerRecordCard> createState() =>
@@ -1528,6 +1548,7 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
       questions: widget.questions,
       answers: widget.answers,
       highlightedAnswerId: widget.answer.id,
+      questionPublicEnabledResolver: widget.questionPublicEnabledResolver,
     );
   }
 
@@ -1873,6 +1894,30 @@ bool _canOpenAnswerFromRecord(
   return true;
 }
 
+const String _publicQuestionThreadDisabledMessage =
+    '先生により、このレッスンの公開質問欄は非公開化されています。';
+
+Future<bool> _isQuestionThreadNavigationAllowed({
+  required LessonQuestion question,
+  Future<bool> Function(LessonQuestion question)? questionPublicEnabledResolver,
+}) async {
+  if (!question.isPublic) {
+    return true;
+  }
+  if (questionPublicEnabledResolver != null) {
+    try {
+      return await questionPublicEnabledResolver(question);
+    } catch (_) {
+      return true;
+    }
+  }
+  return const LessonInteractionService().isPublicFeatureEnabled(
+    courseId: question.courseId,
+    lessonNumber: question.lessonNumber,
+    fieldName: LessonInteractionService.lessonQuestionsPublicEnabledField,
+  );
+}
+
 Future<LessonQuestion?> _resolveLatestQuestionForThreadNavigation(
   LessonQuestion question,
 ) async {
@@ -1900,6 +1945,7 @@ Future<void> _openQuestionThreadPage({
   required List<LessonQuestion> questions,
   required List<LessonQuestionAnswer> answers,
   String? highlightedAnswerId,
+  Future<bool> Function(LessonQuestion question)? questionPublicEnabledResolver,
 }) async {
   final latestQuestion = await _resolveLatestQuestionForThreadNavigation(
     question,
@@ -1911,6 +1957,21 @@ Future<void> _openQuestionThreadPage({
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(const SnackBar(content: Text('元の質問は削除済み、または現在は表示できません。')));
+    return;
+  }
+  final canOpenQuestionThread = await _isQuestionThreadNavigationAllowed(
+    question: latestQuestion,
+    questionPublicEnabledResolver: questionPublicEnabledResolver,
+  );
+  if (!canOpenQuestionThread) {
+    if (!context.mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        const SnackBar(content: Text(_publicQuestionThreadDisabledMessage)),
+      );
     return;
   }
   final useRecordStreams = Firebase.apps.isEmpty;
