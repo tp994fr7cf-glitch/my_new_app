@@ -1228,7 +1228,7 @@ void main() {
   );
 
   testWidgets(
-    'Teacher-hidden mirror notice stays after opening detail and returning',
+    'Teacher-hidden mirror question card stays visible but does not open detail',
     (tester) async {
       const question = LessonQuestion(
         id: 'question-hidden-persist',
@@ -1270,10 +1270,7 @@ void main() {
 
       await tester.tap(find.text('戻ったあとも非公開表示を維持したい質問です。'));
       await tester.pumpAndSettle();
-      expect(find.text('質問詳細'), findsOneWidget);
-
-      await tester.tap(find.byTooltip('質問一覧に戻る'));
-      await tester.pumpAndSettle();
+      expect(find.text('質問詳細'), findsNothing);
 
       expect(find.text('先生によって非公開中'), findsOneWidget);
       expect(find.text('先生だけ表示 / 先生だけ回答可'), findsOneWidget);
@@ -1281,7 +1278,68 @@ void main() {
     },
   );
 
-  testWidgets('Question detail shows teacher-hidden moderation notice', (
+  testWidgets(
+    'My answer card does not open detail when parent question is teacher-hidden by mirror ids',
+    (tester) async {
+      const hiddenParentQuestion = LessonQuestion(
+        id: 'answer-parent-hidden-by-mirror',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '先生が非公開にした親質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.everyone,
+        attachmentTypes: [],
+      );
+      const ownAnswer = LessonQuestionAnswer(
+        id: 'own-answer-hidden-parent',
+        questionId: 'answer-parent-hidden-by-mirror',
+        authorId: 'student-a',
+        authorName: '学習者A',
+        authorRole: 'student',
+        body: 'この回答カードは表示されるが遷移は不可です。',
+        attachmentTypes: [],
+        parentCommentId: 'answer-parent-hidden-by-mirror',
+        parentCommentType: 'question',
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              questionsStream: Stream.value(const [hiddenParentQuestion]),
+              publicQuestionsStream: Stream.value(const []),
+              answersStream: Stream.value(const [ownAnswer]),
+              teacherHiddenOwnQuestionIdsStream: Stream.value(const {
+                'answer-parent-hidden-by-mirror',
+              }),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('自分の質問・回答'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ChoiceChip, '回答'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('この回答カードは表示されるが遷移は不可です。'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('質問詳細'), findsNothing);
+      expect(find.text('この回答カードは表示されるが遷移は不可です。'), findsOneWidget);
+    },
+  );
+
+  testWidgets('Hidden question card stays visible but does not open detail', (
     tester,
   ) async {
     const hiddenQuestion = LessonQuestion(
@@ -1318,7 +1376,7 @@ void main() {
     await tester.tap(find.text('詳細画面で非公開注意を表示したい質問です。'));
     await tester.pumpAndSettle();
 
-    expect(find.text('質問詳細'), findsOneWidget);
+    expect(find.text('質問詳細'), findsNothing);
     expect(find.text('先生によって非公開中'), findsOneWidget);
     expect(find.text('先生だけ表示 / 先生だけ回答可'), findsOneWidget);
   });

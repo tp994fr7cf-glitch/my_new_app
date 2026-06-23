@@ -345,7 +345,10 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       _lastQuotablePublicNotes = const [];
       _lastQuotableOwnNotes = const [];
     }
-    _sharedQuotableNotesStream = _quotableNotesStream();
+    final source = _quotableNotesStream();
+    _sharedQuotableNotesStream = source.isBroadcast
+        ? source
+        : source.asBroadcastStream();
   }
 
   void _applyActiveRoleState({
@@ -2872,14 +2875,20 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     await batch.commit();
   }
 
-  bool _canOpenQuestionFromAnswerList(LessonQuestion question) {
+  bool _canOpenQuestionFromAnswerList(
+    LessonQuestion question, {
+    Set<String> teacherHiddenQuestionIds = const <String>{},
+  }) {
     if (question.isDeleted) {
       return false;
     }
     if (widget.isTeacherPreview) {
       return true;
     }
-    return !question.isTeacherHidden;
+    return !isQuestionTeacherHiddenForViewer(
+      question: question,
+      teacherHiddenQuestionIds: teacherHiddenQuestionIds,
+    );
   }
 
   bool _canOpenAnswerFromAnswerList(
@@ -3103,11 +3112,16 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     required LessonQuestionAnswer answer,
     required LessonQuestion? question,
     required LessonQuestionAnswer? threadRootAnswer,
+    Set<String> teacherHiddenQuestionIds = const <String>{},
   }) {
     if (!_canOpenAnswerFromAnswerList(answer, allowTeacherHidden: true)) {
       return 'この回答コメントは削除済み、または現在は表示できません。';
     }
-    if (question == null || !_canOpenQuestionFromAnswerList(question)) {
+    if (question == null ||
+        !_canOpenQuestionFromAnswerList(
+          question,
+          teacherHiddenQuestionIds: teacherHiddenQuestionIds,
+        )) {
       return '元の質問は削除済み、または現在は表示できません。';
     }
     if (answer.parentCommentType == 'answer' &&
@@ -3122,6 +3136,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     LessonQuestionAnswer answer,
     ScrollController sourceController, {
     LessonQuestion? fallbackQuestion,
+    Set<String> teacherHiddenQuestionIds = const <String>{},
   }) async {
     final answerId = (answer.id ?? '').trim();
     if (answerId.isEmpty || _openingAnswerDetailFromList) {
@@ -3153,6 +3168,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         answer: answer,
         question: question,
         threadRootAnswer: threadRootAnswer,
+        teacherHiddenQuestionIds: teacherHiddenQuestionIds,
       );
       if (unavailableMessage != null || question == null) {
         _showMessage(unavailableMessage ?? '元の質問を確認できませんでした。');
@@ -3512,6 +3528,8 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
                                     answer,
                                     _myAnswersScrollController,
                                     fallbackQuestion: parentQuestion,
+                                    teacherHiddenQuestionIds:
+                                        hiddenOwnQuestionIds,
                                   ),
                               onDelete: _deleteAnswerFromMyList,
                               onToggleModeration: isTeacherPreviewMode
@@ -3760,11 +3778,13 @@ class _QuestionList extends StatelessWidget {
                       authorRole: question.authorRole,
                     );
                     final questionId = (question.id ?? '').trim();
-                    final teacherHiddenByMirror =
-                        questionId.isNotEmpty &&
-                        teacherHiddenQuestionIds.contains(questionId);
-                    final isTeacherHidden =
-                        question.isTeacherHidden || teacherHiddenByMirror;
+                    final isTeacherHidden = isQuestionTeacherHiddenForViewer(
+                      question: question,
+                      teacherHiddenQuestionIds: teacherHiddenQuestionIds,
+                    );
+                    final canOpenQuestion =
+                        onTap != null &&
+                        (isCurrentUserTeacher || !isTeacherHidden);
                     return _CommentBubble(
                       body: question.body,
                       authorId: question.authorId,
@@ -3785,8 +3805,8 @@ class _QuestionList extends StatelessWidget {
                       quotedNoteBody: question.quotedNoteBody,
                       isOwner: isOwner,
                       isTeacher: isCurrentUserTeacher,
-                      onTap: onTap == null ? null : () => onTap!(question),
-                      onReply: onTap == null ? null : () => onTap!(question),
+                      onTap: canOpenQuestion ? () => onTap!(question) : null,
+                      onReply: canOpenQuestion ? () => onTap!(question) : null,
                       onEdit: onEdit == null ? null : () => onEdit!(question),
                       onDelete: onDelete == null
                           ? null
@@ -3920,19 +3940,24 @@ class _AnswerList extends StatelessWidget {
                                   parentQuestion: parentQuestion,
                                   parentAnswer: parentAnswer,
                                 );
-                            final parentQuestionId = (parentQuestion?.id ?? '')
-                                .trim();
-                            final parentHiddenByMirror =
-                                parentQuestionId.isNotEmpty &&
-                                teacherHiddenQuestionIds.contains(
-                                  parentQuestionId,
+                            final parentIsTeacherHidden =
+                                parentQuestion != null &&
+                                isQuestionTeacherHiddenForViewer(
+                                  question: parentQuestion,
+                                  teacherHiddenQuestionIds:
+                                      teacherHiddenQuestionIds,
                                 );
                             final questionScopeLabel = parentQuestion == null
                                 ? '先生だけ表示'
                                 : _questionScopeLabel(
                                     parentQuestion,
-                                    forceTeacherHidden: parentHiddenByMirror,
+                                    forceTeacherHidden: parentIsTeacherHidden,
                                   );
+                            final canOpenFromAnswerCard =
+                                onTap != null &&
+                                !isOpeningAnswerDetail &&
+                                (isCurrentUserTeacher ||
+                                    !parentIsTeacherHidden);
                             final isOwner = isCommentOwnerForActiveRole(
                               currentUserId: currentUserId,
                               isCurrentUserTeacher: isCurrentUserTeacher,
@@ -3971,12 +3996,12 @@ class _AnswerList extends StatelessWidget {
                               ),
                               isOwner: isOwner,
                               isTeacher: isCurrentUserTeacher,
-                              onTap: onTap == null || isOpeningAnswerDetail
-                                  ? null
-                                  : () => onTap!(answer, parentQuestion),
-                              onReply: onTap == null || isOpeningAnswerDetail
-                                  ? null
-                                  : () => onTap!(answer, parentQuestion),
+                              onTap: canOpenFromAnswerCard
+                                  ? () => onTap!(answer, parentQuestion)
+                                  : null,
+                              onReply: canOpenFromAnswerCard
+                                  ? () => onTap!(answer, parentQuestion)
+                                  : null,
                               onDelete: !isOwner || onDelete == null
                                   ? null
                                   : () => onDelete!(answer),
@@ -4464,6 +4489,16 @@ String _formatCommentTimestamp(Timestamp? timestamp) {
   final hour = dateTime.hour.toString().padLeft(2, '0');
   final minute = dateTime.minute.toString().padLeft(2, '0');
   return '${dateTime.month}/${dateTime.day} $hour:$minute';
+}
+
+bool isQuestionTeacherHiddenForViewer({
+  required LessonQuestion question,
+  Set<String> teacherHiddenQuestionIds = const <String>{},
+}) {
+  final questionId = (question.id ?? '').trim();
+  final hiddenByMirror =
+      questionId.isNotEmpty && teacherHiddenQuestionIds.contains(questionId);
+  return question.isTeacherHidden || hiddenByMirror;
 }
 
 String _questionScopeLabel(
