@@ -104,12 +104,11 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   Stream<List<LessonNote>>? _providedNotesBroadcast;
   Stream<List<LessonNote>>? _providedPublicNotesSource;
   Stream<List<LessonNote>>? _providedPublicNotesBroadcast;
-  Stream<bool>? _cachedNotePublicPlatformEnabledStream;
-  String? _cachedNotePublicPlatformEnabledStreamKey;
   Stream<String>? _cachedLearnerRestrictionModeStream;
   Object? _cachedLearnerRestrictionModeStreamKey;
   LessonNotePublicSort _ownSort = LessonNotePublicSort.newest;
   LessonNotePublicSort _publicSort = LessonNotePublicSort.newest;
+  bool _lastKnownNotePublicPlatformEnabled = true;
   final Set<String> _processingPublicApprovalNoteIds = <String>{};
   final Set<String> _suppressedPublicApprovalBellNoteIds = <String>{};
   final LessonInteractionService _lessonInteractionService =
@@ -370,22 +369,16 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   }
 
   Stream<bool> _notePublicPlatformEnabledStream() {
-    final cacheKey =
-        '$_courseId:${widget.lessonNumber}:${widget.isTeacherPreview}';
-    if (_cachedNotePublicPlatformEnabledStream != null &&
-        _cachedNotePublicPlatformEnabledStreamKey == cacheKey) {
-      return _cachedNotePublicPlatformEnabledStream!;
-    }
-    final stream = _lessonInteractionService
+    return _lessonInteractionService
         .publicFeatureEnabledStream(
           courseId: _courseId,
           lessonNumber: widget.lessonNumber,
           fieldName: LessonInteractionService.lessonNotesPublicEnabledField,
         )
-        .asBroadcastStream();
-    _cachedNotePublicPlatformEnabledStream = stream;
-    _cachedNotePublicPlatformEnabledStreamKey = cacheKey;
-    return stream;
+        .map((enabled) {
+          _lastKnownNotePublicPlatformEnabled = enabled;
+          return enabled;
+        });
   }
 
   Future<bool> _isNotePublicPlatformEnabled() async {
@@ -1924,7 +1917,8 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
     return StreamBuilder<bool>(
       stream: _notePublicPlatformEnabledStream(),
       builder: (context, platformSnapshot) {
-        final enabled = platformSnapshot.data == true;
+        final enabled =
+            platformSnapshot.data ?? _lastKnownNotePublicPlatformEnabled;
         return StreamBuilder<String>(
           stream: _learnerRestrictionModeStream(),
           builder: (context, restrictionSnapshot) {
