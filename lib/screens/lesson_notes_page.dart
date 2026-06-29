@@ -28,6 +28,7 @@ class LessonNotesPage extends StatelessWidget {
     this.initialFocusNoteId,
     this.teacherHiddenOwnNoteIdsStream,
     this.publicRestrictionModeStream,
+    this.notePublicPlatformEnabledStream,
   });
 
   final Course course;
@@ -39,6 +40,7 @@ class LessonNotesPage extends StatelessWidget {
   final String? initialFocusNoteId;
   final Stream<Set<String>>? teacherHiddenOwnNoteIdsStream;
   final Stream<String>? publicRestrictionModeStream;
+  final Stream<bool>? notePublicPlatformEnabledStream;
 
   @override
   Widget build(BuildContext context) {
@@ -54,6 +56,7 @@ class LessonNotesPage extends StatelessWidget {
         initialFocusNoteId: initialFocusNoteId,
         teacherHiddenOwnNoteIdsStream: teacherHiddenOwnNoteIdsStream,
         publicRestrictionModeStream: publicRestrictionModeStream,
+        notePublicPlatformEnabledStream: notePublicPlatformEnabledStream,
       ),
     );
   }
@@ -73,6 +76,7 @@ class LessonNotesPanel extends StatefulWidget {
     this.initialFocusNoteId,
     this.teacherHiddenOwnNoteIdsStream,
     this.publicRestrictionModeStream,
+    this.notePublicPlatformEnabledStream,
   });
 
   final Course course;
@@ -86,6 +90,7 @@ class LessonNotesPanel extends StatefulWidget {
   final String? initialFocusNoteId;
   final Stream<Set<String>>? teacherHiddenOwnNoteIdsStream;
   final Stream<String>? publicRestrictionModeStream;
+  final Stream<bool>? notePublicPlatformEnabledStream;
 
   @override
   State<LessonNotesPanel> createState() => _LessonNotesPanelState();
@@ -106,8 +111,16 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   Stream<List<LessonNote>>? _providedPublicNotesBroadcast;
   Stream<String>? _cachedLearnerRestrictionModeStream;
   Object? _cachedLearnerRestrictionModeStreamKey;
+  Stream<List<LessonNote>>? _cachedPublicNotesStream;
+  Object? _cachedPublicNotesStreamKey;
+  Stream<List<LessonNote>>? _cachedTeacherPreviewPublicNotesStream;
+  Object? _cachedTeacherPreviewPublicNotesStreamKey;
+  Stream<bool>? _cachedNotePublicPlatformEnabledStream;
+  Object? _cachedNotePublicPlatformEnabledStreamKey;
   LessonNotePublicSort _ownSort = LessonNotePublicSort.newest;
   LessonNotePublicSort _publicSort = LessonNotePublicSort.newest;
+  List<LessonNote> _lastPublicNotes = const [];
+  List<LessonNote> _lastTeacherPreviewPublicNotes = const [];
   bool _lastKnownNotePublicPlatformEnabled = true;
   final Set<String> _processingPublicApprovalNoteIds = <String>{};
   final Set<String> _suppressedPublicApprovalBellNoteIds = <String>{};
@@ -117,6 +130,7 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       const CourseIdentityService();
 
   String get _courseId => widget.course.storageId;
+  String get _noteStreamScopeKey => '$_courseId:${widget.lessonNumber}';
 
   String get _interactionSettingId =>
       _lessonInteractionService.settingDocumentId(
@@ -189,6 +203,35 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
       lessonNumber: widget.lessonNumber,
       learnerId: userId,
     );
+  }
+
+  @override
+  void didUpdateWidget(covariant LessonNotesPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final lessonScopeChanged =
+        widget.course.storageId != oldWidget.course.storageId ||
+        widget.lessonNumber != oldWidget.lessonNumber;
+    final sourceChanged =
+        widget.publicNotesStream != oldWidget.publicNotesStream ||
+        widget.notePublicPlatformEnabledStream !=
+            oldWidget.notePublicPlatformEnabledStream;
+    if (lessonScopeChanged || sourceChanged) {
+      _resetPublicTabCache(resetPlatformFallback: lessonScopeChanged);
+    }
+  }
+
+  void _resetPublicTabCache({required bool resetPlatformFallback}) {
+    _cachedPublicNotesStream = null;
+    _cachedPublicNotesStreamKey = null;
+    _cachedTeacherPreviewPublicNotesStream = null;
+    _cachedTeacherPreviewPublicNotesStreamKey = null;
+    _cachedNotePublicPlatformEnabledStream = null;
+    _cachedNotePublicPlatformEnabledStreamKey = null;
+    _lastPublicNotes = const [];
+    _lastTeacherPreviewPublicNotes = const [];
+    if (resetPlatformFallback) {
+      _lastKnownNotePublicPlatformEnabled = true;
+    }
   }
 
   @override
@@ -309,76 +352,124 @@ class _LessonNotesPanelState extends State<LessonNotesPanel> {
   }
 
   Stream<List<LessonNote>> _publicNotesStream() {
+    final cacheKey = Object.hash(
+      widget.publicNotesStream,
+      _noteStreamScopeKey,
+      _publicSort,
+      'public',
+    );
+    if (_cachedPublicNotesStream != null &&
+        _cachedPublicNotesStreamKey == cacheKey) {
+      return _cachedPublicNotesStream!;
+    }
     final provided = widget.publicNotesStream;
+    late final Stream<List<LessonNote>> stream;
     if (provided != null) {
-      return _asBroadcastNotesStream(provided, isPublic: true).map((notes) {
+      stream = _asBroadcastNotesStream(provided, isPublic: true).map((notes) {
         final filtered = widget.isTeacherPreview
             ? notes.where((note) => !note.isDeleted).toList()
             : notes.where((note) => note.isPubliclyVisible).toList();
-        return sortPublicLessonNotes(filtered, _publicSort);
+        final sorted = sortPublicLessonNotes(filtered, _publicSort);
+        _lastPublicNotes = sorted;
+        return sorted;
       });
+    } else if (Firebase.apps.isEmpty) {
+      stream = Stream.value(const []);
+    } else {
+      stream = FirebaseFirestore.instance
+          .collection('publicLessonNotes')
+          .where('courseId', isEqualTo: _courseId)
+          .where('lessonNumber', isEqualTo: widget.lessonNumber)
+          .where('interactionSettingId', isEqualTo: _interactionSettingId)
+          .where('studentVisibility', isEqualTo: lessonNoteVisibilityPublic)
+          .where('moderationStatus', isEqualTo: lessonNoteModerationVisible)
+          .where('isDeleted', isEqualTo: false)
+          .snapshots(includeMetadataChanges: true)
+          .map((snapshot) {
+            if (snapshot.metadata.isFromCache) {
+              return _lastPublicNotes;
+            }
+            final sorted = sortPublicLessonNotes(
+              snapshot.docs
+                  .map(LessonNote.fromFirestore)
+                  .where((note) => note.isPubliclyVisible)
+                  .toList(),
+              _publicSort,
+            );
+            _lastPublicNotes = sorted;
+            return sorted;
+          });
     }
-    if (Firebase.apps.isEmpty) {
-      return Stream.value(const []);
-    }
-
-    return FirebaseFirestore.instance
-        .collection('publicLessonNotes')
-        .where('courseId', isEqualTo: _courseId)
-        .where('lessonNumber', isEqualTo: widget.lessonNumber)
-        .where('interactionSettingId', isEqualTo: _interactionSettingId)
-        .where('studentVisibility', isEqualTo: lessonNoteVisibilityPublic)
-        .where('moderationStatus', isEqualTo: lessonNoteModerationVisible)
-        .where('isDeleted', isEqualTo: false)
-        .snapshots(includeMetadataChanges: true)
-        .map((snapshot) {
-          if (snapshot.metadata.isFromCache) {
-            return const <LessonNote>[];
-          }
-          return sortPublicLessonNotes(
-            snapshot.docs
-                .map(LessonNote.fromFirestore)
-                .where((note) => note.isPubliclyVisible)
-                .toList(),
-            _publicSort,
-          );
-        });
+    final broadcast = stream.asBroadcastStream();
+    _cachedPublicNotesStream = broadcast;
+    _cachedPublicNotesStreamKey = cacheKey;
+    return broadcast;
   }
 
   Stream<List<LessonNote>> _teacherPreviewPublicNotesStream() {
-    if (Firebase.apps.isEmpty) {
-      return Stream.value(const []);
+    final cacheKey = Object.hash(
+      _noteStreamScopeKey,
+      _publicSort,
+      'teacherPreview',
+    );
+    if (_cachedTeacherPreviewPublicNotesStream != null &&
+        _cachedTeacherPreviewPublicNotesStreamKey == cacheKey) {
+      return _cachedTeacherPreviewPublicNotesStream!;
     }
-
-    return FirebaseFirestore.instance
-        .collection('publicLessonNotes')
-        .where('courseId', isEqualTo: _courseId)
-        .where('lessonNumber', isEqualTo: widget.lessonNumber)
-        .where('interactionSettingId', isEqualTo: _interactionSettingId)
-        .where('isDeleted', isEqualTo: false)
-        .snapshots(includeMetadataChanges: true)
-        .map((snapshot) {
-          if (snapshot.metadata.isFromCache) {
-            return const <LessonNote>[];
-          }
-          return sortPublicLessonNotes(
-            snapshot.docs.map(LessonNote.fromFirestore).toList(),
-            _publicSort,
-          );
-        });
+    late final Stream<List<LessonNote>> stream;
+    if (Firebase.apps.isEmpty) {
+      stream = Stream.value(const []);
+    } else {
+      stream = FirebaseFirestore.instance
+          .collection('publicLessonNotes')
+          .where('courseId', isEqualTo: _courseId)
+          .where('lessonNumber', isEqualTo: widget.lessonNumber)
+          .where('interactionSettingId', isEqualTo: _interactionSettingId)
+          .where('isDeleted', isEqualTo: false)
+          .snapshots(includeMetadataChanges: true)
+          .map((snapshot) {
+            if (snapshot.metadata.isFromCache) {
+              return _lastTeacherPreviewPublicNotes;
+            }
+            final sorted = sortPublicLessonNotes(
+              snapshot.docs.map(LessonNote.fromFirestore).toList(),
+              _publicSort,
+            );
+            _lastTeacherPreviewPublicNotes = sorted;
+            return sorted;
+          });
+    }
+    final broadcast = stream.asBroadcastStream();
+    _cachedTeacherPreviewPublicNotesStream = broadcast;
+    _cachedTeacherPreviewPublicNotesStreamKey = cacheKey;
+    return broadcast;
   }
 
   Stream<bool> _notePublicPlatformEnabledStream() {
-    return _lessonInteractionService
-        .publicFeatureEnabledStream(
+    final cacheKey = Object.hash(
+      widget.notePublicPlatformEnabledStream,
+      _noteStreamScopeKey,
+    );
+    if (_cachedNotePublicPlatformEnabledStream != null &&
+        _cachedNotePublicPlatformEnabledStreamKey == cacheKey) {
+      return _cachedNotePublicPlatformEnabledStream!;
+    }
+    final provided = widget.notePublicPlatformEnabledStream;
+    final source =
+        provided ??
+        _lessonInteractionService.publicFeatureEnabledStream(
           courseId: _courseId,
           lessonNumber: widget.lessonNumber,
           fieldName: LessonInteractionService.lessonNotesPublicEnabledField,
-        )
-        .map((enabled) {
-          _lastKnownNotePublicPlatformEnabled = enabled;
-          return enabled;
-        });
+        );
+    final stream = source.map((enabled) {
+      _lastKnownNotePublicPlatformEnabled = enabled;
+      return enabled;
+    });
+    final broadcast = stream.asBroadcastStream();
+    _cachedNotePublicPlatformEnabledStream = broadcast;
+    _cachedNotePublicPlatformEnabledStreamKey = cacheKey;
+    return broadcast;
   }
 
   Future<bool> _isNotePublicPlatformEnabled() async {

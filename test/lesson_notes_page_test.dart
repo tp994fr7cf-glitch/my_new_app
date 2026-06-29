@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -212,9 +214,9 @@ void main() {
             lesson: lesson,
             lessonNumber: 1,
             notesStream: Stream.value(const [hiddenOwnNote, normalOwnNote]),
-            teacherHiddenOwnNoteIdsStream: Stream.value(
-              const {'own-hidden-note'},
-            ),
+            teacherHiddenOwnNoteIdsStream: Stream.value(const {
+              'own-hidden-note',
+            }),
             foldersStream: Stream.value(const []),
           ),
         ),
@@ -1203,6 +1205,54 @@ void main() {
   });
 
   testWidgets(
+    'Public notes tab preserves previous visibility during feature reconnect',
+    (tester) async {
+      final reconnectController = StreamController<bool>.broadcast();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LessonNotesPage(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            notePublicPlatformEnabledStream: Stream<bool>.multi((controller) {
+              controller.add(true);
+              controller.close();
+            }),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('公開メモ'));
+      await tester.pumpAndSettle();
+      expect(find.text('公開メモはまだありません。'), findsOneWidget);
+      expect(find.text('公開メモ欄は非公開化されています。'), findsNothing);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LessonNotesPage(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            notePublicPlatformEnabledStream: reconnectController.stream,
+          ),
+        ),
+      );
+      await tester.pump();
+
+      await tester.tap(find.text('自分のメモ'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('公開メモ'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('公開メモはまだありません。'), findsOneWidget);
+      expect(find.text('公開メモ欄は非公開化されています。'), findsNothing);
+      await reconnectController.close();
+    },
+  );
+
+  testWidgets(
     'Public notes tab is blocked when restriction mode disables public read',
     (tester) async {
       const publicNote = LessonNote(
@@ -1235,7 +1285,8 @@ void main() {
               notesStream: Stream.value(const []),
               publicNotesStream: Stream.value(const [publicNote]),
               publicRestrictionModeStream: Stream.value(
-                LessonInteractionService.learnerRestrictionModeNoPublicReadOrPost,
+                LessonInteractionService
+                    .learnerRestrictionModeNoPublicReadOrPost,
               ),
             ),
           ),
