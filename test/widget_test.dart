@@ -284,6 +284,271 @@ void main() {
     expect(find.text('回答コメントはまだありません。'), findsOneWidget);
   });
 
+  testWidgets('Learning records show only student comments in student mode', (
+    WidgetTester tester,
+  ) async {
+    final now = Timestamp.fromDate(DateTime(2026, 6, 1, 10, 0));
+    final studentQuestion = LessonQuestion(
+      id: 'question-student',
+      authorId: 'user-a',
+      authorName: '学習者',
+      authorRole: 'student',
+      courseId: 'course-a',
+      courseTitle: '数学',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式',
+      title: '',
+      body: '学習者として書いた質問',
+      visibility: LessonQuestionVisibility.teacherOnly,
+      target: LessonQuestionTarget.teacher,
+      attachmentTypes: const [],
+      updatedAt: now,
+    );
+    final teacherQuestion = LessonQuestion(
+      id: 'question-teacher',
+      authorId: 'user-a',
+      authorName: '先生',
+      authorRole: 'teacher',
+      courseId: 'course-a',
+      courseTitle: '数学',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式',
+      title: '',
+      body: '先生として書いた質問',
+      visibility: LessonQuestionVisibility.teacherOnly,
+      target: LessonQuestionTarget.teacher,
+      attachmentTypes: const [],
+      updatedAt: now,
+    );
+    final studentAnswer = LessonQuestionAnswer(
+      id: 'answer-student',
+      questionId: 'question-student',
+      authorId: 'user-a',
+      authorName: '学習者',
+      authorRole: 'student',
+      courseId: 'course-a',
+      courseTitle: '数学',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式',
+      body: '学習者として書いた回答',
+      attachmentTypes: const [],
+      createdAt: now,
+    );
+    final teacherAnswer = LessonQuestionAnswer(
+      id: 'answer-teacher',
+      questionId: 'question-teacher',
+      authorId: 'user-a',
+      authorName: '先生',
+      authorRole: 'teacher',
+      courseId: 'course-a',
+      courseTitle: '数学',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式',
+      body: '先生として書いた回答',
+      attachmentTypes: const [],
+      createdAt: now,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LearningRecordsPage(
+          user: _FakeUser(),
+          activeCommentRole: 'student',
+          lessonViewSegmentsStream: const Stream.empty(),
+          learningEventsStream: const Stream.empty(),
+          quizAttemptsStream: const Stream.empty(),
+          lessonNotesStream: const Stream.empty(),
+          lessonQuestionsStream: Stream.value([
+            studentQuestion,
+            teacherQuestion,
+          ]),
+          lessonQuestionAnswersStream: Stream.value([
+            studentAnswer,
+            teacherAnswer,
+          ]),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('質問・回答コメントを見る'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('学習者として書いた質問'), findsOneWidget);
+    expect(find.text('先生として書いた質問'), findsNothing);
+
+    await tester.tap(find.text('回答コメント'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('学習者として書いた回答'), findsOneWidget);
+    expect(find.text('先生として書いた回答'), findsNothing);
+  });
+
+  testWidgets('Learning records show only teacher comments in teacher mode', (
+    WidgetTester tester,
+  ) async {
+    final now = Timestamp.fromDate(DateTime(2026, 6, 1, 11, 0));
+    final studentQuestion = LessonQuestion(
+      id: 'question-student-2',
+      authorId: 'user-a',
+      authorName: '学習者',
+      authorRole: 'student',
+      courseId: 'course-a',
+      courseTitle: '数学',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式',
+      title: '',
+      body: '学習者側の質問',
+      visibility: LessonQuestionVisibility.teacherOnly,
+      target: LessonQuestionTarget.teacher,
+      attachmentTypes: const [],
+      updatedAt: now,
+    );
+    final teacherQuestion = LessonQuestion(
+      id: 'question-teacher-2',
+      authorId: 'user-a',
+      authorName: '先生',
+      authorRole: 'teacher',
+      courseId: 'course-a',
+      courseTitle: '数学',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式',
+      title: '',
+      body: '先生側の質問',
+      visibility: LessonQuestionVisibility.teacherOnly,
+      target: LessonQuestionTarget.teacher,
+      attachmentTypes: const [],
+      updatedAt: now,
+    );
+    final studentAnswer = LessonQuestionAnswer(
+      id: 'answer-student-2',
+      questionId: 'question-student-2',
+      authorId: 'user-a',
+      authorName: '学習者',
+      authorRole: 'student',
+      courseId: 'course-a',
+      courseTitle: '数学',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式',
+      body: '学習者側の回答',
+      attachmentTypes: const [],
+      createdAt: now,
+    );
+    final teacherAnswer = LessonQuestionAnswer(
+      id: 'answer-teacher-2',
+      questionId: 'question-teacher-2',
+      authorId: 'user-a',
+      authorName: '先生',
+      authorRole: 'teacher',
+      courseId: 'course-a',
+      courseTitle: '数学',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式',
+      body: '先生側の回答',
+      attachmentTypes: const [],
+      createdAt: now,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LearningRecordsPage(
+          user: _FakeUser(),
+          activeCommentRole: 'teacher',
+          lessonViewSegmentsStream: const Stream.empty(),
+          learningEventsStream: const Stream.empty(),
+          quizAttemptsStream: const Stream.empty(),
+          lessonNotesStream: const Stream.empty(),
+          lessonQuestionsStream: Stream.value([
+            studentQuestion,
+            teacherQuestion,
+          ]),
+          lessonQuestionAnswersStream: Stream.value([
+            studentAnswer,
+            teacherAnswer,
+          ]),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('質問・回答コメントを見る'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('先生側の質問'), findsOneWidget);
+    expect(find.text('学習者側の質問'), findsNothing);
+
+    await tester.tap(find.text('回答コメント'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('先生側の回答'), findsOneWidget);
+    expect(find.text('学習者側の回答'), findsNothing);
+  });
+
+  testWidgets(
+    'Learning records hide delete action for different-role records',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime(2026, 6, 1, 12, 0));
+      final teacherQuestion = LessonQuestion(
+        id: 'question-teacher-only',
+        authorId: 'user-a',
+        authorName: '先生',
+        authorRole: 'teacher',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        title: '',
+        body: '先生だけの質問',
+        visibility: LessonQuestionVisibility.teacherOnly,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: const [],
+        updatedAt: now,
+      );
+      final teacherAnswer = LessonQuestionAnswer(
+        id: 'answer-teacher-only',
+        questionId: 'question-teacher-only',
+        authorId: 'user-a',
+        authorName: '先生',
+        authorRole: 'teacher',
+        courseId: 'course-a',
+        courseTitle: '数学',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式',
+        body: '先生だけの回答',
+        attachmentTypes: const [],
+        createdAt: now,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            activeCommentRole: 'student',
+            lessonViewSegmentsStream: const Stream.empty(),
+            learningEventsStream: const Stream.empty(),
+            quizAttemptsStream: const Stream.empty(),
+            lessonNotesStream: const Stream.empty(),
+            lessonQuestionsStream: Stream.value([teacherQuestion]),
+            lessonQuestionAnswersStream: Stream.value([teacherAnswer]),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('質問・回答コメントを見る'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('この期間の質問コメントはまだありません。'), findsOneWidget);
+      expect(find.text('削除'), findsNothing);
+
+      await tester.tap(find.text('回答コメント'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('この期間の回答コメントはまだありません。'), findsOneWidget);
+      expect(find.text('削除'), findsNothing);
+    },
+  );
+
   testWidgets('Learning records page shows answer record previews', (
     WidgetTester tester,
   ) async {

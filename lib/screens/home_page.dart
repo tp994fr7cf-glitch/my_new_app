@@ -110,7 +110,10 @@ class StudentHomePage extends StatelessWidget {
               onPressed: () {
                 Navigator.of(context).push(
                   MaterialPageRoute(
-                    builder: (_) => LearningRecordsPage(user: user),
+                    builder: (_) => LearningRecordsPage(
+                      user: user,
+                      activeCommentRole: profile['activeRole'] as String?,
+                    ),
                   ),
                 );
               },

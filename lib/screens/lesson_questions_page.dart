@@ -2805,10 +2805,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         });
   }
 
-  Future<void> _deleteAnswer(
-    LessonQuestion question,
-    LessonQuestionAnswer answer,
-  ) async {
+  Future<void> _deleteAnswer(LessonQuestionAnswer answer) async {
     if (Firebase.apps.isEmpty || answer.id == null) {
       return;
     }
@@ -2816,30 +2813,35 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     if (user == null || user.uid != answer.authorId) {
       return;
     }
+    await _markAnswerDeletedForOwner(
+      answerId: answer.id!,
+      ownerUserId: user.uid,
+    );
+  }
+
+  Future<void> _markAnswerDeletedForOwner({
+    required String answerId,
+    required String ownerUserId,
+  }) async {
     final firestore = FirebaseFirestore.instance;
     final deletedData = {
       'isDeleted': true,
       'deletedAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     };
+    final privateRef = firestore
+        .collection('users')
+        .doc(ownerUserId)
+        .collection('lessonQuestionAnswers')
+        .doc(answerId);
+    final publicRef = firestore
+        .collection('publicLessonQuestionAnswers')
+        .doc(answerId);
+    final publicSnapshot = await publicRef.get();
     final batch = firestore.batch()
-      ..set(
-        firestore
-            .collection('users')
-            .doc(user.uid)
-            .collection('lessonQuestionAnswers')
-            .doc(answer.id),
-        deletedData,
-        SetOptions(merge: true),
-      );
-    if (question.isPublic) {
-      final publicAnswerRef = firestore
-          .collection('publicLessonQuestionAnswers')
-          .doc(answer.id);
-      final publicAnswerSnapshot = await publicAnswerRef.get();
-      if (publicAnswerSnapshot.exists) {
-        batch.set(publicAnswerRef, deletedData, SetOptions(merge: true));
-      }
+      ..set(privateRef, deletedData, SetOptions(merge: true));
+    if (publicSnapshot.exists) {
+      batch.set(publicRef, deletedData, SetOptions(merge: true));
     }
     await batch.commit();
   }
@@ -2852,27 +2854,10 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     if (user == null || user.uid != answer.authorId) {
       return;
     }
-    final firestore = FirebaseFirestore.instance;
-    final deletedData = {
-      'isDeleted': true,
-      'deletedAt': FieldValue.serverTimestamp(),
-      'updatedAt': FieldValue.serverTimestamp(),
-    };
-    final privateRef = firestore
-        .collection('users')
-        .doc(user.uid)
-        .collection('lessonQuestionAnswers')
-        .doc(answer.id);
-    final publicRef = firestore
-        .collection('publicLessonQuestionAnswers')
-        .doc(answer.id);
-    final publicSnapshot = await publicRef.get();
-    final batch = firestore.batch()
-      ..set(privateRef, deletedData, SetOptions(merge: true));
-    if (publicSnapshot.exists) {
-      batch.set(publicRef, deletedData, SetOptions(merge: true));
-    }
-    await batch.commit();
+    await _markAnswerDeletedForOwner(
+      answerId: answer.id!,
+      ownerUserId: user.uid,
+    );
   }
 
   bool _canOpenQuestionFromAnswerList(
@@ -3289,8 +3274,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
                     _backToQuestionList();
                   }
                 },
-                onDeleteAnswer: (answer) =>
-                    _deleteAnswer(currentQuestion, answer),
+                onDeleteAnswer: _deleteAnswer,
                 onToggleAnswerModeration: widget.isTeacherPreview
                     ? _setPublicAnswerModeration
                     : null,

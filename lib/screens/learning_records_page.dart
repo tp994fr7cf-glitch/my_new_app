@@ -15,6 +15,7 @@ class LearningRecordsPage extends StatefulWidget {
   const LearningRecordsPage({
     super.key,
     required this.user,
+    this.activeCommentRole,
     this.learningEventsStream,
     this.lessonViewSegmentsStream,
     this.quizAttemptsStream,
@@ -25,6 +26,7 @@ class LearningRecordsPage extends StatefulWidget {
   });
 
   final User user;
+  final String? activeCommentRole;
   final Stream<List<Map<String, dynamic>>>? learningEventsStream;
   final Stream<List<Map<String, dynamic>>>? lessonViewSegmentsStream;
   final Stream<List<Map<String, dynamic>>>? quizAttemptsStream;
@@ -44,12 +46,32 @@ enum _PeriodFilter { all, today, sevenDays, thirtyDays }
 
 enum _CommentRecordType { questions, answers }
 
+const String _recordRoleMismatchDeleteMessage =
+    'この立場で作成したコメントではないため、ここからは削除できません。';
+
+String _normalizedRecordCommentRole(String? role) {
+  final normalized = (role ?? '').trim();
+  if (normalized == publicUserProfileRoleTeacher) {
+    return publicUserProfileRoleTeacher;
+  }
+  return publicUserProfileRoleStudent;
+}
+
+bool _matchesRecordCommentRole({
+  required String currentRole,
+  required String? authorRole,
+}) {
+  return _normalizedRecordCommentRole(authorRole) == currentRole;
+}
+
 class _LearningRecordsPageState extends State<LearningRecordsPage> {
   _RecordType _selectedType = _RecordType.views;
   _PeriodFilter _selectedPeriod = _PeriodFilter.all;
   _CommentRecordType _selectedCommentType = _CommentRecordType.questions;
   LessonQuestionSort _commentSort = LessonQuestionSort.newest;
   String _query = '';
+  String get _currentCommentRole =>
+      _normalizedRecordCommentRole(widget.activeCommentRole);
 
   Stream<List<Map<String, dynamic>>> _learningEventsStream() {
     final providedStream = widget.learningEventsStream;
@@ -300,6 +322,7 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
                 answersStream: _lessonQuestionAnswersStream(),
                 filterQuestions: _filterQuestions,
                 filterAnswers: _filterAnswers,
+                currentCommentRole: _currentCommentRole,
                 selectedType: _selectedCommentType,
                 onSelectedType: (type) {
                   setState(() {
@@ -354,6 +377,12 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
       if (question.isDeleted) {
         return false;
       }
+      if (!_matchesRecordCommentRole(
+        currentRole: _currentCommentRole,
+        authorRole: question.authorRole,
+      )) {
+        return false;
+      }
       if (since != null) {
         final referenceTime = _commentSort == LessonQuestionSort.editedNewest
             ? lessonQuestionEditedAt(question)
@@ -392,6 +421,12 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
     final query = _query.trim().toLowerCase();
     final filtered = answers.where((answer) {
       if (answer.isDeleted) {
+        return false;
+      }
+      if (!_matchesRecordCommentRole(
+        currentRole: _currentCommentRole,
+        authorRole: answer.authorRole,
+      )) {
         return false;
       }
       if (since != null) {
@@ -743,6 +778,7 @@ class _LessonQuestionRecordsList extends StatelessWidget {
     required this.answersStream,
     required this.filterQuestions,
     required this.filterAnswers,
+    required this.currentCommentRole,
     required this.selectedType,
     required this.onSelectedType,
     required this.selectedSort,
@@ -757,6 +793,7 @@ class _LessonQuestionRecordsList extends StatelessWidget {
   filterQuestions;
   final List<LessonQuestionAnswer> Function(List<LessonQuestionAnswer> answers)
   filterAnswers;
+  final String currentCommentRole;
   final _CommentRecordType selectedType;
   final ValueChanged<_CommentRecordType> onSelectedType;
   final LessonQuestionSort selectedSort;
@@ -822,6 +859,7 @@ class _LessonQuestionRecordsList extends StatelessWidget {
                       questions: allQuestions,
                       answers: answers,
                       user: user,
+                      currentCommentRole: currentCommentRole,
                       questionPublicEnabledResolver:
                           questionPublicEnabledResolver,
                     ),
@@ -832,6 +870,7 @@ class _LessonQuestionRecordsList extends StatelessWidget {
                     _LessonAnswerRecordCard(
                       answer: answer,
                       user: user,
+                      currentCommentRole: currentCommentRole,
                       parentQuestion: _parentQuestionForAnswer(
                         answer,
                         allQuestions,
@@ -920,6 +959,10 @@ LessonQuestion? _parentQuestionForAnswer(
   return null;
 }
 
+bool _canIgnorePublicMirrorDeleteError(FirebaseException error) {
+  return error.code == 'permission-denied' || error.code == 'not-found';
+}
+
 class _LessonNoteRecordCard extends StatelessWidget {
   const _LessonNoteRecordCard({required this.note});
 
@@ -989,6 +1032,7 @@ class _LessonQuestionRecordCard extends StatelessWidget {
     required this.questions,
     required this.answers,
     required this.user,
+    required this.currentCommentRole,
     this.questionPublicEnabledResolver,
   });
 
@@ -996,8 +1040,13 @@ class _LessonQuestionRecordCard extends StatelessWidget {
   final List<LessonQuestion> questions;
   final List<LessonQuestionAnswer> answers;
   final User user;
+  final String currentCommentRole;
   final Future<bool> Function(LessonQuestion question)?
   questionPublicEnabledResolver;
+  bool get _isQuestionInCurrentRole => _matchesRecordCommentRole(
+    currentRole: currentCommentRole,
+    authorRole: question.authorRole,
+  );
 
   bool get _canOpenQuestionThread => _canOpenQuestionFromRecord(question);
   String? get _unavailableMessage => _canOpenQuestionThread
@@ -1067,10 +1116,10 @@ class _LessonQuestionRecordCard extends StatelessWidget {
     );
   }
 
-  Future<void> _deleteQuestion() async {
+  Future<bool> _deleteQuestion() async {
     final questionId = question.id;
     if (questionId == null || Firebase.apps.isEmpty) {
-      return;
+      return false;
     }
     final firestore = FirebaseFirestore.instance;
     final now = FieldValue.serverTimestamp();
@@ -1082,25 +1131,36 @@ class _LessonQuestionRecordCard extends StatelessWidget {
     final publicRef = firestore
         .collection('publicLessonQuestions')
         .doc(questionId);
-    final publicSnapshot = await publicRef.get();
-    final batch = firestore.batch()
-      ..set(privateRef, {
-        'isDeleted': true,
-        'deletedAt': now,
-        'updatedAt': now,
-      }, SetOptions(merge: true));
-    if (publicSnapshot.exists) {
-      batch.set(publicRef, {
+    await privateRef.set({
+      'isDeleted': true,
+      'deletedAt': now,
+      'updatedAt': now,
+    }, SetOptions(merge: true));
+    try {
+      await publicRef.update({
         'studentVisibility': lessonQuestionVisibilityTeacherOnly,
         'isDeleted': true,
         'deletedAt': now,
         'updatedAt': now,
-      }, SetOptions(merge: true));
+      });
+      return false;
+    } on FirebaseException catch (error) {
+      if (_canIgnorePublicMirrorDeleteError(error)) {
+        return true;
+      }
+      rethrow;
     }
-    await batch.commit();
   }
 
   Future<void> _confirmAndDelete(BuildContext context) async {
+    if (!_isQuestionInCurrentRole) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          const SnackBar(content: Text(_recordRoleMismatchDeleteMessage)),
+        );
+      return;
+    }
     final shouldDelete = await showDialog<bool>(
       context: context,
       builder: (context) {
@@ -1124,13 +1184,21 @@ class _LessonQuestionRecordCard extends StatelessWidget {
       return;
     }
     try {
-      await _deleteQuestion();
+      final skippedPublicMirror = await _deleteQuestion();
       if (!context.mounted) {
         return;
       }
       ScaffoldMessenger.of(context)
         ..clearSnackBars()
-        ..showSnackBar(const SnackBar(content: Text('質問コメントを削除しました。')));
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              skippedPublicMirror
+                  ? '質問コメントを削除しました。古い公開データへの反映は遅れる場合があります。'
+                  : '質問コメントを削除しました。',
+            ),
+          ),
+        );
     } on FirebaseException catch (error) {
       if (!context.mounted) {
         return;
@@ -1219,6 +1287,7 @@ class _LessonAnswerRecordCard extends StatefulWidget {
   const _LessonAnswerRecordCard({
     required this.answer,
     required this.user,
+    required this.currentCommentRole,
     required this.questions,
     required this.answers,
     this.parentQuestion,
@@ -1227,6 +1296,7 @@ class _LessonAnswerRecordCard extends StatefulWidget {
 
   final LessonQuestionAnswer answer;
   final User user;
+  final String currentCommentRole;
   final List<LessonQuestion> questions;
   final List<LessonQuestionAnswer> answers;
   final LessonQuestion? parentQuestion;
@@ -1697,10 +1767,10 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
     );
   }
 
-  Future<void> _deleteAnswer() async {
+  Future<bool> _deleteAnswer() async {
     final answerId = widget.answer.id;
     if (answerId == null || Firebase.apps.isEmpty) {
-      return;
+      return false;
     }
     final firestore = FirebaseFirestore.instance;
     final deletedData = {
@@ -1716,16 +1786,31 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
     final publicRef = firestore
         .collection('publicLessonQuestionAnswers')
         .doc(answerId);
-    final publicSnapshot = await publicRef.get();
-    final batch = firestore.batch()
-      ..set(privateRef, deletedData, SetOptions(merge: true));
-    if (publicSnapshot.exists) {
-      batch.set(publicRef, deletedData, SetOptions(merge: true));
+    await privateRef.set(deletedData, SetOptions(merge: true));
+    try {
+      await publicRef.update(deletedData);
+      return false;
+    } on FirebaseException catch (error) {
+      if (_canIgnorePublicMirrorDeleteError(error)) {
+        return true;
+      }
+      rethrow;
     }
-    await batch.commit();
   }
 
   Future<void> _confirmAndDelete(BuildContext context) async {
+    final isAnswerInCurrentRole = _matchesRecordCommentRole(
+      currentRole: widget.currentCommentRole,
+      authorRole: widget.answer.authorRole,
+    );
+    if (!isAnswerInCurrentRole) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          const SnackBar(content: Text(_recordRoleMismatchDeleteMessage)),
+        );
+      return;
+    }
     final shouldDelete = await showDialog<bool>(
       context: context,
       builder: (context) {
@@ -1749,13 +1834,21 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
       return;
     }
     try {
-      await _deleteAnswer();
+      final skippedPublicMirror = await _deleteAnswer();
       if (!context.mounted) {
         return;
       }
       ScaffoldMessenger.of(context)
         ..clearSnackBars()
-        ..showSnackBar(const SnackBar(content: Text('回答コメントを削除しました。')));
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              skippedPublicMirror
+                  ? '回答コメントを削除しました。古い公開データへの反映は遅れる場合があります。'
+                  : '回答コメントを削除しました。',
+            ),
+          ),
+        );
     } on FirebaseException catch (error) {
       if (!context.mounted) {
         return;
