@@ -574,15 +574,7 @@ class CourseDetailPage extends StatelessWidget {
                     ),
                   );
                 },
-                onManageInteractions: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) =>
-                          TeacherInteractionManagePage(course: course),
-                    ),
-                  );
-                },
-                onManagePrivacy: () {
+                onManageCourseSettings: () {
                   Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (_) =>
@@ -639,15 +631,13 @@ class _TeacherActionButtons extends StatelessWidget {
   const _TeacherActionButtons({
     required this.onEditCourse,
     required this.onManageLessons,
-    required this.onManageInteractions,
-    required this.onManagePrivacy,
+    required this.onManageCourseSettings,
     required this.onPreview,
   });
 
   final VoidCallback onEditCourse;
   final VoidCallback onManageLessons;
-  final VoidCallback onManageInteractions;
-  final VoidCallback onManagePrivacy;
+  final VoidCallback onManageCourseSettings;
   final VoidCallback onPreview;
 
   @override
@@ -668,15 +658,9 @@ class _TeacherActionButtons extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         OutlinedButton.icon(
-          onPressed: onManageInteractions,
-          icon: const Icon(Icons.forum_outlined),
-          label: const Text('公開メモ・質問を管理'),
-        ),
-        const SizedBox(height: 8),
-        OutlinedButton.icon(
-          onPressed: onManagePrivacy,
-          icon: const Icon(Icons.verified_user_outlined),
-          label: const Text('本名同意設定を管理'),
+          onPressed: onManageCourseSettings,
+          icon: const Icon(Icons.settings_outlined),
+          label: const Text('講座設定'),
         ),
         const SizedBox(height: 8),
         OutlinedButton.icon(
