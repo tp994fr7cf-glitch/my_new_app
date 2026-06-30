@@ -4,7 +4,32 @@ import 'package:firebase_core/firebase_core.dart';
 import '../models/lesson_note.dart';
 import '../services/lesson_interaction_service.dart';
 
-const Duration quotedNoteCitationCommitRetryDelay = Duration(milliseconds: 400);
+const List<Duration> lessonQuestionAnswerCommitRetryDelays = [
+  Duration(milliseconds: 500),
+  Duration(milliseconds: 1000),
+  Duration(milliseconds: 1500),
+];
+
+const Duration quotedNoteCitationCommitRetryDelay =
+    lessonQuestionAnswerCommitRetryDelays.first;
+
+String? quotedNoteSnapshotFieldFromFirestore(dynamic raw) {
+  if (raw is! String || raw.isEmpty) {
+    return null;
+  }
+  return raw;
+}
+
+QuotedNoteCitationSnapshotFields quotedNoteCitationSnapshotFromFirestoreData(
+  Map<String, dynamic>? data, {
+  required String noteId,
+}) {
+  return QuotedNoteCitationSnapshotFields(
+    quotedNoteId: noteId,
+    quotedNoteTitle: quotedNoteSnapshotFieldFromFirestore(data?['title']),
+    quotedNoteBody: quotedNoteSnapshotFieldFromFirestore(data?['body']),
+  );
+}
 
 class QuotedNoteCitationSnapshotFields {
   const QuotedNoteCitationSnapshotFields({
@@ -53,13 +78,9 @@ bool quotedNoteSnapshotMatches({
 QuotedNoteCitationSnapshotFields quotedNoteCitationSnapshotFromNote(
   LessonNote note,
 ) {
-  final noteId = (note.id ?? '').trim();
-  final title = note.title.trim();
-  final body = note.body.trim();
-  return QuotedNoteCitationSnapshotFields(
-    quotedNoteId: noteId,
-    quotedNoteTitle: title.isEmpty ? null : title,
-    quotedNoteBody: body.isEmpty ? null : body,
+  return quotedNoteCitationSnapshotFromFirestoreData(
+    {'title': note.title, 'body': note.body},
+    noteId: (note.id ?? '').trim(),
   );
 }
 
@@ -253,7 +274,10 @@ Future<QuotedNoteCitationPreflightResult> preflightQuotedNoteCitationForWrite({
       );
     }
     return QuotedNoteCitationPreflightResult.valid(
-      quotedNoteCitationSnapshotFromNote(publicNote),
+      quotedNoteCitationSnapshotFromFirestoreData(
+        publicSnapshot.data(),
+        noteId: safeQuotedNoteId,
+      ),
     );
   }
 
@@ -265,7 +289,10 @@ Future<QuotedNoteCitationPreflightResult> preflightQuotedNoteCitationForWrite({
         selectedBody: selectedBody,
       )) {
     return QuotedNoteCitationPreflightResult.valid(
-      quotedNoteCitationSnapshotFromNote(publicNote),
+      quotedNoteCitationSnapshotFromFirestoreData(
+        publicSnapshot.data(),
+        noteId: safeQuotedNoteId,
+      ),
     );
   }
 
@@ -277,7 +304,10 @@ Future<QuotedNoteCitationPreflightResult> preflightQuotedNoteCitationForWrite({
         selectedBody: selectedBody,
       )) {
     return QuotedNoteCitationPreflightResult.valid(
-      quotedNoteCitationSnapshotFromNote(publicNote),
+      quotedNoteCitationSnapshotFromFirestoreData(
+        publicSnapshot.data(),
+        noteId: safeQuotedNoteId,
+      ),
     );
   }
 
@@ -289,7 +319,10 @@ Future<QuotedNoteCitationPreflightResult> preflightQuotedNoteCitationForWrite({
         selectedBody: selectedBody,
       )) {
     return QuotedNoteCitationPreflightResult.valid(
-      quotedNoteCitationSnapshotFromNote(ownNote),
+      quotedNoteCitationSnapshotFromFirestoreData(
+        ownSnapshot?.data(),
+        noteId: safeQuotedNoteId,
+      ),
     );
   }
 

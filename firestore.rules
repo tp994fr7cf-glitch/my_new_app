@@ -243,32 +243,50 @@ service cloud.firestore {
           || request.resource.data.quotedNoteBody == null);
     }
 
+    function quotedNoteSnapshotFieldEmpty(rawValue, hasField) {
+      return !hasField || rawValue == '' || rawValue == null;
+    }
+
     function quotedPublicNoteSnapshotMatches(noteId) {
-      return ((get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.title is string
-            && get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.title.size() > 0
-            && request.resource.data.quotedNoteTitle == get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.title)
-          || (get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.title == ''
+      let noteData = get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data;
+      let noteTitle = noteData.title;
+      let noteBody = noteData.body;
+      return ((noteTitle is string
+            && noteTitle.size() > 0
+            && request.resource.data.quotedNoteTitle == noteTitle)
+          || (quotedNoteSnapshotFieldEmpty(
+              noteTitle,
+              noteData.keys().hasAny(['title']))
             && (!request.resource.data.keys().hasAny(['quotedNoteTitle'])
               || request.resource.data.quotedNoteTitle == null)))
-        && ((get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.body is string
-            && get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.body.size() > 0
-            && request.resource.data.quotedNoteBody == get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.body)
-          || (get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.body == ''
+        && ((noteBody is string
+            && noteBody.size() > 0
+            && request.resource.data.quotedNoteBody == noteBody)
+          || (quotedNoteSnapshotFieldEmpty(
+              noteBody,
+              noteData.keys().hasAny(['body']))
             && (!request.resource.data.keys().hasAny(['quotedNoteBody'])
               || request.resource.data.quotedNoteBody == null)));
     }
 
     function quotedOwnNoteSnapshotMatches(noteId) {
-      return ((get(/databases/$(database)/documents/users/$(request.auth.uid)/lessonNotes/$(noteId)).data.title is string
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)/lessonNotes/$(noteId)).data.title.size() > 0
-            && request.resource.data.quotedNoteTitle == get(/databases/$(database)/documents/users/$(request.auth.uid)/lessonNotes/$(noteId)).data.title)
-          || (get(/databases/$(database)/documents/users/$(request.auth.uid)/lessonNotes/$(noteId)).data.title == ''
+      let noteData = get(/databases/$(database)/documents/users/$(request.auth.uid)/lessonNotes/$(noteId)).data;
+      let noteTitle = noteData.title;
+      let noteBody = noteData.body;
+      return ((noteTitle is string
+            && noteTitle.size() > 0
+            && request.resource.data.quotedNoteTitle == noteTitle)
+          || (quotedNoteSnapshotFieldEmpty(
+              noteTitle,
+              noteData.keys().hasAny(['title']))
             && (!request.resource.data.keys().hasAny(['quotedNoteTitle'])
               || request.resource.data.quotedNoteTitle == null)))
-        && ((get(/databases/$(database)/documents/users/$(request.auth.uid)/lessonNotes/$(noteId)).data.body is string
-            && get(/databases/$(database)/documents/users/$(request.auth.uid)/lessonNotes/$(noteId)).data.body.size() > 0
-            && request.resource.data.quotedNoteBody == get(/databases/$(database)/documents/users/$(request.auth.uid)/lessonNotes/$(noteId)).data.body)
-          || (get(/databases/$(database)/documents/users/$(request.auth.uid)/lessonNotes/$(noteId)).data.body == ''
+        && ((noteBody is string
+            && noteBody.size() > 0
+            && request.resource.data.quotedNoteBody == noteBody)
+          || (quotedNoteSnapshotFieldEmpty(
+              noteBody,
+              noteData.keys().hasAny(['body']))
             && (!request.resource.data.keys().hasAny(['quotedNoteBody'])
               || request.resource.data.quotedNoteBody == null)));
     }

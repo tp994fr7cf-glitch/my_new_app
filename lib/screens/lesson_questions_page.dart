@@ -15,6 +15,7 @@ import '../models/public_user_profile.dart';
 import '../services/course_identity_service.dart';
 import '../services/lesson_interaction_service.dart';
 import '../utils/firestore_parsing.dart';
+import '../utils/lesson_question_answer_write_preflight.dart';
 import '../utils/quoted_note_citation_validation.dart';
 import 'lesson_notes_page.dart';
 import 'public_note_edit_history_sheet.dart';
@@ -1433,30 +1434,6 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     );
   }
 
-  Future<Map<String, dynamic>?> _publicQuestionMirrorData(
-    String questionId,
-  ) async {
-    if (Firebase.apps.isEmpty) {
-      return null;
-    }
-    try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('publicLessonQuestions')
-          .doc(questionId)
-          .get();
-      return snapshot.data();
-    } on FirebaseException {
-      return null;
-    }
-  }
-
-  Future<bool> _isWritableQuestionMirror(String questionId) async {
-    final data = await _publicQuestionMirrorData(questionId);
-    return data != null &&
-        data['isDeleted'] != true &&
-        data['moderationStatus'] == lessonNoteModerationVisible;
-  }
-
   Future<void> _setPublicQuestionModeration(LessonQuestion question) async {
     await _lessonInteractionService.setPublicModeration(
       collectionPath: 'publicLessonQuestions',
@@ -1756,6 +1733,29 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     return error.message ?? fallback;
   }
 
+  Future<LessonQuestionAnswerWritePreflightResult>
+  _preflightLessonQuestionAnswerWrite({
+    required String userId,
+    required LessonQuestion question,
+    required _LessonQuestionAnswerDraft draft,
+    required bool isTeacherAnswer,
+  }) {
+    return preflightLessonQuestionAnswerWrite(
+      firestore: FirebaseFirestore.instance,
+      userId: userId,
+      courseId: _courseId,
+      lessonNumber: widget.lessonNumber,
+      questionId: question.id!,
+      courseInstructorId: widget.course.instructorId,
+      isCourseInstructor: _isCourseInstructorForCitation(),
+      isTeacherAnswer: isTeacherAnswer,
+      quotedNoteId: draft.quotedNoteId,
+      selectedQuotedTitle: draft.quotedNoteTitle,
+      selectedQuotedBody: draft.quotedNoteBody,
+      requiresPublicQuoteAudience: question.isPubliclyVisible,
+    );
+  }
+
   bool _isCourseInstructorForCitation() {
     return isCourseInstructorForQuotedNoteCitation(
       currentUserId: _currentUserId,
@@ -1914,8 +1914,6 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         'updatedAt': now,
         if (draft.questionId == null) ...{'answerCount': 0, 'createdAt': now},
       };
-      final batch = firestore.batch()
-        ..set(questionRef, data, SetOptions(merge: true));
       final publicRef = firestore
           .collection('publicLessonQuestions')
           .doc(questionId);
@@ -1926,23 +1924,18 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       final publicModerationStatus =
           publicData?['moderationStatus'] as String? ??
           lessonNoteModerationVisible;
-      batch.set(publicRef, {
-        ...data,
-        'questionId': questionId,
-        'interactionSettingId': _interactionSettingId,
-        'visibility': lessonQuestionVisibilityPublic,
-        'studentVisibility': visibility,
-        'moderationStatus': publicModerationStatus,
-      }, SetOptions(merge: true));
       final quotedNotePreflightPassed = quotedNoteSnapshot != null;
-      try {
-        await batch.commit();
-      } on FirebaseException catch (error) {
-        if (error.code == 'permission-denied' &&
-            quotedNoteSnapshot != null &&
-            quotedNoteId.isNotEmpty) {
-          await Future<void>.delayed(quotedNoteCitationCommitRetryDelay);
-          final retryPreflight = await _preflightQuotedNoteCitation(
+      final retrySchedule = [
+        Duration.zero,
+        ...lessonQuestionAnswerCommitRetryDelays,
+      ];
+      var committed = false;
+      for (var attempt = 0; attempt < retrySchedule.length; attempt++) {
+        if (retrySchedule[attempt] > Duration.zero) {
+          await Future<void>.delayed(retrySchedule[attempt]);
+        }
+        if (quotedNoteId.isNotEmpty) {
+          final quotePreflight = await _preflightQuotedNoteCitation(
             userId: user.uid,
             quotedNoteId: quotedNoteId,
             selectedTitle: draft.quotedNoteTitle,
@@ -1950,26 +1943,38 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
             requiresPublicAudience:
                 visibility == lessonQuestionVisibilityPublic,
           );
-          if (retryPreflight.isValid) {
-            quotedNoteSnapshot = retryPreflight.snapshot;
-            final retryData = {
-              ...data,
-              'quotedNoteId': quotedNoteSnapshot?.quotedNoteId,
-              'quotedNoteTitle': quotedNoteSnapshot?.quotedNoteTitle,
-              'quotedNoteBody': quotedNoteSnapshot?.quotedNoteBody,
-            };
-            final retryBatch = firestore.batch()
-              ..set(questionRef, retryData, SetOptions(merge: true));
-            retryBatch.set(publicRef, {
-              ...retryData,
-              'questionId': questionId,
-              'interactionSettingId': _interactionSettingId,
-              'visibility': lessonQuestionVisibilityPublic,
-              'studentVisibility': visibility,
-              'moderationStatus': publicModerationStatus,
-            }, SetOptions(merge: true));
-            await retryBatch.commit();
-          } else {
+          if (!quotePreflight.isValid) {
+            if (attempt < retrySchedule.length - 1) {
+              continue;
+            }
+            _showMessage(quotePreflight.errorMessage!);
+            return false;
+          }
+          quotedNoteSnapshot = quotePreflight.snapshot;
+        }
+        final attemptData = {
+          ...data,
+          'quotedNoteId': quotedNoteSnapshot?.quotedNoteId ?? draft.quotedNoteId,
+          'quotedNoteTitle': quotedNoteSnapshot?.quotedNoteTitle,
+          'quotedNoteBody': quotedNoteSnapshot?.quotedNoteBody,
+        };
+        try {
+          final attemptBatch = firestore.batch()
+            ..set(questionRef, attemptData, SetOptions(merge: true));
+          attemptBatch.set(publicRef, {
+            ...attemptData,
+            'questionId': questionId,
+            'interactionSettingId': _interactionSettingId,
+            'visibility': lessonQuestionVisibilityPublic,
+            'studentVisibility': visibility,
+            'moderationStatus': publicModerationStatus,
+          }, SetOptions(merge: true));
+          await attemptBatch.commit();
+          committed = true;
+          break;
+        } on FirebaseException catch (error) {
+          if (error.code != 'permission-denied' ||
+              attempt >= retrySchedule.length - 1) {
             _showMessage(
               _postFailureMessage(
                 error,
@@ -1979,9 +1984,10 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
             );
             return false;
           }
-        } else {
-          rethrow;
         }
+      }
+      if (!committed) {
+        return false;
       }
       if (mounted) {
         setState(() {
@@ -2650,20 +2656,6 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
           );
       QuotedNoteCitationSnapshotFields? quotedNoteSnapshot;
       final quotedNoteId = (draft.quotedNoteId ?? '').trim();
-      if (quotedNoteId.isNotEmpty) {
-        final quotePreflight = await _preflightQuotedNoteCitation(
-          userId: user.uid,
-          quotedNoteId: quotedNoteId,
-          selectedTitle: draft.quotedNoteTitle,
-          selectedBody: draft.quotedNoteBody,
-          requiresPublicAudience: question.isPubliclyVisible,
-        );
-        if (!quotePreflight.isValid) {
-          _showMessage(quotePreflight.errorMessage!);
-          return false;
-        }
-        quotedNoteSnapshot = quotePreflight.snapshot;
-      }
       final firestore = FirebaseFirestore.instance;
       final teacherDisplayName = isTeacherAnswer
           ? await _teacherCommentDisplayName(user)
@@ -2687,7 +2679,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
           .collection('lessonQuestionAnswers')
           .doc();
       final now = FieldValue.serverTimestamp();
-      final data = {
+      final baseData = {
         'questionId': question.id,
         'courseId': _courseId,
         'courseTitle': widget.course.title,
@@ -2712,77 +2704,75 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         ),
         if ((draft.replyToBodyPreview ?? '').trim().isNotEmpty)
           'replyToBodyPreview': _previewText(draft.replyToBodyPreview!),
-        if ((threadRootAnswerId ?? '').isNotEmpty)
+        if ((threadRootAnswerId ?? '').trim().isNotEmpty)
           'threadRootAnswerId': threadRootAnswerId,
         'replyToCreatedAt': draft.replyToCreatedAt,
-        'quotedNoteId': quotedNoteSnapshot?.quotedNoteId ?? draft.quotedNoteId,
-        'quotedNoteTitle': quotedNoteSnapshot?.quotedNoteTitle,
-        'quotedNoteBody': quotedNoteSnapshot?.quotedNoteBody,
         'isDeleted': false,
         'moderationStatus': lessonNoteModerationVisible,
         'createdAt': now,
         'updatedAt': now,
       };
-      final batch = firestore.batch()..set(answerRef, data);
-      final writePublicMirror = await _isWritableQuestionMirror(question.id!);
-      if (writePublicMirror) {
-        batch.set(
-          firestore.collection('publicLessonQuestionAnswers').doc(answerRef.id),
-          {...data, 'answerId': answerRef.id},
-        );
-      }
-      final quotedNotePreflightPassed = quotedNoteSnapshot != null;
-      Future<void> commitAnswerBatch(Map<String, dynamic> payload) async {
-        final commitBatch = firestore.batch()..set(answerRef, payload);
-        if (writePublicMirror) {
-          commitBatch.set(
-            firestore
-                .collection('publicLessonQuestionAnswers')
-                .doc(answerRef.id),
-            {...payload, 'answerId': answerRef.id},
-          );
+      LessonQuestionAnswerWritePreflightResult? lastPreflight;
+      final retrySchedule = [
+        Duration.zero,
+        ...lessonQuestionAnswerCommitRetryDelays,
+      ];
+      for (var attempt = 0; attempt < retrySchedule.length; attempt++) {
+        if (retrySchedule[attempt] > Duration.zero) {
+          await Future<void>.delayed(retrySchedule[attempt]);
         }
-        await commitBatch.commit();
-      }
-
-      try {
-        await commitAnswerBatch(data);
-      } on FirebaseException catch (error) {
-        if (error.code == 'permission-denied' &&
-            quotedNoteSnapshot != null &&
-            quotedNoteId.isNotEmpty) {
-          await Future<void>.delayed(quotedNoteCitationCommitRetryDelay);
-          final retryPreflight = await _preflightQuotedNoteCitation(
-            userId: user.uid,
-            quotedNoteId: quotedNoteId,
-            selectedTitle: draft.quotedNoteTitle,
-            selectedBody: draft.quotedNoteBody,
-            requiresPublicAudience: question.isPubliclyVisible,
-          );
-          if (retryPreflight.isValid) {
-            quotedNoteSnapshot = retryPreflight.snapshot;
-            final retryData = {
-              ...data,
-              'quotedNoteId': quotedNoteSnapshot?.quotedNoteId,
-              'quotedNoteTitle': quotedNoteSnapshot?.quotedNoteTitle,
-              'quotedNoteBody': quotedNoteSnapshot?.quotedNoteBody,
-            };
-            await commitAnswerBatch(retryData);
-          } else {
+        lastPreflight = await _preflightLessonQuestionAnswerWrite(
+          userId: user.uid,
+          question: question,
+          draft: draft,
+          isTeacherAnswer: isTeacherAnswer,
+        );
+        if (!lastPreflight.isValid) {
+          final canRetry =
+              attempt < retrySchedule.length - 1 &&
+              lastPreflight.failureKind !=
+                  LessonQuestionAnswerWriteFailureKind.quoteCitation;
+          if (canRetry) {
+            continue;
+          }
+          _showMessage(lastPreflight.errorMessage!);
+          return false;
+        }
+        quotedNoteSnapshot = lastPreflight.quoteSnapshot;
+        final data = {
+          ...baseData,
+          'quotedNoteId': quotedNoteSnapshot?.quotedNoteId ?? draft.quotedNoteId,
+          'quotedNoteTitle': quotedNoteSnapshot?.quotedNoteTitle,
+          'quotedNoteBody': quotedNoteSnapshot?.quotedNoteBody,
+        };
+        try {
+          final commitBatch = firestore.batch()..set(answerRef, data);
+          if (lastPreflight.writePublicMirror) {
+            commitBatch.set(
+              firestore
+                  .collection('publicLessonQuestionAnswers')
+                  .doc(answerRef.id),
+              {...data, 'answerId': answerRef.id},
+            );
+          }
+          await commitBatch.commit();
+          return true;
+        } on FirebaseException catch (error) {
+          if (error.code != 'permission-denied' ||
+              attempt >= retrySchedule.length - 1) {
             _showMessage(
-              _postFailureMessage(
-                error,
+              lessonQuestionAnswerPostFailureMessage(
+                error: error,
                 fallback: '回答コメントの投稿に失敗しました。',
-                quotedNotePreflightPassed: quotedNotePreflightPassed,
+                lastPreflight: lastPreflight,
+                hadQuotedNote: quotedNoteId.isNotEmpty,
               ),
             );
             return false;
           }
-        } else {
-          rethrow;
         }
       }
-      return true;
+      return false;
     } on FirebaseException catch (error) {
       _showMessage(
         _postFailureMessage(
