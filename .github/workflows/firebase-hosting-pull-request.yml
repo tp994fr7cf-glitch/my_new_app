@@ -23,4 +23,5 @@ jobs:
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_MY_NEW_APP_NAONA_20260523 }}
+          channelId: p${{ github.event.number }}-${{ github.run_id }}-${{ github.run_attempt }}
           projectId: my-new-app-naona-20260523
