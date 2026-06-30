@@ -5835,6 +5835,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
         if (saved) {
           _answerController.clear();
           _clearReplyTarget();
+          _clearQuotedNoteSelection();
         }
         setState(() => _isSaving = false);
       }
@@ -5931,6 +5932,9 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
     _replyToLinkCurrentProfile = false;
     _replyToBodyPreview = null;
     _replyToCreatedAt = null;
+  }
+
+  void _clearQuotedNoteSelection() {
     _quotedNoteId = '';
     _quotedNoteTitle = '';
     _quotedNoteBody = '';
