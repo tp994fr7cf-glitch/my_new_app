@@ -16,7 +16,8 @@
           "projectId": "my-new-app-naona-20260523",
           "configurations": {
             "android": "1:848607557123:android:a258123325cd9371a78036",
-            "ios": "1:848607557123:ios:716fbc4db30fe514a78036"
+            "ios": "1:848607557123:ios:716fbc4db30fe514a78036",
+            "web": "1:848607557123:web:1bb54cfdf79c04e5a78036"
           }
         }
       }
@@ -33,6 +34,35 @@
       {
         "source": "**",
         "destination": "/index.html"
+      }
+    ],
+    "headers": [
+      {
+        "source": "/index.html",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, no-store, must-revalidate"
+          }
+        ]
+      },
+      {
+        "source": "/flutter_bootstrap.js",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, no-store, must-revalidate"
+          }
+        ]
+      },
+      {
+        "source": "/main.dart.js",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, no-store, must-revalidate"
+          }
+        ]
       }
     ]
   }
