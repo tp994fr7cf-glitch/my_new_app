@@ -40,6 +40,18 @@ class QuotedNoteCitationSnapshotFields {
   final String quotedNoteId;
   final String? quotedNoteTitle;
   final String? quotedNoteBody;
+
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        other is QuotedNoteCitationSnapshotFields &&
+            quotedNoteId == other.quotedNoteId &&
+            quotedNoteTitle == other.quotedNoteTitle &&
+            quotedNoteBody == other.quotedNoteBody;
+  }
+
+  @override
+  int get hashCode => Object.hash(quotedNoteId, quotedNoteTitle, quotedNoteBody);
 }
 
 class QuotedNoteCitationPreflightResult {
