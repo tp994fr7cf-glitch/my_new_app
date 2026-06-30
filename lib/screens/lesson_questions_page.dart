@@ -15,6 +15,7 @@ import '../models/public_user_profile.dart';
 import '../services/course_identity_service.dart';
 import '../services/lesson_interaction_service.dart';
 import '../utils/firestore_parsing.dart';
+import '../utils/quoted_note_citation_validation.dart';
 import 'lesson_notes_page.dart';
 import 'public_note_edit_history_sheet.dart';
 import 'public_user_profile_page.dart';
@@ -1744,11 +1745,44 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
   String _postFailureMessage(
     FirebaseException error, {
     required String fallback,
+    bool quotedNotePreflightPassed = false,
   }) {
     if (error.code == 'permission-denied') {
+      if (quotedNotePreflightPassed) {
+        return '投稿できませんでした。通信状態を確認して、もう一度お試しください。';
+      }
       return '投稿できませんでした。引用メモの公開設定や公開範囲を確認して、もう一度お試しください。';
     }
     return error.message ?? fallback;
+  }
+
+  bool _isCourseInstructorForCitation() {
+    return isCourseInstructorForQuotedNoteCitation(
+      currentUserId: _currentUserId,
+      courseInstructorId: widget.course.instructorId,
+      isActiveTeacher: _isCurrentUserTeacher,
+    );
+  }
+
+  Future<QuotedNoteCitationPreflightResult> _preflightQuotedNoteCitation({
+    required String userId,
+    required String quotedNoteId,
+    required String? selectedTitle,
+    required String? selectedBody,
+    required bool requiresPublicAudience,
+  }) {
+    return preflightQuotedNoteCitationForWrite(
+      firestore: FirebaseFirestore.instance,
+      userId: userId,
+      courseId: _courseId,
+      lessonNumber: widget.lessonNumber,
+      courseInstructorId: widget.course.instructorId,
+      isCourseInstructor: _isCourseInstructorForCitation(),
+      requiresPublicAudience: requiresPublicAudience,
+      quotedNoteId: quotedNoteId,
+      selectedTitle: selectedTitle,
+      selectedBody: selectedBody,
+    );
   }
 
   Future<bool> _saveQuestion(_LessonQuestionDraft draft) async {
@@ -1817,13 +1851,21 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       final visibility = requestedPublic && platformEnabled
           ? lessonQuestionVisibilityPublic
           : lessonQuestionVisibilityTeacherOnly;
-      final isQuotedNoteValid = await _validateQuotedNoteForQuestion(
-        userId: user.uid,
-        draft: draft,
-        finalVisibility: visibility,
-      );
-      if (!isQuotedNoteValid) {
-        return false;
+      QuotedNoteCitationSnapshotFields? quotedNoteSnapshot;
+      final quotedNoteId = (draft.quotedNoteId ?? '').trim();
+      if (quotedNoteId.isNotEmpty) {
+        final quotePreflight = await _preflightQuotedNoteCitation(
+          userId: user.uid,
+          quotedNoteId: quotedNoteId,
+          selectedTitle: draft.quotedNoteTitle,
+          selectedBody: draft.quotedNoteBody,
+          requiresPublicAudience: visibility == lessonQuestionVisibilityPublic,
+        );
+        if (!quotePreflight.isValid) {
+          _showMessage(quotePreflight.errorMessage!);
+          return false;
+        }
+        quotedNoteSnapshot = quotePreflight.snapshot;
       }
       final isTeacherQuestion =
           widget.isTeacherPreview || _isCurrentUserTeacher;
@@ -1863,9 +1905,9 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         'studentVisibility': visibility,
         'target': target,
         'attachmentTypes': draft.attachmentTypes,
-        'quotedNoteId': draft.quotedNoteId,
-        'quotedNoteTitle': draft.quotedNoteTitle,
-        'quotedNoteBody': draft.quotedNoteBody,
+        'quotedNoteId': quotedNoteSnapshot?.quotedNoteId ?? draft.quotedNoteId,
+        'quotedNoteTitle': quotedNoteSnapshot?.quotedNoteTitle,
+        'quotedNoteBody': quotedNoteSnapshot?.quotedNoteBody,
         'status': lessonQuestionStatusOpen,
         'isDeleted': false,
         'moderationStatus': lessonNoteModerationVisible,
@@ -1892,7 +1934,55 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         'studentVisibility': visibility,
         'moderationStatus': publicModerationStatus,
       }, SetOptions(merge: true));
-      await batch.commit();
+      final quotedNotePreflightPassed = quotedNoteSnapshot != null;
+      try {
+        await batch.commit();
+      } on FirebaseException catch (error) {
+        if (error.code == 'permission-denied' &&
+            quotedNoteSnapshot != null &&
+            quotedNoteId.isNotEmpty) {
+          await Future<void>.delayed(quotedNoteCitationCommitRetryDelay);
+          final retryPreflight = await _preflightQuotedNoteCitation(
+            userId: user.uid,
+            quotedNoteId: quotedNoteId,
+            selectedTitle: draft.quotedNoteTitle,
+            selectedBody: draft.quotedNoteBody,
+            requiresPublicAudience:
+                visibility == lessonQuestionVisibilityPublic,
+          );
+          if (retryPreflight.isValid) {
+            quotedNoteSnapshot = retryPreflight.snapshot;
+            final retryData = {
+              ...data,
+              'quotedNoteId': quotedNoteSnapshot?.quotedNoteId,
+              'quotedNoteTitle': quotedNoteSnapshot?.quotedNoteTitle,
+              'quotedNoteBody': quotedNoteSnapshot?.quotedNoteBody,
+            };
+            final retryBatch = firestore.batch()
+              ..set(questionRef, retryData, SetOptions(merge: true));
+            retryBatch.set(publicRef, {
+              ...retryData,
+              'questionId': questionId,
+              'interactionSettingId': _interactionSettingId,
+              'visibility': lessonQuestionVisibilityPublic,
+              'studentVisibility': visibility,
+              'moderationStatus': publicModerationStatus,
+            }, SetOptions(merge: true));
+            await retryBatch.commit();
+          } else {
+            _showMessage(
+              _postFailureMessage(
+                error,
+                fallback: '質問コメントの投稿に失敗しました。',
+                quotedNotePreflightPassed: quotedNotePreflightPassed,
+              ),
+            );
+            return false;
+          }
+        } else {
+          rethrow;
+        }
+      }
       if (mounted) {
         setState(() {
           _editingQuestion = null;
@@ -1905,7 +1995,13 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       );
       return true;
     } on FirebaseException catch (error) {
-      _showMessage(_postFailureMessage(error, fallback: '質問コメントの投稿に失敗しました。'));
+      _showMessage(
+        _postFailureMessage(
+          error,
+          fallback: '質問コメントの投稿に失敗しました。',
+          quotedNotePreflightPassed: (draft.quotedNoteId ?? '').trim().isNotEmpty,
+        ),
+      );
       return false;
     } catch (error) {
       _showMessage('質問コメントの投稿に失敗しました: $error');
@@ -2265,196 +2361,6 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         });
   }
 
-  Future<LessonNote?> _resolveQuotedNoteForCurrentUser({
-    required String userId,
-    required String noteId,
-  }) async {
-    if (noteId.isEmpty || Firebase.apps.isEmpty) {
-      return null;
-    }
-    final firestore = FirebaseFirestore.instance;
-    try {
-      final publicSnapshot = await firestore
-          .collection('publicLessonNotes')
-          .doc(noteId)
-          .get();
-      if (publicSnapshot.exists) {
-        final publicNote = LessonNote.fromFirestore(publicSnapshot);
-        if (!publicNote.isDeleted &&
-            publicNote.allowsQuestionCitation &&
-            publicNote.courseId == _courseId &&
-            publicNote.lessonNumber == widget.lessonNumber) {
-          return publicNote;
-        }
-      }
-    } on FirebaseException {
-      // Fall through to private lookup below.
-    }
-    try {
-      final ownSnapshot = await firestore
-          .collection('users')
-          .doc(userId)
-          .collection('lessonNotes')
-          .doc(noteId)
-          .get();
-      if (ownSnapshot.exists) {
-        final ownNote = LessonNote.fromFirestore(ownSnapshot);
-        if (!ownNote.isDeleted &&
-            ownNote.allowsQuestionCitation &&
-            ownNote.courseId == _courseId &&
-            ownNote.lessonNumber == widget.lessonNumber) {
-          return ownNote;
-        }
-      }
-    } on FirebaseException {
-      return null;
-    }
-    return null;
-  }
-
-  Future<LessonNote?> _loadQuotedNoteForMessage({
-    required String userId,
-    required String noteId,
-  }) async {
-    if (noteId.isEmpty || Firebase.apps.isEmpty) {
-      return null;
-    }
-    final firestore = FirebaseFirestore.instance;
-    try {
-      final ownSnapshot = await firestore
-          .collection('users')
-          .doc(userId)
-          .collection('lessonNotes')
-          .doc(noteId)
-          .get();
-      if (ownSnapshot.exists) {
-        return LessonNote.fromFirestore(ownSnapshot);
-      }
-    } on FirebaseException {
-      // Keep fallback checks below.
-    }
-    try {
-      final publicSnapshot = await firestore
-          .collection('publicLessonNotes')
-          .doc(noteId)
-          .get();
-      if (publicSnapshot.exists) {
-        return LessonNote.fromFirestore(publicSnapshot);
-      }
-    } on FirebaseException {
-      return null;
-    }
-    return null;
-  }
-
-  bool _quotedNoteSnapshotMatches({
-    required LessonNote note,
-    required String? selectedTitle,
-    required String? selectedBody,
-  }) {
-    final title = (selectedTitle ?? '').trim();
-    final body = (selectedBody ?? '').trim();
-    return title == note.title.trim() && body == note.body.trim();
-  }
-
-  String _quotedNotePublicAudienceMessage(LessonNote note) {
-    if (note.isStudentTeacherOnly) {
-      return '引用しようとしているメモは先生だけに公開されているため、公開コメントには使えません。';
-    }
-    return '引用しようとしているメモは公開コメントに使える条件を満たしていません。';
-  }
-
-  Future<String?> _quotedNoteValidationMessage({
-    required String userId,
-    required String quotedNoteId,
-    required String? selectedTitle,
-    required String? selectedBody,
-    required bool requiresPublicAudience,
-  }) async {
-    final resolved = await _resolveQuotedNoteForCurrentUser(
-      userId: userId,
-      noteId: quotedNoteId,
-    );
-    if (resolved == null) {
-      final note = await _loadQuotedNoteForMessage(
-        userId: userId,
-        noteId: quotedNoteId,
-      );
-      if (note == null) {
-        return '引用メモを確認できないため、選び直してください。';
-      }
-      if (note.isDeleted) {
-        return '引用しようとしているメモは削除されたため、使えません。';
-      }
-      if (!note.allowsQuestionCitation) {
-        return '引用しようとしているメモは引用許可がオフになったため、使えません。';
-      }
-      if (note.courseId != _courseId ||
-          note.lessonNumber != widget.lessonNumber) {
-        return 'このレッスンのメモではないため、引用できません。';
-      }
-      return '引用メモを確認できないため、選び直してください。';
-    }
-    if (!_quotedNoteSnapshotMatches(
-      note: resolved,
-      selectedTitle: selectedTitle,
-      selectedBody: selectedBody,
-    )) {
-      return '引用しようとしているメモの内容が更新されたため、もう一度選び直してください。';
-    }
-    if (requiresPublicAudience &&
-        !canQuoteLessonNoteToPublicAudience(resolved)) {
-      return _quotedNotePublicAudienceMessage(resolved);
-    }
-    return null;
-  }
-
-  Future<bool> _validateQuotedNoteForQuestion({
-    required String userId,
-    required _LessonQuestionDraft draft,
-    required String finalVisibility,
-  }) async {
-    final quotedNoteId = (draft.quotedNoteId ?? '').trim();
-    if (quotedNoteId.isEmpty) {
-      return true;
-    }
-    final message = await _quotedNoteValidationMessage(
-      userId: userId,
-      quotedNoteId: quotedNoteId,
-      selectedTitle: draft.quotedNoteTitle,
-      selectedBody: draft.quotedNoteBody,
-      requiresPublicAudience: finalVisibility == lessonQuestionVisibilityPublic,
-    );
-    if (message != null) {
-      _showMessage(message);
-      return false;
-    }
-    return true;
-  }
-
-  Future<bool> _validateQuotedNoteForAnswer({
-    required String userId,
-    required LessonQuestion question,
-    required _LessonQuestionAnswerDraft draft,
-  }) async {
-    final quotedNoteId = (draft.quotedNoteId ?? '').trim();
-    if (quotedNoteId.isEmpty) {
-      return true;
-    }
-    final message = await _quotedNoteValidationMessage(
-      userId: userId,
-      quotedNoteId: quotedNoteId,
-      selectedTitle: draft.quotedNoteTitle,
-      selectedBody: draft.quotedNoteBody,
-      requiresPublicAudience: question.isPubliclyVisible,
-    );
-    if (message != null) {
-      _showMessage(message);
-      return false;
-    }
-    return true;
-  }
-
   Future<LessonQuestion?> _loadLatestReplyParentQuestion({
     required String questionId,
     required String currentUserId,
@@ -2742,13 +2648,21 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
             draft: draft,
             currentUserId: user.uid,
           );
-      final isQuotedNoteValid = await _validateQuotedNoteForAnswer(
-        userId: user.uid,
-        question: question,
-        draft: draft,
-      );
-      if (!isQuotedNoteValid) {
-        return false;
+      QuotedNoteCitationSnapshotFields? quotedNoteSnapshot;
+      final quotedNoteId = (draft.quotedNoteId ?? '').trim();
+      if (quotedNoteId.isNotEmpty) {
+        final quotePreflight = await _preflightQuotedNoteCitation(
+          userId: user.uid,
+          quotedNoteId: quotedNoteId,
+          selectedTitle: draft.quotedNoteTitle,
+          selectedBody: draft.quotedNoteBody,
+          requiresPublicAudience: question.isPubliclyVisible,
+        );
+        if (!quotePreflight.isValid) {
+          _showMessage(quotePreflight.errorMessage!);
+          return false;
+        }
+        quotedNoteSnapshot = quotePreflight.snapshot;
       }
       final firestore = FirebaseFirestore.instance;
       final teacherDisplayName = isTeacherAnswer
@@ -2801,25 +2715,82 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         if ((threadRootAnswerId ?? '').isNotEmpty)
           'threadRootAnswerId': threadRootAnswerId,
         'replyToCreatedAt': draft.replyToCreatedAt,
-        'quotedNoteId': draft.quotedNoteId,
-        'quotedNoteTitle': draft.quotedNoteTitle,
-        'quotedNoteBody': draft.quotedNoteBody,
+        'quotedNoteId': quotedNoteSnapshot?.quotedNoteId ?? draft.quotedNoteId,
+        'quotedNoteTitle': quotedNoteSnapshot?.quotedNoteTitle,
+        'quotedNoteBody': quotedNoteSnapshot?.quotedNoteBody,
         'isDeleted': false,
         'moderationStatus': lessonNoteModerationVisible,
         'createdAt': now,
         'updatedAt': now,
       };
       final batch = firestore.batch()..set(answerRef, data);
-      if (await _isWritableQuestionMirror(question.id!)) {
+      final writePublicMirror = await _isWritableQuestionMirror(question.id!);
+      if (writePublicMirror) {
         batch.set(
           firestore.collection('publicLessonQuestionAnswers').doc(answerRef.id),
           {...data, 'answerId': answerRef.id},
         );
       }
-      await batch.commit();
+      final quotedNotePreflightPassed = quotedNoteSnapshot != null;
+      Future<void> commitAnswerBatch(Map<String, dynamic> payload) async {
+        final commitBatch = firestore.batch()..set(answerRef, payload);
+        if (writePublicMirror) {
+          commitBatch.set(
+            firestore
+                .collection('publicLessonQuestionAnswers')
+                .doc(answerRef.id),
+            {...payload, 'answerId': answerRef.id},
+          );
+        }
+        await commitBatch.commit();
+      }
+
+      try {
+        await commitAnswerBatch(data);
+      } on FirebaseException catch (error) {
+        if (error.code == 'permission-denied' &&
+            quotedNoteSnapshot != null &&
+            quotedNoteId.isNotEmpty) {
+          await Future<void>.delayed(quotedNoteCitationCommitRetryDelay);
+          final retryPreflight = await _preflightQuotedNoteCitation(
+            userId: user.uid,
+            quotedNoteId: quotedNoteId,
+            selectedTitle: draft.quotedNoteTitle,
+            selectedBody: draft.quotedNoteBody,
+            requiresPublicAudience: question.isPubliclyVisible,
+          );
+          if (retryPreflight.isValid) {
+            quotedNoteSnapshot = retryPreflight.snapshot;
+            final retryData = {
+              ...data,
+              'quotedNoteId': quotedNoteSnapshot?.quotedNoteId,
+              'quotedNoteTitle': quotedNoteSnapshot?.quotedNoteTitle,
+              'quotedNoteBody': quotedNoteSnapshot?.quotedNoteBody,
+            };
+            await commitAnswerBatch(retryData);
+          } else {
+            _showMessage(
+              _postFailureMessage(
+                error,
+                fallback: '回答コメントの投稿に失敗しました。',
+                quotedNotePreflightPassed: quotedNotePreflightPassed,
+              ),
+            );
+            return false;
+          }
+        } else {
+          rethrow;
+        }
+      }
       return true;
     } on FirebaseException catch (error) {
-      _showMessage(_postFailureMessage(error, fallback: '回答コメントの投稿に失敗しました。'));
+      _showMessage(
+        _postFailureMessage(
+          error,
+          fallback: '回答コメントの投稿に失敗しました。',
+          quotedNotePreflightPassed: (draft.quotedNoteId ?? '').trim().isNotEmpty,
+        ),
+      );
       return false;
     } catch (error) {
       _showMessage('回答コメントの投稿に失敗しました: $error');
