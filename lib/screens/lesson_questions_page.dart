@@ -110,6 +110,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
   List<LessonQuestionAnswer> _lastTeacherPreviewAnswers = const [];
   List<LessonNote> _lastQuotablePublicNotes = const [];
   List<LessonNote> _lastQuotableOwnNotes = const [];
+  List<LessonNote> _lastQuotableOwnLegacyNotes = const [];
   Set<String> _lastTeacherHiddenOwnQuestionIds = const <String>{};
   late Stream<List<LessonNote>> _sharedQuotableNotesStream;
   Stream<List<LessonQuestion>>? _providedQuestionsSource;
@@ -173,6 +174,17 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
 
   bool get _canAccessTeacherOnlyQuotablePublicNotes =>
       widget.isTeacherPreview || _isCurrentUserTeacher;
+
+  bool _canAccessTeacherOnlyQuotablePublicNotesForRole({
+    required bool activeRoleIsTeacher,
+  }) {
+    final currentUserId = _currentUserId;
+    final isCurrentUserTeacher =
+        activeRoleIsTeacher &&
+        currentUserId != null &&
+        widget.course.instructorId == currentUserId;
+    return widget.isTeacherPreview || isCurrentUserTeacher;
+  }
 
   Stream<String> _learnerRestrictionModeStream() {
     final cacheKey = Object.hash(
@@ -344,6 +356,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     if (resetCache) {
       _lastQuotablePublicNotes = const [];
       _lastQuotableOwnNotes = const [];
+      _lastQuotableOwnLegacyNotes = const [];
     }
     final source = _quotableNotesStream();
     _sharedQuotableNotesStream = source.isBroadcast
@@ -358,11 +371,18 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     if (!mounted) {
       return;
     }
+    final previousCanAccessTeacherOnlyPublicNotes =
+        _canAccessTeacherOnlyQuotablePublicNotesForRole(
+          activeRoleIsTeacher: _activeRoleIsTeacher,
+        );
     final nextRoleIsTeacher = isResolved && isTeacher;
-    final roleChanged =
-        _activeRoleResolved &&
-        isResolved &&
-        _activeRoleIsTeacher != nextRoleIsTeacher;
+    final nextCanAccessTeacherOnlyPublicNotes =
+        _canAccessTeacherOnlyQuotablePublicNotesForRole(
+          activeRoleIsTeacher: nextRoleIsTeacher,
+        );
+    final canAccessTeacherOnlyPublicNotesChanged =
+        previousCanAccessTeacherOnlyPublicNotes !=
+        nextCanAccessTeacherOnlyPublicNotes;
     final stateChanged =
         _activeRoleResolved != isResolved ||
         _activeRoleIsTeacher != nextRoleIsTeacher;
@@ -372,7 +392,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     setState(() {
       _activeRoleResolved = isResolved;
       _activeRoleIsTeacher = nextRoleIsTeacher;
-      if (roleChanged) {
+      if (canAccessTeacherOnlyPublicNotesChanged) {
         _refreshSharedQuotableNotesStream(resetCache: true);
       }
     });
@@ -1283,10 +1303,14 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     final publicNotesStream = publicNotesQuery
         .snapshots(includeMetadataChanges: true)
         .map((snapshot) {
+          final notes = snapshot.docs.map(LessonNote.fromFirestore).toList();
           if (snapshot.metadata.isFromCache) {
+            if (_lastQuotablePublicNotes.isEmpty) {
+              _lastQuotablePublicNotes = notes;
+              return notes;
+            }
             return _lastQuotablePublicNotes;
           }
-          final notes = snapshot.docs.map(LessonNote.fromFirestore).toList();
           _lastQuotablePublicNotes = notes;
           return notes;
         });
@@ -1300,41 +1324,102 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         .where('allowsQuestionCitation', isEqualTo: true)
         .snapshots(includeMetadataChanges: true)
         .map((snapshot) {
+          final notes = snapshot.docs.map(LessonNote.fromFirestore).toList();
           if (snapshot.metadata.isFromCache) {
+            if (_lastQuotableOwnNotes.isEmpty) {
+              _lastQuotableOwnNotes = notes;
+              return notes;
+            }
             return _lastQuotableOwnNotes;
           }
-          final notes = snapshot.docs.map(LessonNote.fromFirestore).toList();
           _lastQuotableOwnNotes = notes;
+          return notes;
+        });
+    // Developer memo:
+    // Older memo records can keep the same course/lesson text but have
+    // different ID fields depending on the route they were created from.
+    // This fallback stream keeps quote candidates stable by title scope,
+    // while final posting validation still enforces strict safety checks.
+    final ownLegacyNotesStream = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('lessonNotes')
+        .where('courseTitle', isEqualTo: widget.course.title)
+        .where('lessonTitle', isEqualTo: widget.lesson.title)
+        .where('isDeleted', isEqualTo: false)
+        .where('allowsQuestionCitation', isEqualTo: true)
+        .snapshots(includeMetadataChanges: true)
+        .map((snapshot) {
+          final notes = snapshot.docs.map(LessonNote.fromFirestore).toList();
+          if (snapshot.metadata.isFromCache) {
+            if (_lastQuotableOwnLegacyNotes.isEmpty) {
+              _lastQuotableOwnLegacyNotes = notes;
+              return notes;
+            }
+            return _lastQuotableOwnLegacyNotes;
+          }
+          _lastQuotableOwnLegacyNotes = notes;
           return notes;
         });
     return Stream.multi((controller) {
       var latestPublicNotes = _lastQuotablePublicNotes;
       var latestOwnNotes = _lastQuotableOwnNotes;
+      var latestOwnLegacyNotes = _lastQuotableOwnLegacyNotes;
+      var hasPublicEmission = latestPublicNotes.isNotEmpty;
+      var hasOwnEmission = latestOwnNotes.isNotEmpty;
+      var hasOwnLegacyEmission = latestOwnLegacyNotes.isNotEmpty;
       void emit() {
+        // Merge own-note streams by id so the dropdown does not fluctuate
+        // when strict and legacy fallback queries return overlapping rows.
+        final mergedOwnById = <String, LessonNote>{};
+        for (final note in latestOwnNotes) {
+          final noteId = (note.id ?? '').trim();
+          if (noteId.isEmpty) {
+            continue;
+          }
+          mergedOwnById[noteId] = note;
+        }
+        for (final note in latestOwnLegacyNotes) {
+          final noteId = (note.id ?? '').trim();
+          if (noteId.isEmpty) {
+            continue;
+          }
+          mergedOwnById[noteId] = note;
+        }
         controller.add(
           _mergeQuotableNotes(
             publicNotes: latestPublicNotes,
-            ownNotes: latestOwnNotes,
+            ownNotes: mergedOwnById.values.toList(),
             currentUserId: user.uid,
             canAccessTeacherOnlyPublicNotes: canAccessTeacherOnlyPublicNotes,
           ),
         );
       }
 
-      emit();
+      if (hasPublicEmission || hasOwnEmission || hasOwnLegacyEmission) {
+        emit();
+      }
 
       final publicSubscription = publicNotesStream.listen((notes) {
         latestPublicNotes = notes;
+        hasPublicEmission = true;
         emit();
       }, onError: controller.addError);
       final ownSubscription = ownNotesStream.listen((notes) {
         latestOwnNotes = notes;
+        hasOwnEmission = true;
+        emit();
+      }, onError: controller.addError);
+      final ownLegacySubscription = ownLegacyNotesStream.listen((notes) {
+        latestOwnLegacyNotes = notes;
+        hasOwnLegacyEmission = true;
         emit();
       }, onError: controller.addError);
 
       controller.onCancel = () async {
         await publicSubscription.cancel();
         await ownSubscription.cancel();
+        await ownLegacySubscription.cancel();
       };
     });
   }
@@ -1656,6 +1741,16 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       ..showSnackBar(SnackBar(content: Text(message)));
   }
 
+  String _postFailureMessage(
+    FirebaseException error, {
+    required String fallback,
+  }) {
+    if (error.code == 'permission-denied') {
+      return '投稿できませんでした。引用メモの公開設定や公開範囲を確認して、もう一度お試しください。';
+    }
+    return error.message ?? fallback;
+  }
+
   Future<bool> _saveQuestion(_LessonQuestionDraft draft) async {
     if (Firebase.apps.isEmpty) {
       _showMessage('質問保存にはログインとFirebase設定が必要です。');
@@ -1810,7 +1905,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       );
       return true;
     } on FirebaseException catch (error) {
-      _showMessage(error.message ?? '質問コメントの投稿に失敗しました。');
+      _showMessage(_postFailureMessage(error, fallback: '質問コメントの投稿に失敗しました。'));
       return false;
     } catch (error) {
       _showMessage('質問コメントの投稿に失敗しました: $error');
@@ -2178,33 +2273,138 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       return null;
     }
     final firestore = FirebaseFirestore.instance;
-    final publicSnapshot = await firestore
-        .collection('publicLessonNotes')
-        .doc(noteId)
-        .get();
-    if (publicSnapshot.exists) {
-      final publicNote = LessonNote.fromFirestore(publicSnapshot);
-      if (!publicNote.isDeleted &&
-          publicNote.allowsQuestionCitation &&
-          publicNote.courseId == _courseId &&
-          publicNote.lessonNumber == widget.lessonNumber) {
-        return publicNote;
+    try {
+      final publicSnapshot = await firestore
+          .collection('publicLessonNotes')
+          .doc(noteId)
+          .get();
+      if (publicSnapshot.exists) {
+        final publicNote = LessonNote.fromFirestore(publicSnapshot);
+        if (!publicNote.isDeleted &&
+            publicNote.allowsQuestionCitation &&
+            publicNote.courseId == _courseId &&
+            publicNote.lessonNumber == widget.lessonNumber) {
+          return publicNote;
+        }
       }
+    } on FirebaseException {
+      // Fall through to private lookup below.
     }
-    final ownSnapshot = await firestore
-        .collection('users')
-        .doc(userId)
-        .collection('lessonNotes')
-        .doc(noteId)
-        .get();
-    if (ownSnapshot.exists) {
-      final ownNote = LessonNote.fromFirestore(ownSnapshot);
-      if (!ownNote.isDeleted &&
-          ownNote.allowsQuestionCitation &&
-          ownNote.courseId == _courseId &&
-          ownNote.lessonNumber == widget.lessonNumber) {
-        return ownNote;
+    try {
+      final ownSnapshot = await firestore
+          .collection('users')
+          .doc(userId)
+          .collection('lessonNotes')
+          .doc(noteId)
+          .get();
+      if (ownSnapshot.exists) {
+        final ownNote = LessonNote.fromFirestore(ownSnapshot);
+        if (!ownNote.isDeleted &&
+            ownNote.allowsQuestionCitation &&
+            ownNote.courseId == _courseId &&
+            ownNote.lessonNumber == widget.lessonNumber) {
+          return ownNote;
+        }
       }
+    } on FirebaseException {
+      return null;
+    }
+    return null;
+  }
+
+  Future<LessonNote?> _loadQuotedNoteForMessage({
+    required String userId,
+    required String noteId,
+  }) async {
+    if (noteId.isEmpty || Firebase.apps.isEmpty) {
+      return null;
+    }
+    final firestore = FirebaseFirestore.instance;
+    try {
+      final ownSnapshot = await firestore
+          .collection('users')
+          .doc(userId)
+          .collection('lessonNotes')
+          .doc(noteId)
+          .get();
+      if (ownSnapshot.exists) {
+        return LessonNote.fromFirestore(ownSnapshot);
+      }
+    } on FirebaseException {
+      // Keep fallback checks below.
+    }
+    try {
+      final publicSnapshot = await firestore
+          .collection('publicLessonNotes')
+          .doc(noteId)
+          .get();
+      if (publicSnapshot.exists) {
+        return LessonNote.fromFirestore(publicSnapshot);
+      }
+    } on FirebaseException {
+      return null;
+    }
+    return null;
+  }
+
+  bool _quotedNoteSnapshotMatches({
+    required LessonNote note,
+    required String? selectedTitle,
+    required String? selectedBody,
+  }) {
+    final title = (selectedTitle ?? '').trim();
+    final body = (selectedBody ?? '').trim();
+    return title == note.title.trim() && body == note.body.trim();
+  }
+
+  String _quotedNotePublicAudienceMessage(LessonNote note) {
+    if (note.isStudentTeacherOnly) {
+      return '引用しようとしているメモは先生だけに公開されているため、公開コメントには使えません。';
+    }
+    return '引用しようとしているメモは公開コメントに使える条件を満たしていません。';
+  }
+
+  Future<String?> _quotedNoteValidationMessage({
+    required String userId,
+    required String quotedNoteId,
+    required String? selectedTitle,
+    required String? selectedBody,
+    required bool requiresPublicAudience,
+  }) async {
+    final resolved = await _resolveQuotedNoteForCurrentUser(
+      userId: userId,
+      noteId: quotedNoteId,
+    );
+    if (resolved == null) {
+      final note = await _loadQuotedNoteForMessage(
+        userId: userId,
+        noteId: quotedNoteId,
+      );
+      if (note == null) {
+        return '引用メモを確認できないため、選び直してください。';
+      }
+      if (note.isDeleted) {
+        return '引用しようとしているメモは削除されたため、使えません。';
+      }
+      if (!note.allowsQuestionCitation) {
+        return '引用しようとしているメモは引用許可がオフになったため、使えません。';
+      }
+      if (note.courseId != _courseId ||
+          note.lessonNumber != widget.lessonNumber) {
+        return 'このレッスンのメモではないため、引用できません。';
+      }
+      return '引用メモを確認できないため、選び直してください。';
+    }
+    if (!_quotedNoteSnapshotMatches(
+      note: resolved,
+      selectedTitle: selectedTitle,
+      selectedBody: selectedBody,
+    )) {
+      return '引用しようとしているメモの内容が更新されたため、もう一度選び直してください。';
+    }
+    if (requiresPublicAudience &&
+        !canQuoteLessonNoteToPublicAudience(resolved)) {
+      return _quotedNotePublicAudienceMessage(resolved);
     }
     return null;
   }
@@ -2218,17 +2418,15 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     if (quotedNoteId.isEmpty) {
       return true;
     }
-    final quotedNote = await _resolveQuotedNoteForCurrentUser(
+    final message = await _quotedNoteValidationMessage(
       userId: userId,
-      noteId: quotedNoteId,
+      quotedNoteId: quotedNoteId,
+      selectedTitle: draft.quotedNoteTitle,
+      selectedBody: draft.quotedNoteBody,
+      requiresPublicAudience: finalVisibility == lessonQuestionVisibilityPublic,
     );
-    if (quotedNote == null) {
-      _showMessage('引用メモを確認できないため、選び直してください。');
-      return false;
-    }
-    if (finalVisibility == lessonQuestionVisibilityPublic &&
-        !canQuoteLessonNoteToPublicAudience(quotedNote)) {
-      _showMessage('公開コメントでは、受講者にも公開されているメモだけ引用できます。');
+    if (message != null) {
+      _showMessage(message);
       return false;
     }
     return true;
@@ -2243,17 +2441,15 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     if (quotedNoteId.isEmpty) {
       return true;
     }
-    final quotedNote = await _resolveQuotedNoteForCurrentUser(
+    final message = await _quotedNoteValidationMessage(
       userId: userId,
-      noteId: quotedNoteId,
+      quotedNoteId: quotedNoteId,
+      selectedTitle: draft.quotedNoteTitle,
+      selectedBody: draft.quotedNoteBody,
+      requiresPublicAudience: question.isPubliclyVisible,
     );
-    if (quotedNote == null) {
-      _showMessage('引用メモを確認できないため、選び直してください。');
-      return false;
-    }
-    if (question.isPubliclyVisible &&
-        !canQuoteLessonNoteToPublicAudience(quotedNote)) {
-      _showMessage('公開コメントでは、受講者にも公開されているメモだけ引用できます。');
+    if (message != null) {
+      _showMessage(message);
       return false;
     }
     return true;
@@ -2498,7 +2694,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     );
   }
 
-  Future<void> _saveAnswer(
+  Future<bool> _saveAnswer(
     LessonQuestion question,
     _LessonQuestionAnswerDraft draft,
   ) async {
@@ -2506,120 +2702,129 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         Firebase.apps.isEmpty ||
         question.id == null ||
         draft.body.trim().isEmpty) {
-      return;
+      return false;
     }
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
-      return;
+      return false;
     }
-    final isTeacherAnswer = widget.isTeacherPreview || _isCurrentUserTeacher;
-    final restrictionMode = await _currentLearnerRestrictionMode();
-    final blocksPublicPost = _lessonInteractionService.blocksPublicPost(
-      restrictionMode,
-    );
-    if (!isTeacherAnswer && blocksPublicPost && question.isPubliclyVisible) {
-      _showMessage('先生により公開回答への投稿が制限されています。先生のみ公開の質問には回答できます。');
-      return;
-    }
-    final questionAuthorRestrictionMode =
-        await _currentQuestionAuthorRestrictionMode(question);
-    final blockedByQuestionAuthorRestriction =
-        _isAnswerBlockedByQuestionAuthorRestriction(
-          question: question,
-          questionAuthorRestrictionMode: questionAuthorRestrictionMode,
-          actingUserId: user.uid,
-          isActingUserTeacher: isTeacherAnswer,
-        );
-    if (blockedByQuestionAuthorRestriction) {
-      _showMessage('この公開質問は、質問投稿者が先生により公開欄への投稿を制限されているため、他の受講者は回答コメントできません。');
-      return;
-    }
-    final threadRootAnswerId = await _resolveThreadRootAnswerIdForPersist(
-      question: question,
-      draft: draft,
-      currentUserId: user.uid,
-    );
-    final latestReplyTargetDisplayName =
-        await _resolveReplyTargetDisplayNameForPersist(
-          question: question,
-          draft: draft,
-          currentUserId: user.uid,
-        );
-    final isQuotedNoteValid = await _validateQuotedNoteForAnswer(
-      userId: user.uid,
-      question: question,
-      draft: draft,
-    );
-    if (!isQuotedNoteValid) {
-      return;
-    }
-    final firestore = FirebaseFirestore.instance;
-    final teacherDisplayName = isTeacherAnswer
-        ? await _teacherCommentDisplayName(user)
-        : null;
-    final authorName = await _resolveCommentAuthorName(
-      user,
-      isTeacher: isTeacherAnswer,
-      teacherDisplayName: teacherDisplayName,
-    );
-    final authorSnapshot = await _courseIdentityService.resolveAuthorSnapshot(
-      courseId: _courseId,
-      userId: user.uid,
-      fallbackDisplayName: authorName,
-      role: isTeacherAnswer
-          ? publicUserProfileRoleTeacher
-          : publicUserProfileRoleStudent,
-    );
-    final answerRef = firestore
-        .collection('users')
-        .doc(user.uid)
-        .collection('lessonQuestionAnswers')
-        .doc();
-    final now = FieldValue.serverTimestamp();
-    final data = {
-      'questionId': question.id,
-      'courseId': _courseId,
-      'courseTitle': widget.course.title,
-      'lessonNumber': widget.lessonNumber,
-      'lessonTitle': widget.lesson.title,
-      'authorId': user.uid,
-      'authorName': authorSnapshot.displayName,
-      'authorDisplayName': teacherDisplayName,
-      'authorAvatarColorName': authorSnapshot.avatarColorName,
-      'authorProfileVisible': authorSnapshot.profileVisible,
-      'authorIdentityMode': authorSnapshot.identityMode,
-      'authorRole': isTeacherAnswer ? 'teacher' : 'student',
-      'body': draft.body.trim(),
-      'attachmentTypes': <String>[],
-      'parentCommentId': draft.parentCommentId,
-      'parentCommentType': draft.parentCommentType,
-      'replyToAuthorId': draft.replyToAuthorId,
-      'replyToAuthorRole': draft.replyToAuthorRole,
-      'replyToDisplayName': _safeReplyTargetDisplayName(
-        latestReplyTargetDisplayName,
-        role: draft.replyToAuthorRole,
-      ),
-      if ((draft.replyToBodyPreview ?? '').trim().isNotEmpty)
-        'replyToBodyPreview': _previewText(draft.replyToBodyPreview!),
-      if ((threadRootAnswerId ?? '').isNotEmpty)
-        'threadRootAnswerId': threadRootAnswerId,
-      'replyToCreatedAt': draft.replyToCreatedAt,
-      'quotedNoteId': draft.quotedNoteId,
-      'quotedNoteTitle': draft.quotedNoteTitle,
-      'quotedNoteBody': draft.quotedNoteBody,
-      'isDeleted': false,
-      'moderationStatus': lessonNoteModerationVisible,
-      'createdAt': now,
-      'updatedAt': now,
-    };
-    final batch = firestore.batch()..set(answerRef, data);
-    if (await _isWritableQuestionMirror(question.id!)) {
-      batch.set(
-        firestore.collection('publicLessonQuestionAnswers').doc(answerRef.id),
-        {...data, 'answerId': answerRef.id},
+    try {
+      final isTeacherAnswer = widget.isTeacherPreview || _isCurrentUserTeacher;
+      final restrictionMode = await _currentLearnerRestrictionMode();
+      final blocksPublicPost = _lessonInteractionService.blocksPublicPost(
+        restrictionMode,
       );
+      if (!isTeacherAnswer && blocksPublicPost && question.isPubliclyVisible) {
+        _showMessage('先生により公開回答への投稿が制限されています。先生のみ公開の質問には回答できます。');
+        return false;
+      }
+      final questionAuthorRestrictionMode =
+          await _currentQuestionAuthorRestrictionMode(question);
+      final blockedByQuestionAuthorRestriction =
+          _isAnswerBlockedByQuestionAuthorRestriction(
+            question: question,
+            questionAuthorRestrictionMode: questionAuthorRestrictionMode,
+            actingUserId: user.uid,
+            isActingUserTeacher: isTeacherAnswer,
+          );
+      if (blockedByQuestionAuthorRestriction) {
+        _showMessage('この公開質問は、質問投稿者が先生により公開欄への投稿を制限されているため、他の受講者は回答コメントできません。');
+        return false;
+      }
+      final threadRootAnswerId = await _resolveThreadRootAnswerIdForPersist(
+        question: question,
+        draft: draft,
+        currentUserId: user.uid,
+      );
+      final latestReplyTargetDisplayName =
+          await _resolveReplyTargetDisplayNameForPersist(
+            question: question,
+            draft: draft,
+            currentUserId: user.uid,
+          );
+      final isQuotedNoteValid = await _validateQuotedNoteForAnswer(
+        userId: user.uid,
+        question: question,
+        draft: draft,
+      );
+      if (!isQuotedNoteValid) {
+        return false;
+      }
+      final firestore = FirebaseFirestore.instance;
+      final teacherDisplayName = isTeacherAnswer
+          ? await _teacherCommentDisplayName(user)
+          : null;
+      final authorName = await _resolveCommentAuthorName(
+        user,
+        isTeacher: isTeacherAnswer,
+        teacherDisplayName: teacherDisplayName,
+      );
+      final authorSnapshot = await _courseIdentityService.resolveAuthorSnapshot(
+        courseId: _courseId,
+        userId: user.uid,
+        fallbackDisplayName: authorName,
+        role: isTeacherAnswer
+            ? publicUserProfileRoleTeacher
+            : publicUserProfileRoleStudent,
+      );
+      final answerRef = firestore
+          .collection('users')
+          .doc(user.uid)
+          .collection('lessonQuestionAnswers')
+          .doc();
+      final now = FieldValue.serverTimestamp();
+      final data = {
+        'questionId': question.id,
+        'courseId': _courseId,
+        'courseTitle': widget.course.title,
+        'lessonNumber': widget.lessonNumber,
+        'lessonTitle': widget.lesson.title,
+        'authorId': user.uid,
+        'authorName': authorSnapshot.displayName,
+        'authorDisplayName': teacherDisplayName,
+        'authorAvatarColorName': authorSnapshot.avatarColorName,
+        'authorProfileVisible': authorSnapshot.profileVisible,
+        'authorIdentityMode': authorSnapshot.identityMode,
+        'authorRole': isTeacherAnswer ? 'teacher' : 'student',
+        'body': draft.body.trim(),
+        'attachmentTypes': <String>[],
+        'parentCommentId': draft.parentCommentId,
+        'parentCommentType': draft.parentCommentType,
+        'replyToAuthorId': draft.replyToAuthorId,
+        'replyToAuthorRole': draft.replyToAuthorRole,
+        'replyToDisplayName': _safeReplyTargetDisplayName(
+          latestReplyTargetDisplayName,
+          role: draft.replyToAuthorRole,
+        ),
+        if ((draft.replyToBodyPreview ?? '').trim().isNotEmpty)
+          'replyToBodyPreview': _previewText(draft.replyToBodyPreview!),
+        if ((threadRootAnswerId ?? '').isNotEmpty)
+          'threadRootAnswerId': threadRootAnswerId,
+        'replyToCreatedAt': draft.replyToCreatedAt,
+        'quotedNoteId': draft.quotedNoteId,
+        'quotedNoteTitle': draft.quotedNoteTitle,
+        'quotedNoteBody': draft.quotedNoteBody,
+        'isDeleted': false,
+        'moderationStatus': lessonNoteModerationVisible,
+        'createdAt': now,
+        'updatedAt': now,
+      };
+      final batch = firestore.batch()..set(answerRef, data);
+      if (await _isWritableQuestionMirror(question.id!)) {
+        batch.set(
+          firestore.collection('publicLessonQuestionAnswers').doc(answerRef.id),
+          {...data, 'answerId': answerRef.id},
+        );
+      }
+      await batch.commit();
+      return true;
+    } on FirebaseException catch (error) {
+      _showMessage(_postFailureMessage(error, fallback: '回答コメントの投稿に失敗しました。'));
+      return false;
+    } catch (error) {
+      _showMessage('回答コメントの投稿に失敗しました: $error');
+      return false;
     }
-    await batch.commit();
   }
 
   Future<String?> _teacherCommentDisplayName(User user) async {
@@ -3207,6 +3412,34 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     return merged;
   }
 
+  List<LessonNote> _latestQuotableNotesForInitialData() {
+    final currentUserId = _currentUserId;
+    if (currentUserId == null || currentUserId.trim().isEmpty) {
+      return const <LessonNote>[];
+    }
+    final mergedOwnById = <String, LessonNote>{};
+    for (final note in _lastQuotableOwnNotes) {
+      final noteId = (note.id ?? '').trim();
+      if (noteId.isEmpty) {
+        continue;
+      }
+      mergedOwnById[noteId] = note;
+    }
+    for (final note in _lastQuotableOwnLegacyNotes) {
+      final noteId = (note.id ?? '').trim();
+      if (noteId.isEmpty) {
+        continue;
+      }
+      mergedOwnById[noteId] = note;
+    }
+    return _mergeQuotableNotes(
+      publicNotes: _lastQuotablePublicNotes,
+      ownNotes: mergedOwnById.values.toList(),
+      currentUserId: currentUserId,
+      canAccessTeacherOnlyPublicNotes: _canAccessTeacherOnlyQuotablePublicNotes,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final height = widget.isTeacherPreview ? 420.0 : 560.0;
@@ -3257,6 +3490,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
                     ? _teacherPreviewAnswersStream(currentQuestion)
                     : _answersStream(currentQuestion),
                 quotableNotesStream: _sharedQuotableNotesStream,
+                initialQuotableNotes: _latestQuotableNotesForInitialData(),
                 currentUserId: _currentUserId,
                 isCurrentUserTeacher: isCurrentUserTeacher,
                 canAnswer:
@@ -3294,6 +3528,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         onCancel: () => setState(() => _editingQuestion = null),
         onSave: _saveQuestion,
         quotableNotesStream: _sharedQuotableNotesStream,
+        initialQuotableNotes: _latestQuotableNotesForInitialData(),
         initialQuotedNote: widget.initialQuotedNote,
       );
     }
@@ -5303,11 +5538,37 @@ String _previewText(String value) {
   return '${normalized.substring(0, 36)}...';
 }
 
+class _QuotableNotesLoadingField extends StatelessWidget {
+  const _QuotableNotesLoadingField();
+
+  @override
+  Widget build(BuildContext context) {
+    return InputDecorator(
+      decoration: const InputDecoration(
+        border: OutlineInputBorder(),
+        labelText: '引用するメモ',
+      ),
+      child: Row(
+        children: const [
+          SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          SizedBox(width: 10),
+          Text('引用メモを読み込み中です...'),
+        ],
+      ),
+    );
+  }
+}
+
 class _LessonQuestionDetail extends StatefulWidget {
   const _LessonQuestionDetail({
     required this.question,
     required this.answersStream,
     required this.quotableNotesStream,
+    required this.initialQuotableNotes,
     required this.currentUserId,
     required this.isCurrentUserTeacher,
     required this.canAnswer,
@@ -5323,12 +5584,13 @@ class _LessonQuestionDetail extends StatefulWidget {
   final LessonQuestion question;
   final Stream<List<LessonQuestionAnswer>> answersStream;
   final Stream<List<LessonNote>> quotableNotesStream;
+  final List<LessonNote> initialQuotableNotes;
   final String? currentUserId;
   final bool isCurrentUserTeacher;
   final bool canAnswer;
   final String? highlightedAnswerId;
   final VoidCallback onBack;
-  final Future<void> Function(_LessonQuestionAnswerDraft draft) onSaveAnswer;
+  final Future<bool> Function(_LessonQuestionAnswerDraft draft) onSaveAnswer;
   final Future<void> Function()? onToggleQuestionModeration;
   final Future<void> Function() onDeleteQuestion;
   final Future<void> Function(LessonQuestionAnswer answer) onDeleteAnswer;
@@ -5365,6 +5627,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
   bool _isSaving = false;
   List<LessonQuestionAnswer> _lastNonEmptyAnswers = const [];
   String? _lastNonEmptyAnswersQuestionId;
+  final Set<String> _locallyDeletedAnswerIds = <String>{};
 
   @override
   void initState() {
@@ -5386,6 +5649,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
     if (oldWidget.question.id != widget.question.id) {
       _lastNonEmptyAnswers = const [];
       _lastNonEmptyAnswersQuestionId = null;
+      _locallyDeletedAnswerIds.clear();
       _openedAnswerThreadRootId = null;
       _openedInitialHighlightedThread = false;
       _resetHighlightAutoPositionState();
@@ -5536,30 +5800,79 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
       return;
     }
     setState(() => _isSaving = true);
-    await widget.onSaveAnswer(
-      _LessonQuestionAnswerDraft(
-        body: _answerController.text,
-        parentCommentId: _replyParentId ?? widget.question.id,
-        parentCommentType: _replyParentType,
-        replyToAuthorId: _replyToAuthorId ?? widget.question.authorId,
-        replyToAuthorRole: _replyToAuthorRole ?? widget.question.authorRole,
-        replyToDisplayName: resolvedReplyTargetDisplayName,
-        replyToBodyPreview: _replyToBodyPreview,
-        replyToCreatedAt:
-            _replyToCreatedAt ??
-            widget.question.createdAt ??
-            widget.question.updatedAt,
-        quotedNoteId: _quotedNoteId.isEmpty ? null : _quotedNoteId,
-        quotedNoteTitle: _quotedNoteTitle.isEmpty ? null : _quotedNoteTitle,
-        quotedNoteBody: _quotedNoteBody.isEmpty ? null : _quotedNoteBody,
-      ),
-    );
-    if (!mounted) {
+    bool saved = false;
+    try {
+      saved = await widget.onSaveAnswer(
+        _LessonQuestionAnswerDraft(
+          body: _answerController.text,
+          parentCommentId: _replyParentId ?? widget.question.id,
+          parentCommentType: _replyParentType,
+          replyToAuthorId: _replyToAuthorId ?? widget.question.authorId,
+          replyToAuthorRole: _replyToAuthorRole ?? widget.question.authorRole,
+          replyToDisplayName: resolvedReplyTargetDisplayName,
+          replyToBodyPreview: _replyToBodyPreview,
+          replyToCreatedAt:
+              _replyToCreatedAt ??
+              widget.question.createdAt ??
+              widget.question.updatedAt,
+          quotedNoteId: _quotedNoteId.isEmpty ? null : _quotedNoteId,
+          quotedNoteTitle: _quotedNoteTitle.isEmpty ? null : _quotedNoteTitle,
+          quotedNoteBody: _quotedNoteBody.isEmpty ? null : _quotedNoteBody,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        if (saved) {
+          _answerController.clear();
+          _clearReplyTarget();
+        }
+        setState(() => _isSaving = false);
+      }
+    }
+  }
+
+  List<LessonQuestionAnswer> _excludeLocallyDeletedAnswers(
+    List<LessonQuestionAnswer> answers,
+  ) {
+    if (_locallyDeletedAnswerIds.isEmpty) {
+      return answers;
+    }
+    return answers
+        .where(
+          (answer) =>
+              !_locallyDeletedAnswerIds.contains((answer.id ?? '').trim()),
+        )
+        .toList();
+  }
+
+  Future<void> _deleteAnswerWithOptimisticHide(
+    LessonQuestionAnswer answer,
+  ) async {
+    final answerId = (answer.id ?? '').trim();
+    if (answerId.isEmpty) {
+      await widget.onDeleteAnswer(answer);
       return;
     }
-    _answerController.clear();
-    _clearReplyTarget();
-    setState(() => _isSaving = false);
+    if (mounted) {
+      setState(() {
+        _locallyDeletedAnswerIds.add(answerId);
+      });
+    } else {
+      _locallyDeletedAnswerIds.add(answerId);
+    }
+    try {
+      await widget.onDeleteAnswer(answer);
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _locallyDeletedAnswerIds.remove(answerId);
+      });
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(const SnackBar(content: Text('回答コメントの削除に失敗しました。')));
+    }
   }
 
   void _setQuestionReplyTarget() {
@@ -5671,8 +5984,9 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
               StreamBuilder<List<LessonQuestionAnswer>>(
                 stream: widget.answersStream,
                 builder: (context, snapshot) {
-                  final incomingAnswers =
-                      snapshot.data ?? const <LessonQuestionAnswer>[];
+                  final incomingAnswers = _excludeLocallyDeletedAnswers(
+                    snapshot.data ?? const <LessonQuestionAnswer>[],
+                  );
                   final questionId = question.id;
                   final scopedIncomingAnswers = questionId == null
                       ? incomingAnswers
@@ -5683,13 +5997,16 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                     _lastNonEmptyAnswers = scopedIncomingAnswers;
                     _lastNonEmptyAnswersQuestionId = questionId;
                   }
+                  final fallbackAnswers = _excludeLocallyDeletedAnswers(
+                    _lastNonEmptyAnswers,
+                  );
                   final canUseFallback =
                       questionId != null &&
                       scopedIncomingAnswers.isEmpty &&
-                      _lastNonEmptyAnswers.isNotEmpty &&
+                      fallbackAnswers.isNotEmpty &&
                       _lastNonEmptyAnswersQuestionId == questionId;
                   final answers = canUseFallback
-                      ? _lastNonEmptyAnswers
+                      ? fallbackAnswers
                       : scopedIncomingAnswers;
                   final answerThreads = _buildAnswerThreads(
                     question: question,
@@ -5770,7 +6087,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                       isCurrentUserTeacher: widget.isCurrentUserTeacher,
                       canAnswer: widget.canAnswer,
                       onReply: _setAnswerReplyTarget,
-                      onDeleteAnswer: widget.onDeleteAnswer,
+                      onDeleteAnswer: _deleteAnswerWithOptimisticHide,
                       onToggleAnswerModeration: widget.onToggleAnswerModeration,
                       highlightedAnswerId: widget.highlightedAnswerId,
                       parentHighlightedAnswerId: parentHighlightedAnswerId,
@@ -5794,7 +6111,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                                 ? null
                                 : () => _openRepliesThread(thread.root.id!),
                             onReply: _setAnswerReplyTarget,
-                            onDeleteAnswer: widget.onDeleteAnswer,
+                            onDeleteAnswer: _deleteAnswerWithOptimisticHide,
                             onToggleAnswerModeration:
                                 widget.onToggleAnswerModeration,
                             highlightedAnswerId: widget.highlightedAnswerId,
@@ -5810,7 +6127,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                             isCurrentUserTeacher: widget.isCurrentUserTeacher,
                             canAnswer: widget.canAnswer,
                             onReply: _setAnswerReplyTarget,
-                            onDeleteAnswer: widget.onDeleteAnswer,
+                            onDeleteAnswer: _deleteAnswerWithOptimisticHide,
                             onToggleAnswerModeration:
                                 widget.onToggleAnswerModeration,
                             highlightedBubbleKey: _highlightedAnswerBubbleKey,
@@ -5910,8 +6227,21 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                 ],
                 StreamBuilder<List<LessonNote>>(
                   stream: widget.quotableNotesStream,
+                  initialData: widget.initialQuotableNotes.isEmpty
+                      ? null
+                      : widget.initialQuotableNotes,
                   builder: (context, snapshot) {
+                    final isLoadingNotes =
+                        !snapshot.hasData &&
+                        !snapshot.hasError &&
+                        snapshot.connectionState == ConnectionState.waiting;
                     final notes = snapshot.data ?? const <LessonNote>[];
+                    final noteLoadErrorMessage = snapshot.hasError
+                        ? '引用メモの読み込みに失敗しました。通信状態を確認して、もう一度お試しください。'
+                        : null;
+                    if (isLoadingNotes) {
+                      return const _QuotableNotesLoadingField();
+                    }
                     final hasSelectedQuotedNote =
                         _quotedNoteId.isNotEmpty &&
                         notes.any((note) => note.id == _quotedNoteId);
@@ -5930,36 +6260,53 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                         });
                       });
                     }
-                    return DropdownButtonFormField<String>(
-                      initialValue: selectedQuotedNoteId,
-                      decoration: const InputDecoration(
-                        border: OutlineInputBorder(),
-                        labelText: '引用するメモ',
-                      ),
-                      items: [
-                        const DropdownMenuItem(value: '', child: Text('引用なし')),
-                        for (final note in notes)
-                          DropdownMenuItem(
-                            value: note.id ?? '',
-                            child: Text(
-                              note.title.isEmpty ? '無題のメモ' : note.title,
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        DropdownButtonFormField<String>(
+                          initialValue: selectedQuotedNoteId,
+                          decoration: const InputDecoration(
+                            border: OutlineInputBorder(),
+                            labelText: '引用するメモ',
+                          ),
+                          items: [
+                            const DropdownMenuItem(
+                              value: '',
+                              child: Text('引用なし'),
+                            ),
+                            for (final note in notes)
+                              DropdownMenuItem(
+                                value: note.id ?? '',
+                                child: Text(
+                                  note.title.isEmpty ? '無題のメモ' : note.title,
+                                ),
+                              ),
+                          ],
+                          onChanged: (value) {
+                            LessonNote? selectedNote;
+                            for (final note in notes) {
+                              if (note.id == value) {
+                                selectedNote = note;
+                                break;
+                              }
+                            }
+                            setState(() {
+                              _quotedNoteId = value ?? '';
+                              _quotedNoteTitle = selectedNote?.title ?? '';
+                              _quotedNoteBody = selectedNote?.body ?? '';
+                            });
+                          },
+                        ),
+                        if (noteLoadErrorMessage != null) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            noteLoadErrorMessage,
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.error,
                             ),
                           ),
+                        ],
                       ],
-                      onChanged: (value) {
-                        LessonNote? selectedNote;
-                        for (final note in notes) {
-                          if (note.id == value) {
-                            selectedNote = note;
-                            break;
-                          }
-                        }
-                        setState(() {
-                          _quotedNoteId = value ?? '';
-                          _quotedNoteTitle = selectedNote?.title ?? '';
-                          _quotedNoteBody = selectedNote?.body ?? '';
-                        });
-                      },
                     );
                   },
                 ),
@@ -6589,6 +6936,7 @@ class _LessonQuestionEditor extends StatefulWidget {
     required this.onCancel,
     required this.onSave,
     required this.quotableNotesStream,
+    required this.initialQuotableNotes,
     this.initialQuotedNote,
   });
 
@@ -6599,6 +6947,7 @@ class _LessonQuestionEditor extends StatefulWidget {
   final VoidCallback onCancel;
   final Future<bool> Function(_LessonQuestionDraft draft) onSave;
   final Stream<List<LessonNote>> quotableNotesStream;
+  final List<LessonNote> initialQuotableNotes;
   final LessonNote? initialQuotedNote;
 
   @override
@@ -6760,40 +7109,70 @@ class _LessonQuestionEditorState extends State<_LessonQuestionEditor> {
                 const SizedBox(height: 12),
                 StreamBuilder<List<LessonNote>>(
                   stream: widget.quotableNotesStream,
+                  initialData: widget.initialQuotableNotes.isEmpty
+                      ? null
+                      : widget.initialQuotableNotes,
                   builder: (context, snapshot) {
+                    final isLoadingNotes =
+                        !snapshot.hasData &&
+                        !snapshot.hasError &&
+                        snapshot.connectionState == ConnectionState.waiting;
                     final notes = _notesWithInitialQuotedNote(
                       snapshot.data ?? const <LessonNote>[],
                     );
-                    return DropdownButtonFormField<String>(
-                      initialValue: _quotedNoteId,
-                      decoration: const InputDecoration(
-                        border: OutlineInputBorder(),
-                        labelText: '引用するメモ',
-                      ),
-                      items: [
-                        const DropdownMenuItem(value: '', child: Text('引用なし')),
-                        for (final note in notes)
-                          DropdownMenuItem(
-                            value: note.id ?? '',
-                            child: Text(
-                              note.title.isEmpty ? '無題のメモ' : note.title,
+                    final noteLoadErrorMessage = snapshot.hasError
+                        ? '引用メモの読み込みに失敗しました。通信状態を確認して、もう一度お試しください。'
+                        : null;
+                    if (isLoadingNotes) {
+                      return const _QuotableNotesLoadingField();
+                    }
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        DropdownButtonFormField<String>(
+                          initialValue: _quotedNoteId,
+                          decoration: const InputDecoration(
+                            border: OutlineInputBorder(),
+                            labelText: '引用するメモ',
+                          ),
+                          items: [
+                            const DropdownMenuItem(
+                              value: '',
+                              child: Text('引用なし'),
+                            ),
+                            for (final note in notes)
+                              DropdownMenuItem(
+                                value: note.id ?? '',
+                                child: Text(
+                                  note.title.isEmpty ? '無題のメモ' : note.title,
+                                ),
+                              ),
+                          ],
+                          onChanged: (value) {
+                            LessonNote? selectedNote;
+                            for (final note in notes) {
+                              if (note.id == value) {
+                                selectedNote = note;
+                                break;
+                              }
+                            }
+                            setState(() {
+                              _quotedNoteId = value ?? '';
+                              _quotedNoteTitle = selectedNote?.title ?? '';
+                              _quotedNoteBody = selectedNote?.body ?? '';
+                            });
+                          },
+                        ),
+                        if (noteLoadErrorMessage != null) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            noteLoadErrorMessage,
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.error,
                             ),
                           ),
+                        ],
                       ],
-                      onChanged: (value) {
-                        LessonNote? selectedNote;
-                        for (final note in notes) {
-                          if (note.id == value) {
-                            selectedNote = note;
-                            break;
-                          }
-                        }
-                        setState(() {
-                          _quotedNoteId = value ?? '';
-                          _quotedNoteTitle = selectedNote?.title ?? '';
-                          _quotedNoteBody = selectedNote?.body ?? '';
-                        });
-                      },
                     );
                   },
                 ),
