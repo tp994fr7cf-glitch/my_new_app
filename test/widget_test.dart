@@ -12,7 +12,7 @@ import 'package:my_new_app/screens/course_list_page.dart';
 import 'package:my_new_app/screens/home_page.dart';
 import 'package:my_new_app/screens/learning_records_page.dart';
 import 'package:my_new_app/screens/teacher_application_page.dart';
-import 'package:my_new_app/screens/teacher_course_list_page.dart';
+import 'package:my_new_app/screens/teacher_interaction_manage_page.dart';
 import 'package:my_new_app/screens/teacher_quiz_manage_page.dart';
 import 'package:my_new_app/screens/video_lesson_page.dart';
 
@@ -2852,6 +2852,40 @@ void main() {
       ),
     );
     expect(find.text('講座コード: ABC123'), findsOneWidget);
+  });
+
+  testWidgets('Teacher course detail shows unified course settings button', (
+    WidgetTester tester,
+  ) async {
+    const course = Course(
+      id: 'test-course',
+      courseCode: 'ABC123',
+      title: '講座設定ボタン確認用',
+      instructorName: '先生',
+      category: 'テスト',
+      level: '初級',
+      duration: '1時間',
+      lessonCount: 1,
+      rating: 0,
+      priceLabel: '無料',
+      description: '講座設定ボタンの表示確認',
+      lessons: [CourseLesson(title: 'レッスン1', duration: '10分')],
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: CourseDetailPage(course: course, isTeacherMode: true),
+      ),
+    );
+
+    expect(find.text('講座設定'), findsOneWidget);
+    expect(find.text('公開メモ・質問を管理'), findsNothing);
+    expect(find.text('本名同意設定を管理'), findsNothing);
+
+    await tester.tap(find.text('講座設定'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('本名同意・公開投稿の管理'), findsOneWidget);
   });
 
   testWidgets('Audio lesson page shows audio placeholder', (
