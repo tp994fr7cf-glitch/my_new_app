@@ -1651,7 +1651,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                     ? Icons.keyboard_arrow_up
                     : Icons.question_answer_outlined,
               ),
-              label: Text(_isLessonQuestionsOpen ? '質問コメントを閉じる' : '質問コメントを開く'),
+              label: Text(
+                _isLessonQuestionsOpen ? '質問コメント欄を閉じる' : '質問コメント欄を開く',
+              ),
             ),
             if (_isLessonQuestionsOpen) ...[
               const SizedBox(height: 12),
