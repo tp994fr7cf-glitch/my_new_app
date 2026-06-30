@@ -10,8 +10,7 @@ const List<Duration> lessonQuestionAnswerCommitRetryDelays = [
   Duration(milliseconds: 1500),
 ];
 
-const Duration quotedNoteCitationCommitRetryDelay =
-    lessonQuestionAnswerCommitRetryDelays.first;
+const Duration quotedNoteCitationCommitRetryDelay = Duration(milliseconds: 500);
 
 String? quotedNoteSnapshotFieldFromFirestore(dynamic raw) {
   if (raw is! String || raw.isEmpty) {
