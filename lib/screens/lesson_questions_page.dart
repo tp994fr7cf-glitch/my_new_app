@@ -2606,7 +2606,49 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     );
   }
 
-  Future<bool> _saveAnswer(
+  LessonQuestionAnswer _savedAnswerFromPersistPayload({
+    required String answerId,
+    required LessonQuestion question,
+    required _LessonQuestionAnswerDraft draft,
+    required Map<String, dynamic> data,
+    required User user,
+    required CourseAuthorSnapshot authorSnapshot,
+    String? teacherDisplayName,
+  }) {
+    final clientNow = Timestamp.now();
+    return LessonQuestionAnswer(
+      id: answerId,
+      questionId: question.id!,
+      authorId: user.uid,
+      authorName: authorSnapshot.displayName,
+      authorDisplayName: teacherDisplayName,
+      authorAvatarColorName: authorSnapshot.avatarColorName,
+      authorProfileVisible: authorSnapshot.profileVisible,
+      authorIdentityMode: authorSnapshot.identityMode,
+      authorRole: data['authorRole'] as String? ?? 'student',
+      courseId: _courseId,
+      courseTitle: widget.course.title,
+      lessonNumber: widget.lessonNumber,
+      lessonTitle: widget.lesson.title,
+      body: draft.body.trim(),
+      attachmentTypes: const [],
+      parentCommentId: draft.parentCommentId,
+      parentCommentType: draft.parentCommentType,
+      threadRootAnswerId: data['threadRootAnswerId'] as String?,
+      replyToAuthorId: draft.replyToAuthorId,
+      replyToAuthorRole: draft.replyToAuthorRole,
+      replyToDisplayName: data['replyToDisplayName'] as String?,
+      replyToBodyPreview: data['replyToBodyPreview'] as String?,
+      replyToCreatedAt: draft.replyToCreatedAt,
+      quotedNoteId: data['quotedNoteId'] as String?,
+      quotedNoteTitle: data['quotedNoteTitle'] as String?,
+      quotedNoteBody: data['quotedNoteBody'] as String?,
+      createdAt: clientNow,
+      updatedAt: clientNow,
+    );
+  }
+
+  Future<LessonQuestionAnswer?> _saveAnswer(
     LessonQuestion question,
     _LessonQuestionAnswerDraft draft,
   ) async {
@@ -2614,11 +2656,11 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
         Firebase.apps.isEmpty ||
         question.id == null ||
         draft.body.trim().isEmpty) {
-      return false;
+      return null;
     }
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
-      return false;
+      return null;
     }
     try {
       final isTeacherAnswer = widget.isTeacherPreview || _isCurrentUserTeacher;
@@ -2628,7 +2670,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       );
       if (!isTeacherAnswer && blocksPublicPost && question.isPubliclyVisible) {
         _showMessage('先生により公開回答への投稿が制限されています。先生のみ公開の質問には回答できます。');
-        return false;
+        return null;
       }
       final questionAuthorRestrictionMode =
           await _currentQuestionAuthorRestrictionMode(question);
@@ -2641,7 +2683,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
           );
       if (blockedByQuestionAuthorRestriction) {
         _showMessage('この公開質問は、質問投稿者が先生により公開欄への投稿を制限されているため、他の受講者は回答コメントできません。');
-        return false;
+        return null;
       }
       final threadRootAnswerId = await _resolveThreadRootAnswerIdForPersist(
         question: question,
@@ -2736,7 +2778,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
             continue;
           }
           _showMessage(lastPreflight.errorMessage!);
-          return false;
+          return null;
         }
         quotedNoteSnapshot = lastPreflight.quoteSnapshot;
         final data = {
@@ -2756,7 +2798,15 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
             );
           }
           await commitBatch.commit();
-          return true;
+          return _savedAnswerFromPersistPayload(
+            answerId: answerRef.id,
+            question: question,
+            draft: draft,
+            data: data,
+            user: user,
+            authorSnapshot: authorSnapshot,
+            teacherDisplayName: teacherDisplayName,
+          );
         } on FirebaseException catch (error) {
           if (error.code != 'permission-denied' ||
               attempt >= retrySchedule.length - 1) {
@@ -2768,11 +2818,11 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
                 hadQuotedNote: quotedNoteId.isNotEmpty,
               ),
             );
-            return false;
+            return null;
           }
         }
       }
-      return false;
+      return null;
     } on FirebaseException catch (error) {
       _showMessage(
         _postFailureMessage(
@@ -2781,10 +2831,10 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
           quotedNotePreflightPassed: (draft.quotedNoteId ?? '').trim().isNotEmpty,
         ),
       );
-      return false;
+      return null;
     } catch (error) {
       _showMessage('回答コメントの投稿に失敗しました: $error');
-      return false;
+      return null;
     }
   }
 
@@ -5561,7 +5611,8 @@ class _LessonQuestionDetail extends StatefulWidget {
   final bool canAnswer;
   final String? highlightedAnswerId;
   final VoidCallback onBack;
-  final Future<bool> Function(_LessonQuestionAnswerDraft draft) onSaveAnswer;
+  final Future<LessonQuestionAnswer?> Function(_LessonQuestionAnswerDraft draft)
+  onSaveAnswer;
   final Future<void> Function()? onToggleQuestionModeration;
   final Future<void> Function() onDeleteQuestion;
   final Future<void> Function(LessonQuestionAnswer answer) onDeleteAnswer;
@@ -5598,6 +5649,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
   bool _isSaving = false;
   List<LessonQuestionAnswer> _lastNonEmptyAnswers = const [];
   String? _lastNonEmptyAnswersQuestionId;
+  final List<LessonQuestionAnswer> _locallySavedAnswers = [];
   final Set<String> _locallyDeletedAnswerIds = <String>{};
 
   @override
@@ -5620,6 +5672,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
     if (oldWidget.question.id != widget.question.id) {
       _lastNonEmptyAnswers = const [];
       _lastNonEmptyAnswersQuestionId = null;
+      _locallySavedAnswers.clear();
       _locallyDeletedAnswerIds.clear();
       _openedAnswerThreadRootId = null;
       _openedInitialHighlightedThread = false;
@@ -5758,6 +5811,65 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
     }
   }
 
+  void _rememberSavedAnswerLocally(LessonQuestionAnswer answer) {
+    final questionId = (widget.question.id ?? '').trim();
+    final answerId = (answer.id ?? '').trim();
+    if (questionId.isEmpty || answerId.isEmpty) {
+      return;
+    }
+    _locallySavedAnswers.removeWhere((saved) => (saved.id ?? '').trim() == answerId);
+    _locallySavedAnswers.add(answer);
+    _lastNonEmptyAnswersQuestionId = questionId;
+    _lastNonEmptyAnswers = _mergeAnswersWithLocalPending(
+      _lastNonEmptyAnswers,
+      questionId: questionId,
+    );
+  }
+
+  void _pruneLocalSavedAnswers(List<LessonQuestionAnswer> streamAnswers) {
+    if (_locallySavedAnswers.isEmpty) {
+      return;
+    }
+    final streamIds = streamAnswers
+        .map((answer) => (answer.id ?? '').trim())
+        .where((id) => id.isNotEmpty)
+        .toSet();
+    _locallySavedAnswers.removeWhere(
+      (answer) => streamIds.contains((answer.id ?? '').trim()),
+    );
+  }
+
+  List<LessonQuestionAnswer> _mergeAnswersWithLocalPending(
+    List<LessonQuestionAnswer> streamAnswers, {
+    required String? questionId,
+  }) {
+    final safeQuestionId = (questionId ?? '').trim();
+    if (safeQuestionId.isEmpty) {
+      return streamAnswers;
+    }
+    final mergedById = <String, LessonQuestionAnswer>{
+      for (final answer in streamAnswers)
+        if ((answer.id ?? '').trim().isNotEmpty) (answer.id ?? '').trim(): answer,
+    };
+    for (final answer in _locallySavedAnswers) {
+      if (answer.questionId != safeQuestionId) {
+        continue;
+      }
+      final answerId = (answer.id ?? '').trim();
+      if (answerId.isEmpty) {
+        continue;
+      }
+      mergedById.putIfAbsent(answerId, () => answer);
+    }
+    final merged = mergedById.values.toList()
+      ..sort(
+        (a, b) => timestampOrEpoch(
+          a.createdAt,
+        ).compareTo(timestampOrEpoch(b.createdAt)),
+      );
+    return merged;
+  }
+
   Future<void> _saveAnswer() async {
     if (!widget.canAnswer) {
       return;
@@ -5771,9 +5883,9 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
       return;
     }
     setState(() => _isSaving = true);
-    bool saved = false;
+    LessonQuestionAnswer? savedAnswer;
     try {
-      saved = await widget.onSaveAnswer(
+      savedAnswer = await widget.onSaveAnswer(
         _LessonQuestionAnswerDraft(
           body: _answerController.text,
           parentCommentId: _replyParentId ?? widget.question.id,
@@ -5792,14 +5904,18 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
         ),
       );
     } finally {
-      if (mounted) {
-        if (saved) {
+      _isSaving = false;
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        if (savedAnswer != null) {
           _answerController.clear();
           _clearReplyTarget();
           _clearQuotedNoteSelection();
+          _rememberSavedAnswerLocally(savedAnswer);
         }
-        setState(() => _isSaving = false);
-      }
+      });
     }
   }
 
@@ -5968,6 +6084,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                       : incomingAnswers
                             .where((answer) => answer.questionId == questionId)
                             .toList();
+                  _pruneLocalSavedAnswers(scopedIncomingAnswers);
                   if (scopedIncomingAnswers.isNotEmpty) {
                     _lastNonEmptyAnswers = scopedIncomingAnswers;
                     _lastNonEmptyAnswersQuestionId = questionId;
@@ -5980,9 +6097,13 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                       scopedIncomingAnswers.isEmpty &&
                       fallbackAnswers.isNotEmpty &&
                       _lastNonEmptyAnswersQuestionId == questionId;
-                  final answers = canUseFallback
+                  final baseAnswers = canUseFallback
                       ? fallbackAnswers
                       : scopedIncomingAnswers;
+                  final answers = _mergeAnswersWithLocalPending(
+                    baseAnswers,
+                    questionId: questionId,
+                  );
                   final answerThreads = _buildAnswerThreads(
                     question: question,
                     answers: answers,
@@ -6224,6 +6345,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         DropdownButtonFormField<String>(
+                          key: ValueKey('quoted-note-$_quotedNoteId'),
                           initialValue: _quotedNoteId,
                           decoration: const InputDecoration(
                             border: OutlineInputBorder(),
