@@ -28,6 +28,39 @@ void main() {
       expect(lessonQuestionMatchesQuery(question, '英語'), isFalse);
     });
 
+    test('detects quoted note attachment from id even without title snapshot', () {
+      expect(
+        hasQuotedNoteAttachment(
+          quotedNoteId: 'note-a',
+          quotedNoteTitle: null,
+          quotedNoteBody: null,
+        ),
+        isTrue,
+      );
+      expect(
+        hasQuotedNoteAttachment(
+          quotedNoteId: null,
+          quotedNoteTitle: null,
+          quotedNoteBody: null,
+        ),
+        isFalse,
+      );
+      expect(
+        quotedNoteDisplayTitle(
+          quotedNoteId: 'note-a',
+          quotedNoteTitle: null,
+        ),
+        '無題のメモ',
+      );
+      expect(
+        quotedNoteDisplayTitle(
+          quotedNoteId: 'note-a',
+          quotedNoteTitle: '移項メモ',
+        ),
+        '移項メモ',
+      );
+    });
+
     test('uses teacher label and stable student number identity', () {
       final teacher = commentIdentityFor(
         authorId: 'teacher-a',

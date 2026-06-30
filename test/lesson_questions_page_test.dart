@@ -2009,6 +2009,46 @@ void main() {
     },
   );
 
+  testWidgets('Untitled quoted note chip is shown when title snapshot is empty', (
+    tester,
+  ) async {
+    const question = LessonQuestion(
+      id: 'question-untitled-note',
+      authorId: 'student-a',
+      authorName: '学習者A',
+      courseId: 'course-a',
+      courseTitle: '数学 方程式入門',
+      lessonNumber: 1,
+      lessonTitle: '一次方程式の基本',
+      title: '',
+      body: '無題メモを引用した質問です。',
+      visibility: LessonQuestionVisibility.public,
+      target: LessonQuestionTarget.everyone,
+      attachmentTypes: [],
+      quotedNoteId: 'public-note-untitled',
+      quotedNoteTitle: null,
+      quotedNoteBody: '引用時の本文',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonQuestionsPanel(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            questionsStream: Stream.value(const [question]),
+            publicQuestionsStream: Stream.value(const []),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('レッスンメモ'), findsOneWidget);
+    expect(find.textContaining('メモ: 無題のメモ'), findsOneWidget);
+  });
+
   testWidgets('Quoted note bubble shows memo status action', (tester) async {
     const question = LessonQuestion(
       id: 'question-note-status',
@@ -2519,6 +2559,83 @@ void main() {
       await tester.tap(dropdownFinder);
       await tester.pumpAndSettle();
       expect(find.text('遅延で届く先生向けメモ'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Reply composer keeps selected untitled quote when note list refreshes empty',
+    (tester) async {
+      const question = LessonQuestion(
+        id: 'teacher-preview-public-question-selected-note',
+        authorId: 'student-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '引用付き回答を書きます。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: [],
+      );
+      const untitledNote = LessonNote(
+        id: 'learner-teacher-only-note-untitled',
+        authorId: 'student-b',
+        authorName: '別の学習者',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '無題メモ本文',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.teacherOnly,
+        studentVisibility: LessonNoteVisibility.teacherOnly,
+        tags: [],
+        attachmentTypes: [],
+        hasAudioAttachment: false,
+        isCopied: false,
+        canPublish: true,
+        allowsQuestionCitation: true,
+      );
+      final notesController = StreamController<List<LessonNote>>();
+      addTearDown(notesController.close);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              publicQuestionsStream: Stream.value(const [question]),
+              answersStream: Stream.value(const []),
+              quotableNotesStream: notesController.stream,
+              isTeacherPreview: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      notesController.add(const [untitledNote]);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('引用付き回答を書きます。'));
+      await tester.pumpAndSettle();
+      final dropdownFinder = find.byType(DropdownButtonFormField<String>).last;
+
+      await tester.tap(dropdownFinder);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('無題のメモ').last);
+      await tester.pumpAndSettle();
+
+      notesController.add(const []);
+      await tester.pumpAndSettle();
+
+      expect(find.text('無題のメモ'), findsOneWidget);
     },
   );
 

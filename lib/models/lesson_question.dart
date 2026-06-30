@@ -249,6 +249,32 @@ class LessonQuestionAnswer {
   }
 }
 
+bool hasQuotedNoteAttachment({
+  String? quotedNoteId,
+  String? quotedNoteTitle,
+  String? quotedNoteBody,
+}) {
+  if ((quotedNoteId ?? '').trim().isNotEmpty) {
+    return true;
+  }
+  return (quotedNoteTitle ?? '').trim().isNotEmpty ||
+      (quotedNoteBody ?? '').trim().isNotEmpty;
+}
+
+String quotedNoteDisplayTitle({
+  String? quotedNoteId,
+  String? quotedNoteTitle,
+}) {
+  final title = (quotedNoteTitle ?? '').trim();
+  if (title.isNotEmpty) {
+    return title;
+  }
+  if ((quotedNoteId ?? '').trim().isNotEmpty) {
+    return '無題のメモ';
+  }
+  return '';
+}
+
 bool lessonQuestionMatchesQuery(LessonQuestion question, String query) {
   final normalized = query.trim().toLowerCase();
   if (normalized.isEmpty) {
