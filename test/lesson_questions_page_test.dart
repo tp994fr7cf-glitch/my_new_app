@@ -2639,6 +2639,83 @@ void main() {
     },
   );
 
+  testWidgets(
+    'Reply composer keeps quoted memo when reply target is cleared',
+    (tester) async {
+      const question = LessonQuestion(
+        id: 'teacher-preview-public-question-clear-reply',
+        authorId: 'student-a',
+        authorName: '学習者',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '返信先解除後も引用を残したい質問です。',
+        visibility: LessonQuestionVisibility.public,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: [],
+      );
+      const untitledNote = LessonNote(
+        id: 'learner-teacher-only-note-clear-reply',
+        authorId: 'student-b',
+        authorName: '別の学習者',
+        courseId: 'course-a',
+        courseTitle: '数学 方程式入門',
+        lessonNumber: 1,
+        lessonTitle: '一次方程式の基本',
+        title: '',
+        body: '無題メモ本文',
+        folderId: '',
+        folderName: '',
+        visibility: LessonNoteVisibility.teacherOnly,
+        studentVisibility: LessonNoteVisibility.teacherOnly,
+        tags: [],
+        attachmentTypes: [],
+        hasAudioAttachment: false,
+        isCopied: false,
+        canPublish: true,
+        allowsQuestionCitation: true,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonQuestionsPanel(
+              course: course,
+              lesson: lesson,
+              lessonNumber: 1,
+              publicQuestionsStream: Stream.value(const [question]),
+              answersStream: Stream.value(const []),
+              quotableNotesStream: Stream.value(const [untitledNote]),
+              isTeacherPreview: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('返信先解除後も引用を残したい質問です。'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('返信').first);
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('返信先を解除'), findsOneWidget);
+
+      final dropdownFinder = find.byType(DropdownButtonFormField<String>).last;
+      await tester.tap(dropdownFinder);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('無題のメモ').last);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('返信先を解除'));
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('返信先を解除'), findsNothing);
+      expect(find.text('無題のメモ'), findsOneWidget);
+    },
+  );
+
   testWidgets('Question editor locks scope after posting', (tester) async {
     const question = LessonQuestion(
       id: 'question-locked',
