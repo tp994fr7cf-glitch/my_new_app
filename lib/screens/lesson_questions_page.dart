@@ -4512,7 +4512,11 @@ class _CommentBubble extends StatelessWidget {
                               ],
                               Text(body.isEmpty ? '本文なし' : body),
                               if (attachmentTypes.isNotEmpty ||
-                                  (quotedNoteTitle ?? '').isNotEmpty) ...[
+                                  hasQuotedNoteAttachment(
+                                    quotedNoteId: quotedNoteId,
+                                    quotedNoteTitle: quotedNoteTitle,
+                                    quotedNoteBody: quotedNoteBody,
+                                  )) ...[
                                 const SizedBox(height: 8),
                                 Wrap(
                                   spacing: 8,
@@ -4525,14 +4529,20 @@ class _CommentBubble extends StatelessWidget {
                                             : '画像',
                                         detail: 'アップロード機能追加後に表示します。',
                                       ),
-                                    if ((quotedNoteTitle ?? '').isNotEmpty) ...[
+                                    if (hasQuotedNoteAttachment(
+                                      quotedNoteId: quotedNoteId,
+                                      quotedNoteTitle: quotedNoteTitle,
+                                      quotedNoteBody: quotedNoteBody,
+                                    )) ...[
                                       _QuotedNotePreviewChip(
                                         quotedNoteId: quotedNoteId,
                                       ),
                                       PublicNoteEditStatusButton(
                                         noteId: quotedNoteId,
-                                        fallbackTitle:
-                                            quotedNoteTitle ?? '無題のメモ',
+                                        fallbackTitle: quotedNoteDisplayTitle(
+                                          quotedNoteId: quotedNoteId,
+                                          quotedNoteTitle: quotedNoteTitle,
+                                        ),
                                         fallbackBody: quotedNoteBody ?? '',
                                         icon: Icons.sticky_note_2_outlined,
                                         leadingLabel: 'メモ',
@@ -6242,29 +6252,14 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                     if (isLoadingNotes) {
                       return const _QuotableNotesLoadingField();
                     }
-                    final hasSelectedQuotedNote =
+                    final selectedNoteInList =
                         _quotedNoteId.isNotEmpty &&
                         notes.any((note) => note.id == _quotedNoteId);
-                    final selectedQuotedNoteId = hasSelectedQuotedNote
-                        ? _quotedNoteId
-                        : '';
-                    if (!hasSelectedQuotedNote && _quotedNoteId.isNotEmpty) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (!mounted || _quotedNoteId.isEmpty) {
-                          return;
-                        }
-                        setState(() {
-                          _quotedNoteId = '';
-                          _quotedNoteTitle = '';
-                          _quotedNoteBody = '';
-                        });
-                      });
-                    }
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         DropdownButtonFormField<String>(
-                          initialValue: selectedQuotedNoteId,
+                          initialValue: _quotedNoteId,
                           decoration: const InputDecoration(
                             border: OutlineInputBorder(),
                             labelText: '引用するメモ',
@@ -6274,6 +6269,15 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                               value: '',
                               child: Text('引用なし'),
                             ),
+                            if (_quotedNoteId.isNotEmpty && !selectedNoteInList)
+                              DropdownMenuItem(
+                                value: _quotedNoteId,
+                                child: Text(
+                                  _quotedNoteTitle.isEmpty
+                                      ? '無題のメモ'
+                                      : _quotedNoteTitle,
+                                ),
+                              ),
                             for (final note in notes)
                               DropdownMenuItem(
                                 value: note.id ?? '',

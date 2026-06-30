@@ -964,17 +964,22 @@ class TeacherInteractionManagePage extends StatelessWidget {
                   title: '質問本文',
                   body: question.body.isEmpty ? '本文はありません。' : question.body,
                 ),
-                if ((question.quotedNoteTitle ?? '').isNotEmpty ||
-                    (question.quotedNoteBody ?? '').isNotEmpty) ...[
+                if (hasQuotedNoteAttachment(
+                  quotedNoteId: question.quotedNoteId,
+                  quotedNoteTitle: question.quotedNoteTitle,
+                  quotedNoteBody: question.quotedNoteBody,
+                )) ...[
                   const SizedBox(height: 16),
                   _DetailSection(
                     title: '引用メモ',
                     body: [
-                      if ((question.quotedNoteTitle ?? '').isNotEmpty)
-                        question.quotedNoteTitle!,
-                      if ((question.quotedNoteBody ?? '').isNotEmpty)
-                        question.quotedNoteBody!,
-                    ].join('\n'),
+                      quotedNoteDisplayTitle(
+                        quotedNoteId: question.quotedNoteId,
+                        quotedNoteTitle: question.quotedNoteTitle,
+                      ),
+                      if ((question.quotedNoteBody ?? '').trim().isNotEmpty)
+                        question.quotedNoteBody!.trim(),
+                    ].where((part) => part.isNotEmpty).join('\n'),
                   ),
                 ],
               ],
@@ -1194,9 +1199,18 @@ class _PublicQuestionCard extends StatelessWidget {
                         ),
                         const SizedBox(height: 8),
                         Text(_questionHeadline(question)),
-                        if ((question.quotedNoteTitle ?? '').isNotEmpty) ...[
+                        if (hasQuotedNoteAttachment(
+                          quotedNoteId: question.quotedNoteId,
+                          quotedNoteTitle: question.quotedNoteTitle,
+                          quotedNoteBody: question.quotedNoteBody,
+                        )) ...[
                           const SizedBox(height: 4),
-                          Text('引用メモ: ${question.quotedNoteTitle}'),
+                          Text(
+                            '引用メモ: ${quotedNoteDisplayTitle(
+                              quotedNoteId: question.quotedNoteId,
+                              quotedNoteTitle: question.quotedNoteTitle,
+                            )}',
+                          ),
                         ],
                         const SizedBox(height: 8),
                         _StatusWrap(labels: _statusLabels(question)),

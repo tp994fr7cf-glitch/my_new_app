@@ -1085,8 +1085,11 @@ class _LessonQuestionRecordCard extends StatelessWidget {
                 SelectableText(
                   question.body.isEmpty ? '本文はありません。' : question.body,
                 ),
-                if ((question.quotedNoteTitle ?? '').isNotEmpty ||
-                    (question.quotedNoteBody ?? '').isNotEmpty) ...[
+                if (hasQuotedNoteAttachment(
+                  quotedNoteId: question.quotedNoteId,
+                  quotedNoteTitle: question.quotedNoteTitle,
+                  quotedNoteBody: question.quotedNoteBody,
+                )) ...[
                   const SizedBox(height: 16),
                   const Text(
                     '引用メモ',
@@ -1242,9 +1245,18 @@ class _LessonQuestionRecordCard extends StatelessWidget {
                 const SizedBox(height: 8),
                 Text(question.body),
               ],
-              if ((question.quotedNoteTitle ?? '').isNotEmpty) ...[
+              if (hasQuotedNoteAttachment(
+                quotedNoteId: question.quotedNoteId,
+                quotedNoteTitle: question.quotedNoteTitle,
+                quotedNoteBody: question.quotedNoteBody,
+              )) ...[
                 const SizedBox(height: 8),
-                Text('引用メモ: ${question.quotedNoteTitle}'),
+                Text(
+                  '引用メモ: ${quotedNoteDisplayTitle(
+                    quotedNoteId: question.quotedNoteId,
+                    quotedNoteTitle: question.quotedNoteTitle,
+                  )}',
+                ),
               ],
               if (_unavailableMessage != null) ...[
                 const SizedBox(height: 8),
@@ -2185,16 +2197,23 @@ bool _looksLikeEmail(String value) {
 }
 
 String _quotedNotePreviewText(LessonQuestion question) {
-  final title = question.quotedNoteTitle?.trim();
-  final body = question.quotedNoteBody?.trim();
-  if ((title ?? '').isEmpty && (body ?? '').isEmpty) {
+  if (!hasQuotedNoteAttachment(
+    quotedNoteId: question.quotedNoteId,
+    quotedNoteTitle: question.quotedNoteTitle,
+    quotedNoteBody: question.quotedNoteBody,
+  )) {
     return '引用メモはありません。';
   }
-  if ((title ?? '').isEmpty) {
-    return body!;
+  final title = quotedNoteDisplayTitle(
+    quotedNoteId: question.quotedNoteId,
+    quotedNoteTitle: question.quotedNoteTitle,
+  );
+  final body = question.quotedNoteBody?.trim() ?? '';
+  if (body.isEmpty) {
+    return title;
   }
-  if ((body ?? '').isEmpty) {
-    return title!;
+  if (title.isEmpty) {
+    return body;
   }
   return '$title\n$body';
 }
