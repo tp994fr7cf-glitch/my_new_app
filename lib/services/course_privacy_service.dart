@@ -258,11 +258,17 @@ class CoursePrivacyService {
       throw StateError('受講者同士の本名共有への同意が必要です。');
     }
     final safeLegalName = legalName.trim();
-    if (normalizedPolicy.requiresLegalName && safeLegalName.isEmpty) {
-      throw StateError('本名の登録が必要です。');
+    final existingLegalName = (await loadLegalName(userId))?.trim() ?? '';
+    final resolvedLegalName = resolveLegalNameForConsent(
+      submittedLegalName: safeLegalName,
+      profileLegalName: existingLegalName,
+      requiresLegalName: normalizedPolicy.requiresLegalName,
+    );
+
+    if (existingLegalName.isEmpty && safeLegalName.isNotEmpty) {
+      await setLegalNameIfAbsent(userId: userId, legalName: safeLegalName);
     }
 
-    await setLegalNameIfAbsent(userId: userId, legalName: safeLegalName);
     final consentRef = _consentRef(userId: userId, courseId: courseId);
     final existingConsent = await consentRef.get();
     final existingToken = (existingConsent.data()?['peerShareToken'] as String?)
@@ -291,7 +297,7 @@ class CoursePrivacyService {
       batch.set(teacherShareRef, {
         'courseId': courseId,
         'userId': userId,
-        'legalName': safeLegalName,
+        'legalName': resolvedLegalName,
         'acceptedPolicyVersion': normalizedPolicy.consentPolicyVersion,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
@@ -308,14 +314,14 @@ class CoursePrivacyService {
     }
 
     await batch.commit();
-    try {
-      await syncPeerLegalNameShareForEnrollment(
+    // Peer-name sync can be slow when enrollment already exists (re-consent).
+    // Run in background so the consent UI is not blocked; lesson open also syncs.
+    unawaited(
+      syncPeerLegalNameShareForEnrollment(
         userId: userId,
         courseId: courseId,
-      );
-    } on FirebaseException {
-      // Consent completion should not fail when peer-share sync is delayed.
-    }
+      ).catchError((_) {}),
+    );
   }
 
   Future<bool> _hasCourseEnrollment({
@@ -444,4 +450,26 @@ class CoursePrivacyService {
       return names;
     });
   }
+}
+
+String resolveLegalNameForConsent({
+  required String submittedLegalName,
+  required String? profileLegalName,
+  required bool requiresLegalName,
+}) {
+  final safeSubmitted = submittedLegalName.trim();
+  final existing = profileLegalName?.trim() ?? '';
+
+  if (existing.isNotEmpty) {
+    if (safeSubmitted.isNotEmpty && existing != safeSubmitted) {
+      throw StateError('本名は登録後に変更できません。');
+    }
+    return existing;
+  }
+
+  if (requiresLegalName && safeSubmitted.isEmpty) {
+    throw StateError('本名の登録が必要です。');
+  }
+
+  return safeSubmitted;
 }
