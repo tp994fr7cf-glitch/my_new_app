@@ -1,4 +1,3 @@
-import com.android.build.api.dsl.CommonExtension
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
@@ -24,23 +23,15 @@ subprojects {
         if (!pluginManager.hasPlugin("org.jetbrains.kotlin.android")) {
             pluginManager.apply("org.jetbrains.kotlin.android")
         }
-    }
-}
-subprojects {
-    afterEvaluate {
-        val sourceCompatibility =
-            extensions.findByType(CommonExtension::class.java)
-                ?.compileOptions
-                ?.sourceCompatibility
-        val kotlinJvmTarget = when {
-            sourceCompatibility == null -> JvmTarget.JVM_17
-            sourceCompatibility >= JavaVersion.VERSION_17 -> JvmTarget.JVM_17
-            sourceCompatibility >= JavaVersion.VERSION_11 -> JvmTarget.JVM_11
-            else -> JvmTarget.JVM_1_8
-        }
-        tasks.withType<KotlinCompile>().configureEach {
-            compilerOptions {
-                jvmTarget.set(kotlinJvmTarget)
+        afterEvaluate {
+            val kotlinJvmTarget = when (name) {
+                "file_picker" -> JvmTarget.JVM_11
+                else -> JvmTarget.JVM_17
+            }
+            tasks.withType<KotlinCompile>().configureEach {
+                compilerOptions {
+                    jvmTarget.set(kotlinJvmTarget)
+                }
             }
         }
     }
