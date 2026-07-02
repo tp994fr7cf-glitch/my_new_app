@@ -7,6 +7,7 @@ import '../models/course.dart';
 import '../models/course_participant_identity.dart';
 import '../models/course_privacy_consent.dart';
 import '../models/public_user_profile.dart';
+import '../services/course_catalog_service.dart';
 import '../services/course_identity_service.dart';
 import '../services/course_privacy_service.dart';
 import 'course_entry_gate.dart';
@@ -23,10 +24,11 @@ class CourseDetailPage extends StatelessWidget {
 
   final Course course;
   final bool isTeacherMode;
+  static const _courseCatalogService = CourseCatalogService();
   static const _courseIdentityService = CourseIdentityService();
   static const _coursePrivacyService = CoursePrivacyService();
 
-  String get _courseId => course.storageId;
+  String _courseIdFor(Course activeCourse) => activeCourse.storageId;
 
   Future<void> _openAliasUpdateDialog(
     BuildContext context, {
@@ -106,7 +108,7 @@ class CourseDetailPage extends StatelessWidget {
     }
     try {
       await _courseIdentityService.updateAlias(
-        courseId: _courseId,
+        courseId: _courseIdFor(course),
         userId: userId,
         aliasDisplayName: safeName,
         aliasAvatarColorName: selectedColor,
@@ -122,7 +124,7 @@ class CourseDetailPage extends StatelessWidget {
     }
     try {
       await _courseIdentityService.rewriteCourseAuthorSnapshots(
-        courseId: _courseId,
+        courseId: _courseIdFor(course),
         userId: userId,
         snapshot: CourseAuthorSnapshot(
           displayName: safeName,
@@ -172,20 +174,20 @@ class CourseDetailPage extends StatelessWidget {
     }
     try {
       await _courseIdentityService.revealProfileIdentity(
-        courseId: _courseId,
+        courseId: _courseIdFor(course),
         userId: userId,
         updatedByUserId: userId,
         updatedByRole: 'student',
       );
       final snapshot = await _courseIdentityService.resolveAuthorSnapshot(
-        courseId: _courseId,
+        courseId: _courseIdFor(course),
         userId: userId,
         fallbackDisplayName:
             FirebaseAuth.instance.currentUser?.displayName ?? '学習者',
         role: publicUserProfileRoleStudent,
       );
       await _courseIdentityService.rewriteCourseAuthorSnapshots(
-        courseId: _courseId,
+        courseId: _courseIdFor(course),
         userId: userId,
         snapshot: snapshot,
       );
@@ -204,6 +206,7 @@ class CourseDetailPage extends StatelessWidget {
   }
 
   Future<void> _saveLearningProgress({
+    required Course activeCourse,
     required CourseLesson lesson,
     required int lessonNumber,
   }) async {
@@ -215,24 +218,25 @@ class CourseDetailPage extends StatelessWidget {
       return;
     }
 
+    final courseId = _courseIdFor(activeCourse);
     final firestore = FirebaseFirestore.instance;
     final enrollmentRef = firestore
         .collection('users')
         .doc(user.uid)
         .collection('enrollments')
-        .doc(_courseId);
+        .doc(courseId);
     final eventRef = firestore
         .collection('users')
         .doc(user.uid)
         .collection('learningEvents')
         .doc();
     final now = FieldValue.serverTimestamp();
-    final courseSnapshot = {'id': _courseId, ...course.toFirestore()};
+    final courseSnapshot = {'id': courseId, ...activeCourse.toFirestore()};
 
     final batch = firestore.batch()
       ..set(enrollmentRef, {
         'userId': user.uid,
-        'courseId': _courseId,
+        'courseId': courseId,
         'course': courseSnapshot,
         'lastLessonNumber': lessonNumber,
         'lastLessonTitle': lesson.title,
@@ -243,8 +247,8 @@ class CourseDetailPage extends StatelessWidget {
       ..set(eventRef, {
         'userId': user.uid,
         'type': 'lessonOpened',
-        'courseId': _courseId,
-        'courseTitle': course.title,
+        'courseId': courseId,
+        'courseTitle': activeCourse.title,
         'lessonNumber': lessonNumber,
         'lessonTitle': lesson.title,
         'createdAt': now,
@@ -254,7 +258,7 @@ class CourseDetailPage extends StatelessWidget {
     try {
       await _coursePrivacyService.syncPeerLegalNameShareForEnrollment(
         userId: user.uid,
-        courseId: _courseId,
+        courseId: courseId,
       );
     } on FirebaseException {
       // Do not block lesson opening if peer-share sync fails.
@@ -263,6 +267,7 @@ class CourseDetailPage extends StatelessWidget {
 
   Future<void> _openLesson(
     BuildContext context, {
+    required Course activeCourse,
     required CourseLesson lesson,
     required int lessonNumber,
   }) async {
@@ -275,7 +280,7 @@ class CourseDetailPage extends StatelessWidget {
       try {
         canEnter = await ensureCourseEntryAccess(
           context,
-          course: course,
+          course: activeCourse,
           user: user,
         );
       } catch (_) {
@@ -291,7 +296,11 @@ class CourseDetailPage extends StatelessWidget {
       }
     }
     try {
-      await _saveLearningProgress(lesson: lesson, lessonNumber: lessonNumber);
+      await _saveLearningProgress(
+        activeCourse: activeCourse,
+        lesson: lesson,
+        lessonNumber: lessonNumber,
+      );
     } catch (_) {
       messenger
         ?..clearSnackBars()
@@ -307,7 +316,7 @@ class CourseDetailPage extends StatelessWidget {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => VideoLessonPage(
-          course: course,
+          course: activeCourse,
           lesson: lesson,
           lessonNumber: lessonNumber,
         ),
@@ -315,16 +324,16 @@ class CourseDetailPage extends StatelessWidget {
     );
   }
 
-  void _previewLesson(BuildContext context) {
-    if (course.lessons.isEmpty) {
+  void _previewLesson(BuildContext context, Course activeCourse) {
+    if (activeCourse.lessons.isEmpty) {
       return;
     }
 
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => VideoLessonPage(
-          course: course,
-          lesson: course.lessons.first,
+          course: activeCourse,
+          lesson: activeCourse.lessons.first,
           lessonNumber: 1,
           isTeacherPreview: true,
         ),
@@ -340,6 +349,21 @@ class CourseDetailPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final courseStream = _courseCatalogService.watchCourse(course);
+    if (courseStream == null) {
+      return _buildPage(context, course);
+    }
+
+    return StreamBuilder<Course>(
+      stream: courseStream,
+      initialData: course,
+      builder: (context, snapshot) {
+        return _buildPage(context, snapshot.data ?? course);
+      },
+    );
+  }
+
+  Widget _buildPage(BuildContext context, Course activeCourse) {
     final currentUser = Firebase.apps.isNotEmpty
         ? FirebaseAuth.instance.currentUser
         : null;
@@ -371,25 +395,25 @@ class CourseDetailPage extends StatelessWidget {
               spacing: 8,
               runSpacing: 8,
               children: [
-                Chip(label: Text(course.category)),
-                Chip(label: Text(course.level)),
-                Chip(label: Text(course.priceLabel)),
+                Chip(label: Text(activeCourse.category)),
+                Chip(label: Text(activeCourse.level)),
+                Chip(label: Text(activeCourse.priceLabel)),
               ],
             ),
             const SizedBox(height: 16),
             Text(
-              course.title,
+              activeCourse.title,
               style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
             Text(
-              '講師: ${course.instructorName}',
+              '講師: ${activeCourse.instructorName}',
               style: Theme.of(context).textTheme.titleMedium,
             ),
-            if (course.courseCode != null) ...[
+            if (activeCourse.courseCode != null) ...[
               const SizedBox(height: 8),
               Text(
-                '講座コード: ${course.courseCode}',
+                '講座コード: ${activeCourse.courseCode}',
                 style: Theme.of(context).textTheme.titleMedium,
               ),
             ],
@@ -398,21 +422,21 @@ class CourseDetailPage extends StatelessWidget {
               children: [
                 const Icon(Icons.star, size: 20),
                 const SizedBox(width: 4),
-                Text(course.rating.toStringAsFixed(1)),
+                Text(activeCourse.rating.toStringAsFixed(1)),
                 const SizedBox(width: 16),
                 const Icon(Icons.schedule, size: 20),
                 const SizedBox(width: 4),
-                Text(course.duration),
+                Text(activeCourse.duration),
                 const SizedBox(width: 16),
                 const Icon(Icons.list_alt, size: 20),
                 const SizedBox(width: 4),
-                Text('${course.lessonCount}本'),
+                Text('${activeCourse.lessonCount}本'),
               ],
             ),
             const SizedBox(height: 24),
             const _SectionTitle('講座概要'),
             const SizedBox(height: 8),
-            Text(course.description),
+            Text(activeCourse.description),
             const SizedBox(height: 24),
             const _SectionTitle('この講座で学べること'),
             const SizedBox(height: 8),
@@ -425,7 +449,7 @@ class CourseDetailPage extends StatelessWidget {
               const SizedBox(height: 8),
               StreamBuilder<CourseParticipantIdentity?>(
                 stream: _courseIdentityService.identityStream(
-                  courseId: _courseId,
+                  courseId: _courseIdFor(activeCourse),
                   userId: currentUser.uid,
                 ),
                 builder: (context, snapshot) {
@@ -497,7 +521,7 @@ class CourseDetailPage extends StatelessWidget {
               StreamBuilder<CourseEntryRequirement>(
                 stream: _coursePrivacyService.watchEntryRequirement(
                   userId: currentUser.uid,
-                  courseId: _courseId,
+                  courseId: _courseIdFor(activeCourse),
                 ),
                 builder: (context, snapshot) {
                   final requirement = snapshot.data;
@@ -509,7 +533,7 @@ class CourseDetailPage extends StatelessWidget {
                   }
                   return StreamBuilder<List<String>>(
                     stream: _coursePrivacyService.peerLegalNamesStream(
-                      _courseId,
+                      _courseIdFor(activeCourse),
                     ),
                     builder: (context, namesSnapshot) {
                       final names = namesSnapshot.data ?? const <String>[];
@@ -549,7 +573,7 @@ class CourseDetailPage extends StatelessWidget {
             const SizedBox(height: 24),
             const _SectionTitle('レッスン一覧'),
             const SizedBox(height: 8),
-            for (final entry in course.lessons.indexed)
+            for (final entry in activeCourse.lessons.indexed)
               _LessonTile(
                 index: entry.$1 + 1,
                 lesson: entry.$2,
@@ -558,6 +582,7 @@ class CourseDetailPage extends StatelessWidget {
                     : () {
                         _openLesson(
                           context,
+                          activeCourse: activeCourse,
                           lesson: entry.$2,
                           lessonNumber: entry.$1 + 1,
                         );
@@ -570,7 +595,8 @@ class CourseDetailPage extends StatelessWidget {
                 onManageLessons: () {
                   Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (_) => TeacherLessonManagePage(course: course),
+                      builder: (_) =>
+                          TeacherLessonManagePage(course: activeCourse),
                     ),
                   );
                 },
@@ -578,22 +604,23 @@ class CourseDetailPage extends StatelessWidget {
                   Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (_) =>
-                          TeacherInteractionManagePage(course: course),
+                          TeacherInteractionManagePage(course: activeCourse),
                     ),
                   );
                 },
-                onPreview: () => _previewLesson(context),
+                onPreview: () => _previewLesson(context, activeCourse),
               )
             else
               FilledButton.icon(
                 onPressed: () {
-                  if (course.lessons.isEmpty) {
+                  if (activeCourse.lessons.isEmpty) {
                     return;
                   }
 
                   _openLesson(
                     context,
-                    lesson: course.lessons.first,
+                    activeCourse: activeCourse,
+                    lesson: activeCourse.lessons.first,
                     lessonNumber: 1,
                   );
                 },
