@@ -54,7 +54,29 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
     if (kIsWeb) {
       await _player.setWebCrossOrigin(WebCrossOrigin.anonymous);
     }
-    await _player.setUrl(url.toString());
+    final duration = await _player.setUrl(url.toString());
+    if (_hasUsableDuration(duration) || _hasUsableDuration(_player.duration)) {
+      return;
+    }
+    await _waitForUsableDuration();
+  }
+
+  bool _hasUsableDuration(Duration? duration) {
+    return duration != null && duration > Duration.zero;
+  }
+
+  Future<void> _waitForUsableDuration() async {
+    if (_hasUsableDuration(_player.duration)) {
+      return;
+    }
+
+    try {
+      await _player.durationStream
+          .firstWhere(_hasUsableDuration)
+          .timeout(const Duration(seconds: 15));
+    } on TimeoutException {
+      return;
+    }
   }
 
   @override
