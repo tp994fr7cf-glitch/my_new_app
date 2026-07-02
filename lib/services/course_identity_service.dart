@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 
 import '../models/course_participant_identity.dart';
+import '../models/course_profile_display.dart';
 import '../models/public_user_profile.dart';
 
 class CourseIdentityService {
@@ -76,6 +77,14 @@ class CourseIdentityService {
       );
     }
     final ref = _identityRef(courseId: courseId, userId: userId);
+    final aliasName = (aliasDisplayName ?? '').trim();
+    final shouldUseAlias = useCourseAlias && aliasName.isNotEmpty;
+    final profileForMirror = shouldUseAlias
+        ? null
+        : await loadPublicUserProfile(
+            userId: userId,
+            role: publicUserProfileRoleStudent,
+          );
     final result = await FirebaseFirestore.instance.runTransaction((
       transaction,
     ) async {
@@ -84,8 +93,6 @@ class CourseIdentityService {
         return CourseParticipantIdentity.fromFirestore(snapshot);
       }
 
-      final aliasName = (aliasDisplayName ?? '').trim();
-      final shouldUseAlias = useCourseAlias && aliasName.isNotEmpty;
       final aliasColor = profileAvatarColors.containsKey(aliasAvatarColorName)
           ? aliasAvatarColorName
           : defaultProfileColorName;
@@ -101,6 +108,9 @@ class CourseIdentityService {
         aliasAvatarColorName: shouldUseAlias
             ? aliasColor
             : defaultProfileColorName,
+        sharedDisplayName: profileForMirror?.displayName,
+        sharedAvatarColorName: profileForMirror?.avatarColorName,
+        sharedBio: profileForMirror?.bio,
         updatedByUserId: updatedByUserId,
         updatedByRole: updatedByRole,
       );
@@ -148,6 +158,7 @@ class CourseIdentityService {
         'aliasAvatarColorName': safeColor,
         'aliasConfiguredAtEnrollment': true,
         'aliasRetired': false,
+        ...clearSharedProfileMirrorFields,
         'updatedByUserId': updatedByUserId,
         'updatedByRole': updatedByRole,
         'updatedAt': FieldValue.serverTimestamp(),
@@ -165,6 +176,10 @@ class CourseIdentityService {
       return;
     }
     final ref = _identityRef(courseId: courseId, userId: userId);
+    final profile = await loadPublicUserProfile(
+      userId: userId,
+      role: publicUserProfileRoleStudent,
+    );
     await FirebaseFirestore.instance.runTransaction((transaction) async {
       final snapshot = await transaction.get(ref);
       if (!snapshot.exists) {
@@ -177,11 +192,82 @@ class CourseIdentityService {
       transaction.set(ref, {
         'identityMode': courseIdentityModeProfile,
         'aliasRetired': true,
+        if (profile != null) ...sharedProfileMirrorFieldsFrom(profile),
         'updatedByUserId': updatedByUserId,
         'updatedByRole': updatedByRole,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     });
+  }
+
+  Future<void> syncSharedProfileMirror({
+    required String courseId,
+    required String userId,
+    required PublicUserProfile profile,
+  }) async {
+    if (Firebase.apps.isEmpty || courseId.isEmpty || userId.isEmpty) {
+      return;
+    }
+    final identity = await loadIdentity(courseId: courseId, userId: userId);
+    if (identity == null || !identity.isProfileMode) {
+      return;
+    }
+    await _identityRef(courseId: courseId, userId: userId).set({
+      ...sharedProfileMirrorFieldsFrom(profile),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> syncSharedProfileMirrorAcrossEnrollments({
+    required String userId,
+    required PublicUserProfile profile,
+  }) async {
+    if (Firebase.apps.isEmpty || userId.isEmpty) {
+      return;
+    }
+    if (profile.role != publicUserProfileRoleStudent) {
+      return;
+    }
+    final authUserId = FirebaseAuth.instance.currentUser?.uid;
+    if (authUserId == null || authUserId != userId) {
+      return;
+    }
+    QuerySnapshot<Map<String, dynamic>> enrollments;
+    try {
+      enrollments = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('enrollments')
+          .get();
+    } on FirebaseException {
+      return;
+    }
+    final snapshot = CourseAuthorSnapshot(
+      displayName: profile.displayName,
+      avatarColorName: profile.avatarColorName,
+      profileVisible: true,
+      identityMode: courseIdentityModeProfile,
+    );
+    for (final enrollment in enrollments.docs) {
+      final courseId = enrollment.id;
+      if (courseId.isEmpty) {
+        continue;
+      }
+      final identity = await loadIdentity(courseId: courseId, userId: userId);
+      if (identity == null || !identity.isProfileMode) {
+        continue;
+      }
+      await syncSharedProfileMirror(
+        courseId: courseId,
+        userId: userId,
+        profile: profile,
+      );
+      await rewriteCourseAuthorSnapshots(
+        courseId: courseId,
+        userId: userId,
+        snapshot: snapshot,
+      );
+    }
   }
 
   Future<CourseAuthorSnapshot> resolveAuthorSnapshot({
@@ -209,23 +295,26 @@ class CourseIdentityService {
         identityMode: courseIdentityModeAlias,
       );
     }
+    if (identity != null && identity.hasSharedProfileMirror) {
+      final shared = identity.toSharedPublicUserProfile(
+        fallbackDisplayName: fallbackDisplayName,
+      );
+      return CourseAuthorSnapshot(
+        displayName: shared.displayName,
+        avatarColorName: shared.avatarColorName,
+        profileVisible: true,
+        identityMode: courseIdentityModeProfile,
+      );
+    }
     final profileRole = role == publicUserProfileRoleTeacher
         ? publicUserProfileRoleTeacher
         : publicUserProfileRoleStudent;
     String profileName = fallbackDisplayName.trim();
     String profileColor = defaultProfileColorName;
-    try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('publicUserProfiles')
-          .doc(publicUserProfileDocumentId(userId, profileRole))
-          .get();
-      if (snapshot.exists) {
-        final profile = PublicUserProfile.fromFirestore(snapshot);
-        profileName = profile.displayName.trim();
-        profileColor = profile.avatarColorName;
-      }
-    } on FirebaseException {
-      // keep fallback values
+    final profile = await loadPublicUserProfile(userId: userId, role: profileRole);
+    if (profile != null) {
+      profileName = profile.displayName.trim();
+      profileColor = profile.avatarColorName;
     }
     if (profileName.isEmpty) {
       profileName = profileRole == publicUserProfileRoleTeacher ? '先生' : '学習者';

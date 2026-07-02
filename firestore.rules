@@ -392,7 +392,11 @@ service cloud.firestore {
     }
 
     match /publicUserProfiles/{profileId} {
-      allow read: if signedIn();
+      allow read: if signedIn()
+        && (
+          profileId == request.auth.uid + '_student'
+          || profileId.matches('^.+_teacher$')
+        );
       allow create, update: if signedIn()
         && validPublicUserProfile(profileId);
     }
@@ -1343,6 +1347,21 @@ service cloud.firestore {
                 'brown',
                 'indigo'
               ])
+            && (!request.resource.data.keys().hasAny(['sharedDisplayName'])
+              || request.resource.data.sharedDisplayName is string)
+            && (!request.resource.data.keys().hasAny(['sharedAvatarColorName'])
+              || request.resource.data.sharedAvatarColorName in [
+                'blue',
+                'green',
+                'orange',
+                'purple',
+                'pink',
+                'teal',
+                'brown',
+                'indigo'
+              ])
+            && (!request.resource.data.keys().hasAny(['sharedBio'])
+              || request.resource.data.sharedBio is string)
             && (!request.resource.data.keys().hasAny(['updatedByUserId'])
               || request.resource.data.updatedByUserId is string)
             && (!request.resource.data.keys().hasAny(['updatedByRole'])
@@ -1352,7 +1371,11 @@ service cloud.firestore {
         }
 
         allow read: if signedIn()
-          && (request.auth.uid == userId || isCourseInstructor(courseId));
+          && (
+            request.auth.uid == userId
+            || isCourseInstructor(courseId)
+            || userHasCourseEnrollment(courseId)
+          );
 
         allow create, update: if signedIn()
           && validIdentityPayload()

@@ -8,6 +8,7 @@ import '../models/course_participant_identity.dart';
 import '../models/course_privacy_policy.dart';
 import '../models/lesson_note.dart';
 import '../models/lesson_question.dart';
+import '../models/course_profile_display.dart';
 import '../models/public_user_profile.dart';
 import '../services/course_identity_service.dart';
 import '../services/course_privacy_service.dart';
@@ -761,6 +762,7 @@ class TeacherInteractionManagePage extends StatelessWidget {
                                           LessonInteractionService
                                               .learnerRestrictionModeNone;
                                       return _LearnerRestrictionTile(
+                                        courseId: _courseId,
                                         identity: identity,
                                         legalName: legalNames[identity.userId],
                                         restrictionLabel: _restrictionModeLabel(
@@ -779,6 +781,7 @@ class TeacherInteractionManagePage extends StatelessWidget {
                                             role: publicUserProfileRoleStudent,
                                             fallbackDisplayName: '学習者',
                                             isOwner: false,
+                                            courseId: _courseId,
                                           );
                                         },
                                         onOpenSettings: () =>
@@ -1030,9 +1033,11 @@ class _PublicNoteCard extends StatelessWidget {
         : publicUserProfileRoleStudent;
     final profileStream = isAliasAuthor
         ? null
-        : publicUserProfileStream(
-            userId: note.authorId,
-            role: profileRole,
+        : authorPublicProfileStream(
+            courseId: note.courseId,
+            authorId: note.authorId,
+            authorRole: profileRole,
+            authorProfileVisible: note.authorProfileVisible,
             fallbackDisplayName: fallbackProfile.displayName,
           );
     return StreamBuilder<PublicUserProfile>(
@@ -1062,6 +1067,8 @@ class _PublicNoteCard extends StatelessWidget {
                         role: profileRole,
                         fallbackDisplayName: profile.displayName,
                         isOwner: false,
+                        courseId: note.courseId,
+                        authorProfileVisible: note.authorProfileVisible,
                       );
                     },
                     child: PublicProfileAvatar(profile: profile),
@@ -1148,9 +1155,11 @@ class _PublicQuestionCard extends StatelessWidget {
         : publicUserProfileRoleStudent;
     final profileStream = isAliasAuthor
         ? null
-        : publicUserProfileStream(
-            userId: question.authorId,
-            role: profileRole,
+        : authorPublicProfileStream(
+            courseId: question.courseId,
+            authorId: question.authorId,
+            authorRole: profileRole,
+            authorProfileVisible: question.authorProfileVisible,
             fallbackDisplayName: fallbackProfile.displayName,
           );
     return StreamBuilder<PublicUserProfile>(
@@ -1180,6 +1189,8 @@ class _PublicQuestionCard extends StatelessWidget {
                         role: profileRole,
                         fallbackDisplayName: profile.displayName,
                         isOwner: false,
+                        courseId: question.courseId,
+                        authorProfileVisible: question.authorProfileVisible,
                       );
                     },
                     child: PublicProfileAvatar(profile: profile),
@@ -1245,6 +1256,7 @@ class _PublicQuestionCard extends StatelessWidget {
 
 class _LearnerRestrictionTile extends StatelessWidget {
   const _LearnerRestrictionTile({
+    required this.courseId,
     required this.identity,
     required this.restrictionLabel,
     required this.onTapProfile,
@@ -1252,6 +1264,7 @@ class _LearnerRestrictionTile extends StatelessWidget {
     this.legalName,
   });
 
+  final String courseId;
   final CourseParticipantIdentity identity;
   final String restrictionLabel;
   final String? legalName;
@@ -1269,9 +1282,9 @@ class _LearnerRestrictionTile extends StatelessWidget {
     );
     final stream = isAlias
         ? null
-        : publicUserProfileStream(
+        : courseSharedPublicProfileStream(
+            courseId: courseId,
             userId: identity.userId,
-            role: publicUserProfileRoleStudent,
             fallbackDisplayName: fallbackProfile.displayName,
           );
     return StreamBuilder<PublicUserProfile>(

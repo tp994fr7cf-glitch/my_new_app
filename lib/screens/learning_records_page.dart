@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../models/course.dart';
 import '../models/lesson_note.dart';
 import '../models/lesson_question.dart';
+import '../models/course_profile_display.dart';
 import '../models/public_user_profile.dart';
 import '../services/lesson_interaction_service.dart';
 import 'lesson_notes_page.dart';
@@ -1562,9 +1563,11 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
             publicUserProfileRoleTeacher
         ? publicUserProfileRoleTeacher
         : publicUserProfileRoleStudent;
-    return publicUserProfileStream(
-      userId: safeAuthorId,
-      role: profileRole,
+    return authorPublicProfileStream(
+      courseId: widget.answer.courseId,
+      authorId: safeAuthorId,
+      authorRole: profileRole,
+      authorProfileVisible: true,
       fallbackDisplayName: fallbackDisplayName,
     ).map((profile) {
       final linked = _usableDisplayNameOrNull(profile.displayName);

@@ -15,6 +15,9 @@ class CourseParticipantIdentity {
     required this.aliasRetired,
     this.aliasDisplayName,
     this.aliasAvatarColorName,
+    this.sharedDisplayName,
+    this.sharedAvatarColorName,
+    this.sharedBio,
     this.createdAt,
     this.updatedAt,
     this.updatedByUserId,
@@ -29,6 +32,9 @@ class CourseParticipantIdentity {
   final bool aliasRetired;
   final String? aliasDisplayName;
   final String? aliasAvatarColorName;
+  final String? sharedDisplayName;
+  final String? sharedAvatarColorName;
+  final String? sharedBio;
   final Timestamp? createdAt;
   final Timestamp? updatedAt;
   final String? updatedByUserId;
@@ -40,6 +46,28 @@ class CourseParticipantIdentity {
   bool get isProfileMode => !isAliasMode;
 
   bool get canEditAlias => aliasConfiguredAtEnrollment && !aliasRetired;
+
+  bool get hasSharedProfileMirror {
+    return isProfileMode && (sharedDisplayName ?? '').trim().isNotEmpty;
+  }
+
+  PublicUserProfile toSharedPublicUserProfile({String? fallbackDisplayName}) {
+    final name = (sharedDisplayName ?? '').trim();
+    return PublicUserProfile(
+      userId: userId,
+      role: publicUserProfileRoleStudent,
+      displayName: name.isNotEmpty
+          ? name
+          : ((fallbackDisplayName ?? '').trim().isNotEmpty
+                ? fallbackDisplayName!.trim()
+                : '学習者'),
+      avatarColorName: profileAvatarColors.containsKey(sharedAvatarColorName)
+          ? sharedAvatarColorName!
+          : defaultProfileColorName,
+      bio: sharedBio ?? '',
+      updatedAt: updatedAt,
+    );
+  }
 
   String get safeAliasDisplayName {
     final trimmed = (aliasDisplayName ?? '').trim();
@@ -62,6 +90,15 @@ class CourseParticipantIdentity {
       'aliasRetired': aliasRetired,
       'aliasDisplayName': (aliasDisplayName ?? '').trim(),
       'aliasAvatarColorName': safeAliasAvatarColorName,
+      if (isProfileMode && (sharedDisplayName ?? '').trim().isNotEmpty) ...{
+        'sharedDisplayName': sharedDisplayName!.trim(),
+        'sharedAvatarColorName': profileAvatarColors.containsKey(
+              sharedAvatarColorName,
+            )
+            ? sharedAvatarColorName!
+            : defaultProfileColorName,
+        'sharedBio': (sharedBio ?? '').trim(),
+      },
       if ((updatedByUserId ?? '').trim().isNotEmpty)
         'updatedByUserId': updatedByUserId!.trim(),
       if ((updatedByRole ?? '').trim().isNotEmpty)
@@ -89,6 +126,9 @@ class CourseParticipantIdentity {
       aliasRetired: aliasRetired,
       aliasDisplayName: data['aliasDisplayName'] as String?,
       aliasAvatarColorName: data['aliasAvatarColorName'] as String?,
+      sharedDisplayName: data['sharedDisplayName'] as String?,
+      sharedAvatarColorName: data['sharedAvatarColorName'] as String?,
+      sharedBio: data['sharedBio'] as String?,
       createdAt: data['createdAt'] as Timestamp?,
       updatedAt: data['updatedAt'] as Timestamp?,
       updatedByUserId: data['updatedByUserId'] as String?,

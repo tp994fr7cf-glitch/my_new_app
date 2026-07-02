@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../models/lesson_note.dart';
+import '../../models/course_profile_display.dart';
 import '../../models/public_user_profile.dart';
 import '../public_user_profile_page.dart';
 
@@ -114,9 +115,11 @@ class LessonNotePreviewBody extends StatelessWidget {
       return buildBody(fallback);
     }
     return StreamBuilder<PublicUserProfile>(
-      stream: publicUserProfileStream(
-        userId: note.authorId,
-        role: publicUserProfileRoleStudent,
+      stream: authorPublicProfileStream(
+        courseId: note.courseId,
+        authorId: note.authorId,
+        authorRole: publicUserProfileRoleStudent,
+        authorProfileVisible: note.authorProfileVisible,
         fallbackDisplayName: note.authorName,
       ),
       builder: (context, snapshot) {

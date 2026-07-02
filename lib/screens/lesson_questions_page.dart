@@ -11,6 +11,7 @@ import '../models/course.dart';
 import '../models/course_participant_identity.dart';
 import '../models/lesson_note.dart';
 import '../models/lesson_question.dart';
+import '../models/course_profile_display.dart';
 import '../models/public_user_profile.dart';
 import '../services/course_identity_service.dart';
 import '../services/lesson_interaction_service.dart';
@@ -4059,6 +4060,7 @@ class _QuestionList extends StatelessWidget {
                         onTap != null &&
                         (isCurrentUserTeacher || !isTeacherHidden);
                     return _CommentBubble(
+                      courseId: question.courseId,
                       body: question.body,
                       authorId: question.authorId,
                       authorName: question.authorName,
@@ -4238,6 +4240,7 @@ class _AnswerList extends StatelessWidget {
                               authorRole: answer.authorRole,
                             );
                             return _CommentBubble(
+                              courseId: answer.courseId,
                               body: answer.body,
                               authorId: answer.authorId,
                               authorName: answer.authorName,
@@ -4341,6 +4344,7 @@ class _DeletedQuestionNotice extends StatelessWidget {
 
 class _CommentBubble extends StatelessWidget {
   const _CommentBubble({
+    required this.courseId,
     required this.body,
     required this.authorId,
     required this.authorName,
@@ -4375,6 +4379,7 @@ class _CommentBubble extends StatelessWidget {
     this.bottomInlineAction,
   });
 
+  final String courseId;
   final String body;
   final String authorId;
   final String authorName;
@@ -4459,9 +4464,11 @@ class _CommentBubble extends StatelessWidget {
             ),
           )
         : StreamBuilder<PublicUserProfile>(
-            stream: publicUserProfileStream(
-              userId: authorId,
-              role: profileRole,
+            stream: authorPublicProfileStream(
+              courseId: courseId,
+              authorId: authorId,
+              authorRole: authorRole,
+              authorProfileVisible: authorProfileVisible,
               fallbackDisplayName: fallbackDisplayName,
             ),
             builder: (context, snapshot) {
@@ -4511,6 +4518,8 @@ class _CommentBubble extends StatelessWidget {
                       role: profile.role,
                       fallbackDisplayName: profile.displayName,
                       isOwner: isOwner,
+                      courseId: courseId,
+                      authorProfileVisible: authorProfileVisible,
                     );
                   }
                 : null,
@@ -4561,6 +4570,7 @@ class _CommentBubble extends StatelessWidget {
                                       replyToLinkCurrentProfile,
                                   role: replyToAuthorRole,
                                   bodyPreview: replyToBodyPreview ?? '',
+                                  courseId: courseId,
                                 ),
                                 const SizedBox(height: 8),
                               ],
@@ -5002,6 +5012,7 @@ class _ReplyLine extends StatelessWidget {
     this.linkToCurrentProfile = false,
     required this.bodyPreview,
     this.role,
+    this.courseId,
   });
 
   final String? authorId;
@@ -5009,6 +5020,7 @@ class _ReplyLine extends StatelessWidget {
   final bool linkToCurrentProfile;
   final String bodyPreview;
   final String? role;
+  final String? courseId;
 
   @override
   Widget build(BuildContext context) {
@@ -5022,9 +5034,11 @@ class _ReplyLine extends StatelessWidget {
         : publicUserProfileRoleStudent;
     if (linkToCurrentProfile && safeAuthorId.isNotEmpty) {
       return StreamBuilder<PublicUserProfile>(
-        stream: publicUserProfileStream(
-          userId: safeAuthorId,
-          role: profileRole,
+        stream: authorPublicProfileStream(
+          courseId: courseId,
+          authorId: safeAuthorId,
+          authorRole: profileRole,
+          authorProfileVisible: true,
           fallbackDisplayName: fallbackDisplayName,
         ),
         builder: (context, snapshot) {
@@ -5076,6 +5090,7 @@ class _ReplyTargetPreview extends StatelessWidget {
     required this.bodyPreview,
     required this.onClear,
     this.role,
+    this.courseId,
   });
 
   final String? authorId;
@@ -5084,6 +5099,7 @@ class _ReplyTargetPreview extends StatelessWidget {
   final String bodyPreview;
   final VoidCallback onClear;
   final String? role;
+  final String? courseId;
 
   @override
   Widget build(BuildContext context) {
@@ -5097,9 +5113,11 @@ class _ReplyTargetPreview extends StatelessWidget {
         : publicUserProfileRoleStudent;
     if (linkToCurrentProfile && safeAuthorId.isNotEmpty) {
       return StreamBuilder<PublicUserProfile>(
-        stream: publicUserProfileStream(
-          userId: safeAuthorId,
-          role: profileRole,
+        stream: authorPublicProfileStream(
+          courseId: courseId,
+          authorId: safeAuthorId,
+          authorRole: profileRole,
+          authorProfileVisible: true,
           fallbackDisplayName: fallbackDisplayName,
         ),
         builder: (context, snapshot) {
@@ -5898,14 +5916,13 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
         ? publicUserProfileRoleTeacher
         : publicUserProfileRoleStudent;
     try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('publicUserProfiles')
-          .doc(publicUserProfileDocumentId(safeAuthorId, profileRole))
-          .get();
-      if (!snapshot.exists) {
-        return safeFallback;
-      }
-      final profile = PublicUserProfile.fromFirestore(snapshot);
+      final profile = await resolveAuthorPublicProfile(
+        courseId: widget.question.courseId,
+        authorId: safeAuthorId,
+        authorRole: profileRole,
+        authorProfileVisible: _replyToLinkCurrentProfile,
+        fallbackDisplayName: safeFallback,
+      );
       return _storedReplyTargetDisplayName(profile.displayName, role: role);
     } on FirebaseException {
       return safeFallback;
@@ -6341,6 +6358,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
                             _CommentBubble(
+                              courseId: question.courseId,
                               body: question.body,
                               authorId: question.authorId,
                               authorName: question.authorName,
@@ -6419,6 +6437,7 @@ class _LessonQuestionDetailState extends State<_LessonQuestionDetail> {
                     role: _replyToAuthorRole,
                     bodyPreview: _replyToBodyPreview ?? '',
                     onClear: () => setState(_clearReplyTarget),
+                    courseId: widget.question.courseId,
                   ),
                   const SizedBox(height: 8),
                 ],
@@ -6580,6 +6599,7 @@ class _AnswerThreadView extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _CommentBubble(
+          courseId: parentQuestion.courseId,
           body: root.body,
           authorId: root.authorId,
           authorName: root.authorName,
@@ -6706,6 +6726,7 @@ class _AnswerThreadDetailView extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _CommentBubble(
+          courseId: parentQuestion.courseId,
           body: root.body,
           authorId: root.authorId,
           authorName: root.authorName,
@@ -6780,6 +6801,7 @@ class _AnswerThreadDetailView extends StatelessWidget {
                           : null,
                     );
                     return _CommentBubble(
+                      courseId: parentQuestion.courseId,
                       body: reply.body,
                       authorId: reply.authorId,
                       authorName: reply.authorName,
@@ -6894,6 +6916,7 @@ class _StandaloneRecordReplyView extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             _CommentBubble(
+              courseId: parentQuestion.courseId,
               body: answer.body,
               authorId: answer.authorId,
               authorName: answer.authorName,

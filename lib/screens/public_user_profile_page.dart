@@ -2,7 +2,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
+import '../models/course_profile_display.dart';
 import '../models/public_user_profile.dart';
+import '../services/course_identity_service.dart';
 
 class PublicUserProfilePage extends StatelessWidget {
   const PublicUserProfilePage({
@@ -10,11 +12,15 @@ class PublicUserProfilePage extends StatelessWidget {
     required this.userId,
     required this.role,
     this.fallbackDisplayName,
+    this.courseId,
+    this.authorProfileVisible = true,
   });
 
   final String userId;
   final String role;
   final String? fallbackDisplayName;
+  final String? courseId;
+  final bool authorProfileVisible;
 
   @override
   Widget build(BuildContext context) {
@@ -22,9 +28,11 @@ class PublicUserProfilePage extends StatelessWidget {
       appBar: AppBar(title: const Text('プロフィール')),
       body: SafeArea(
         child: StreamBuilder<PublicUserProfile>(
-          stream: publicUserProfileStream(
-            userId: userId,
-            role: role,
+          stream: authorPublicProfileStream(
+            courseId: courseId,
+            authorId: userId,
+            authorRole: role,
+            authorProfileVisible: authorProfileVisible,
             fallbackDisplayName: fallbackDisplayName,
           ),
           builder: (context, snapshot) {
@@ -64,6 +72,7 @@ class EditPublicUserProfilePage extends StatefulWidget {
 }
 
 class _EditPublicUserProfilePageState extends State<EditPublicUserProfilePage> {
+  static const _courseIdentityService = CourseIdentityService();
   late final TextEditingController _displayNameController;
   late final TextEditingController _bioController;
   late String _avatarColorName;
@@ -110,6 +119,17 @@ class _EditPublicUserProfilePageState extends State<EditPublicUserProfilePage> {
             'bio': _bioController.text.trim(),
             'updatedAt': FieldValue.serverTimestamp(),
           }, SetOptions(merge: true));
+      final savedProfile = PublicUserProfile(
+        userId: widget.userId,
+        role: widget.role,
+        displayName: displayName,
+        avatarColorName: _avatarColorName,
+        bio: _bioController.text.trim(),
+      );
+      await _courseIdentityService.syncSharedProfileMirrorAcrossEnrollments(
+        userId: widget.userId,
+        profile: savedProfile,
+      );
       if (!mounted) {
         return;
       }
@@ -188,6 +208,8 @@ Future<void> showPublicUserProfilePreview({
   required String role,
   required String? fallbackDisplayName,
   required bool isOwner,
+  String? courseId,
+  bool authorProfileVisible = true,
 }) {
   if (isOwner) {
     Navigator.of(context).popUntil((route) => route.isFirst);
@@ -199,9 +221,11 @@ Future<void> showPublicUserProfilePreview({
     showDragHandle: true,
     builder: (context) {
       return StreamBuilder<PublicUserProfile>(
-        stream: publicUserProfileStream(
-          userId: userId,
-          role: role,
+        stream: authorPublicProfileStream(
+          courseId: courseId,
+          authorId: userId,
+          authorRole: role,
+          authorProfileVisible: authorProfileVisible,
           fallbackDisplayName: fallbackDisplayName,
         ),
         builder: (context, snapshot) {
@@ -229,6 +253,8 @@ Future<void> showPublicUserProfilePreview({
                           userId: userId,
                           role: role,
                           fallbackDisplayName: fallbackDisplayName,
+                          courseId: courseId,
+                          authorProfileVisible: authorProfileVisible,
                         ),
                       ),
                     );
