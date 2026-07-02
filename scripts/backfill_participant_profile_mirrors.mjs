@@ -67,6 +67,13 @@ function readAccessToken() {
   return config.tokens.access_token;
 }
 
+function documentApiUrl(documentName) {
+  if (documentName.startsWith('https://')) {
+    return documentName;
+  }
+  return `https://firestore.googleapis.com/v1/${documentName}`;
+}
+
 async function apiRequest(url, method, body, accessToken) {
   const response = await fetch(url, {
     method,
@@ -166,7 +173,8 @@ async function main() {
       const profile = docFields(profileDoc);
       report.candidates.push({courseId, userId, displayName: profile.displayName});
       if (args.mode === 'apply' && report.updated.length < args.lowRiskLimit) {
-        const patchUrl = `${doc.name}?updateMask.fieldPaths=sharedDisplayName&updateMask.fieldPaths=sharedAvatarColorName&updateMask.fieldPaths=sharedBio&updateMask.fieldPaths=updatedAt`;
+        const patchUrl =
+          `${documentApiUrl(doc.name)}?updateMask.fieldPaths=sharedDisplayName&updateMask.fieldPaths=sharedAvatarColorName&updateMask.fieldPaths=sharedBio&updateMask.fieldPaths=updatedAt`;
         await apiRequest(
           patchUrl,
           'PATCH',
