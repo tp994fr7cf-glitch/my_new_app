@@ -391,6 +391,12 @@ service cloud.firestore {
         );
     }
 
+    function canUpdateOwnAuthorSnapshotForCourseContent(userId) {
+      return isOwner(userId)
+        && canUpdateAuthorSnapshotForCourseContent()
+        && resource.data.authorId == userId;
+    }
+
     match /publicUserProfiles/{profileId} {
       allow read: if signedIn()
         && (
@@ -699,6 +705,8 @@ service cloud.firestore {
           && resource.data.publicApprovalStatus == 'pending'
           && request.resource.data.visibility == 'teacherOnly'
           && request.resource.data.publicApprovalStatus == 'rejected';
+
+        allow update: if canUpdateOwnAuthorSnapshotForCourseContent(userId);
       }
 
       match /lessonQuestions/{questionId} {
@@ -745,6 +753,8 @@ service cloud.firestore {
             'updatedAt'
           ])
           && request.resource.data.isDeleted == true;
+
+        allow update: if canUpdateOwnAuthorSnapshotForCourseContent(userId);
       }
 
       match /lessonQuestionAnswers/{answerId} {
@@ -847,6 +857,8 @@ service cloud.firestore {
             'updatedAt'
           ])
           && request.resource.data.isDeleted == true;
+
+        allow update: if canUpdateOwnAuthorSnapshotForCourseContent(userId);
       }
     }
 
