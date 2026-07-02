@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:video_player/video_player.dart';
 
@@ -49,7 +50,12 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   bool get isPlaying => _player.playing;
 
   @override
-  Future<void> open(Uri url) => _player.setUrl(url.toString());
+  Future<void> open(Uri url) async {
+    if (kIsWeb) {
+      await _player.setWebCrossOrigin(WebCrossOrigin.anonymous);
+    }
+    await _player.setUrl(url.toString());
+  }
 
   @override
   Future<void> play() => _player.play();
@@ -68,13 +74,14 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
   VideoPlayerController? _controller;
   final StreamController<bool> _playingController =
       StreamController<bool>.broadcast();
+  final StreamController<Duration> _positionController =
+      StreamController<Duration>.broadcast();
 
   @override
   VideoPlayerController? get videoController => _controller;
 
   @override
-  Stream<Duration> get positionStream =>
-      _controller?.positionStream ?? const Stream<Duration>.empty();
+  Stream<Duration> get positionStream => _positionController.stream;
 
   @override
   Stream<bool> get playingStream => _playingController.stream;
@@ -92,8 +99,18 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
   Future<void> open(Uri url) async {
     final controller = VideoPlayerController.networkUrl(url);
     _controller = controller;
-    controller.addListener(_notifyPlaying);
+    controller.addListener(_onControllerUpdate);
     await controller.initialize();
+    _onControllerUpdate();
+  }
+
+  void _onControllerUpdate() {
+    if (_controller == null) {
+      return;
+    }
+    if (!_positionController.isClosed) {
+      _positionController.add(_controller!.value.position);
+    }
     _notifyPlaying();
   }
 
@@ -119,14 +136,16 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
   @override
   Future<void> seek(Duration position) async {
     await _controller?.seekTo(position);
+    _onControllerUpdate();
   }
 
   @override
   Future<void> disposePlayer() async {
-    _controller?.removeListener(_notifyPlaying);
+    _controller?.removeListener(_onControllerUpdate);
     await _controller?.dispose();
     _controller = null;
     await _playingController.close();
+    await _positionController.close();
   }
 }
 
