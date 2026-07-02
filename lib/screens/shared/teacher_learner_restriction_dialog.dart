@@ -5,22 +5,20 @@ import '../../models/course_participant_identity.dart';
 import '../../services/lesson_interaction_service.dart';
 
 List<int> sortedCourseLessonNumbers(Course course) {
-  final numbers = course.lessons.map((lesson) => lesson.lessonNumber).toList()
-    ..sort();
-  if (numbers.isEmpty) {
+  if (course.lessons.isEmpty) {
     return const [1];
   }
-  return numbers;
+  return [for (var i = 0; i < course.lessons.length; i++) i + 1];
 }
 
 int youngestCourseLessonNumber(Course course) =>
     sortedCourseLessonNumbers(course).first;
 
 String lessonDropdownLabel(Course course, int lessonNumber) {
-  for (final lesson in course.lessons) {
-    if (lesson.lessonNumber == lessonNumber) {
-      return 'レッスン${lesson.lessonNumber}: ${lesson.title}';
-    }
+  final index = lessonNumber - 1;
+  if (index >= 0 && index < course.lessons.length) {
+    final lesson = course.lessons[index];
+    return 'レッスン$lessonNumber: ${lesson.title}';
   }
   return 'レッスン$lessonNumber';
 }
@@ -185,10 +183,12 @@ class _TeacherLearnerRestrictionDialogState
   }
 
   void _submit() {
-    final targetLessonNumbers = _multiSelectEnabled
-        ? _selectedMultiLessons.toList()
-          ..sort()
-        : [_selectedSingleLesson];
+    final List<int> targetLessonNumbers;
+    if (_multiSelectEnabled) {
+      targetLessonNumbers = _selectedMultiLessons.toList()..sort();
+    } else {
+      targetLessonNumbers = [_selectedSingleLesson];
+    }
     if (targetLessonNumbers.isEmpty) {
       ScaffoldMessenger.maybeOf(context)?.showSnackBar(
         const SnackBar(content: Text('適用するレッスンを1つ以上選んでください。')),
