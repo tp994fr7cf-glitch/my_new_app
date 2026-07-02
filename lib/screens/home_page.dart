@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../models/course.dart';
 import '../models/public_user_profile.dart';
+import '../services/course_catalog_service.dart';
 import '../services/course_privacy_service.dart';
 import 'course_entry_gate.dart';
 import 'course_create_page.dart';
@@ -231,6 +232,7 @@ Future<void> _saveResumeLearningEvent({
       'updatedAt': now,
       'lastLessonNumber': lessonNumber,
       'lastLessonTitle': lesson.title,
+      'course': {'id': courseId, ...course.toFirestore()},
     }, SetOptions(merge: true))
     ..set(userRef.collection('learningEvents').doc(), {
       'userId': user.uid,
@@ -258,21 +260,28 @@ Future<void> _resumeLearningFromEnrollment(
     return;
   }
 
-  final course = Course.fromMap(courseData, id: data['courseId'] as String?);
-  if (course.lessons.isEmpty) {
+  final fallbackCourse = Course.fromMap(courseData, id: data['courseId'] as String?);
+  final courseId = data['courseId'] as String? ?? fallbackCourse.id ?? enrollment.id;
+  final activeCourse = await const CourseCatalogService().fetchCourse(
+    courseId,
+    fallback: fallbackCourse,
+  );
+  if (!context.mounted) {
+    return;
+  }
+  if (activeCourse.lessons.isEmpty) {
     return;
   }
 
   final savedLessonNumber = (data['lastLessonNumber'] as num?)?.toInt() ?? 1;
-  final lessonNumber = savedLessonNumber.clamp(1, course.lessons.length);
-  final lesson = course.lessons[lessonNumber - 1];
-  final courseId = data['courseId'] as String? ?? course.id ?? enrollment.id;
+  final lessonNumber = savedLessonNumber.clamp(1, activeCourse.lessons.length);
+  final lesson = activeCourse.lessons[lessonNumber - 1];
 
   final bool canEnter;
   try {
     canEnter = await ensureCourseEntryAccess(
       context,
-      course: course,
+      course: activeCourse,
       user: user,
     );
   } catch (_) {
@@ -290,7 +299,7 @@ Future<void> _resumeLearningFromEnrollment(
   navigator.push(
     MaterialPageRoute(
       builder: (_) => VideoLessonPage(
-        course: course,
+        course: activeCourse,
         lesson: lesson,
         lessonNumber: lessonNumber,
       ),
@@ -300,7 +309,7 @@ Future<void> _resumeLearningFromEnrollment(
   _saveResumeLearningEvent(
     user: user,
     courseId: courseId,
-    course: course,
+    course: activeCourse,
     lesson: lesson,
     lessonNumber: lessonNumber,
   ).catchError((_) {
