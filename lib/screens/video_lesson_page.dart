@@ -10,6 +10,7 @@ import 'package:video_player/video_player.dart';
 import '../models/active_learning_lock.dart';
 import '../models/course.dart';
 import '../models/lesson_cycle_display.dart';
+import '../models/lesson_duration_parser.dart';
 import '../models/lesson_player_view_state.dart';
 import '../models/lesson_segment_boundary.dart';
 import '../models/course_privacy_consent.dart';
@@ -95,6 +96,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   String? _mediaLoadError;
   LessonMediaPlayback? _mediaPlayback;
   StreamSubscription<Duration>? _positionSubscription;
+  StreamSubscription<Duration?>? _durationSubscription;
   StreamSubscription<bool>? _playingSubscription;
 
   Course get course => widget.course;
@@ -169,6 +171,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _activeLearningHeartbeatTimer?.cancel();
     _entryRequirementSubscription?.cancel();
     _positionSubscription?.cancel();
+    _durationSubscription?.cancel();
     _playingSubscription?.cancel();
     unawaited(_mediaPlayback?.disposePlayer());
     WidgetsBinding.instance.removeObserver(this);
@@ -228,6 +231,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       _positionSubscription = playback.positionStream.listen((position) {
         _handlePlaybackPosition(position.inSeconds);
       });
+      _durationSubscription = playback.durationStream.listen((duration) {
+        _updateResolvedDuration(playerDuration: duration);
+      });
       _playingSubscription = playback.playingStream.listen((isPlaying) {
         if (!mounted) {
           return;
@@ -242,12 +248,15 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         return;
       }
 
-      setState(() {
-        _mediaPlayback = playback;
-        _totalDurationSec = playback.duration?.inSeconds ?? 0;
-        _isLoadingMedia = false;
-        _mediaLoadError = _totalDurationSec <= 0 ? '再生時間を取得できませんでした。' : null;
-      });
+      _applyResolvedPlaybackState(playback);
+    } on LessonMediaLoadException catch (error) {
+      if (mounted) {
+        setState(() {
+          _mediaLoadError = error.message;
+          _isLoadingMedia = false;
+          _totalDurationSec = 0;
+        });
+      }
     } catch (error) {
       if (mounted) {
         setState(() {
@@ -285,6 +294,47 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     if (shouldPersistPending && !_isTeacherPreview) {
       unawaited(_persistSessionProgress());
     }
+  }
+
+  void _updateResolvedDuration({Duration? playerDuration}) {
+    if (!mounted || _mediaPlayback == null) {
+      return;
+    }
+
+    final nextTotalDurationSec = resolveLessonMediaDurationSec(
+      playerDuration: playerDuration ?? _mediaPlayback!.duration,
+      mediaDurationSec: lesson.mediaDurationSec,
+      durationLabel: lesson.duration,
+    );
+    if (nextTotalDurationSec <= _totalDurationSec) {
+      return;
+    }
+
+    setState(() {
+      _totalDurationSec = nextTotalDurationSec;
+      _mediaLoadError = null;
+    });
+  }
+
+  void _applyResolvedPlaybackState(LessonMediaPlayback playback) {
+    final totalDurationSec = resolveLessonMediaDurationSec(
+      playerDuration: playback.duration,
+      mediaDurationSec: lesson.mediaDurationSec,
+      durationLabel: lesson.duration,
+    );
+
+    setState(() {
+      _mediaPlayback = playback;
+      _totalDurationSec = totalDurationSec;
+      _isLoadingMedia = false;
+      if (!playback.isReady) {
+        _mediaLoadError = 'メディアの読み込みに失敗しました。';
+      } else if (totalDurationSec <= 0) {
+        _mediaLoadError = '再生時間を取得できませんでした。';
+      } else {
+        _mediaLoadError = null;
+      }
+    });
   }
 
   Future<void> _togglePlayback() async {
@@ -1499,8 +1549,10 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     final studySecondsLabel = _isLoadingLearningState ? 'ー' : '$_studySeconds秒';
     final watchSecondsLabel = _isLoadingLearningState ? 'ー' : '$_watchSeconds秒';
 
-    final canControlPlayback =
-        _hasMediaSource && _mediaLoadError == null && _totalDurationSec > 0;
+    final canControlPlayback = _hasMediaSource &&
+        _mediaLoadError == null &&
+        _totalDurationSec > 0 &&
+        (_mediaPlayback?.isReady ?? false);
     final sliderMax = _totalDurationSec > 0 ? _totalDurationSec.toDouble() : 1.0;
     final videoController = _mediaPlayback?.videoController;
 

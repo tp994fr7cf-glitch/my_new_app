@@ -96,6 +96,7 @@ class CourseLesson {
     required this.duration,
     this.mediaType = 'video',
     this.mediaUrl = '',
+    this.mediaDurationSec = 0,
     this.isPreview = false,
   });
 
@@ -103,6 +104,7 @@ class CourseLesson {
   final String duration;
   final String mediaType;
   final String mediaUrl;
+  final int mediaDurationSec;
   final bool isPreview;
 
   factory CourseLesson.fromMap(Map data) {
@@ -111,6 +113,7 @@ class CourseLesson {
       duration: data['duration'] as String? ?? '',
       mediaType: data['mediaType'] as String? ?? 'video',
       mediaUrl: data['mediaUrl'] as String? ?? '',
+      mediaDurationSec: (data['mediaDurationSec'] as num?)?.toInt() ?? 0,
       isPreview: data['isPreview'] as bool? ?? false,
     );
   }
@@ -121,6 +124,7 @@ class CourseLesson {
       'duration': duration,
       'mediaType': mediaType,
       'mediaUrl': mediaUrl,
+      if (mediaDurationSec > 0) 'mediaDurationSec': mediaDurationSec,
       'isPreview': isPreview,
     };
   }
