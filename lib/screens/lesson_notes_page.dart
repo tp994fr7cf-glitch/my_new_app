@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import '../models/course.dart';
 import '../models/course_participant_identity.dart';
 import '../models/lesson_note.dart';
+import '../models/course_profile_display.dart';
 import '../models/public_user_profile.dart';
 import '../services/course_identity_service.dart';
 import '../services/lesson_interaction_service.dart';
@@ -2655,6 +2656,8 @@ class _PublicLessonNoteCard extends StatelessWidget {
                             role: publicUserProfileRoleStudent,
                             fallbackDisplayName: note.authorName,
                             isOwner: false,
+                            courseId: note.courseId,
+                            authorProfileVisible: note.authorProfileVisible,
                           );
                         }
                       : null,
@@ -2842,9 +2845,11 @@ class _PublicLessonNoteCard extends StatelessWidget {
       return buildCard(fallback);
     }
     return StreamBuilder<PublicUserProfile>(
-      stream: publicUserProfileStream(
-        userId: note.authorId,
-        role: publicUserProfileRoleStudent,
+      stream: authorPublicProfileStream(
+        courseId: note.courseId,
+        authorId: note.authorId,
+        authorRole: publicUserProfileRoleStudent,
+        authorProfileVisible: note.authorProfileVisible,
         fallbackDisplayName: note.authorName,
       ),
       builder: (context, snapshot) {
