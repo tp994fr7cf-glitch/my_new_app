@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>テスト音声ダウンロード</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 0;
+        padding: 24px;
+        line-height: 1.6;
+        background: #f7f7f7;
+        color: #222;
+      }
+      main {
+        max-width: 640px;
+        margin: 0 auto;
+        background: #fff;
+        border-radius: 12px;
+        padding: 24px;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+      }
+      a.button {
+        display: inline-block;
+        margin-top: 16px;
+        padding: 14px 18px;
+        border-radius: 8px;
+        background: #1565c0;
+        color: #fff;
+        text-decoration: none;
+        font-weight: bold;
+      }
+      audio {
+        width: 100%;
+        margin-top: 16px;
+      }
+      code {
+        background: #eee;
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>テスト音声（1分30秒）</h1>
+      <p>
+        女性の声で、1秒ごとに <strong>1 から 90 まで</strong>
+        カウントします。各数字はだいたいその秒数の位置で始まるように調整しています。
+      </p>
+      <p>
+        用途: レッスン音声アップロードの Web 確認用
+      </p>
+      <audio controls src="lesson-count-90.mp3"></audio>
+      <p>
+        スマホで保存する場合は、下のボタンを長押しするか、ブラウザのダウンロード機能を使ってください。
+      </p>
+      <a class="button" href="lesson-count-90.mp3" download="lesson-count-90.mp3">
+        MP3 をダウンロード
+      </a>
+      <p><small>ファイル名: <code>lesson-count-90.mp3</code>（約 1.4 MB）</small></p>
+    </main>
+  </body>
+</html>
