@@ -381,7 +381,7 @@ class _LessonEditorCard extends StatelessWidget {
               items: const [
                 DropdownMenuItem(value: 'video', child: Text('動画')),
                 DropdownMenuItem(value: 'audio', child: Text('音声のみ')),
-              ),
+              ],
               onChanged: editor.isUploading
                   ? null
                   : (value) {
