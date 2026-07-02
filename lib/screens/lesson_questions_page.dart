@@ -152,6 +152,7 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
   bool _activeRoleIsTeacher = false;
   bool _activeRoleResolved = false;
   bool _openingAnswerDetailFromList = false;
+  final Set<String> _locallyDeletedMyAnswerIds = <String>{};
   final LessonInteractionService _lessonInteractionService =
       const LessonInteractionService();
   final CourseIdentityService _courseIdentityService =
@@ -743,6 +744,31 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     return answer.authorRole == activeRole;
   }
 
+  List<LessonQuestionAnswer> _filterLocallyDeletedMyAnswers(
+    List<LessonQuestionAnswer> answers,
+  ) {
+    if (_locallyDeletedMyAnswerIds.isEmpty) {
+      return answers;
+    }
+    return answers
+        .where(
+          (answer) =>
+              !_locallyDeletedMyAnswerIds.contains((answer.id ?? '').trim()),
+        )
+        .toList();
+  }
+
+  void _pruneLocallyDeletedMyAnswers(List<LessonQuestionAnswer> streamAnswers) {
+    if (_locallyDeletedMyAnswerIds.isEmpty) {
+      return;
+    }
+    final streamIds = streamAnswers
+        .map((answer) => (answer.id ?? '').trim())
+        .where((id) => id.isNotEmpty)
+        .toSet();
+    _locallyDeletedMyAnswerIds.removeWhere((id) => !streamIds.contains(id));
+  }
+
   Stream<List<LessonQuestionAnswer>> _myAnswersStream() {
     final cacheKey = Object.hash(
       widget.answersStream,
@@ -777,12 +803,11 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
             .where('courseId', isEqualTo: _courseId)
             .where('lessonNumber', isEqualTo: widget.lessonNumber)
             .snapshots(includeMetadataChanges: true)
-            .map((snapshot) {
-              return snapshot.docs
-                  .map(LessonQuestionAnswer.fromFirestore)
-                  .where((answer) => !answer.isDeleted)
-                  .toList();
-            });
+            .map(
+              (snapshot) => partitionOwnMyAnswers(
+                snapshot.docs.map(LessonQuestionAnswer.fromFirestore),
+              ),
+            );
         final ownMirroredAnswersStream = FirebaseFirestore.instance
             .collection('publicLessonQuestionAnswers')
             .where('courseId', isEqualTo: _courseId)
@@ -798,29 +823,23 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
             });
         stream = Stream.multi((controller) {
           var latestOwnAnswers = const <LessonQuestionAnswer>[];
+          var latestDeletedOwnAnswerIds = const <String>{};
           var latestMirroredAnswers = const <LessonQuestionAnswer>[];
           void emitMergedAnswers() {
-            final mergedById = <String, LessonQuestionAnswer>{};
-            for (final answer in latestOwnAnswers) {
-              final answerId = (answer.id ?? '').trim();
-              if (answerId.isNotEmpty) {
-                mergedById[answerId] = answer;
-              }
-            }
-            for (final answer in latestMirroredAnswers) {
-              final answerId = (answer.id ?? '').trim();
-              if (answerId.isNotEmpty) {
-                mergedById[answerId] = answer;
-              }
-            }
-            final filtered = mergedById.values
-                .where(_matchesActiveAnswerRole)
-                .toList();
-            controller.add(sortLessonQuestionAnswers(filtered, _myAnswersSort));
+            controller.add(
+              mergeMyAnswersStreamSnapshot(
+                ownActiveAnswers: latestOwnAnswers,
+                ownDeletedAnswerIds: latestDeletedOwnAnswerIds,
+                mirroredAnswers: latestMirroredAnswers,
+                matchesActiveAnswerRole: _matchesActiveAnswerRole,
+                sort: _myAnswersSort,
+              ),
+            );
           }
 
-          final ownSubscription = ownAnswersStream.listen((answers) {
-            latestOwnAnswers = answers;
+          final ownSubscription = ownAnswersStream.listen((snapshot) {
+            latestOwnAnswers = snapshot.activeAnswers;
+            latestDeletedOwnAnswerIds = snapshot.deletedAnswerIds;
             emitMergedAnswers();
           }, onError: controller.addError);
           final mirroredSubscription = ownMirroredAnswersStream.listen((
@@ -837,8 +856,10 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
       }
     }
     final tracked = stream.map((answers) {
-      _lastMyAnswers = answers;
-      return answers;
+      final withoutLocallyDeleted = _filterLocallyDeletedMyAnswers(answers);
+      _pruneLocallyDeletedMyAnswers(withoutLocallyDeleted);
+      _lastMyAnswers = withoutLocallyDeleted;
+      return withoutLocallyDeleted;
     });
     final broadcast = tracked.asBroadcastStream();
     _cachedMyAnswersStream = broadcast;
@@ -3070,10 +3091,32 @@ class _LessonQuestionsPanelState extends State<LessonQuestionsPanel>
     if (user == null || user.uid != answer.authorId) {
       return;
     }
-    await _markAnswerDeletedForOwner(
-      answerId: answer.id!,
-      ownerUserId: user.uid,
-    );
+    final answerId = answer.id!.trim();
+    if (answerId.isEmpty) {
+      return;
+    }
+    if (mounted) {
+      setState(() {
+        _locallyDeletedMyAnswerIds.add(answerId);
+      });
+    } else {
+      _locallyDeletedMyAnswerIds.add(answerId);
+    }
+    try {
+      await _markAnswerDeletedForOwner(
+        answerId: answerId,
+        ownerUserId: user.uid,
+      );
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _locallyDeletedMyAnswerIds.remove(answerId);
+        });
+      } else {
+        _locallyDeletedMyAnswerIds.remove(answerId);
+      }
+      _showMessage('回答コメントの削除に失敗しました。');
+    }
   }
 
   bool _canOpenQuestionFromAnswerList(
@@ -4870,6 +4913,64 @@ bool canQuoteLessonNoteToPublicAudience(LessonNote? note) {
     return true;
   }
   return note.isPubliclyVisible;
+}
+
+class OwnMyAnswersSnapshot {
+  const OwnMyAnswersSnapshot({
+    required this.activeAnswers,
+    required this.deletedAnswerIds,
+  });
+
+  final List<LessonQuestionAnswer> activeAnswers;
+  final Set<String> deletedAnswerIds;
+}
+
+OwnMyAnswersSnapshot partitionOwnMyAnswers(
+  Iterable<LessonQuestionAnswer> answers,
+) {
+  final deletedIds = <String>{};
+  final active = <LessonQuestionAnswer>[];
+  for (final answer in answers) {
+    final answerId = (answer.id ?? '').trim();
+    if (answer.isDeleted) {
+      if (answerId.isNotEmpty) {
+        deletedIds.add(answerId);
+      }
+      continue;
+    }
+    active.add(answer);
+  }
+  return OwnMyAnswersSnapshot(
+    activeAnswers: active,
+    deletedAnswerIds: deletedIds,
+  );
+}
+
+List<LessonQuestionAnswer> mergeMyAnswersStreamSnapshot({
+  required List<LessonQuestionAnswer> ownActiveAnswers,
+  required Set<String> ownDeletedAnswerIds,
+  required List<LessonQuestionAnswer> mirroredAnswers,
+  required bool Function(LessonQuestionAnswer answer) matchesActiveAnswerRole,
+  required LessonQuestionSort sort,
+}) {
+  final mergedById = <String, LessonQuestionAnswer>{};
+  for (final answer in mirroredAnswers) {
+    final answerId = (answer.id ?? '').trim();
+    if (answerId.isEmpty || ownDeletedAnswerIds.contains(answerId)) {
+      continue;
+    }
+    mergedById[answerId] = answer;
+  }
+  for (final answer in ownActiveAnswers) {
+    final answerId = (answer.id ?? '').trim();
+    if (answerId.isNotEmpty) {
+      mergedById[answerId] = answer;
+    }
+  }
+  return sortLessonQuestionAnswers(
+    mergedById.values.where(matchesActiveAnswerRole).toList(),
+    sort,
+  );
 }
 
 LessonQuestion? _initialQuestionDraftForQuotedNote(LessonNote? note) {
