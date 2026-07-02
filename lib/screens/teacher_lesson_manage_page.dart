@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
+import '../services/lesson_media_storage_service.dart';
 import 'teacher_quiz_manage_page.dart';
 
 typedef LessonSaveOverride = Future<void> Function(List<CourseLesson> lessons);
@@ -22,6 +23,8 @@ class TeacherLessonManagePage extends StatefulWidget {
 }
 
 class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
+  static const _mediaStorageService = LessonMediaStorageService();
+
   late final List<_LessonEditorState> _lessonEditors;
   bool _isSaving = false;
   String? _message;
@@ -137,8 +140,81 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     }
   }
 
+  Future<void> _uploadLessonMedia({
+    required int lessonNumber,
+    required _LessonEditorState editor,
+  }) async {
+    final courseId = widget.course.id;
+    if (courseId == null) {
+      setState(() {
+        _message = '講座IDがないためアップロードできません。';
+      });
+      return;
+    }
+
+    setState(() {
+      editor.isUploading = true;
+      editor.uploadProgress = 0;
+      _message = null;
+    });
+
+    try {
+      final result = await _mediaStorageService.pickAndUploadLessonMedia(
+        courseId: courseId,
+        lessonNumber: lessonNumber,
+        mediaType: editor.mediaType,
+        onProgress: (progress) {
+          if (!mounted) {
+            return;
+          }
+          setState(() {
+            editor.uploadProgress = progress;
+          });
+        },
+      );
+      if (!mounted) {
+        return;
+      }
+      if (result == null) {
+        setState(() {
+          editor.isUploading = false;
+          editor.uploadProgress = null;
+        });
+        return;
+      }
+
+      editor.mediaUrlController.text = result.downloadUrl;
+      setState(() {
+        editor.isUploading = false;
+        editor.uploadProgress = null;
+        _message =
+            'レッスン$lessonNumber の${_mediaStorageService.mediaTypeLabel(editor.mediaType)}をアップロードしました。'
+            '「レッスン情報を保存」を押して反映してください。';
+      });
+    } on LessonMediaStorageException catch (error) {
+      if (mounted) {
+        setState(() {
+          editor.isUploading = false;
+          editor.uploadProgress = null;
+          _message = error.message;
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          editor.isUploading = false;
+          editor.uploadProgress = null;
+          _message = 'アップロードに失敗しました: $error';
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final courseId = widget.course.id;
+    final canUploadMedia = courseId != null && courseId.isNotEmpty;
+
     return Scaffold(
       appBar: AppBar(title: const Text('レッスン管理')),
       body: SafeArea(
@@ -150,15 +226,30 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
               style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
-            const Text('動画・音声ファイル本体のアップロードは後で追加します。今は種別と仮URLを管理します。'),
+            const Text(
+              '音声・動画ファイルは Firebase Storage にアップロードできます。'
+              'アップロード後は「レッスン情報を保存」を押してください。',
+            ),
+            if (!canUploadMedia) ...[
+              const SizedBox(height: 8),
+              Text(
+                '講座IDがないため、この画面ではアップロードできません。',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
             const SizedBox(height: 24),
             for (final entry in _lessonEditors.indexed) ...[
               _LessonEditorCard(
                 index: entry.$1 + 1,
                 course: widget.course,
                 editor: entry.$2,
+                canUploadMedia: canUploadMedia,
                 requiredText: _requiredText,
                 onChanged: () => setState(() {}),
+                onUpload: () => _uploadLessonMedia(
+                  lessonNumber: entry.$1 + 1,
+                  editor: entry.$2,
+                ),
               ),
               const SizedBox(height: 16),
             ],
@@ -195,6 +286,8 @@ class _LessonEditorState {
     required this.mediaUrlController,
     required this.mediaType,
     required this.isPreview,
+    this.isUploading = false,
+    this.uploadProgress,
   });
 
   factory _LessonEditorState.fromLesson(CourseLesson lesson) {
@@ -212,6 +305,8 @@ class _LessonEditorState {
   final TextEditingController mediaUrlController;
   String mediaType;
   bool isPreview;
+  bool isUploading;
+  double? uploadProgress;
 
   void dispose() {
     titleController.dispose();
@@ -225,18 +320,29 @@ class _LessonEditorCard extends StatelessWidget {
     required this.index,
     required this.course,
     required this.editor,
+    required this.canUploadMedia,
     required this.requiredText,
     required this.onChanged,
+    required this.onUpload,
   });
 
   final int index;
   final Course course;
   final _LessonEditorState editor;
+  final bool canUploadMedia;
   final String? Function(String? value) requiredText;
   final VoidCallback onChanged;
+  final VoidCallback onUpload;
 
   @override
   Widget build(BuildContext context) {
+    const mediaStorageService = LessonMediaStorageService();
+    final mediaLabel = mediaStorageService.mediaTypeLabel(editor.mediaType);
+    final allowedExtensions = mediaStorageService.allowedExtensionsForMediaType(
+      editor.mediaType,
+    );
+    final hasMediaUrl = editor.mediaUrlController.text.trim().isNotEmpty;
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -275,44 +381,79 @@ class _LessonEditorCard extends StatelessWidget {
               items: const [
                 DropdownMenuItem(value: 'video', child: Text('動画')),
                 DropdownMenuItem(value: 'audio', child: Text('音声のみ')),
-              ],
-              onChanged: (value) {
-                if (value == null) {
-                  return;
-                }
-                editor.mediaType = value;
-                onChanged();
-              },
+              ),
+              onChanged: editor.isUploading
+                  ? null
+                  : (value) {
+                      if (value == null) {
+                        return;
+                      }
+                      editor.mediaType = value;
+                      onChanged();
+                    },
             ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: !canUploadMedia || editor.isUploading ? null : onUpload,
+              icon: Icon(
+                editor.mediaType == 'audio'
+                    ? Icons.upload_file
+                    : Icons.video_file_outlined,
+              ),
+              label: Text('$mediaLabelファイルをアップロード'),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '対応形式: ${allowedExtensions.join(' / ')}（50MBまで）',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            if (editor.isUploading) ...[
+              const SizedBox(height: 12),
+              LinearProgressIndicator(
+                value: editor.uploadProgress == null
+                    ? null
+                    : editor.uploadProgress!.clamp(0, 1),
+              ),
+              const SizedBox(height: 8),
+              Text('アップロード中… ${((editor.uploadProgress ?? 0) * 100).round()}%'),
+            ],
             const SizedBox(height: 12),
             TextFormField(
               controller: editor.mediaUrlController,
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                labelText: '動画・音声URL（仮）',
-                hintText: '後でFirebase StorageなどのURLを入れます',
+              readOnly: true,
+              decoration: InputDecoration(
+                border: const OutlineInputBorder(),
+                labelText: '$mediaLabel URL',
+                hintText: 'アップロード後に自動入力されます',
+                suffixIcon: hasMediaUrl
+                    ? const Icon(Icons.check_circle_outline)
+                    : null,
               ),
             ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('無料プレビュー'),
               value: editor.isPreview,
-              onChanged: (value) {
-                editor.isPreview = value;
-                onChanged();
-              },
+              onChanged: editor.isUploading
+                  ? null
+                  : (value) {
+                      editor.isPreview = value;
+                      onChanged();
+                    },
             ),
             OutlinedButton.icon(
-              onPressed: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => TeacherQuizManagePage(
-                      course: course,
-                      lessonNumber: index,
-                    ),
-                  ),
-                );
-              },
+              onPressed: editor.isUploading
+                  ? null
+                  : () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => TeacherQuizManagePage(
+                            course: course,
+                            lessonNumber: index,
+                          ),
+                        ),
+                      );
+                    },
               icon: const Icon(Icons.quiz),
               label: const Text('クイズを管理'),
             ),

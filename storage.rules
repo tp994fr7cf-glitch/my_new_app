@@ -1,0 +1,44 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isCourseInstructor(courseId) {
+      return signedIn()
+        && firestore.exists(/databases/(default)/documents/courses/$(courseId))
+        && firestore.get(/databases/(default)/documents/courses/$(courseId)).data.instructorId
+          == request.auth.uid;
+    }
+
+    function userHasCourseEnrollment(courseId) {
+      return signedIn()
+        && firestore.exists(
+          /databases/(default)/documents/users/$(request.auth.uid)/enrollments/$(courseId)
+        );
+    }
+
+    function canReadCourseMedia(courseId) {
+      return isCourseInstructor(courseId) || userHasCourseEnrollment(courseId);
+    }
+
+    function isLessonMediaContentType() {
+      return request.resource.contentType.matches('audio/.*')
+        || request.resource.contentType.matches('video/.*');
+    }
+
+    function isValidLessonMediaUpload() {
+      return isLessonMediaContentType()
+        && request.resource.size > 0
+        && request.resource.size <= 50 * 1024 * 1024;
+    }
+
+    match /courseMedia/{courseId}/lessons/{lessonNumber}/{fileName} {
+      allow read: if canReadCourseMedia(courseId);
+      allow create, update: if isCourseInstructor(courseId) && isValidLessonMediaUpload();
+      allow delete: if isCourseInstructor(courseId);
+    }
+  }
+}
