@@ -1,4 +1,4 @@
-import com.android.build.gradle.BaseExtension
+import com.android.build.api.dsl.CommonExtension
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
@@ -28,15 +28,14 @@ subprojects {
 }
 subprojects {
     afterEvaluate {
-        val javaMajorVersion =
-            extensions.findByType(BaseExtension::class.java)
+        val sourceCompatibility =
+            extensions.findByType(CommonExtension::class.java)
                 ?.compileOptions
                 ?.sourceCompatibility
-                ?.majorVersion
-                ?: 17
         val kotlinJvmTarget = when {
-            javaMajorVersion >= 17 -> JvmTarget.JVM_17
-            javaMajorVersion >= 11 -> JvmTarget.JVM_11
+            sourceCompatibility == null -> JvmTarget.JVM_17
+            sourceCompatibility >= JavaVersion.VERSION_17 -> JvmTarget.JVM_17
+            sourceCompatibility >= JavaVersion.VERSION_11 -> JvmTarget.JVM_11
             else -> JvmTarget.JVM_1_8
         }
         tasks.withType<KotlinCompile>().configureEach {
