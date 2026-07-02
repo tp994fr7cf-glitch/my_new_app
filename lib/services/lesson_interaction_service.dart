@@ -16,6 +16,30 @@ class LessonPublicModerationState {
   final String moderationStatus;
 }
 
+class LearnerRestrictionLessonState {
+  const LearnerRestrictionLessonState({
+    required this.restrictionMode,
+    required this.currentlyBulkHidden,
+  });
+
+  final String restrictionMode;
+  final bool currentlyBulkHidden;
+}
+
+class LearnerRestrictionApplyOutcome {
+  const LearnerRestrictionApplyOutcome({
+    required this.successLessonNumbers,
+    required this.failedLessonNumbers,
+    required this.affectedPosts,
+  });
+
+  final List<int> successLessonNumbers;
+  final List<int> failedLessonNumbers;
+  final int affectedPosts;
+
+  bool get isFullSuccess => failedLessonNumbers.isEmpty;
+}
+
 class LessonInteractionService {
   const LessonInteractionService();
 
@@ -652,5 +676,110 @@ class LessonInteractionService {
       }, SetOptions(merge: true));
     }
     await batch.commit();
+  }
+
+  String restrictionModeLabel(String mode) {
+    return switch (normalizeLearnerRestrictionMode(mode)) {
+      learnerRestrictionModeNoPublicReadOrPost => '公開欄の閲覧と投稿を制限中',
+      learnerRestrictionModeNoPublicPost => '公開欄への投稿のみ制限中',
+      _ => '制限なし',
+    };
+  }
+
+  String summarizeRestrictionModesForLessons({
+    required Map<int, String> modesByLesson,
+    required List<int> lessonNumbers,
+  }) {
+    if (lessonNumbers.isEmpty) {
+      return '制限: 制限なし';
+    }
+    final normalizedModes = lessonNumbers
+        .map(
+          (lessonNumber) => normalizeLearnerRestrictionMode(
+            modesByLesson[lessonNumber],
+          ),
+        )
+        .toSet();
+    if (normalizedModes.length == 1) {
+      return '制限: ${restrictionModeLabel(normalizedModes.first)}';
+    }
+    return '制限: レッスンごとに設定あり';
+  }
+
+  Future<LearnerRestrictionLessonState> loadLearnerRestrictionLessonState({
+    required String courseId,
+    required int lessonNumber,
+    required String learnerId,
+  }) async {
+    final restrictionMode = await learnerRestrictionMode(
+      courseId: courseId,
+      lessonNumber: lessonNumber,
+      learnerId: learnerId,
+    );
+    final currentlyBulkHidden = await hasBulkHiddenPublicPosts(
+      courseId: courseId,
+      lessonNumber: lessonNumber,
+      learnerId: learnerId,
+    );
+    return LearnerRestrictionLessonState(
+      restrictionMode: restrictionMode,
+      currentlyBulkHidden: currentlyBulkHidden,
+    );
+  }
+
+  Future<LearnerRestrictionApplyOutcome> applyLearnerRestrictionToLessons({
+    required String courseId,
+    required String learnerId,
+    required List<int> lessonNumbers,
+    required String restrictionMode,
+    required String updatedByUserId,
+    required bool bulkHide,
+    required bool bulkUnhide,
+    String unhidePolicy = bulkUnhideKeepIndividualHidden,
+  }) async {
+    final successLessonNumbers = <int>[];
+    final failedLessonNumbers = <int>[];
+    var affectedPosts = 0;
+    final normalizedMode = normalizeLearnerRestrictionMode(restrictionMode);
+    final normalizedUnhidePolicy = unhidePolicy == bulkUnhideForceAllVisible
+        ? bulkUnhideForceAllVisible
+        : bulkUnhideKeepIndividualHidden;
+
+    for (final lessonNumber in lessonNumbers) {
+      try {
+        await setLearnerRestrictionMode(
+          courseId: courseId,
+          lessonNumber: lessonNumber,
+          learnerId: learnerId,
+          restrictionMode: normalizedMode,
+          updatedByUserId: updatedByUserId,
+        );
+        if (bulkHide) {
+          affectedPosts += await setBulkModerationForLearnerPublicPosts(
+            courseId: courseId,
+            lessonNumber: lessonNumber,
+            learnerId: learnerId,
+            hide: true,
+          );
+        } else if (bulkUnhide) {
+          affectedPosts += await setBulkModerationForLearnerPublicPosts(
+            courseId: courseId,
+            lessonNumber: lessonNumber,
+            learnerId: learnerId,
+            hide: false,
+            unhidePolicy: normalizedUnhidePolicy,
+          );
+        }
+        successLessonNumbers.add(lessonNumber);
+      } on FirebaseException {
+        failedLessonNumbers.add(lessonNumber);
+      }
+    }
+
+    return LearnerRestrictionApplyOutcome(
+      successLessonNumbers: successLessonNumbers,
+      failedLessonNumbers: failedLessonNumbers,
+      affectedPosts: affectedPosts,
+    );
   }
 }

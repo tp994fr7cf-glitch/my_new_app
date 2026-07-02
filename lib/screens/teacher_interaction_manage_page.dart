@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -14,6 +16,7 @@ import '../services/course_identity_service.dart';
 import '../services/course_privacy_service.dart';
 import '../services/lesson_interaction_service.dart';
 import 'public_user_profile_page.dart';
+import 'shared/teacher_learner_restriction_dialog.dart';
 
 class TeacherInteractionManagePage extends StatelessWidget {
   const TeacherInteractionManagePage({super.key, required this.course});
@@ -235,19 +238,13 @@ class TeacherInteractionManagePage extends StatelessWidget {
     required int lessonNumber,
   }) async {
     final identity = await _loadParticipantIdentity(learnerId);
-    final currentMode = await _lessonInteractionService.learnerRestrictionMode(
-      courseId: _courseId,
-      lessonNumber: lessonNumber,
-      learnerId: identity.userId,
-    );
     if (!context.mounted) {
       return;
     }
     await _openLearnerRestrictionDialog(
       context,
-      lessonNumber: lessonNumber,
       identity: identity,
-      currentMode: currentMode,
+      initialLessonNumber: lessonNumber,
     );
   }
 
@@ -391,34 +388,68 @@ class TeacherInteractionManagePage extends StatelessWidget {
     }
   }
 
-  String _restrictionModeLabel(String mode) {
-    return switch (_lessonInteractionService.normalizeLearnerRestrictionMode(
-      mode,
-    )) {
-      LessonInteractionService.learnerRestrictionModeNoPublicReadOrPost =>
-        '公開欄の閲覧と投稿を制限中',
-      LessonInteractionService.learnerRestrictionModeNoPublicPost =>
-        '公開欄への投稿のみ制限中',
-      _ => '制限なし',
-    };
-  }
+  List<int> get _sortedLessonNumbers => sortedCourseLessonNumbers(course);
 
-  Stream<String> _learnerRestrictionModeStream({
-    required int lessonNumber,
-    required String learnerId,
-  }) {
-    return _lessonInteractionService.learnerRestrictionModeStream(
-      courseId: _courseId,
-      lessonNumber: lessonNumber,
-      learnerId: learnerId,
-    );
+  Stream<Map<String, Map<int, String>>> _learnerRestrictionsSummaryStream() {
+    if (Firebase.apps.isEmpty || _sortedLessonNumbers.isEmpty) {
+      return Stream.value(const {});
+    }
+    return Stream.multi((controller) {
+      final store = <String, Map<int, String>>{};
+      final subscriptions = <StreamSubscription<QuerySnapshot<Map<String, dynamic>>>>[];
+
+      void emitSummary() {
+        controller.add({
+          for (final entry in store.entries)
+            entry.key: Map<int, String>.from(entry.value),
+        });
+      }
+
+      for (final lessonNumber in _sortedLessonNumbers) {
+        final settingId = _lessonInteractionService.settingDocumentId(
+          courseId: _courseId,
+          lessonNumber: lessonNumber,
+        );
+        final subscription = FirebaseFirestore.instance
+            .collection('lessonInteractionSettings')
+            .doc(settingId)
+            .collection(
+              LessonInteractionService.learnerRestrictionsCollectionName,
+            )
+            .snapshots()
+            .listen((snapshot) {
+              for (final learnerId in store.keys.toList()) {
+                store[learnerId]?.remove(lessonNumber);
+                if (store[learnerId]?.isEmpty ?? false) {
+                  store.remove(learnerId);
+                }
+              }
+              for (final doc in snapshot.docs) {
+                store.putIfAbsent(doc.id, () => <int, String>{});
+                store[doc.id]![lessonNumber] =
+                    _lessonInteractionService.normalizeLearnerRestrictionMode(
+                      doc.data()[
+                          LessonInteractionService.learnerRestrictionModeField]
+                          as String?,
+                    );
+              }
+              emitSummary();
+            }, onError: controller.addError);
+        subscriptions.add(subscription);
+      }
+
+      controller.onCancel = () async {
+        for (final subscription in subscriptions) {
+          await subscription.cancel();
+        }
+      };
+    });
   }
 
   Future<void> _openLearnerRestrictionDialog(
     BuildContext context, {
-    required int lessonNumber,
     required CourseParticipantIdentity identity,
-    required String currentMode,
+    required int initialLessonNumber,
   }) async {
     final user = Firebase.apps.isEmpty
         ? null
@@ -427,178 +458,42 @@ class TeacherInteractionManagePage extends StatelessWidget {
       return;
     }
     final messenger = ScaffoldMessenger.maybeOf(context);
-    final currentlyBulkHidden = await _lessonInteractionService
-        .hasBulkHiddenPublicPosts(
-          courseId: _courseId,
-          lessonNumber: lessonNumber,
-          learnerId: identity.userId,
-        );
-    var selectedMode = _lessonInteractionService
-        .normalizeLearnerRestrictionMode(currentMode);
-    var bulkHide = currentlyBulkHidden;
-    var bulkUnhide = false;
-    var bulkUnhidePolicy =
-        LessonInteractionService.bulkUnhideKeepIndividualHidden;
-
-    final confirmed = await showDialog<bool>(
+    final result = await TeacherLearnerRestrictionDialog.show(
       context: context,
-      builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (dialogContext, setDialogState) {
-            return AlertDialog(
-              title: const Text('非公開詳細設定'),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('対象ユーザー: ${identity.userId}'),
-                    const SizedBox(height: 8),
-                    Text('レッスン$lessonNumber'),
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<String>(
-                      initialValue: selectedMode,
-                      decoration: const InputDecoration(
-                        border: OutlineInputBorder(),
-                        labelText: '制限モード',
-                      ),
-                      items: const [
-                        DropdownMenuItem(
-                          value: LessonInteractionService
-                              .learnerRestrictionModeNone,
-                          child: Text('制限なし'),
-                        ),
-                        DropdownMenuItem(
-                          value: LessonInteractionService
-                              .learnerRestrictionModeNoPublicReadOrPost,
-                          child: Text('公開欄の閲覧と投稿を制限'),
-                        ),
-                        DropdownMenuItem(
-                          value: LessonInteractionService
-                              .learnerRestrictionModeNoPublicPost,
-                          child: Text('公開欄への投稿のみ制限'),
-                        ),
-                      ],
-                      onChanged: (value) {
-                        setDialogState(() {
-                          selectedMode = _lessonInteractionService
-                              .normalizeLearnerRestrictionMode(value);
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    CheckboxListTile(
-                      contentPadding: EdgeInsets.zero,
-                      value: bulkHide,
-                      title: const Text('この受講者の既存公開投稿を一括で非公開にする'),
-                      onChanged: (value) {
-                        setDialogState(() {
-                          bulkHide = value == true;
-                          if (bulkHide) {
-                            bulkUnhide = false;
-                          }
-                        });
-                      },
-                    ),
-                    CheckboxListTile(
-                      contentPadding: EdgeInsets.zero,
-                      value: bulkUnhide,
-                      title: const Text('この受講者の公開投稿を一括で公開に戻す'),
-                      onChanged: (value) {
-                        setDialogState(() {
-                          bulkUnhide = value == true;
-                          if (bulkUnhide) {
-                            bulkHide = false;
-                          }
-                        });
-                      },
-                    ),
-                    if (bulkUnhide) ...[
-                      const SizedBox(height: 8),
-                      const Text('一括公開の方針'),
-                      RadioListTile<String>(
-                        contentPadding: EdgeInsets.zero,
-                        value: LessonInteractionService
-                            .bulkUnhideKeepIndividualHidden,
-                        groupValue: bulkUnhidePolicy,
-                        title: const Text('A: 個別非公開は維持'),
-                        onChanged: (value) {
-                          setDialogState(() {
-                            bulkUnhidePolicy =
-                                value ??
-                                LessonInteractionService
-                                    .bulkUnhideKeepIndividualHidden;
-                          });
-                        },
-                      ),
-                      RadioListTile<String>(
-                        contentPadding: EdgeInsets.zero,
-                        value:
-                            LessonInteractionService.bulkUnhideForceAllVisible,
-                        groupValue: bulkUnhidePolicy,
-                        title: const Text('B: すべて公開に戻す'),
-                        onChanged: (value) {
-                          setDialogState(() {
-                            bulkUnhidePolicy =
-                                value ??
-                                LessonInteractionService
-                                    .bulkUnhideKeepIndividualHidden;
-                          });
-                        },
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(false),
-                  child: const Text('キャンセル'),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(true),
-                  child: const Text('保存する'),
-                ),
-              ],
-            );
-          },
-        );
-      },
+      course: course,
+      courseId: _courseId,
+      identity: identity,
+      initialLessonNumber: initialLessonNumber,
+      service: _lessonInteractionService,
     );
-
-    if (confirmed != true) {
+    if (result == null) {
       return;
     }
     try {
-      await _lessonInteractionService.setLearnerRestrictionMode(
-        courseId: _courseId,
-        lessonNumber: lessonNumber,
-        learnerId: identity.userId,
-        restrictionMode: selectedMode,
-        updatedByUserId: user.uid,
-      );
-      var affected = 0;
-      if (bulkHide) {
-        affected = await _lessonInteractionService
-            .setBulkModerationForLearnerPublicPosts(
-              courseId: _courseId,
-              lessonNumber: lessonNumber,
-              learnerId: identity.userId,
-              hide: true,
-            );
-      } else if (bulkUnhide) {
-        affected = await _lessonInteractionService
-            .setBulkModerationForLearnerPublicPosts(
-              courseId: _courseId,
-              lessonNumber: lessonNumber,
-              learnerId: identity.userId,
-              hide: false,
-              unhidePolicy: bulkUnhidePolicy,
-            );
+      final outcome = await _lessonInteractionService
+          .applyLearnerRestrictionToLessons(
+            courseId: _courseId,
+            learnerId: identity.userId,
+            lessonNumbers: result.targetLessonNumbers,
+            restrictionMode: result.selectedMode,
+            updatedByUserId: user.uid,
+            bulkHide: result.bulkHide,
+            bulkUnhide: result.bulkUnhide,
+            unhidePolicy: result.bulkUnhidePolicy,
+          );
+      if (outcome.isFullSuccess) {
+        final message = outcome.affectedPosts > 0
+            ? '設定を保存しました。${result.targetLessonNumbers.length}レッスン分、公開状態を更新した投稿: ${outcome.affectedPosts}件'
+            : '設定を保存しました。${result.targetLessonNumbers.length}レッスン分を更新しました。';
+        messenger
+          ?..clearSnackBars()
+          ..showSnackBar(SnackBar(content: Text(message)));
+        return;
       }
-      final message = affected > 0
-          ? '設定を保存しました。公開状態を更新した投稿: $affected件'
-          : '設定を保存しました。';
+      final failedLabel = outcome.failedLessonNumbers.join(', ');
+      final message = outcome.successLessonNumbers.isEmpty
+          ? '設定の保存に失敗しました。'
+          : '一部のレッスンで保存に失敗しました（レッスン: $failedLabel）。成功: ${outcome.successLessonNumbers.length}件';
       messenger
         ?..clearSnackBars()
         ..showSnackBar(SnackBar(content: Text(message)));
@@ -637,67 +532,6 @@ class TeacherInteractionManagePage extends StatelessWidget {
               },
             ),
             const SizedBox(height: 24),
-            const Text(
-              '同意済み本名（先生表示）',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            StreamBuilder<List<Map<String, String>>>(
-              stream: _teacherLegalNameSharesStream(),
-              builder: (context, snapshot) {
-                final rows = snapshot.data ?? const <Map<String, String>>[];
-                if (rows.isEmpty) {
-                  return const Text('同意済みの本名はまだありません。');
-                }
-                return Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('先生のみ、受講者の講座内表示と本名を対応付けて確認できます。'),
-                        const SizedBox(height: 8),
-                        for (final row in rows)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 4),
-                            child: Text(
-                              'UID: ${row['userId'] ?? ''} / 本名: ${row['legalName'] ?? ''}',
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-            const SizedBox(height: 24),
-            const Text(
-              '受講者の講座専用表示',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            StreamBuilder<List<CourseParticipantIdentity>>(
-              stream: _participantIdentityStream(),
-              builder: (context, snapshot) {
-                final identities =
-                    snapshot.data ?? const <CourseParticipantIdentity>[];
-                if (identities.isEmpty) {
-                  return const Text('講座専用表示を設定した受講者はまだいません。');
-                }
-                return Column(
-                  children: [
-                    for (final identity in identities)
-                      _ParticipantIdentityCard(
-                        identity: identity,
-                        onForceUpdateAlias: identity.canEditAlias
-                            ? () => _forceUpdateAlias(context, identity)
-                            : null,
-                      ),
-                  ],
-                );
-              },
-            ),
-            const SizedBox(height: 24),
             StreamBuilder<Map<int, _LessonInteractionSetting>>(
               stream: _settingsStream(),
               builder: (context, snapshot) {
@@ -717,12 +551,12 @@ class TeacherInteractionManagePage extends StatelessWidget {
             ),
             const SizedBox(height: 24),
             const Text(
-              '受講者ごとの非公開詳細設定（レッスン別）',
+              '受講者ごとの設定',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
             const Text(
-              '受講者ごとに、公開欄の閲覧・投稿を制限できます。設定時に、その受講者の既存公開投稿を一括で非公開/公開に戻すことも選べます。',
+              '受講者ごとに、公開欄の閲覧・投稿を制限できます。講座専用表示を使っている受講者は、設定の下から強制変更もできます。',
             ),
             const SizedBox(height: 8),
             StreamBuilder<List<CourseParticipantIdentity>>(
@@ -739,65 +573,58 @@ class TeacherInteractionManagePage extends StatelessWidget {
                   builder: (context, legalNameSnapshot) {
                     final legalNames =
                         legalNameSnapshot.data ?? const <String, String>{};
-                    return Column(
-                      children: [
-                        for (final entry in course.lessons.indexed)
-                          Card(
-                            child: ExpansionTile(
-                              title: Text(
-                                'レッスン${entry.$1 + 1}: ${entry.$2.title}',
-                              ),
-                              subtitle: const Text('タップして受講者ごとの非公開詳細設定を開く'),
-                              initiallyExpanded: entry.$1 == 0,
-                              children: [
-                                for (final identity in identities)
-                                  StreamBuilder<String>(
-                                    stream: _learnerRestrictionModeStream(
-                                      lessonNumber: entry.$1 + 1,
-                                      learnerId: identity.userId,
-                                    ),
-                                    builder: (context, restrictionSnapshot) {
-                                      final restrictionMode =
-                                          restrictionSnapshot.data ??
-                                          LessonInteractionService
-                                              .learnerRestrictionModeNone;
-                                      return _LearnerRestrictionTile(
-                                        courseId: _courseId,
+                    return StreamBuilder<Map<String, Map<int, String>>>(
+                      stream: _learnerRestrictionsSummaryStream(),
+                      builder: (context, restrictionSnapshot) {
+                        final restrictionsByLearner =
+                            restrictionSnapshot.data ??
+                            const <String, Map<int, String>>{};
+                        return Column(
+                          children: [
+                            for (final identity in identities)
+                              Card(
+                                child: _LearnerRestrictionTile(
+                                  courseId: _courseId,
+                                  identity: identity,
+                                  legalName: legalNames[identity.userId],
+                                  restrictionLabel: _lessonInteractionService
+                                      .summarizeRestrictionModesForLessons(
+                                        modesByLesson:
+                                            restrictionsByLearner[identity
+                                                .userId] ??
+                                            const {},
+                                        lessonNumbers: _sortedLessonNumbers,
+                                      ),
+                                  onTapProfile: () {
+                                    if (identity.isAliasMode) {
+                                      _showAliasProfileLockedDialog(context);
+                                      return;
+                                    }
+                                    showPublicUserProfilePreview(
+                                      context: context,
+                                      userId: identity.userId,
+                                      role: publicUserProfileRoleStudent,
+                                      fallbackDisplayName: '学習者',
+                                      isOwner: false,
+                                      courseId: _courseId,
+                                    );
+                                  },
+                                  onOpenSettings: () =>
+                                      _openLearnerRestrictionDialog(
+                                        context,
                                         identity: identity,
-                                        legalName: legalNames[identity.userId],
-                                        restrictionLabel: _restrictionModeLabel(
-                                          restrictionMode,
-                                        ),
-                                        onTapProfile: () {
-                                          if (identity.isAliasMode) {
-                                            _showAliasProfileLockedDialog(
-                                              context,
-                                            );
-                                            return;
-                                          }
-                                          showPublicUserProfilePreview(
-                                            context: context,
-                                            userId: identity.userId,
-                                            role: publicUserProfileRoleStudent,
-                                            fallbackDisplayName: '学習者',
-                                            isOwner: false,
-                                            courseId: _courseId,
-                                          );
-                                        },
-                                        onOpenSettings: () =>
-                                            _openLearnerRestrictionDialog(
-                                              context,
-                                              lessonNumber: entry.$1 + 1,
-                                              identity: identity,
-                                              currentMode: restrictionMode,
-                                            ),
-                                      );
-                                    },
-                                  ),
-                              ],
-                            ),
-                          ),
-                      ],
+                                        initialLessonNumber:
+                                            youngestCourseLessonNumber(course),
+                                      ),
+                                  onForceUpdateAlias: identity.canEditAlias
+                                      ? () =>
+                                            _forceUpdateAlias(context, identity)
+                                      : null,
+                                ),
+                              ),
+                          ],
+                        );
+                      },
                     );
                   },
                 );
@@ -1262,6 +1089,7 @@ class _LearnerRestrictionTile extends StatelessWidget {
     required this.onTapProfile,
     required this.onOpenSettings,
     this.legalName,
+    this.onForceUpdateAlias,
   });
 
   final String courseId;
@@ -1270,6 +1098,7 @@ class _LearnerRestrictionTile extends StatelessWidget {
   final String? legalName;
   final VoidCallback onTapProfile;
   final VoidCallback onOpenSettings;
+  final VoidCallback? onForceUpdateAlias;
 
   @override
   Widget build(BuildContext context) {
@@ -1308,9 +1137,20 @@ class _LearnerRestrictionTile extends StatelessWidget {
             ].join('\n'),
           ),
           isThreeLine: legalNameText.isNotEmpty,
-          trailing: TextButton(
-            onPressed: onOpenSettings,
-            child: const Text('設定'),
+          trailing: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              TextButton(
+                onPressed: onOpenSettings,
+                child: const Text('設定'),
+              ),
+              if (onForceUpdateAlias != null)
+                TextButton(
+                  onPressed: onForceUpdateAlias,
+                  child: const Text('強制変更'),
+                ),
+            ],
           ),
         );
       },
@@ -1508,39 +1348,6 @@ class _CoursePrivacyPolicyCard extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _ParticipantIdentityCard extends StatelessWidget {
-  const _ParticipantIdentityCard({
-    required this.identity,
-    this.onForceUpdateAlias,
-  });
-
-  final CourseParticipantIdentity identity;
-  final VoidCallback? onForceUpdateAlias;
-
-  @override
-  Widget build(BuildContext context) {
-    final modeLabel = identity.isAliasMode ? '講座専用表示' : 'プロフィール表示';
-    final aliasSummary = identity.isAliasMode
-        ? '講座専用名: ${identity.safeAliasDisplayName}'
-        : identity.aliasConfiguredAtEnrollment
-        ? '講座専用表示は廃止済み（プロフィール表示に固定）'
-        : '受講開始時に講座専用表示を使わない設定';
-    return Card(
-      child: ListTile(
-        title: Text(modeLabel),
-        subtitle: Text('UID: ${identity.userId}\n$aliasSummary'),
-        isThreeLine: true,
-        trailing: onForceUpdateAlias == null
-            ? null
-            : TextButton(
-                onPressed: onForceUpdateAlias,
-                child: const Text('強制変更'),
-              ),
       ),
     );
   }

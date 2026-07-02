@@ -208,4 +208,42 @@ void main() {
       expect(next.moderationStatus, lessonInteractionModerationVisible);
     });
   });
+
+  group('LessonInteractionService restriction summaries', () {
+    test('summarizeRestrictionModesForLessons shows none when all none', () {
+      expect(
+        service.summarizeRestrictionModesForLessons(
+          modesByLesson: const {1: 'none', 2: 'none'},
+          lessonNumbers: const [1, 2],
+        ),
+        '制限: 制限なし',
+      );
+    });
+
+    test('summarizeRestrictionModesForLessons shows shared mode label', () {
+      expect(
+        service.summarizeRestrictionModesForLessons(
+          modesByLesson: const {
+            1: LessonInteractionService.learnerRestrictionModeNoPublicPost,
+            2: LessonInteractionService.learnerRestrictionModeNoPublicPost,
+          },
+          lessonNumbers: const [1, 2],
+        ),
+        '制限: 公開欄への投稿のみ制限中',
+      );
+    });
+
+    test('summarizeRestrictionModesForLessons shows mixed label', () {
+      expect(
+        service.summarizeRestrictionModesForLessons(
+          modesByLesson: const {
+            1: LessonInteractionService.learnerRestrictionModeNone,
+            2: LessonInteractionService.learnerRestrictionModeNoPublicPost,
+          },
+          lessonNumbers: const [1, 2],
+        ),
+        '制限: レッスンごとに設定あり',
+      );
+    });
+  });
 }
