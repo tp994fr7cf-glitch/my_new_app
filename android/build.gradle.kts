@@ -1,3 +1,6 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+
 allprojects {
     repositories {
         google()
@@ -19,6 +22,13 @@ subprojects {
     pluginManager.withPlugin("com.android.library") {
         if (!pluginManager.hasPlugin("org.jetbrains.kotlin.android")) {
             pluginManager.apply("org.jetbrains.kotlin.android")
+        }
+    }
+}
+subprojects {
+    tasks.withType<KotlinCompile>().configureEach {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_17)
         }
     }
 }
