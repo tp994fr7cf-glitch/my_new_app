@@ -33,6 +33,15 @@ void main() {
       );
     });
 
+    test('detects whether lesson has media source', () {
+      expect(lessonHasMediaSource(''), isFalse);
+      expect(lessonHasMediaSource('   '), isFalse);
+      expect(
+        lessonHasMediaSource('https://example.com/lesson-count-90.mp3'),
+        isTrue,
+      );
+    });
+
     test('selects play button labels', () {
       expect(
         lessonPlayButtonLabel(

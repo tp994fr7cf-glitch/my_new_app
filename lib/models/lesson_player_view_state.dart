@@ -1,5 +1,7 @@
 enum LessonPlayButtonVisual { play, pause, replay }
 
+bool lessonHasMediaSource(String mediaUrl) => mediaUrl.trim().isNotEmpty;
+
 int calculateCompletionThresholdSec({
   required int totalDurationSec,
   required double completionRate,

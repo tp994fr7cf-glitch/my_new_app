@@ -15,6 +15,48 @@ import 'package:my_new_app/screens/teacher_application_page.dart';
 import 'package:my_new_app/screens/teacher_interaction_manage_page.dart';
 import 'package:my_new_app/screens/teacher_quiz_manage_page.dart';
 import 'package:my_new_app/screens/video_lesson_page.dart';
+import 'package:my_new_app/services/lesson_media_playback.dart';
+
+Course _courseWithPlayableMedia(Course base) {
+  final lesson = base.lessons.first;
+  return Course(
+    id: base.id,
+    courseCode: base.courseCode,
+    instructorId: base.instructorId,
+    title: base.title,
+    instructorName: base.instructorName,
+    category: base.category,
+    level: base.level,
+    duration: base.duration,
+    lessonCount: base.lessonCount,
+    rating: base.rating,
+    priceLabel: base.priceLabel,
+    description: base.description,
+    lessons: [
+      CourseLesson(
+        title: lesson.title,
+        duration: lesson.duration,
+        mediaType: lesson.mediaType,
+        mediaUrl: 'https://example.com/test-lesson.mp3',
+        isPreview: lesson.isPreview,
+      ),
+      ...base.lessons.skip(1),
+    ],
+    lessonEvents: base.lessonEvents,
+  );
+}
+
+Widget _playableVideoLessonPage(Course course) {
+  final playableCourse = _courseWithPlayableMedia(course);
+  return MaterialApp(
+    home: VideoLessonPage(
+      course: playableCourse,
+      lesson: playableCourse.lessons.first,
+      lessonNumber: 1,
+      playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(),
+    ),
+  );
+}
 
 void main() {
   testWidgets('Firebase setup guidance is shown when setup fails', (
@@ -2905,14 +2947,14 @@ void main() {
     );
 
     expect(find.text('音声授業'), findsOneWidget);
-    expect(find.text('音声プレイヤー仮UI'), findsOneWidget);
+    expect(find.text('音声ファイルが未設定です'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('授業形式: 音声のみ'),
       500,
       scrollable: find.byType(Scrollable),
     );
     expect(find.text('授業形式: 音声のみ'), findsOneWidget);
-    expect(find.text('動画プレイヤー仮UI'), findsNothing);
+    expect(find.text('動画プレイヤー'), findsNothing);
   });
 
   testWidgets('Video lesson placeholder advances playback time', (
@@ -2920,15 +2962,8 @@ void main() {
   ) async {
     final course = sampleCourses.first;
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: VideoLessonPage(
-          course: course,
-          lesson: course.lessons.first,
-          lessonNumber: 1,
-        ),
-      ),
-    );
+    await tester.pumpWidget(_playableVideoLessonPage(course));
+    await tester.pumpAndSettle();
 
     expect(find.text('00:00 / 01:30'), findsOneWidget);
     expect(find.text('現在位置: 00:00'), findsOneWidget);
@@ -2986,15 +3021,8 @@ void main() {
   ) async {
     final course = sampleCourses.first;
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: VideoLessonPage(
-          course: course,
-          lesson: course.lessons.first,
-          lessonNumber: 1,
-        ),
-      ),
-    );
+    await tester.pumpWidget(_playableVideoLessonPage(course));
+    await tester.pumpAndSettle();
 
     final slider = tester.widget<Slider>(find.byType(Slider));
     slider.onChanged!(30);
@@ -3014,15 +3042,8 @@ void main() {
   ) async {
     final course = sampleCourses.first;
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: VideoLessonPage(
-          course: course,
-          lesson: course.lessons.first,
-          lessonNumber: 1,
-        ),
-      ),
-    );
+    await tester.pumpWidget(_playableVideoLessonPage(course));
+    await tester.pumpAndSettle();
 
     await tester.tap(find.widgetWithText(FilledButton, '再生'));
     await tester.pump();
@@ -3043,15 +3064,8 @@ void main() {
   ) async {
     final course = sampleCourses.first;
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: VideoLessonPage(
-          course: course,
-          lesson: course.lessons.first,
-          lessonNumber: 1,
-        ),
-      ),
-    );
+    await tester.pumpWidget(_playableVideoLessonPage(course));
+    await tester.pumpAndSettle();
 
     final completionButton = find.widgetWithText(OutlinedButton, '視聴終了として記録');
     await tester.scrollUntilVisible(
@@ -3129,13 +3143,15 @@ void main() {
     bool? savedIsCorrect;
 
     final course = sampleCourses.first;
+    final playableCourse = _courseWithPlayableMedia(course);
 
     await tester.pumpWidget(
       MaterialApp(
         home: VideoLessonPage(
-          course: course,
-          lesson: course.lessons.first,
+          course: playableCourse,
+          lesson: playableCourse.lessons.first,
           lessonNumber: 1,
+          playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(),
           onQuizAnswerSaveOverride:
               ({
                 required event,

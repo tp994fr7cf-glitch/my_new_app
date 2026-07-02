@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:video_player/video_player.dart';
 
 import '../models/active_learning_lock.dart';
 import '../models/course.dart';
@@ -14,6 +16,7 @@ import '../models/course_privacy_consent.dart';
 import '../models/quiz_answer_key.dart';
 import '../models/watched_range.dart';
 import '../services/course_privacy_service.dart';
+import '../services/lesson_media_playback.dart';
 import 'course_entry_gate.dart';
 import 'lesson_questions_page.dart';
 import 'lesson_notes_page.dart';
@@ -33,6 +36,7 @@ class VideoLessonPage extends StatefulWidget {
     required this.lessonNumber,
     this.isTeacherPreview = false,
     this.onQuizAnswerSaveOverride,
+    this.playbackFactory,
   });
 
   final Course course;
@@ -40,6 +44,7 @@ class VideoLessonPage extends StatefulWidget {
   final int lessonNumber;
   final bool isTeacherPreview;
   final QuizAnswerSaveOverride? onQuizAnswerSaveOverride;
+  final LessonMediaPlaybackFactory? playbackFactory;
 
   @override
   State<VideoLessonPage> createState() => _VideoLessonPageState();
@@ -47,7 +52,6 @@ class VideoLessonPage extends StatefulWidget {
 
 class _VideoLessonPageState extends State<VideoLessonPage>
     with WidgetsBindingObserver {
-  static const int _developmentPlaybackDurationSec = 90;
   static const double _completionRate = 0.92;
   static const Duration _resumeWindow = Duration(hours: 24);
   static const Duration _activeLearningHeartbeatInterval = Duration(
@@ -86,6 +90,12 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   final Set<String> _answeredQuizEventIds = {};
   final List<WatchedRange> _cycleWatchedRanges = [];
   String? _message;
+  int _totalDurationSec = 0;
+  bool _isLoadingMedia = false;
+  String? _mediaLoadError;
+  LessonMediaPlayback? _mediaPlayback;
+  StreamSubscription<Duration>? _positionSubscription;
+  StreamSubscription<bool>? _playingSubscription;
 
   Course get course => widget.course;
   CourseLesson get lesson => widget.lesson;
@@ -93,12 +103,13 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   bool get _isAudioLesson => lesson.mediaType == 'audio';
   bool get _isTeacherPreview => widget.isTeacherPreview;
-  int get _totalDurationSec => _developmentPlaybackDurationSec;
+  bool get _hasMediaSource => lessonHasMediaSource(lesson.mediaUrl);
   int get _completionThresholdSec => calculateCompletionThresholdSec(
     totalDurationSec: _totalDurationSec,
     completionRate: _completionRate,
   );
-  bool get _isAtEnd => _currentPositionSec >= _totalDurationSec;
+  bool get _isAtEnd =>
+      _totalDurationSec > 0 && _currentPositionSec >= _totalDurationSec;
   bool get _hasActiveSession => _sessionId != null && !_sessionCompleted;
   String get _taskKey => '${_courseId()}-$lessonNumber-$_cycleNumber';
   int get _visibleCycleNumber => _displayCycleNumber ?? _cycleNumber;
@@ -142,6 +153,10 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     WidgetsBinding.instance.addObserver(this);
     _isLoadingLearningState = Firebase.apps.isNotEmpty && !_isTeacherPreview;
     _listenEntryRequirement();
+    if (_hasMediaSource) {
+      _isLoadingMedia = true;
+      unawaited(_initializeMediaPlayer());
+    }
     if (_isLoadingLearningState) {
       unawaited(_resumeLearningTimeOnOpen());
     }
@@ -153,6 +168,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _studyTimer?.cancel();
     _activeLearningHeartbeatTimer?.cancel();
     _entryRequirementSubscription?.cancel();
+    _positionSubscription?.cancel();
+    _playingSubscription?.cancel();
+    unawaited(_mediaPlayback?.disposePlayer());
     WidgetsBinding.instance.removeObserver(this);
     if (!_isTeacherPreview) {
       if (_pendingCompletion && !_sessionCompleted) {
@@ -192,9 +210,95 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
   }
 
+  Future<void> _initializeMediaPlayer() async {
+    if (!_hasMediaSource) {
+      if (mounted) {
+        setState(() {
+          _isLoadingMedia = false;
+          _totalDurationSec = 0;
+        });
+      }
+      return;
+    }
+
+    try {
+      final factory = widget.playbackFactory ?? createLessonMediaPlayback;
+      final playback = factory(isAudio: _isAudioLesson);
+      await playback.open(Uri.parse(lesson.mediaUrl.trim()));
+      _positionSubscription = playback.positionStream.listen((position) {
+        _handlePlaybackPosition(position.inSeconds);
+      });
+      _playingSubscription = playback.playingStream.listen((isPlaying) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _isPlaying = isPlaying;
+        });
+      });
+
+      if (!mounted) {
+        await playback.disposePlayer();
+        return;
+      }
+
+      setState(() {
+        _mediaPlayback = playback;
+        _totalDurationSec = playback.duration?.inSeconds ?? 0;
+        _isLoadingMedia = false;
+        _mediaLoadError = _totalDurationSec <= 0 ? '再生時間を取得できませんでした。' : null;
+      });
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _mediaLoadError = 'メディアの読み込みに失敗しました: $error';
+          _isLoadingMedia = false;
+          _totalDurationSec = 0;
+        });
+      }
+    }
+  }
+
+  void _handlePlaybackPosition(int nextPositionSec) {
+    if (!mounted || _totalDurationSec <= 0) {
+      return;
+    }
+
+    final clampedPosition = nextPositionSec.clamp(0, _totalDurationSec);
+    var shouldPersistPending = false;
+    setState(() {
+      final previousPositionSec = _currentPositionSec;
+      if (clampedPosition != _currentPositionSec) {
+        _currentPositionSec = clampedPosition;
+        _addWatchProgress(previousPositionSec, _currentPositionSec);
+      }
+      if (_isTeacherPreview && _currentPositionSec >= _totalDurationSec) {
+        _isPlaying = false;
+      }
+      if (!_isTeacherPreview &&
+          _currentPositionSec >= _completionThresholdSec &&
+          !_pendingCompletion) {
+        _setCompletionPendingState();
+        shouldPersistPending = true;
+      }
+    });
+    if (shouldPersistPending && !_isTeacherPreview) {
+      unawaited(_persistSessionProgress());
+    }
+  }
+
   Future<void> _togglePlayback() async {
+    if (!_hasMediaSource || _mediaLoadError != null || _totalDurationSec <= 0) {
+      setState(() {
+        _message = _hasMediaSource
+            ? (_mediaLoadError ?? '再生時間を取得できませんでした。')
+            : '音声・動画ファイルが未設定のため再生できません。';
+      });
+      return;
+    }
+
     if (_isPlaying) {
-      _pausePlayback();
+      await _pausePlayback();
       return;
     }
 
@@ -215,6 +319,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         _cycleWatchedRanges.clear();
         _message = null;
       });
+      await _mediaPlayback?.seek(Duration.zero);
     }
 
     final prepared = await _ensureSession();
@@ -224,52 +329,29 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
     setState(() {
       _hasPlaybackStarted = true;
-      _isPlaying = true;
       _message = null;
     });
-    _playbackTimer?.cancel();
-    _playbackTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted) {
-        _playbackTimer?.cancel();
-        return;
-      }
+    await _mediaPlayback?.play();
+  }
 
-      var shouldPersistPending = false;
+  Future<void> _pausePlayback() async {
+    _playbackTimer?.cancel();
+    await _mediaPlayback?.pause();
+    if (mounted) {
       setState(() {
-        final previousPositionSec = _currentPositionSec;
-        if (_currentPositionSec < _totalDurationSec) {
-          _currentPositionSec += 1;
-        }
-        _addWatchProgress(previousPositionSec, _currentPositionSec);
-        if (_isTeacherPreview && _currentPositionSec >= _totalDurationSec) {
-          _isPlaying = false;
-          _playbackTimer?.cancel();
-        }
-        if (!_isTeacherPreview &&
-            _currentPositionSec >= _completionThresholdSec &&
-            !_pendingCompletion) {
-          _setCompletionPendingState();
-          shouldPersistPending = true;
-        }
+        _isPlaying = false;
       });
-      if (shouldPersistPending) {
-        if (!_isTeacherPreview) {
-          unawaited(_persistSessionProgress());
-        }
-      }
-    });
+    }
   }
 
-  void _pausePlayback() {
-    _playbackTimer?.cancel();
+  Future<void> _seekPlaybackPosition(int positionSec) async {
+    if (_totalDurationSec <= 0) {
+      return;
+    }
+    final nextPosition = positionSec.clamp(0, _totalDurationSec);
+    await _mediaPlayback?.seek(Duration(seconds: nextPosition));
     setState(() {
-      _isPlaying = false;
-    });
-  }
-
-  void _seekPlaybackPosition(int positionSec) {
-    setState(() {
-      _currentPositionSec = positionSec.clamp(0, _totalDurationSec).toInt();
+      _currentPositionSec = nextPosition;
       _message = null;
     });
     if (!_isTeacherPreview) {
@@ -320,7 +402,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
               : '講座設定が更新され、先生への本名提供の同意が必要になりました。';
           unawaited(
             () async {
-              _pausePlayback();
+              unawaited(_pausePlayback());
               final canContinue = await showCoursePolicyBlockDialog(
                 context,
                 course: course,
@@ -1408,6 +1490,11 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     final studySecondsLabel = _isLoadingLearningState ? 'ー' : '$_studySeconds秒';
     final watchSecondsLabel = _isLoadingLearningState ? 'ー' : '$_watchSeconds秒';
 
+    final canControlPlayback =
+        _hasMediaSource && _mediaLoadError == null && _totalDurationSec > 0;
+    final sliderMax = _totalDurationSec > 0 ? _totalDurationSec.toDouble() : 1.0;
+    final videoController = _mediaPlayback?.videoController;
+
     return Scaffold(
       appBar: AppBar(title: Text(_isAudioLesson ? '音声授業' : '動画視聴')),
       body: SafeArea(
@@ -1425,51 +1512,96 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Icon(
-                      _isAudioLesson ? Icons.headphones : Icons.smart_display,
-                      size: 72,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(_isAudioLesson ? '音声プレイヤー仮UI' : '動画プレイヤー仮UI'),
-                    const SizedBox(height: 4),
-                    Text(
-                      _isAudioLesson
-                          ? '実際の音声再生機能は後で追加します。'
-                          : '実際の動画再生機能は後で追加します。',
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      '${formatLessonTime(_currentPositionSec)} / ${formatLessonTime(_totalDurationSec)}',
-                      style: const TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
+                    if (!_hasMediaSource) ...[
+                      Icon(
+                        _isAudioLesson ? Icons.headphones : Icons.smart_display,
+                        size: 72,
+                        color: Theme.of(context).colorScheme.error,
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 32),
-                      child: Slider(
-                        value: _currentPositionSec.toDouble(),
-                        min: 0,
-                        max: _totalDurationSec.toDouble(),
-                        divisions: _totalDurationSec,
-                        label: formatLessonTime(_currentPositionSec),
-                        onChanged: (value) {
-                          _seekPlaybackPosition(value.round());
-                        },
+                      const SizedBox(height: 8),
+                      Text(
+                        _isAudioLesson
+                            ? '音声ファイルが未設定です'
+                            : '動画ファイルが未設定です',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
-                    ),
-                    const SizedBox(height: 16),
-                    FilledButton.icon(
-                      onPressed: _isPreparingSession
-                          ? null
-                          : () {
-                              unawaited(_togglePlayback());
-                            },
-                      icon: Icon(_playButtonIcon),
-                      label: Text(_playButtonLabel),
-                    ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        '先生がレッスン管理画面から音声・動画をアップロードすると、ここで再生できます。',
+                        textAlign: TextAlign.center,
+                      ),
+                    ] else if (_isLoadingMedia) ...[
+                      const CircularProgressIndicator(),
+                      const SizedBox(height: 12),
+                      Text(_isAudioLesson ? '音声を読み込み中…' : '動画を読み込み中…'),
+                    ] else if (_mediaLoadError != null) ...[
+                      Icon(
+                        Icons.error_outline,
+                        size: 72,
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _mediaLoadError!,
+                        textAlign: TextAlign.center,
+                      ),
+                    ] else ...[
+                      if (!_isAudioLesson &&
+                          videoController != null &&
+                          videoController.value.isInitialized) ...[
+                        AspectRatio(
+                          aspectRatio: videoController.value.aspectRatio,
+                          child: VideoPlayer(videoController),
+                        ),
+                        const SizedBox(height: 16),
+                      ] else ...[
+                        Icon(
+                          _isAudioLesson ? Icons.headphones : Icons.smart_display,
+                          size: 72,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(_isAudioLesson ? '音声プレイヤー' : '動画プレイヤー'),
+                        const SizedBox(height: 4),
+                        const Text('アップロード済みのファイルを再生します。'),
+                        const SizedBox(height: 16),
+                      ],
+                      Text(
+                        '${formatLessonTime(_currentPositionSec)} / ${formatLessonTime(_totalDurationSec)}',
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 32),
+                        child: Slider(
+                          value: _currentPositionSec
+                              .clamp(0, _totalDurationSec)
+                              .toDouble(),
+                          min: 0,
+                          max: sliderMax,
+                          divisions: _totalDurationSec > 0 ? _totalDurationSec : null,
+                          label: formatLessonTime(_currentPositionSec),
+                          onChanged: canControlPlayback
+                              ? (value) {
+                                  _seekPlaybackPosition(value.round());
+                                }
+                              : null,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      FilledButton.icon(
+                        onPressed: !canControlPlayback || _isPreparingSession
+                            ? null
+                            : () {
+                                unawaited(_togglePlayback());
+                              },
+                        icon: Icon(_playButtonIcon),
+                        label: Text(_playButtonLabel),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -1501,11 +1633,13 @@ class _VideoLessonPageState extends State<VideoLessonPage>
             Text('再生時間: ${lesson.duration}'),
             const SizedBox(height: 8),
             Text('授業形式: ${_isAudioLesson ? '音声のみ' : '動画'}'),
-            const SizedBox(height: 8),
-            Text('仮再生時間: ${formatLessonTime(_totalDurationSec)}'),
+            if (_hasMediaSource) ...[
+              const SizedBox(height: 8),
+              Text('再生時間（ファイル）: ${formatLessonTime(_totalDurationSec)}'),
+            ],
             const SizedBox(height: 8),
             Text('現在位置: ${formatLessonTime(_currentPositionSec)}'),
-            if (!_isTeacherPreview) ...[
+            if (!_isTeacherPreview && canControlPlayback) ...[
               const SizedBox(height: 8),
               Text('現在の周回: $cycleLabel'),
               const SizedBox(height: 8),
@@ -1515,8 +1649,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
               const SizedBox(height: 8),
               Text('視聴終了判定: $_completionThresholdSec秒到達'),
             ],
-            const SizedBox(height: 8),
-            Wrap(
+            if (canControlPlayback) ...[
+              const SizedBox(height: 8),
+              Wrap(
               spacing: 8,
               runSpacing: 8,
               children: [
@@ -1564,7 +1699,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                 ),
               ],
             ),
-            if (!_isTeacherPreview) ...[
+            if (!_isTeacherPreview && canControlPlayback) ...[
               const SizedBox(height: 8),
               OutlinedButton.icon(
                 onPressed: _sessionCompleted
@@ -1576,9 +1711,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                 label: const Text('視聴終了として記録'),
               ),
             ],
-            if (lesson.mediaUrl.isNotEmpty) ...[
+            if (lesson.mediaUrl.isNotEmpty && kDebugMode) ...[
               const SizedBox(height: 8),
-              Text('仮URL: ${lesson.mediaUrl}'),
+              Text('mediaUrl: ${lesson.mediaUrl}'),
             ],
             if (_dueQuizEvents.isNotEmpty) ...[
               const SizedBox(height: 24),
@@ -1666,9 +1801,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
               ),
             ],
             const SizedBox(height: 24),
-            const _SectionTitle('この画面に後で追加する機能'),
+            const _SectionTitle('この画面の機能'),
             const SizedBox(height: 8),
-            _BulletText(_isAudioLesson ? '実際の音声プレイヤー' : '実際の動画プレイヤー'),
+            _BulletText(_isAudioLesson ? '音声ファイルの再生' : '動画ファイルの再生'),
             const _BulletText('再生位置の保存'),
             const _BulletText('視聴完了チェック'),
             const _BulletText('コメント・質問欄'),
