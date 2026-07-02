@@ -93,7 +93,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('動画視聴'), findsOneWidget);
-    expect(find.text('動画プレイヤー仮UI'), findsOneWidget);
+    expect(find.text('動画ファイルが未設定です'), findsOneWidget);
     expect(find.text('レッスン1: Flutterで作るアプリの全体像'), findsOneWidget);
   });
 

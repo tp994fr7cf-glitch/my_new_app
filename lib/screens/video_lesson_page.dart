@@ -331,7 +331,16 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       _hasPlaybackStarted = true;
       _message = null;
     });
-    await _mediaPlayback?.play();
+    try {
+      await _mediaPlayback?.play();
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _isPlaying = false;
+          _message = '再生に失敗しました: $error';
+        });
+      }
+    }
   }
 
   Future<void> _pausePlayback() async {
@@ -1649,56 +1658,57 @@ class _VideoLessonPageState extends State<VideoLessonPage>
               const SizedBox(height: 8),
               Text('視聴終了判定: $_completionThresholdSec秒到達'),
             ],
-            if (canControlPlayback) ...[
+            if (canControlPlayback && kDebugMode) ...[
               const SizedBox(height: 8),
               Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: () {
-                    unawaited(_seekForDevelopment(1));
-                  },
-                  icon: const Icon(Icons.add),
-                  label: const Text('1秒進める（開発用）'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    unawaited(_seekForDevelopment(5));
-                  },
-                  icon: const Icon(Icons.add),
-                  label: const Text('5秒進める（開発用）'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    unawaited(_seekForDevelopment(30));
-                  },
-                  icon: const Icon(Icons.forward_30),
-                  label: const Text('30秒進める（開発用）'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    unawaited(_seekForDevelopment(-1));
-                  },
-                  icon: const Icon(Icons.remove),
-                  label: const Text('1秒巻き戻す（開発用）'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    unawaited(_seekForDevelopment(-5));
-                  },
-                  icon: const Icon(Icons.remove),
-                  label: const Text('5秒巻き戻す（開発用）'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    unawaited(_seekForDevelopment(-30));
-                  },
-                  icon: const Icon(Icons.replay_30),
-                  label: const Text('30秒巻き戻す（開発用）'),
-                ),
-              ],
-            ),
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      unawaited(_seekForDevelopment(1));
+                    },
+                    icon: const Icon(Icons.add),
+                    label: const Text('1秒進める（開発用）'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      unawaited(_seekForDevelopment(5));
+                    },
+                    icon: const Icon(Icons.add),
+                    label: const Text('5秒進める（開発用）'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      unawaited(_seekForDevelopment(30));
+                    },
+                    icon: const Icon(Icons.forward_30),
+                    label: const Text('30秒進める（開発用）'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      unawaited(_seekForDevelopment(-1));
+                    },
+                    icon: const Icon(Icons.remove),
+                    label: const Text('1秒巻き戻す（開発用）'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      unawaited(_seekForDevelopment(-5));
+                    },
+                    icon: const Icon(Icons.remove),
+                    label: const Text('5秒巻き戻す（開発用）'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      unawaited(_seekForDevelopment(-30));
+                    },
+                    icon: const Icon(Icons.replay_30),
+                    label: const Text('30秒巻き戻す（開発用）'),
+                  ),
+                ],
+              ),
+            ],
             if (!_isTeacherPreview && canControlPlayback) ...[
               const SizedBox(height: 8),
               OutlinedButton.icon(
