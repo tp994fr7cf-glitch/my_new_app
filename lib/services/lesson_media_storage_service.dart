@@ -1,0 +1,201 @@
+import 'package:file_picker/file_picker.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/foundation.dart';
+
+import 'lesson_media_upload_stub.dart'
+    if (dart.library.io) 'lesson_media_upload_io.dart' as platform_upload;
+
+class LessonMediaStorageException implements Exception {
+  LessonMediaStorageException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class LessonMediaUploadResult {
+  const LessonMediaUploadResult({
+    required this.downloadUrl,
+    required this.storagePath,
+    required this.contentType,
+    required this.fileName,
+  });
+
+  final String downloadUrl;
+  final String storagePath;
+  final String contentType;
+  final String fileName;
+}
+
+class LessonMediaStorageService {
+  const LessonMediaStorageService();
+
+  static const int maxBytes = 50 * 1024 * 1024;
+  static const List<String> audioExtensions = ['mp3', 'm4a', 'aac', 'wav'];
+  static const List<String> videoExtensions = ['mp4', 'webm', 'mov'];
+
+  Reference lessonMediaRef({
+    required String courseId,
+    required int lessonNumber,
+    required String fileName,
+  }) {
+    return FirebaseStorage.instance.ref(
+      'courseMedia/$courseId/lessons/$lessonNumber/$fileName',
+    );
+  }
+
+  String storagePath({
+    required String courseId,
+    required int lessonNumber,
+    required String fileName,
+  }) {
+    return 'courseMedia/$courseId/lessons/$lessonNumber/$fileName';
+  }
+
+  List<String> allowedExtensionsForMediaType(String mediaType) {
+    return mediaType == 'audio' ? audioExtensions : videoExtensions;
+  }
+
+  String contentTypeForExtension(String extension) {
+    return switch (extension.toLowerCase()) {
+      'mp3' => 'audio/mpeg',
+      'm4a' => 'audio/mp4',
+      'aac' => 'audio/aac',
+      'wav' => 'audio/wav',
+      'mp4' => 'video/mp4',
+      'webm' => 'video/webm',
+      'mov' => 'video/quicktime',
+      _ => 'application/octet-stream',
+    };
+  }
+
+  String mediaTypeLabel(String mediaType) {
+    return mediaType == 'audio' ? '音声' : '動画';
+  }
+
+  Future<LessonMediaUploadResult?> pickAndUploadLessonMedia({
+    required String courseId,
+    required int lessonNumber,
+    required String mediaType,
+    void Function(double progress)? onProgress,
+  }) async {
+    if (Firebase.apps.isEmpty) {
+      throw LessonMediaStorageException('Firebase が初期化されていません。');
+    }
+    if (FirebaseAuth.instance.currentUser == null) {
+      throw LessonMediaStorageException('ログインが必要です。');
+    }
+    if (courseId.isEmpty) {
+      throw LessonMediaStorageException('講座IDがないためアップロードできません。');
+    }
+    if (lessonNumber <= 0) {
+      throw LessonMediaStorageException('レッスン番号が不正です。');
+    }
+
+    final allowedExtensions = allowedExtensionsForMediaType(mediaType);
+    final pickResult = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: allowedExtensions,
+      allowMultiple: false,
+      withData: kIsWeb,
+    );
+    if (pickResult == null || pickResult.files.isEmpty) {
+      return null;
+    }
+
+    final pickedFile = pickResult.files.single;
+    final originalName = pickedFile.name.trim();
+    if (originalName.isEmpty) {
+      throw LessonMediaStorageException('ファイル名を取得できませんでした。');
+    }
+
+    final extension = _fileExtension(originalName);
+    if (!allowedExtensions.contains(extension)) {
+      throw LessonMediaStorageException(
+        '${mediaTypeLabel(mediaType)}ファイル（${allowedExtensions.join(' / ')}）を選んでください。',
+      );
+    }
+
+    final fileSize = pickedFile.size;
+    if (fileSize <= 0) {
+      throw LessonMediaStorageException('ファイルサイズを取得できませんでした。');
+    }
+    if (fileSize > maxBytes) {
+      throw LessonMediaStorageException('ファイルサイズは50MB以下にしてください。');
+    }
+
+    final contentType = contentTypeForExtension(extension);
+    final storedFileName =
+        '${DateTime.now().millisecondsSinceEpoch}_$originalName';
+    final ref = lessonMediaRef(
+      courseId: courseId,
+      lessonNumber: lessonNumber,
+      fileName: storedFileName,
+    );
+    final metadata = SettableMetadata(
+      contentType: contentType,
+      customMetadata: {
+        'courseId': courseId,
+        'lessonNumber': '$lessonNumber',
+        'mediaType': mediaType,
+        'originalFileName': originalName,
+      },
+    );
+
+    final uploadTask = _startUpload(
+      ref: ref,
+      file: pickedFile,
+      metadata: metadata,
+    );
+    if (onProgress != null) {
+      uploadTask.snapshotEvents.listen((snapshot) {
+        final totalBytes = snapshot.totalBytes;
+        if (totalBytes <= 0) {
+          return;
+        }
+        onProgress(snapshot.bytesTransferred / totalBytes);
+      });
+    }
+
+    await uploadTask;
+    final downloadUrl = await ref.getDownloadURL();
+
+    return LessonMediaUploadResult(
+      downloadUrl: downloadUrl,
+      storagePath: storagePath(
+        courseId: courseId,
+        lessonNumber: lessonNumber,
+        fileName: storedFileName,
+      ),
+      contentType: contentType,
+      fileName: originalName,
+    );
+  }
+
+  UploadTask _startUpload({
+    required Reference ref,
+    required PlatformFile file,
+    required SettableMetadata metadata,
+  }) {
+    final bytes = file.bytes;
+    if (bytes != null) {
+      return ref.putData(bytes, metadata);
+    }
+    final path = file.path;
+    if (!kIsWeb && path != null && path.isNotEmpty) {
+      return platform_upload.putPlatformFile(ref, path, metadata);
+    }
+    throw LessonMediaStorageException('ファイルを読み取れませんでした。');
+  }
+
+  String _fileExtension(String fileName) {
+    final dotIndex = fileName.lastIndexOf('.');
+    if (dotIndex < 0 || dotIndex == fileName.length - 1) {
+      return '';
+    }
+    return fileName.substring(dotIndex + 1).toLowerCase();
+  }
+}
