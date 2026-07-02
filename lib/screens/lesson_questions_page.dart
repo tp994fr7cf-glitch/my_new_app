@@ -6916,7 +6916,7 @@ class _StandaloneRecordReplyView extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             _CommentBubble(
-              courseId: parentQuestion.courseId,
+              courseId: answer.courseId,
               body: answer.body,
               authorId: answer.authorId,
               authorName: answer.authorName,

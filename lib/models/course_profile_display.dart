@@ -204,7 +204,7 @@ Map<String, dynamic> sharedProfileMirrorFieldsFrom(PublicUserProfile profile) {
   };
 }
 
-const Map<String, dynamic> clearSharedProfileMirrorFields = {
+Map<String, dynamic> get clearSharedProfileMirrorFields => {
   'sharedDisplayName': FieldValue.delete(),
   'sharedAvatarColorName': FieldValue.delete(),
   'sharedBio': FieldValue.delete(),
