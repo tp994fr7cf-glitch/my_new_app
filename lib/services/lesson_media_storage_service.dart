@@ -76,10 +76,37 @@ class LessonMediaStorageService {
     return mediaType == 'audio' ? '音声' : '動画';
   }
 
-  Future<LessonMediaUploadResult?> pickAndUploadLessonMedia({
+  FileType pickerTypeForMediaType(String mediaType) {
+    return mediaType == 'audio' ? FileType.audio : FileType.video;
+  }
+
+  Future<PlatformFile?> pickLessonMediaFile({
+    required String mediaType,
+  }) async {
+    final allowedExtensions = allowedExtensionsForMediaType(mediaType);
+    final mediaLabel = mediaTypeLabel(mediaType);
+    final pickResult = await FilePicker.platform.pickFiles(
+      type: kIsWeb ? FileType.custom : pickerTypeForMediaType(mediaType),
+      allowedExtensions: kIsWeb ? allowedExtensions : null,
+      allowMultiple: false,
+      withData: kIsWeb,
+      dialogTitle: '$mediaLabelファイルを選択',
+      lockParentWindow: kIsWeb,
+    );
+    if (pickResult == null || pickResult.files.isEmpty) {
+      return null;
+    }
+
+    final pickedFile = pickResult.files.single;
+    _validatePickedFile(pickedFile: pickedFile, mediaType: mediaType);
+    return pickedFile;
+  }
+
+  Future<LessonMediaUploadResult> uploadLessonMediaFile({
     required String courseId,
     required int lessonNumber,
     required String mediaType,
+    required PlatformFile pickedFile,
     void Function(double progress)? onProgress,
   }) async {
     if (Firebase.apps.isEmpty) {
@@ -95,38 +122,10 @@ class LessonMediaStorageService {
       throw LessonMediaStorageException('レッスン番号が不正です。');
     }
 
-    final allowedExtensions = allowedExtensionsForMediaType(mediaType);
-    final pickResult = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: allowedExtensions,
-      allowMultiple: false,
-      withData: kIsWeb,
-    );
-    if (pickResult == null || pickResult.files.isEmpty) {
-      return null;
-    }
+    _validatePickedFile(pickedFile: pickedFile, mediaType: mediaType);
 
-    final pickedFile = pickResult.files.single;
     final originalName = pickedFile.name.trim();
-    if (originalName.isEmpty) {
-      throw LessonMediaStorageException('ファイル名を取得できませんでした。');
-    }
-
     final extension = _fileExtension(originalName);
-    if (!allowedExtensions.contains(extension)) {
-      throw LessonMediaStorageException(
-        '${mediaTypeLabel(mediaType)}ファイル（${allowedExtensions.join(' / ')}）を選んでください。',
-      );
-    }
-
-    final fileSize = pickedFile.size;
-    if (fileSize <= 0) {
-      throw LessonMediaStorageException('ファイルサイズを取得できませんでした。');
-    }
-    if (fileSize > maxBytes) {
-      throw LessonMediaStorageException('ファイルサイズは50MB以下にしてください。');
-    }
-
     final contentType = contentTypeForExtension(extension);
     final storedFileName =
         '${DateTime.now().millisecondsSinceEpoch}_$originalName';
@@ -173,6 +172,51 @@ class LessonMediaStorageService {
       contentType: contentType,
       fileName: originalName,
     );
+  }
+
+  Future<LessonMediaUploadResult?> pickAndUploadLessonMedia({
+    required String courseId,
+    required int lessonNumber,
+    required String mediaType,
+    void Function(double progress)? onProgress,
+  }) async {
+    final pickedFile = await pickLessonMediaFile(mediaType: mediaType);
+    if (pickedFile == null) {
+      return null;
+    }
+    return uploadLessonMediaFile(
+      courseId: courseId,
+      lessonNumber: lessonNumber,
+      mediaType: mediaType,
+      pickedFile: pickedFile,
+      onProgress: onProgress,
+    );
+  }
+
+  void _validatePickedFile({
+    required PlatformFile pickedFile,
+    required String mediaType,
+  }) {
+    final allowedExtensions = allowedExtensionsForMediaType(mediaType);
+    final originalName = pickedFile.name.trim();
+    if (originalName.isEmpty) {
+      throw LessonMediaStorageException('ファイル名を取得できませんでした。');
+    }
+
+    final extension = _fileExtension(originalName);
+    if (!allowedExtensions.contains(extension)) {
+      throw LessonMediaStorageException(
+        '${mediaTypeLabel(mediaType)}ファイル（${allowedExtensions.join(' / ')}）を選んでください。',
+      );
+    }
+
+    final fileSize = pickedFile.size;
+    if (fileSize <= 0) {
+      throw LessonMediaStorageException('ファイルサイズを取得できませんでした。');
+    }
+    if (fileSize > maxBytes) {
+      throw LessonMediaStorageException('ファイルサイズは50MB以下にしてください。');
+    }
   }
 
   UploadTask _startUpload({

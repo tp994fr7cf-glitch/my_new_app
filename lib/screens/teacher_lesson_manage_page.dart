@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
@@ -152,6 +153,48 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       return;
     }
 
+    final shouldPick = await _showUploadGuideDialog(
+      mediaType: editor.mediaType,
+    );
+    if (!shouldPick || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _message = null;
+    });
+
+    PlatformFile? pickedFile;
+    try {
+      pickedFile = await _mediaStorageService.pickLessonMediaFile(
+        mediaType: editor.mediaType,
+      );
+    } on LessonMediaStorageException catch (error) {
+      if (mounted) {
+        setState(() {
+          _message = error.message;
+        });
+      }
+      return;
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _message = 'ファイル選択に失敗しました: $error';
+        });
+      }
+      return;
+    }
+
+    if (!mounted) {
+      return;
+    }
+    if (pickedFile == null) {
+      setState(() {
+        _message = 'ファイル選択をキャンセルしました。';
+      });
+      return;
+    }
+
     setState(() {
       editor.isUploading = true;
       editor.uploadProgress = 0;
@@ -159,10 +202,11 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     });
 
     try {
-      final result = await _mediaStorageService.pickAndUploadLessonMedia(
+      final result = await _mediaStorageService.uploadLessonMediaFile(
         courseId: courseId,
         lessonNumber: lessonNumber,
         mediaType: editor.mediaType,
+        pickedFile: pickedFile,
         onProgress: (progress) {
           if (!mounted) {
             return;
@@ -173,13 +217,6 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         },
       );
       if (!mounted) {
-        return;
-      }
-      if (result == null) {
-        setState(() {
-          editor.isUploading = false;
-          editor.uploadProgress = null;
-        });
         return;
       }
 
@@ -210,6 +247,45 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     }
   }
 
+  Future<bool> _showUploadGuideDialog({required String mediaType}) async {
+    final mediaLabel = _mediaStorageService.mediaTypeLabel(mediaType);
+    final allowedExtensions = _mediaStorageService.allowedExtensionsForMediaType(
+      mediaType,
+    );
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text('$mediaLabelファイルを選びます'),
+          content: SingleChildScrollView(
+            child: Text(
+              '端末内の$mediaLabelファイルを選んでアップロードします。\n\n'
+              '【エミュレータの場合】\n'
+              '最初は「まだ一つも項目がありません」と出ることがあります。\n'
+              'その場合は、先に PC から音声ファイルを Download フォルダへ入れてください。\n\n'
+              '1. 画面の ≡（メニュー）または「ダウンロード」を開く\n'
+              '2. test.mp3 などを選ぶ\n'
+              '3. 戻るときは端末画面下の ◁（戻る）ボタン\n\n'
+              '【対応形式】\n'
+              '${allowedExtensions.join(' / ')}（50MBまで）',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('キャンセル'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('ファイルを選ぶ'),
+            ),
+          ],
+        );
+      },
+    );
+    return result ?? false;
+  }
+
   @override
   Widget build(BuildContext context) {
     final courseId = widget.course.id;
@@ -228,7 +304,8 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
             const SizedBox(height: 8),
             const Text(
               '音声・動画ファイルは Firebase Storage にアップロードできます。'
-              'アップロード後は「レッスン情報を保存」を押してください。',
+              'アップロード後は「レッスン情報を保存」を押してください。'
+              'エミュレータでは、先に PC から音声ファイルを Download フォルダへ入れる必要があります。',
             ),
             if (!canUploadMedia) ...[
               const SizedBox(height: 8),
