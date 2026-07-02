@@ -3,6 +3,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
+import '../models/lesson_duration_parser.dart';
+import '../services/lesson_media_duration_service.dart';
 import '../services/lesson_media_storage_service.dart';
 import 'teacher_quiz_manage_page.dart';
 
@@ -25,6 +27,7 @@ class TeacherLessonManagePage extends StatefulWidget {
 
 class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
   static const _mediaStorageService = LessonMediaStorageService();
+  static const _durationService = LessonMediaDurationService();
 
   late final List<_LessonEditorState> _lessonEditors;
   bool _isSaving = false;
@@ -65,14 +68,20 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         return null;
       }
 
+      final durationLabel = editor.durationController.text.trim().isEmpty
+          ? '1分30秒'
+          : editor.durationController.text.trim();
+      final mediaDurationSec = editor.mediaDurationSec > 0
+          ? editor.mediaDurationSec
+          : (parseLessonDurationLabel(durationLabel) ?? 0);
+
       lessons.add(
         CourseLesson(
           title: title,
-          duration: editor.durationController.text.trim().isEmpty
-              ? '1分30秒'
-              : editor.durationController.text.trim(),
+          duration: durationLabel,
           mediaType: editor.mediaType,
           mediaUrl: editor.mediaUrlController.text.trim(),
+          mediaDurationSec: mediaDurationSec,
           isPreview: editor.isPreview,
         ),
       );
@@ -220,12 +229,20 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         return;
       }
 
+      final detectedDurationSec = await _durationService.detectDurationSec(
+        pickedFile,
+      );
+
       editor.mediaUrlController.text = result.downloadUrl;
+      if (detectedDurationSec != null && detectedDurationSec > 0) {
+        editor.mediaDurationSec = detectedDurationSec;
+      }
       setState(() {
         editor.isUploading = false;
         editor.uploadProgress = null;
         _message =
             'レッスン$lessonNumber の${_mediaStorageService.mediaTypeLabel(editor.mediaType)}をアップロードしました。'
+            '${detectedDurationSec != null ? '（再生時間: ${detectedDurationSec}秒）' : ''}'
             '「レッスン情報を保存」を押して反映してください。';
       });
     } on LessonMediaStorageException catch (error) {
@@ -363,6 +380,7 @@ class _LessonEditorState {
     required this.mediaUrlController,
     required this.mediaType,
     required this.isPreview,
+    this.mediaDurationSec = 0,
     this.isUploading = false,
     this.uploadProgress,
   });
@@ -374,6 +392,7 @@ class _LessonEditorState {
       mediaUrlController: TextEditingController(text: lesson.mediaUrl),
       mediaType: lesson.mediaType == 'audio' ? 'audio' : 'video',
       isPreview: lesson.isPreview,
+      mediaDurationSec: lesson.mediaDurationSec,
     );
   }
 
@@ -382,6 +401,7 @@ class _LessonEditorState {
   final TextEditingController mediaUrlController;
   String mediaType;
   bool isPreview;
+  int mediaDurationSec;
   bool isUploading;
   double? uploadProgress;
 
