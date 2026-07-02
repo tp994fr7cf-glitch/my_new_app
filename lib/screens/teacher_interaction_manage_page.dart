@@ -1116,40 +1116,80 @@ class _LearnerRestrictionTile extends StatelessWidget {
             userId: identity.userId,
             fallbackDisplayName: fallbackProfile.displayName,
           );
+    final compactButtonStyle = TextButton.styleFrom(
+      visualDensity: VisualDensity.compact,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      minimumSize: Size.zero,
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      textStyle: Theme.of(context).textTheme.labelLarge,
+    );
     return StreamBuilder<PublicUserProfile>(
       stream: stream,
       initialData: fallbackProfile,
       builder: (context, snapshot) {
         final profile = snapshot.data ?? fallbackProfile;
         final legalNameText = (legalName ?? '').trim();
-        return ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-          leading: InkWell(
-            customBorder: const CircleBorder(),
-            onTap: onTapProfile,
-            child: PublicProfileAvatar(profile: profile),
-          ),
-          title: Text(profile.displayName),
-          subtitle: Text(
-            [
-              if (legalNameText.isNotEmpty) '本名: $legalNameText',
-              restrictionLabel,
-            ].join('\n'),
-          ),
-          isThreeLine: legalNameText.isNotEmpty,
-          trailing: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.end,
+        final subtitleLines = <String>[
+          if (legalNameText.isNotEmpty) '本名: $legalNameText',
+          restrictionLabel,
+        ];
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              TextButton(
-                onPressed: onOpenSettings,
-                child: const Text('設定'),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: onTapProfile,
+                    child: PublicProfileAvatar(profile: profile),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          profile.displayName,
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        if (subtitleLines.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            subtitleLines.join('\n'),
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(height: 1.25),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              if (onForceUpdateAlias != null)
-                TextButton(
-                  onPressed: onForceUpdateAlias,
-                  child: const Text('強制変更'),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Wrap(
+                  spacing: 4,
+                  runSpacing: 0,
+                  alignment: WrapAlignment.end,
+                  children: [
+                    TextButton(
+                      style: compactButtonStyle,
+                      onPressed: onOpenSettings,
+                      child: const Text('設定'),
+                    ),
+                    if (onForceUpdateAlias != null)
+                      TextButton(
+                        style: compactButtonStyle,
+                        onPressed: onForceUpdateAlias,
+                        child: const Text('強制変更'),
+                      ),
+                  ],
                 ),
+              ),
             ],
           ),
         );

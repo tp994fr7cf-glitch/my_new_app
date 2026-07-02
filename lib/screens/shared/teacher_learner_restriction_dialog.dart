@@ -160,13 +160,11 @@ class _TeacherLearnerRestrictionDialogState
     _loadSingleLessonState(lessonNumber);
   }
 
-  void _toggleMultiLesson(int lessonNumber, bool selected) {
+  void _setMultiLessons(Set<int> lessonNumbers) {
     setState(() {
-      if (selected) {
-        _selectedMultiLessons.add(lessonNumber);
-      } else {
-        _selectedMultiLessons.remove(lessonNumber);
-      }
+      _selectedMultiLessons
+        ..clear()
+        ..addAll(lessonNumbers);
     });
   }
 
@@ -249,32 +247,14 @@ class _TeacherLearnerRestrictionDialogState
               ),
               if (_multiSelectEnabled) ...[
                 const SizedBox(height: 8),
-                const Text('適用するレッスン'),
-                const SizedBox(height: 4),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    TextButton(
-                      onPressed: _selectAllLessons,
-                      child: const Text('全選択'),
-                    ),
-                    TextButton(
-                      onPressed: _clearAllLessons,
-                      child: const Text('全解除'),
-                    ),
-                  ],
+                _LessonMultiSelectDropdown(
+                  course: widget.course,
+                  lessonNumbers: _lessonNumbers,
+                  selectedLessons: _selectedMultiLessons,
+                  onSelectionChanged: _setMultiLessons,
+                  onSelectAll: _selectAllLessons,
+                  onClearAll: _clearAllLessons,
                 ),
-                for (final lessonNumber in _lessonNumbers)
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: _selectedMultiLessons.contains(lessonNumber),
-                    title: Text(
-                      lessonDropdownLabel(widget.course, lessonNumber),
-                    ),
-                    onChanged: (value) {
-                      _toggleMultiLesson(lessonNumber, value == true);
-                    },
-                  ),
                 const SizedBox(height: 12),
               ],
             ],
@@ -388,6 +368,108 @@ class _TeacherLearnerRestrictionDialogState
           onPressed: _loadingLessonState ? null : _submit,
           child: const Text('保存する'),
         ),
+      ],
+    );
+  }
+}
+
+class _LessonMultiSelectDropdown extends StatelessWidget {
+  const _LessonMultiSelectDropdown({
+    required this.course,
+    required this.lessonNumbers,
+    required this.selectedLessons,
+    required this.onSelectionChanged,
+    required this.onSelectAll,
+    required this.onClearAll,
+  });
+
+  final Course course;
+  final List<int> lessonNumbers;
+  final Set<int> selectedLessons;
+  final ValueChanged<Set<int>> onSelectionChanged;
+  final VoidCallback onSelectAll;
+  final VoidCallback onClearAll;
+
+  String _summaryText() {
+    if (selectedLessons.isEmpty) {
+      return 'レッスンを選択';
+    }
+    if (selectedLessons.length == lessonNumbers.length) {
+      return 'すべてのレッスン';
+    }
+    final sorted = selectedLessons.toList()..sort();
+    if (sorted.length <= 2) {
+      return sorted
+          .map((lessonNumber) => lessonDropdownLabel(course, lessonNumber))
+          .join(' / ');
+    }
+    return '${sorted.length}レッスン選択中';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MenuAnchor(
+      style: MenuStyle(
+        maximumSize: WidgetStateProperty.all(const Size(420, 360)),
+      ),
+      alignmentOffset: const Offset(0, 4),
+      builder: (context, controller, child) {
+        return InputDecorator(
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+            labelText: '適用するレッスン',
+            isDense: true,
+          ),
+          child: InkWell(
+            onTap: () {
+              if (controller.isOpen) {
+                controller.close();
+              } else {
+                controller.open();
+              }
+            },
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _summaryText(),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const Icon(Icons.arrow_drop_down),
+              ],
+            ),
+          ),
+        );
+      },
+      menuChildren: [
+        MenuItemButton(
+          onPressed: onSelectAll,
+          child: const Text('全選択'),
+        ),
+        MenuItemButton(
+          onPressed: onClearAll,
+          child: const Text('全解除'),
+        ),
+        const Divider(height: 1),
+        for (final lessonNumber in lessonNumbers)
+          CheckboxMenuButton(
+            value: selectedLessons.contains(lessonNumber),
+            onChanged: (selected) {
+              if (selected == null) {
+                return;
+              }
+              final next = Set<int>.from(selectedLessons);
+              if (selected) {
+                next.add(lessonNumber);
+              } else {
+                next.remove(lessonNumber);
+              }
+              onSelectionChanged(next);
+            },
+            child: Text(lessonDropdownLabel(course, lessonNumber)),
+          ),
       ],
     );
   }
