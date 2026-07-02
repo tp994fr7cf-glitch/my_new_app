@@ -1,5 +1,4 @@
 import com.android.build.gradle.BaseExtension
-import org.gradle.api.tasks.compile.JavaCompile
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
@@ -28,26 +27,27 @@ subprojects {
     }
 }
 subprojects {
-    project.evaluationDependsOn(":app")
-}
-
-gradle.projectsEvaluated {
-    subprojects {
-        extensions.findByType(BaseExtension::class.java)?.compileOptions {
-            sourceCompatibility = JavaVersion.VERSION_17
-            targetCompatibility = JavaVersion.VERSION_17
-        }
-        tasks.withType<JavaCompile>().configureEach {
-            sourceCompatibility = JavaVersion.VERSION_17.toString()
-            targetCompatibility = JavaVersion.VERSION_17.toString()
-            options.release.set(17)
+    afterEvaluate {
+        val javaMajorVersion =
+            extensions.findByType(BaseExtension::class.java)
+                ?.compileOptions
+                ?.sourceCompatibility
+                ?.majorVersion
+                ?: 17
+        val kotlinJvmTarget = when {
+            javaMajorVersion >= 17 -> JvmTarget.JVM_17
+            javaMajorVersion >= 11 -> JvmTarget.JVM_11
+            else -> JvmTarget.JVM_1_8
         }
         tasks.withType<KotlinCompile>().configureEach {
             compilerOptions {
-                jvmTarget.set(JvmTarget.JVM_17)
+                jvmTarget.set(kotlinJvmTarget)
             }
         }
     }
+}
+subprojects {
+    project.evaluationDependsOn(":app")
 }
 
 tasks.register<Delete>("clean") {
