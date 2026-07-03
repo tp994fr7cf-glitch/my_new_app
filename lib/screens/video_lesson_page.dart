@@ -67,6 +67,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       'device-${DateTime.now().microsecondsSinceEpoch}';
 
   int _currentPositionSec = 0;
+  double _currentPositionSecExact = 0;
   int _studySeconds = 0;
   int _watchSeconds = 0;
   int _cycleNumber = 1;
@@ -116,7 +117,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
     return visibleWhiteboardStrokes(
       strokes: lesson.whiteboard!.strokes,
-      positionSec: _currentPositionSec.toDouble(),
+      positionSec: _currentPositionSecExact,
     );
   }
   bool get _isTeacherPreview => widget.isTeacherPreview;
@@ -244,7 +245,10 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       final playback = factory(isAudio: _isAudioLesson);
       await playback.open(Uri.parse(lesson.mediaUrl.trim()));
       _positionSubscription = playback.positionStream.listen((position) {
-        _handlePlaybackPosition(position.inSeconds);
+        _handlePlaybackPosition(
+          position.inSeconds,
+          positionSecExact: position.inMilliseconds / 1000,
+        );
       });
       _durationSubscription = playback.durationStream.listen((duration) {
         _updateResolvedDuration(playerDuration: duration);
@@ -283,14 +287,27 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
   }
 
-  void _handlePlaybackPosition(int nextPositionSec) {
+  void _handlePlaybackPosition(
+    int nextPositionSec, {
+    required double positionSecExact,
+  }) {
     if (!mounted || _totalDurationSec <= 0) {
       return;
     }
 
     final clampedPosition = nextPositionSec.clamp(0, _totalDurationSec);
+    final clampedExact = positionSecExact
+        .clamp(0.0, _totalDurationSec.toDouble())
+        .toDouble();
+    final shouldUpdateWhiteboard =
+        _hasWhiteboard && clampedExact != _currentPositionSecExact;
+    if (clampedPosition == _currentPositionSec && !shouldUpdateWhiteboard) {
+      return;
+    }
+
     var shouldPersistPending = false;
     setState(() {
+      _currentPositionSecExact = clampedExact;
       final previousPositionSec = _currentPositionSec;
       if (clampedPosition != _currentPositionSec) {
         _currentPositionSec = clampedPosition;
@@ -370,6 +387,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     if (_sessionCompleted || _isAtEnd) {
       setState(() {
         _currentPositionSec = 0;
+        _currentPositionSecExact = 0;
         _sessionId = null;
         _segmentId = null;
         _sessionCompleted = false;
@@ -426,6 +444,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     await _mediaPlayback?.seek(Duration(seconds: nextPosition));
     setState(() {
       _currentPositionSec = nextPosition;
+      _currentPositionSecExact = nextPosition.toDouble();
       _message = null;
     });
     if (!_isTeacherPreview) {
@@ -829,6 +848,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         0;
     if (!preserveCurrentPosition) {
       _currentPositionSec = _cycleMaxWatchedPositionSec;
+      _currentPositionSecExact = _cycleMaxWatchedPositionSec.toDouble();
     }
     _hasPlaybackStarted = data['hasPlaybackStarted'] == true;
     _pendingCompletion = data['pendingCompletion'] == true;

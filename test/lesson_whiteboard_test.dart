@@ -90,4 +90,42 @@ void main() {
     final merged = mergeWhiteboardDraft(published: published, draft: draft);
     expect(merged.strokes.single.id, 'draft');
   });
+
+  test('visibleWhiteboardStrokes uses exact seconds for fractional timestamps', () {
+    const strokes = [
+      WhiteboardStroke(
+        id: 'a',
+        timestampSec: 1.3,
+        points: [
+          WhiteboardPoint(x: 0, y: 0),
+          WhiteboardPoint(x: 1, y: 1),
+        ],
+      ),
+      WhiteboardStroke(
+        id: 'b',
+        timestampSec: 2.1,
+        points: [
+          WhiteboardPoint(x: 0.2, y: 0.2),
+          WhiteboardPoint(x: 0.8, y: 0.8),
+        ],
+      ),
+    ];
+
+    expect(
+      visibleWhiteboardStrokes(strokes: strokes, positionSec: 1),
+      isEmpty,
+    );
+    expect(
+      visibleWhiteboardStrokes(strokes: strokes, positionSec: 1.3),
+      hasLength(1),
+    );
+    expect(
+      visibleWhiteboardStrokes(strokes: strokes, positionSec: 2.09),
+      hasLength(1),
+    );
+    expect(
+      visibleWhiteboardStrokes(strokes: strokes, positionSec: 2.1),
+      hasLength(2),
+    );
+  });
 }
