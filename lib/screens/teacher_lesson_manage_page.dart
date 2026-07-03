@@ -1,11 +1,16 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
 import '../models/lesson_duration_parser.dart';
+import '../models/lesson_player_view_state.dart';
+import '../models/lesson_whiteboard.dart';
 import '../services/lesson_media_duration_service.dart';
 import '../services/lesson_media_storage_service.dart';
+import '../widgets/lesson_whiteboard_editor_panel.dart';
 import 'teacher_quiz_manage_page.dart';
 
 typedef LessonSaveOverride = Future<void> Function(List<CourseLesson> lessons);
@@ -29,16 +34,20 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
   static const _mediaStorageService = LessonMediaStorageService();
   static const _durationService = LessonMediaDurationService();
 
-  late final List<_LessonEditorState> _lessonEditors;
+  late List<_LessonEditorState> _lessonEditors;
+  late Course _activeCourse;
   bool _isSaving = false;
+  bool _isLoadingLessons = false;
   String? _message;
 
   @override
   void initState() {
     super.initState();
-    _lessonEditors = widget.course.lessons
+    _activeCourse = widget.course;
+    _lessonEditors = _activeCourse.lessons
         .map(_LessonEditorState.fromLesson)
         .toList();
+    unawaited(_loadLatestLessons());
   }
 
   @override
@@ -47,6 +56,50 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       editor.dispose();
     }
     super.dispose();
+  }
+
+  Future<void> _loadLatestLessons() async {
+    final courseId = widget.course.id;
+    if (courseId == null || widget.onSaveOverride != null) {
+      return;
+    }
+
+    setState(() {
+      _isLoadingLessons = true;
+    });
+
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('courses')
+          .doc(courseId)
+          .get();
+      if (!mounted || !snapshot.exists) {
+        return;
+      }
+
+      final latestCourse = Course.fromFirestore(snapshot);
+      setState(() {
+        _activeCourse = latestCourse;
+        for (final editor in _lessonEditors) {
+          editor.dispose();
+        }
+        _lessonEditors = latestCourse.lessons
+            .map(_LessonEditorState.fromLesson)
+            .toList();
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _message = '保存済みレッスン情報の読み込みに失敗しました。';
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingLessons = false;
+        });
+      }
+    }
   }
 
   String? _requiredText(String? value) {
@@ -83,6 +136,10 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
           mediaUrl: editor.mediaUrlController.text.trim(),
           mediaDurationSec: mediaDurationSec,
           isPreview: editor.isPreview,
+          whiteboard: editor.workingWhiteboard.isEmpty
+              ? null
+              : editor.workingWhiteboard,
+          whiteboardDraft: null,
         ),
       );
     }
@@ -126,6 +183,16 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
 
       if (mounted) {
         setState(() {
+          for (var index = 0; index < _lessonEditors.length; index++) {
+            if (index >= lessons.length) {
+              continue;
+            }
+            final editor = _lessonEditors[index];
+            final savedLesson = lessons[index];
+            editor.publishedWhiteboard = savedLesson.whiteboard;
+            editor.draftWhiteboard = null;
+            editor.workingWhiteboard = savedLesson.whiteboard ?? const LessonWhiteboard();
+          }
           _message = 'レッスン情報を保存しました。';
         });
       }
@@ -303,6 +370,30 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     return result ?? false;
   }
 
+  Future<void> _saveWhiteboardDraft({
+    required int lessonIndex,
+    required _LessonEditorState editor,
+    required LessonWhiteboard whiteboard,
+  }) async {
+    final courseId = widget.course.id;
+    if (courseId == null) {
+      throw StateError('講座IDがないため一時保存できません。');
+    }
+
+    await saveLessonWhiteboardDraft(
+      courseId: courseId,
+      lessonIndex: lessonIndex,
+      whiteboard: whiteboard,
+    );
+
+    if (mounted) {
+      setState(() {
+        editor.draftWhiteboard = whiteboard.isEmpty ? null : whiteboard;
+        editor.workingWhiteboard = whiteboard;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final courseId = widget.course.id;
@@ -332,10 +423,15 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
               ),
             ],
             const SizedBox(height: 24),
+            if (_isLoadingLessons) ...[
+              const LinearProgressIndicator(),
+              const SizedBox(height: 16),
+            ],
             for (final entry in _lessonEditors.indexed) ...[
               _LessonEditorCard(
                 index: entry.$1 + 1,
-                course: widget.course,
+                lessonIndex: entry.$1,
+                course: _activeCourse,
                 editor: entry.$2,
                 canUploadMedia: canUploadMedia,
                 requiredText: _requiredText,
@@ -343,6 +439,11 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                 onUpload: () => _uploadLessonMedia(
                   lessonNumber: entry.$1 + 1,
                   editor: entry.$2,
+                ),
+                onDraftSaved: (whiteboard) => _saveWhiteboardDraft(
+                  lessonIndex: entry.$1,
+                  editor: entry.$2,
+                  whiteboard: whiteboard,
                 ),
               ),
               const SizedBox(height: 16),
@@ -383,9 +484,17 @@ class _LessonEditorState {
     this.mediaDurationSec = 0,
     this.isUploading = false,
     this.uploadProgress,
-  });
+    this.publishedWhiteboard,
+    this.draftWhiteboard,
+    LessonWhiteboard? workingWhiteboard,
+  }) : workingWhiteboard = workingWhiteboard ?? const LessonWhiteboard();
 
   factory _LessonEditorState.fromLesson(CourseLesson lesson) {
+    final merged = mergeWhiteboardDraft(
+      published: lesson.whiteboard,
+      draft: lesson.whiteboardDraft,
+    );
+
     return _LessonEditorState(
       titleController: TextEditingController(text: lesson.title),
       durationController: TextEditingController(text: lesson.duration),
@@ -393,6 +502,9 @@ class _LessonEditorState {
       mediaType: lesson.mediaType == 'audio' ? 'audio' : 'video',
       isPreview: lesson.isPreview,
       mediaDurationSec: lesson.mediaDurationSec,
+      publishedWhiteboard: lesson.whiteboard,
+      draftWhiteboard: lesson.whiteboardDraft,
+      workingWhiteboard: merged,
     );
   }
 
@@ -404,6 +516,9 @@ class _LessonEditorState {
   int mediaDurationSec;
   bool isUploading;
   double? uploadProgress;
+  LessonWhiteboard? publishedWhiteboard;
+  LessonWhiteboard? draftWhiteboard;
+  LessonWhiteboard workingWhiteboard;
 
   void dispose() {
     titleController.dispose();
@@ -415,21 +530,25 @@ class _LessonEditorState {
 class _LessonEditorCard extends StatelessWidget {
   const _LessonEditorCard({
     required this.index,
+    required this.lessonIndex,
     required this.course,
     required this.editor,
     required this.canUploadMedia,
     required this.requiredText,
     required this.onChanged,
     required this.onUpload,
+    required this.onDraftSaved,
   });
 
   final int index;
+  final int lessonIndex;
   final Course course;
   final _LessonEditorState editor;
   final bool canUploadMedia;
   final String? Function(String? value) requiredText;
   final VoidCallback onChanged;
   final VoidCallback onUpload;
+  final WhiteboardDraftSaveCallback onDraftSaved;
 
   @override
   Widget build(BuildContext context) {
@@ -439,6 +558,11 @@ class _LessonEditorCard extends StatelessWidget {
       editor.mediaType,
     );
     final hasMediaUrl = editor.mediaUrlController.text.trim().isNotEmpty;
+    final isAudioLesson = editor.mediaType == 'audio';
+    final courseId = course.id ?? '';
+    final durationLabel = editor.durationController.text.trim().isEmpty
+        ? '1分30秒'
+        : editor.durationController.text.trim();
 
     return Card(
       child: Padding(
@@ -554,6 +678,25 @@ class _LessonEditorCard extends StatelessWidget {
               icon: const Icon(Icons.quiz),
               label: const Text('クイズを管理'),
             ),
+            if (isAudioLesson && hasMediaUrl && courseId.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              const Divider(),
+              const SizedBox(height: 16),
+              LessonWhiteboardEditorPanel(
+                key: ValueKey('${courseId}_${index}_${editor.mediaUrlController.text}'),
+                courseId: courseId,
+                lessonNumber: index,
+                mediaUrl: editor.mediaUrlController.text.trim(),
+                mediaDurationSec: editor.mediaDurationSec,
+                durationLabel: durationLabel,
+                publishedWhiteboard: editor.publishedWhiteboard,
+                draftWhiteboard: editor.draftWhiteboard,
+                onDraftSaved: onDraftSaved,
+                onWhiteboardChanged: (whiteboard) {
+                  editor.workingWhiteboard = whiteboard;
+                },
+              ),
+            ],
           ],
         ),
       ),
