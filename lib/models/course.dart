@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import 'lesson_whiteboard.dart';
+
 class Course {
   const Course({
     this.id,
@@ -98,6 +100,8 @@ class CourseLesson {
     this.mediaUrl = '',
     this.mediaDurationSec = 0,
     this.isPreview = false,
+    this.whiteboard,
+    this.whiteboardDraft,
   });
 
   final String title;
@@ -106,8 +110,16 @@ class CourseLesson {
   final String mediaUrl;
   final int mediaDurationSec;
   final bool isPreview;
+  final LessonWhiteboard? whiteboard;
+  final LessonWhiteboard? whiteboardDraft;
+
+  bool get hasPublishedWhiteboard =>
+      whiteboard != null && !whiteboard!.isEmpty;
 
   factory CourseLesson.fromMap(Map data) {
+    final whiteboardData = data['whiteboard'];
+    final whiteboardDraftData = data['whiteboardDraft'];
+
     return CourseLesson(
       title: data['title'] as String? ?? '',
       duration: data['duration'] as String? ?? '',
@@ -115,6 +127,12 @@ class CourseLesson {
       mediaUrl: data['mediaUrl'] as String? ?? '',
       mediaDurationSec: (data['mediaDurationSec'] as num?)?.toInt() ?? 0,
       isPreview: data['isPreview'] as bool? ?? false,
+      whiteboard: whiteboardData is Map
+          ? LessonWhiteboard.fromMap(whiteboardData)
+          : null,
+      whiteboardDraft: whiteboardDraftData is Map
+          ? LessonWhiteboard.fromMap(whiteboardDraftData)
+          : null,
     );
   }
 
@@ -126,7 +144,37 @@ class CourseLesson {
       'mediaUrl': mediaUrl,
       if (mediaDurationSec > 0) 'mediaDurationSec': mediaDurationSec,
       'isPreview': isPreview,
+      if (whiteboard != null && !whiteboard!.isEmpty)
+        'whiteboard': whiteboard!.toMap(),
+      if (whiteboardDraft != null && !whiteboardDraft!.isEmpty)
+        'whiteboardDraft': whiteboardDraft!.toMap(),
     };
+  }
+
+  CourseLesson copyWith({
+    String? title,
+    String? duration,
+    String? mediaType,
+    String? mediaUrl,
+    int? mediaDurationSec,
+    bool? isPreview,
+    LessonWhiteboard? whiteboard,
+    LessonWhiteboard? whiteboardDraft,
+    bool clearWhiteboard = false,
+    bool clearWhiteboardDraft = false,
+  }) {
+    return CourseLesson(
+      title: title ?? this.title,
+      duration: duration ?? this.duration,
+      mediaType: mediaType ?? this.mediaType,
+      mediaUrl: mediaUrl ?? this.mediaUrl,
+      mediaDurationSec: mediaDurationSec ?? this.mediaDurationSec,
+      isPreview: isPreview ?? this.isPreview,
+      whiteboard: clearWhiteboard ? null : (whiteboard ?? this.whiteboard),
+      whiteboardDraft: clearWhiteboardDraft
+          ? null
+          : (whiteboardDraft ?? this.whiteboardDraft),
+    );
   }
 }
 

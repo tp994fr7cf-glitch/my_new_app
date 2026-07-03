@@ -13,11 +13,13 @@ import '../models/lesson_cycle_display.dart';
 import '../models/lesson_duration_parser.dart';
 import '../models/lesson_player_view_state.dart';
 import '../models/lesson_segment_boundary.dart';
+import '../models/lesson_whiteboard.dart';
 import '../models/course_privacy_consent.dart';
 import '../models/quiz_answer_key.dart';
 import '../models/watched_range.dart';
 import '../services/course_privacy_service.dart';
 import '../services/lesson_media_playback.dart';
+import '../widgets/lesson_whiteboard_canvas.dart';
 import 'course_entry_gate.dart';
 import 'lesson_questions_page.dart';
 import 'lesson_notes_page.dart';
@@ -104,6 +106,19 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   int get lessonNumber => widget.lessonNumber;
 
   bool get _isAudioLesson => lesson.mediaType == 'audio';
+  bool get _hasWhiteboard =>
+      _isAudioLesson &&
+      lesson.whiteboard != null &&
+      !lesson.whiteboard!.isEmpty;
+  List<WhiteboardStroke> get _visibleWhiteboardStrokes {
+    if (!_hasWhiteboard) {
+      return const [];
+    }
+    return visibleWhiteboardStrokes(
+      strokes: lesson.whiteboard!.strokes,
+      positionSec: _currentPositionSec.toDouble(),
+    );
+  }
   bool get _isTeacherPreview => widget.isTeacherPreview;
   bool get _hasMediaSource => lessonHasMediaSource(lesson.mediaUrl);
   int get _completionThresholdSec => calculateCompletionThresholdSec(
@@ -1667,6 +1682,21 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                 ),
               ),
             ),
+            if (_hasWhiteboard) ...[
+              const SizedBox(height: 16),
+              Text(
+                'ホワイトボード',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 220,
+                child: LessonWhiteboardCanvas(
+                  strokes: _visibleWhiteboardStrokes,
+                  drawingEnabled: false,
+                ),
+              ),
+            ],
             const SizedBox(height: 24),
             Text(course.title, style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
