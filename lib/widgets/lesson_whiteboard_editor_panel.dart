@@ -69,6 +69,13 @@ class _LessonWhiteboardEditorPanelState
   bool get _hasPublishedWhiteboard =>
       widget.publishedWhiteboard != null && !widget.publishedWhiteboard!.isEmpty;
 
+  List<WhiteboardStroke> get _visibleStrokes {
+    return visibleWhiteboardStrokes(
+      strokes: _strokes,
+      positionSec: _currentPositionSecExact,
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -589,7 +596,7 @@ class _LessonWhiteboardEditorPanelState
           SizedBox(
             height: 220,
             child: LessonWhiteboardCanvas(
-              strokes: _strokes,
+              strokes: _visibleStrokes,
               inProgressStroke: _inProgressStroke,
               drawingEnabled: _drawingEnabled,
               onStrokeStart: _handleStrokeStart,
