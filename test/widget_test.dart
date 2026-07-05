@@ -12,6 +12,7 @@ import 'package:my_new_app/screens/course_list_page.dart';
 import 'package:my_new_app/screens/home_page.dart';
 import 'package:my_new_app/screens/learning_records_page.dart';
 import 'package:my_new_app/screens/teacher_application_page.dart';
+import 'package:my_new_app/screens/teacher_course_list_page.dart';
 import 'package:my_new_app/screens/teacher_interaction_manage_page.dart';
 import 'package:my_new_app/screens/teacher_quiz_manage_page.dart';
 import 'package:my_new_app/screens/video_lesson_page.dart';
@@ -46,14 +47,21 @@ Course _courseWithPlayableMedia(Course base) {
   );
 }
 
-Widget _playableVideoLessonPage(Course course) {
+Widget _playableVideoLessonPage(
+  Course course, {
+  bool isTeacherPreview = false,
+  LessonMediaPlaybackFactory? playbackFactory,
+}) {
   final playableCourse = _courseWithPlayableMedia(course);
   return MaterialApp(
     home: VideoLessonPage(
       course: playableCourse,
       lesson: playableCourse.lessons.first,
       lessonNumber: 1,
-      playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(),
+      isTeacherPreview: isTeacherPreview,
+      playbackFactory:
+          playbackFactory ??
+          (({required isAudio}) => FakeLessonMediaPlayback()),
     ),
   );
 }
@@ -3106,6 +3114,61 @@ void main() {
     final course = sampleCourses.first;
 
     await tester.pumpWidget(_playableVideoLessonPage(course));
+    await tester.pumpAndSettle();
+
+    final sliderFinder = find.byType(Slider);
+    final sliderAtEnd = tester.widget<Slider>(sliderFinder);
+    sliderAtEnd.onChanged!(90);
+    await tester.pumpAndSettle();
+
+    final sliderRewound = tester.widget<Slider>(sliderFinder);
+    sliderRewound.onChanged!(30);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, '再生'));
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.text('00:31 / 01:30'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, '一時停止'), findsOneWidget);
+  });
+
+  testWidgets('Teacher preview can replay after natural playback end', (
+    WidgetTester tester,
+  ) async {
+    final course = sampleCourses.first;
+
+    await tester.pumpWidget(
+      _playableVideoLessonPage(
+        course,
+        isTeacherPreview: true,
+        playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(
+          naturalEndPosition: const Duration(milliseconds: 89900),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, '再生'));
+    await tester.pump(const Duration(seconds: 91));
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(FilledButton, 'もう一度再生'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'もう一度再生'));
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.text('00:01 / 01:30'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, '一時停止'), findsOneWidget);
+  });
+
+  testWidgets('Teacher preview can resume after rewinding from the end', (
+    WidgetTester tester,
+  ) async {
+    final course = sampleCourses.first;
+
+    await tester.pumpWidget(
+      _playableVideoLessonPage(course, isTeacherPreview: true),
+    );
     await tester.pumpAndSettle();
 
     final sliderFinder = find.byType(Slider);
