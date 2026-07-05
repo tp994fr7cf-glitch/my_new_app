@@ -18,6 +18,30 @@ void main() {
       );
     });
 
+    test('detects playback end with exact position tolerance', () {
+      expect(
+        isLessonPlaybackAtEnd(
+          totalDurationSec: 90,
+          positionSecExact: 89.4,
+        ),
+        isFalse,
+      );
+      expect(
+        isLessonPlaybackAtEnd(
+          totalDurationSec: 90,
+          positionSecExact: 89.6,
+        ),
+        isTrue,
+      );
+      expect(
+        isLessonPlaybackAtEnd(
+          totalDurationSec: 90,
+          positionSecExact: 90,
+        ),
+        isTrue,
+      );
+    });
+
     test('selects play button visuals', () {
       expect(
         lessonPlayButtonVisual(isPlaying: true, isAtEnd: false),

@@ -126,8 +126,10 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     totalDurationSec: _totalDurationSec,
     completionRate: _completionRate,
   );
-  bool get _isAtEnd =>
-      _totalDurationSec > 0 && _currentPositionSec >= _totalDurationSec;
+  bool get _isAtEnd => isLessonPlaybackAtEnd(
+    totalDurationSec: _totalDurationSec,
+    positionSecExact: _currentPositionSecExact,
+  );
   bool get _hasActiveSession => _sessionId != null && !_sessionCompleted;
   String get _taskKey => '${_courseId()}-$lessonNumber-$_cycleNumber';
   int get _visibleCycleNumber => _displayCycleNumber ?? _cycleNumber;
@@ -254,12 +256,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         _updateResolvedDuration(playerDuration: duration);
       });
       _playingSubscription = playback.playingStream.listen((isPlaying) {
-        if (!mounted) {
-          return;
-        }
-        setState(() {
-          _isPlaying = isPlaying;
-        });
+        _handlePlayingStreamUpdate(isPlaying);
       });
 
       if (!mounted) {
@@ -287,6 +284,30 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
   }
 
+  void _handlePlayingStreamUpdate(bool isPlaying) {
+    if (!mounted) {
+      return;
+    }
+
+    if (_isTeacherPreview &&
+        isLessonPlaybackAtEnd(
+          totalDurationSec: _totalDurationSec,
+          positionSecExact: _currentPositionSecExact,
+        )) {
+      if (isPlaying) {
+        return;
+      }
+      setState(() {
+        _isPlaying = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _isPlaying = isPlaying;
+    });
+  }
+
   void _handlePlaybackPosition(
     int nextPositionSec, {
     required double positionSecExact,
@@ -301,11 +322,15 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         .toDouble();
     final shouldUpdateWhiteboard =
         _hasWhiteboard && clampedExact != _currentPositionSecExact;
-    if (clampedPosition == _currentPositionSec && !shouldUpdateWhiteboard) {
+    final positionExactChanged = clampedExact != _currentPositionSecExact;
+    if (clampedPosition == _currentPositionSec &&
+        !shouldUpdateWhiteboard &&
+        !positionExactChanged) {
       return;
     }
 
     var shouldPersistPending = false;
+    var shouldPauseTeacherPreviewAtEnd = false;
     setState(() {
       _currentPositionSecExact = clampedExact;
       final previousPositionSec = _currentPositionSec;
@@ -313,8 +338,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         _currentPositionSec = clampedPosition;
         _addWatchProgress(previousPositionSec, _currentPositionSec);
       }
-      if (_isTeacherPreview && _currentPositionSec >= _totalDurationSec) {
+      if (_isTeacherPreview &&
+          isLessonPlaybackAtEnd(
+            totalDurationSec: _totalDurationSec,
+            positionSecExact: clampedExact,
+          )) {
+        _syncPlaybackEndPosition();
         _isPlaying = false;
+        shouldPauseTeacherPreviewAtEnd = true;
       }
       if (!_isTeacherPreview &&
           _currentPositionSec >= _completionThresholdSec &&
@@ -323,9 +354,17 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         shouldPersistPending = true;
       }
     });
+    if (shouldPauseTeacherPreviewAtEnd) {
+      unawaited(_mediaPlayback?.pause());
+    }
     if (shouldPersistPending && !_isTeacherPreview) {
       unawaited(_persistSessionProgress());
     }
+  }
+
+  void _syncPlaybackEndPosition() {
+    _currentPositionSec = _totalDurationSec;
+    _currentPositionSecExact = _totalDurationSec.toDouble();
   }
 
   void _updateResolvedDuration({Duration? playerDuration}) {

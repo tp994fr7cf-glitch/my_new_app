@@ -250,10 +250,14 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
 }
 
 class FakeLessonMediaPlayback implements LessonMediaPlayback {
-  FakeLessonMediaPlayback({Duration? totalDuration})
-    : _totalDuration = totalDuration ?? const Duration(seconds: 90);
+  FakeLessonMediaPlayback({
+    Duration? totalDuration,
+    Duration? naturalEndPosition,
+  }) : _totalDuration = totalDuration ?? const Duration(seconds: 90),
+       _naturalEndPosition = naturalEndPosition;
 
   final Duration _totalDuration;
+  final Duration? _naturalEndPosition;
   Duration _position = Duration.zero;
   bool _isPlaying = false;
   bool _isReady = false;
@@ -307,12 +311,23 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
     _isPlaying = true;
     _playingController.add(true);
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_position >= _totalDuration) {
+      final stopAt = _naturalEndPosition ?? _totalDuration;
+      if (_position >= stopAt) {
+        if (_position > stopAt) {
+          _position = stopAt;
+          _positionController.add(_position);
+        }
         unawaited(pause());
         return;
       }
       _position += const Duration(seconds: 1);
+      if (_position > stopAt) {
+        _position = stopAt;
+      }
       _positionController.add(_position);
+      if (_position >= stopAt) {
+        unawaited(pause());
+      }
     });
   }
 
