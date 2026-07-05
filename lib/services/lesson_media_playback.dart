@@ -125,7 +125,12 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   }
 
   @override
-  Future<void> play() => _player.play();
+  Future<void> play() async {
+    if (_player.processingState == ProcessingState.completed) {
+      await _player.seek(_player.position);
+    }
+    await _player.play();
+  }
 
   @override
   Future<void> pause() => _player.pause();
@@ -209,6 +214,13 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
 
   @override
   Future<void> play() async {
+    final controller = _controller;
+    if (controller != null &&
+        controller.value.isInitialized &&
+        controller.value.position >= controller.value.duration &&
+        controller.value.duration > Duration.zero) {
+      await controller.seekTo(controller.value.position);
+    }
     await _controller?.play();
     _notifyPlaying();
   }
@@ -287,6 +299,10 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
 
   @override
   Future<void> play() async {
+    if (_position >= _totalDuration) {
+      _position = Duration.zero;
+      _positionController.add(_position);
+    }
     _timer?.cancel();
     _isPlaying = true;
     _playingController.add(true);

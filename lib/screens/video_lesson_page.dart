@@ -385,27 +385,11 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
 
     if (_sessionCompleted || _isAtEnd) {
-      setState(() {
-        _currentPositionSec = 0;
-        _currentPositionSecExact = 0;
-        _sessionId = null;
-        _segmentId = null;
-        _sessionCompleted = false;
-        _studySeconds = 0;
-        _watchSeconds = 0;
-        _cycleMaxWatchedPositionSec = 0;
-        _hasPlaybackStarted = false;
-        _pendingCompletion = false;
-        _selectedChoices.clear();
-        _answerResults.clear();
-        _answeredQuizEventIds.clear();
-        _cycleWatchedRanges.clear();
-        _message = null;
-      });
-      await _mediaPlayback?.seek(Duration.zero);
+      _resetPlaybackCycleState(positionSec: 0);
+      await _seekMediaPlayback(0);
     }
 
-    final prepared = await _ensureSession();
+    final prepared = await _ensureSession(preservePlaybackPosition: true);
     if (!prepared || !mounted) {
       return;
     }
@@ -414,6 +398,48 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       _hasPlaybackStarted = true;
       _message = null;
     });
+    await _seekMediaPlayback(_currentPositionSec);
+    await _startMediaPlayback();
+  }
+
+  void _resetPlaybackCycleState({required int positionSec}) {
+    setState(() {
+      _currentPositionSec = positionSec;
+      _currentPositionSecExact = positionSec.toDouble();
+      _sessionId = null;
+      _segmentId = null;
+      _sessionCompleted = false;
+      _studySeconds = 0;
+      _watchSeconds = 0;
+      _cycleMaxWatchedPositionSec = 0;
+      _hasPlaybackStarted = false;
+      _pendingCompletion = false;
+      _selectedChoices.clear();
+      _answerResults.clear();
+      _answeredQuizEventIds.clear();
+      _cycleWatchedRanges.clear();
+      _message = null;
+    });
+  }
+
+  Future<void> _seekMediaPlayback(int positionSec) async {
+    if (_mediaPlayback == null || _totalDurationSec <= 0) {
+      return;
+    }
+
+    final targetPosition = positionSec.clamp(0, _totalDurationSec);
+    await _mediaPlayback!.seek(Duration(seconds: targetPosition));
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _currentPositionSec = targetPosition;
+      _currentPositionSecExact = targetPosition.toDouble();
+    });
+  }
+
+  Future<void> _startMediaPlayback() async {
     try {
       await _mediaPlayback?.play();
     } catch (error) {
@@ -441,11 +467,16 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
     final nextPosition = positionSec.clamp(0, _totalDurationSec);
-    await _mediaPlayback?.seek(Duration(seconds: nextPosition));
+    await _seekMediaPlayback(nextPosition);
+    if (!mounted) {
+      return;
+    }
+
     setState(() {
-      _currentPositionSec = nextPosition;
-      _currentPositionSecExact = nextPosition.toDouble();
       _message = null;
+      if (_pendingCompletion && nextPosition < _completionThresholdSec) {
+        _pendingCompletion = false;
+      }
     });
     if (!_isTeacherPreview) {
       unawaited(_persistSessionProgress());
@@ -726,7 +757,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     });
   }
 
-  Future<bool> _ensureSession() async {
+  Future<bool> _ensureSession({bool preservePlaybackPosition = false}) async {
     if (_isTeacherPreview) {
       _startTeacherPreviewSession();
       return true;
@@ -767,7 +798,10 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         return true;
       }
 
-      final session = await _loadOrCreateCycleSession(user);
+      final session = await _loadOrCreateCycleSession(
+        user,
+        preservePlaybackPosition: preservePlaybackPosition,
+      );
       final acquired = await _acquireActiveLearningLock(user, session.id);
       if (!acquired) {
         if (mounted) {
@@ -999,8 +1033,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   }
 
   Future<DocumentSnapshot<Map<String, dynamic>>> _loadOrCreateCycleSession(
-    User user,
-  ) async {
+    User user, {
+    bool preservePlaybackPosition = false,
+  }) async {
     final sessionsRef = FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
@@ -1013,7 +1048,11 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           latestData['status'] == 'completed' ||
           latestData['cycleCompleted'] == true;
       if (!isCompleted) {
-        _loadSession(latest.id, latestData);
+        _loadSession(
+          latest.id,
+          latestData,
+          preserveCurrentPosition: preservePlaybackPosition,
+        );
         await latest.reference.set({
           'hasPlaybackStarted': true,
           'lastActivityAt': FieldValue.serverTimestamp(),
@@ -1347,6 +1386,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   void _setCompletionPendingState() {
     _playbackTimer?.cancel();
     _isPlaying = false;
+    unawaited(_mediaPlayback?.pause());
     _currentPositionSec = _currentPositionSec
         .clamp(_completionThresholdSec, _totalDurationSec)
         .toInt();
