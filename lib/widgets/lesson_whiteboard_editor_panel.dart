@@ -272,11 +272,31 @@ class _LessonWhiteboardEditorPanelState
   }
 
   void _handleStrokeUpdate(WhiteboardPoint point) {
+    _recordPoint(point, force: false);
+  }
+
+  void _recordPoint(WhiteboardPoint point, {required bool force}) {
     if (_strokeStartSec == null) {
       return;
     }
+
+    final timestampSec = _currentPositionSecExact;
+    final timedPoint = WhiteboardPoint(
+      x: point.x,
+      y: point.y,
+      timestampSec: timestampSec,
+    );
+    if (!shouldSampleWhiteboardPoint(
+      existingPoints: _inProgressPoints,
+      nextPoint: timedPoint,
+      nextTimestampSec: timestampSec,
+      force: force,
+    )) {
+      return;
+    }
+
     setState(() {
-      _inProgressPoints = [..._inProgressPoints, point];
+      _inProgressPoints = [..._inProgressPoints, timedPoint];
       _inProgressStroke = WhiteboardStroke(
         id: 'in-progress',
         timestampSec: _strokeStartSec!,
@@ -285,12 +305,41 @@ class _LessonWhiteboardEditorPanelState
     });
   }
 
+  List<WhiteboardPoint> _finalizeStrokePoints(WhiteboardPoint endPoint) {
+    final timestampSec = _currentPositionSecExact;
+    final timedEndPoint = WhiteboardPoint(
+      x: endPoint.x,
+      y: endPoint.y,
+      timestampSec: timestampSec,
+    );
+    final points = List<WhiteboardPoint>.from(_inProgressPoints);
+    if (points.isEmpty) {
+      return [timedEndPoint];
+    }
+
+    final lastPoint = points.last;
+    if (lastPoint.x == timedEndPoint.x && lastPoint.y == timedEndPoint.y) {
+      points[points.length - 1] = timedEndPoint;
+      return points;
+    }
+
+    if (shouldSampleWhiteboardPoint(
+      existingPoints: points,
+      nextPoint: timedEndPoint,
+      nextTimestampSec: timestampSec,
+      force: true,
+    )) {
+      points.add(timedEndPoint);
+    }
+    return points;
+  }
+
   void _handleStrokeEnd(WhiteboardPoint point) {
     if (_strokeStartSec == null) {
       return;
     }
 
-    final points = [..._inProgressPoints, point];
+    final points = _finalizeStrokePoints(point);
     if (points.length >= 2) {
       final stroke = WhiteboardStroke(
         id: '${DateTime.now().microsecondsSinceEpoch}',
@@ -313,7 +362,7 @@ class _LessonWhiteboardEditorPanelState
         id: '${DateTime.now().microsecondsSinceEpoch}',
         timestampSec: _strokeStartSec!,
         endTimestampSec: _currentPositionSecExact,
-        points: _inProgressPoints,
+        points: List<WhiteboardPoint>.from(_inProgressPoints),
       );
       setState(() {
         _strokes = [..._strokes, stroke];

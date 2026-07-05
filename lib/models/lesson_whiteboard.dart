@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui';
 
 class LessonWhiteboard {
@@ -75,6 +76,9 @@ class WhiteboardStroke {
   final int colorArgb;
   final double strokeWidth;
 
+  bool get hasPointTimestamps =>
+      points.isNotEmpty && points.every((point) => point.hasTimestamp);
+
   factory WhiteboardStroke.fromMap(Map data) {
     final pointsData = data['points'];
 
@@ -103,35 +107,124 @@ class WhiteboardStroke {
       'strokeWidth': strokeWidth,
     };
   }
+
+  WhiteboardStroke copyWith({
+    List<WhiteboardPoint>? points,
+  }) {
+    return WhiteboardStroke(
+      id: id,
+      timestampSec: timestampSec,
+      endTimestampSec: endTimestampSec,
+      points: points ?? this.points,
+      colorArgb: colorArgb,
+      strokeWidth: strokeWidth,
+    );
+  }
 }
 
 class WhiteboardPoint {
-  const WhiteboardPoint({required this.x, required this.y});
+  const WhiteboardPoint({
+    required this.x,
+    required this.y,
+    this.timestampSec,
+  });
 
   final double x;
   final double y;
+  final double? timestampSec;
+
+  bool get hasTimestamp => timestampSec != null;
 
   factory WhiteboardPoint.fromMap(Map data) {
     return WhiteboardPoint(
       x: (data['x'] as num?)?.toDouble() ?? 0,
       y: (data['y'] as num?)?.toDouble() ?? 0,
+      timestampSec: (data['timestampSec'] as num?)?.toDouble(),
     );
   }
 
   Map<String, dynamic> toMap() {
-    return {'x': x, 'y': y};
+    return {
+      'x': x,
+      'y': y,
+      if (timestampSec != null) 'timestampSec': timestampSec,
+    };
   }
 
   Offset toOffset() => Offset(x, y);
+}
+
+const double whiteboardMinPointIntervalSec = 0.05;
+const double whiteboardMinPointDistance = 0.005;
+
+bool shouldSampleWhiteboardPoint({
+  required List<WhiteboardPoint> existingPoints,
+  required WhiteboardPoint nextPoint,
+  required double nextTimestampSec,
+  required bool force,
+}) {
+  if (force || existingPoints.isEmpty) {
+    return true;
+  }
+
+  final lastPoint = existingPoints.last;
+  final lastTimestampSec = lastPoint.timestampSec;
+  if (lastTimestampSec == null) {
+    return true;
+  }
+
+  final elapsedSec = nextTimestampSec - lastTimestampSec;
+  if (elapsedSec >= whiteboardMinPointIntervalSec) {
+    return true;
+  }
+
+  final dx = nextPoint.x - lastPoint.x;
+  final dy = nextPoint.y - lastPoint.y;
+  final distance = math.sqrt(dx * dx + dy * dy);
+  return distance >= whiteboardMinPointDistance;
 }
 
 List<WhiteboardStroke> visibleWhiteboardStrokes({
   required List<WhiteboardStroke> strokes,
   required double positionSec,
 }) {
-  return strokes
-      .where((stroke) => stroke.timestampSec <= positionSec)
+  final visibleStrokes = <WhiteboardStroke>[];
+
+  for (final stroke in strokes) {
+    final visibleStroke = visiblePortionOfWhiteboardStroke(
+      stroke: stroke,
+      positionSec: positionSec,
+    );
+    if (visibleStroke != null) {
+      visibleStrokes.add(visibleStroke);
+    }
+  }
+
+  return visibleStrokes;
+}
+
+WhiteboardStroke? visiblePortionOfWhiteboardStroke({
+  required WhiteboardStroke stroke,
+  required double positionSec,
+}) {
+  if (stroke.timestampSec > positionSec) {
+    return null;
+  }
+
+  if (!stroke.hasPointTimestamps) {
+    return stroke;
+  }
+
+  final visiblePoints = stroke.points
+      .where(
+        (point) => point.timestampSec != null && point.timestampSec! <= positionSec,
+      )
       .toList(growable: false);
+  if (visiblePoints.length < 2) {
+    return null;
+  }
+
+  return stroke.copyWith(points: visiblePoints);
 }
 
 LessonWhiteboard mergeWhiteboardDraft({
