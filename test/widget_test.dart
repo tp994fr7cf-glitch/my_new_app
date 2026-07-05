@@ -3079,6 +3079,51 @@ void main() {
     expect(find.text('レッスン1 1周目終了として記録しました。'), findsOneWidget);
   });
 
+  testWidgets('Video lesson can replay after seeking to the end', (
+    WidgetTester tester,
+  ) async {
+    final course = sampleCourses.first;
+
+    await tester.pumpWidget(_playableVideoLessonPage(course));
+    await tester.pumpAndSettle();
+
+    final slider = tester.widget<Slider>(find.byType(Slider));
+    slider.onChanged!(90);
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(FilledButton, 'もう一度再生'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'もう一度再生'));
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.text('00:01 / 01:30'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, '一時停止'), findsOneWidget);
+  });
+
+  testWidgets('Video lesson can resume after rewinding from the end', (
+    WidgetTester tester,
+  ) async {
+    final course = sampleCourses.first;
+
+    await tester.pumpWidget(_playableVideoLessonPage(course));
+    await tester.pumpAndSettle();
+
+    final sliderFinder = find.byType(Slider);
+    final sliderAtEnd = tester.widget<Slider>(sliderFinder);
+    sliderAtEnd.onChanged!(90);
+    await tester.pumpAndSettle();
+
+    final sliderRewound = tester.widget<Slider>(sliderFinder);
+    sliderRewound.onChanged!(30);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, '再生'));
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.text('00:31 / 01:30'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, '一時停止'), findsOneWidget);
+  });
+
   testWidgets('Quiz manage page disables save until quiz is valid', (
     WidgetTester tester,
   ) async {
