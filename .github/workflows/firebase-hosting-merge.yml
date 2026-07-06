@@ -16,12 +16,6 @@ jobs:
           channel: stable
           cache: true
       - run: flutter pub get
-      - id: auth
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_MY_NEW_APP_NAONA_20260523 }}
-      - run: npm install -g firebase-tools
-      - run: firebase deploy --only storage,firestore:rules --project my-new-app-naona-20260523 --non-interactive
       - run: flutter build web --release
       - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
@@ -30,3 +24,12 @@ jobs:
           channelId: live
           firebaseToolsVersion: latest
           projectId: my-new-app-naona-20260523
+      - name: Deploy Firestore and Storage rules
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_MY_NEW_APP_NAONA_20260523 }}
+        run: |
+          echo "$FIREBASE_SERVICE_ACCOUNT" > "$HOME/firebase-sa.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="$HOME/firebase-sa.json"
+          npm install -g firebase-tools
+          firebase deploy --only firestore:rules --project my-new-app-naona-20260523 --non-interactive
+          firebase deploy --only storage --project my-new-app-naona-20260523 --non-interactive

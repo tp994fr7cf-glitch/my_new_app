@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
@@ -12,6 +13,7 @@ import '../models/lesson_player_view_state.dart';
 import '../models/lesson_whiteboard.dart';
 import '../services/lesson_media_duration_service.dart';
 import '../services/lesson_media_storage_service.dart';
+import '../utils/firebase_error_message.dart';
 import '../widgets/lesson_whiteboard_editor_panel.dart';
 import 'teacher_quiz_manage_page.dart';
 
@@ -321,6 +323,15 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
           segment.isUploading = false;
           segment.uploadProgress = null;
           _message = error.message;
+        });
+      }
+    } on FirebaseException catch (error) {
+      if (mounted) {
+        setState(() {
+          segment.isUploading = false;
+          segment.uploadProgress = null;
+          _message =
+              'アップロードに失敗しました: ${describeFirebaseError(error, permissionDeniedMessage: 'Storage へのアップロード権限がありません。Firebase のルール反映後に再試行してください。')}';
         });
       }
     } catch (error) {
