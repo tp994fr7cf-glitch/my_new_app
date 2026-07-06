@@ -69,6 +69,21 @@ class _LessonWhiteboardEditorPanelState
   bool get _hasPublishedWhiteboard =>
       widget.publishedWhiteboard != null && !widget.publishedWhiteboard!.isEmpty;
 
+  bool get _hasUnpublishedDraft {
+    final draft = widget.draftWhiteboard;
+    return draft != null && !draft.isEmpty;
+  }
+
+  bool get _shouldShowEditingCanvas {
+    if (!_hasPublishedWhiteboard) {
+      return true;
+    }
+    if (_isRedrawMode) {
+      return true;
+    }
+    return _hasUnpublishedDraft;
+  }
+
   List<WhiteboardStroke> get _visibleStrokes {
     return visibleWhiteboardStrokes(
       strokes: _strokes,
@@ -105,7 +120,18 @@ class _LessonWhiteboardEditorPanelState
       draft: widget.draftWhiteboard,
     );
     _strokes = List<WhiteboardStroke>.from(merged.strokes);
-    _isRedrawMode = !_hasPublishedWhiteboard || merged.isEmpty;
+
+    if (!_hasPublishedWhiteboard) {
+      _isRedrawMode = true;
+      return;
+    }
+
+    if (!_hasUnpublishedDraft) {
+      _isRedrawMode = false;
+      return;
+    }
+
+    _isRedrawMode = true;
   }
 
   @override
@@ -578,7 +604,7 @@ class _LessonWhiteboardEditorPanelState
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 8),
-        if (_hasPublishedWhiteboard && !_isRedrawMode) ...[
+        if (_hasPublishedWhiteboard && !_shouldShowEditingCanvas) ...[
           SizedBox(
             height: 220,
             child: LessonWhiteboardCanvas(
