@@ -2,9 +2,12 @@
   "firestore": {
     "rules": "firestore.rules"
   },
-  "storage": {
-    "rules": "storage.rules"
-  },
+  "storage": [
+    {
+      "bucket": "my-new-app-naona-20260523.firebasestorage.app",
+      "rules": "storage.rules"
+    }
+  ],
   "flutter": {
     "platforms": {
       "android": {

@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
+import '../utils/firebase_error_message.dart';
 import 'course_detail_page.dart';
 
 class CourseListPage extends StatefulWidget {
@@ -348,7 +349,11 @@ class _CourseLoadError extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Text(
-          '講座データの読み込みに失敗しました: $error',
+          describeFirebaseError(
+            error,
+            permissionDeniedMessage:
+                '講座データへのアクセスが拒否されました。ログイン状態を確認し、しばらく待ってから再試行してください。',
+          ),
           style: TextStyle(
             color: Theme.of(context).colorScheme.onErrorContainer,
           ),
