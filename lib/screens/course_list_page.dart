@@ -38,7 +38,10 @@ class _CourseListPageState extends State<CourseListPage> {
         .where('status', isEqualTo: 'published')
         .snapshots()
         .map((snapshot) {
-          final courses = snapshot.docs.map(Course.fromFirestore).toList();
+          final courses = snapshot.docs
+              .map(Course.tryFromFirestore)
+              .whereType<Course>()
+              .toList();
           courses.sort((a, b) => a.title.compareTo(b.title));
           return courses;
         });

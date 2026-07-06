@@ -1321,6 +1321,9 @@ service cloud.firestore {
     match /courses/{courseId} {
       allow read: if signedIn() && resource.data.status == 'published';
 
+      allow read: if signedIn()
+        && resource.data.instructorId == request.auth.uid;
+
       allow read: if hasActiveTeacherRole()
         && resource.data.instructorId == request.auth.uid;
 

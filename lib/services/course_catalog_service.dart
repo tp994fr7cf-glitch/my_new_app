@@ -20,7 +20,7 @@ class CourseCatalogService {
           if (!snapshot.exists) {
             return fallback;
           }
-          return Course.fromFirestore(snapshot);
+          return Course.tryFromFirestore(snapshot) ?? fallback;
         });
   }
 
@@ -37,7 +37,7 @@ class CourseCatalogService {
       if (!snapshot.exists) {
         return fallback;
       }
-      return Course.fromFirestore(snapshot);
+      return Course.tryFromFirestore(snapshot) ?? fallback;
     } catch (_) {
       return fallback;
     }

@@ -1,5 +1,57 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+int parseIntField(Object? value, {int fallback = 0}) {
+  if (value is int) {
+    return value;
+  }
+  if (value is num) {
+    return value.toInt();
+  }
+  if (value is String) {
+    return int.tryParse(value.trim()) ?? fallback;
+  }
+  return fallback;
+}
+
+double parseDoubleField(Object? value, {double fallback = 0}) {
+  if (value is double) {
+    return value;
+  }
+  if (value is num) {
+    return value.toDouble();
+  }
+  if (value is String) {
+    return double.tryParse(value.trim()) ?? fallback;
+  }
+  return fallback;
+}
+
+double? parseNullableDoubleField(Object? value) {
+  if (value == null) {
+    return null;
+  }
+  if (value is double) {
+    return value;
+  }
+  if (value is num) {
+    return value.toDouble();
+  }
+  if (value is String) {
+    return double.tryParse(value.trim());
+  }
+  return null;
+}
+
+String parseStringField(Object? value, {String fallback = ''}) {
+  if (value is String) {
+    return value;
+  }
+  if (value == null) {
+    return fallback;
+  }
+  return value.toString();
+}
+
 List<String> parseStringList(Object? value) {
   if (value is! List) {
     return const [];
