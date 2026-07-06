@@ -199,4 +199,60 @@ void main() {
       hasLength(2),
     );
   });
+
+  test('resolveWhiteboardForLessonPublish prefers saved draft over working copy', () {
+    const published = LessonWhiteboard(
+      strokes: [
+        WhiteboardStroke(
+          id: 'published',
+          timestampSec: 0,
+          points: [
+            WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
+            WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
+          ],
+        ),
+      ],
+    );
+    const draft = LessonWhiteboard(
+      strokes: [
+        WhiteboardStroke(
+          id: 'draft',
+          timestampSec: 0,
+          points: [
+            WhiteboardPoint(x: 0.2, y: 0.2, timestampSec: 0),
+            WhiteboardPoint(x: 0.8, y: 0.8, timestampSec: 10),
+          ],
+        ),
+      ],
+    );
+    const unsavedWorking = LessonWhiteboard(
+      strokes: [
+        WhiteboardStroke(
+          id: 'unsaved',
+          timestampSec: 0,
+          points: [
+            WhiteboardPoint(x: 0.0, y: 0.0, timestampSec: 0),
+            WhiteboardPoint(x: 1.0, y: 1.0, timestampSec: 10),
+          ],
+        ),
+      ],
+    );
+
+    expect(
+      resolveWhiteboardForLessonPublish(
+        publishedWhiteboard: published,
+        draftWhiteboard: draft,
+        workingWhiteboard: unsavedWorking,
+      ),
+      draft,
+    );
+    expect(
+      resolveWhiteboardForLessonPublish(
+        publishedWhiteboard: published,
+        draftWhiteboard: null,
+        workingWhiteboard: unsavedWorking,
+      ),
+      published,
+    );
+  });
 }

@@ -54,7 +54,7 @@ class _LessonWhiteboardEditorPanelState
   WhiteboardStroke? _inProgressStroke;
   List<WhiteboardPoint> _inProgressPoints = [];
 
-  bool _isRedrawMode = false;
+  WhiteboardEditSessionKind _editSessionKind = WhiteboardEditSessionKind.none;
   bool _isLoadingMedia = false;
   bool _isPlaying = false;
   bool _isSavingDraft = false;
@@ -74,15 +74,8 @@ class _LessonWhiteboardEditorPanelState
     return draft != null && !draft.isEmpty;
   }
 
-  bool get _shouldShowEditingCanvas {
-    if (!_hasPublishedWhiteboard) {
-      return true;
-    }
-    if (_isRedrawMode) {
-      return true;
-    }
-    return _hasUnpublishedDraft;
-  }
+  bool get _shouldShowEditingCanvas =>
+      _editSessionKind != WhiteboardEditSessionKind.none;
 
   List<WhiteboardStroke> get _visibleStrokes {
     return visibleWhiteboardStrokes(
@@ -109,29 +102,38 @@ class _LessonWhiteboardEditorPanelState
     if (oldWidget.draftWhiteboard != widget.draftWhiteboard ||
         oldWidget.publishedWhiteboard != widget.publishedWhiteboard) {
       if (_inProgressStroke == null && !_isPlaying) {
-        _loadInitialStrokes();
+        _loadInitialStrokes(
+          preserveActiveSession:
+              _editSessionKind == WhiteboardEditSessionKind.published ||
+              _editSessionKind == WhiteboardEditSessionKind.pendingReset,
+        );
       }
     }
   }
 
-  void _loadInitialStrokes() {
-    final merged = mergeWhiteboardDraft(
-      published: widget.publishedWhiteboard,
-      draft: widget.draftWhiteboard,
-    );
-    _strokes = List<WhiteboardStroke>.from(merged.strokes);
-
+  void _loadInitialStrokes({bool preserveActiveSession = false}) {
     if (!_hasPublishedWhiteboard) {
-      _isRedrawMode = true;
+      final draft = widget.draftWhiteboard;
+      _strokes = draft != null && !draft.isEmpty
+          ? List<WhiteboardStroke>.from(draft.strokes)
+          : [];
+      _editSessionKind = WhiteboardEditSessionKind.fresh;
       return;
     }
 
-    if (!_hasUnpublishedDraft) {
-      _isRedrawMode = false;
+    if (_hasUnpublishedDraft) {
+      _strokes = List<WhiteboardStroke>.from(widget.draftWhiteboard!.strokes);
+      if (!preserveActiveSession ||
+          _editSessionKind == WhiteboardEditSessionKind.none) {
+        _editSessionKind = WhiteboardEditSessionKind.draft;
+      }
       return;
     }
 
-    _isRedrawMode = true;
+    if (!preserveActiveSession) {
+      _strokes = [];
+      _editSessionKind = WhiteboardEditSessionKind.none;
+    }
   }
 
   @override
@@ -421,6 +423,12 @@ class _LessonWhiteboardEditorPanelState
   }
 
   void _notifyWhiteboardChanged() {
+    if (_editSessionKind == WhiteboardEditSessionKind.fresh) {
+      widget.onWhiteboardChanged?.call(_buildCurrentWhiteboard());
+    }
+  }
+
+  void _syncWorkingWhiteboardAfterDraftSave() {
     widget.onWhiteboardChanged?.call(_buildCurrentWhiteboard());
   }
 
@@ -434,8 +442,17 @@ class _LessonWhiteboardEditorPanelState
       await widget.onDraftSaved(_buildCurrentWhiteboard());
       if (mounted) {
         setState(() {
-          _message = '書き物を一時保存しました。';
+          final saved = _buildCurrentWhiteboard();
+          if (saved.isEmpty && _hasPublishedWhiteboard) {
+            _editSessionKind = WhiteboardEditSessionKind.none;
+            _strokes = [];
+            _message = '書き物を一時保存しました。';
+          } else {
+            _editSessionKind = WhiteboardEditSessionKind.draft;
+            _message = '書き物を一時保存しました。';
+          }
         });
+        _syncWorkingWhiteboardAfterDraftSave();
       }
     } catch (error) {
       if (mounted) {
@@ -460,7 +477,7 @@ class _LessonWhiteboardEditorPanelState
           title: const Text('書き物をリセット'),
           content: const Text(
             'ホワイトボードの書き物をすべて消します。\n'
-            '次の編集は0秒地点から始まります。',
+            '反映は「書き物を一時保存」を押した時点で確定します。',
           ),
           actions: [
             TextButton(
@@ -479,74 +496,114 @@ class _LessonWhiteboardEditorPanelState
       return;
     }
 
-    setState(() {
-      _strokes = [];
-      _isRedrawMode = true;
-      _message = null;
-    });
-    _notifyWhiteboardChanged();
-    _clearInProgressStroke();
-    await _playback?.pause();
-    await _seekPlaybackPosition(0);
-
-    setState(() {
-      _isSavingDraft = true;
-    });
-    try {
-      await widget.onDraftSaved(const LessonWhiteboard());
-      if (mounted) {
-        setState(() {
-          _message = '書き物をリセットしました。';
-        });
-      }
-    } catch (error) {
-      if (mounted) {
-        setState(() {
-          _message = 'リセットの保存に失敗しました: $error';
-        });
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isSavingDraft = false;
-        });
-      }
+    await _beginPendingReset();
+    if (mounted) {
+      setState(() {
+        _message = 'リセットしました。一時保存で確定してください。';
+      });
     }
   }
 
-  Future<void> _startRedraw() async {
-    final shouldRedraw = await showDialog<bool>(
+  Future<void> _showEditOptions() async {
+    final choices = <_WhiteboardEditChoice>[];
+    if (_hasPublishedWhiteboard) {
+      choices.add(_WhiteboardEditChoice.published);
+    }
+    if (_hasUnpublishedDraft) {
+      choices.add(_WhiteboardEditChoice.draft);
+    }
+    choices.add(_WhiteboardEditChoice.reset);
+
+    if (!_hasPublishedWhiteboard && !_hasUnpublishedDraft) {
+      await _beginPendingReset();
+      return;
+    }
+
+    final selected = await showDialog<_WhiteboardEditChoice>(
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
-          title: const Text('書き物を描き直す'),
-          content: const Text(
-            '保存済みの書き物を消して、最初から描き直します。\n'
-            '元の書き物は「レッスン情報を保存」するまで受講者には残ります。',
+          title: const Text('書き物の編集'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (final choice in choices) ...[
+                OutlinedButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(choice),
+                  child: Text(_editChoiceLabel(choice)),
+                ),
+                const SizedBox(height: 8),
+              ],
+            ],
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(false),
+              onPressed: () => Navigator.of(dialogContext).pop(),
               child: const Text('キャンセル'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(dialogContext).pop(true),
-              child: const Text('描き直す'),
             ),
           ],
         );
       },
     );
-    if (shouldRedraw != true || !mounted) {
+    if (selected == null || !mounted) {
+      return;
+    }
+
+    switch (selected) {
+      case _WhiteboardEditChoice.published:
+        await _beginEditingPublished();
+      case _WhiteboardEditChoice.draft:
+        await _beginEditingDraft();
+      case _WhiteboardEditChoice.reset:
+        await _beginPendingReset();
+    }
+  }
+
+  String _editChoiceLabel(_WhiteboardEditChoice choice) {
+    return switch (choice) {
+      _WhiteboardEditChoice.published => '公開しているものを編集する',
+      _WhiteboardEditChoice.draft => '仮保存中のものを編集する',
+      _WhiteboardEditChoice.reset => 'リセットして描き直す',
+    };
+  }
+
+  Future<void> _beginEditingPublished() async {
+    final published = widget.publishedWhiteboard;
+    if (published == null || published.isEmpty) {
       return;
     }
 
     setState(() {
-      _strokes = [];
-      _isRedrawMode = true;
-      _message = '描き直しモードです。スタートを押して書き始めてください。';
+      _strokes = List<WhiteboardStroke>.from(published.strokes);
+      _editSessionKind = WhiteboardEditSessionKind.published;
+      _message = '公開中の書き物を編集しています。一時保存で仮保存されます。';
     });
-    _notifyWhiteboardChanged();
+    _clearInProgressStroke();
+    await _playback?.pause();
+  }
+
+  Future<void> _beginEditingDraft() async {
+    final draft = widget.draftWhiteboard;
+    if (draft == null || draft.isEmpty) {
+      return;
+    }
+
+    setState(() {
+      _strokes = List<WhiteboardStroke>.from(draft.strokes);
+      _editSessionKind = WhiteboardEditSessionKind.draft;
+      _message = '仮保存中の書き物を編集しています。';
+    });
+    _clearInProgressStroke();
+    await _playback?.pause();
+  }
+
+  Future<void> _beginPendingReset() async {
+    setState(() {
+      _strokes = [];
+      _editSessionKind = WhiteboardEditSessionKind.pendingReset;
+      _message = '最初から描き直します。一時保存で確定してください。';
+    });
     _clearInProgressStroke();
     await _playback?.pause();
     await _seekPlaybackPosition(0);
@@ -614,8 +671,8 @@ class _LessonWhiteboardEditorPanelState
           ),
           const SizedBox(height: 8),
           OutlinedButton.icon(
-            onPressed: _isSavingDraft ? null : () => unawaited(_startRedraw()),
-            icon: const Icon(Icons.refresh),
+            onPressed: _isSavingDraft ? null : () => unawaited(_showEditOptions()),
+            icon: const Icon(Icons.edit_outlined),
             label: const Text('書き物を描き直す'),
           ),
         ] else ...[
@@ -648,7 +705,11 @@ class _LessonWhiteboardEditorPanelState
                 label: const Text('一時停止'),
               ),
               OutlinedButton.icon(
-                onPressed: _isSavingDraft || _strokes.isEmpty
+                onPressed:
+                    _isSavingDraft ||
+                        (_strokes.isEmpty &&
+                            _editSessionKind !=
+                                WhiteboardEditSessionKind.pendingReset)
                     ? null
                     : () => unawaited(_saveDraft()),
                 icon: const Icon(Icons.save_outlined),
@@ -661,6 +722,11 @@ class _LessonWhiteboardEditorPanelState
                 icon: const Icon(Icons.delete_outline),
                 label: const Text('リセット'),
               ),
+              OutlinedButton.icon(
+                onPressed: _isSavingDraft ? null : () => unawaited(_showEditOptions()),
+                icon: const Icon(Icons.edit_outlined),
+                label: const Text('編集の選び直し'),
+              ),
             ],
           ),
         ],
@@ -671,6 +737,12 @@ class _LessonWhiteboardEditorPanelState
       ],
     );
   }
+}
+
+enum _WhiteboardEditChoice {
+  published,
+  draft,
+  reset,
 }
 
 Future<void> saveLessonWhiteboardDraft({

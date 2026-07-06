@@ -136,9 +136,11 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
           mediaUrl: editor.mediaUrlController.text.trim(),
           mediaDurationSec: mediaDurationSec,
           isPreview: editor.isPreview,
-          whiteboard: editor.workingWhiteboard.isEmpty
-              ? null
-              : editor.workingWhiteboard,
+          whiteboard: resolveWhiteboardForLessonPublish(
+            publishedWhiteboard: editor.publishedWhiteboard,
+            draftWhiteboard: editor.draftWhiteboard,
+            workingWhiteboard: editor.workingWhiteboard,
+          ),
           whiteboardDraft: null,
         ),
       );
