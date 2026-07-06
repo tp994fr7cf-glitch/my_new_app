@@ -183,6 +183,28 @@ class LessonMediaStorageService {
     );
   }
 
+  /// Deletes a previously uploaded file given its download URL.
+  ///
+  /// Used to clean up storage when a media part is removed or replaced with
+  /// a new upload. This is best-effort: a missing file (already deleted, or
+  /// never actually uploaded, e.g. a URL that isn't a Storage URL) is
+  /// silently ignored so cleanup never blocks the caller's main action.
+  Future<void> deleteFileAtUrl(String url) async {
+    final trimmedUrl = url.trim();
+    if (trimmedUrl.isEmpty || Firebase.apps.isEmpty) {
+      return;
+    }
+    try {
+      final ref = FirebaseStorage.instance.refFromURL(trimmedUrl);
+      await ref.delete();
+    } on FirebaseException catch (error) {
+      if (error.code == 'object-not-found') {
+        return;
+      }
+      rethrow;
+    }
+  }
+
   Future<LessonMediaUploadResult?> pickAndUploadLessonMedia({
     required String courseId,
     required int lessonNumber,

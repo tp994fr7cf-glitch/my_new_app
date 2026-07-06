@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
@@ -41,6 +42,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
 
   late List<_LessonEditorState> _lessonEditors;
   late Course _activeCourse;
+  late List<CourseLesson> _lastPersistedLessons;
   bool _isSaving = false;
   bool _isLoadingLessons = false;
   String? _message;
@@ -52,6 +54,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     _lessonEditors = _activeCourse.lessons
         .map(_LessonEditorState.fromLesson)
         .toList();
+    _lastPersistedLessons = _activeCourse.lessons;
     unawaited(_loadLatestLessons());
   }
 
@@ -85,6 +88,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       final latestCourse = Course.fromFirestore(snapshot);
       setState(() {
         _activeCourse = latestCourse;
+        _lastPersistedLessons = latestCourse.lessons;
         for (final editor in _lessonEditors) {
           editor.dispose();
         }
@@ -170,20 +174,12 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       _message = null;
     });
 
+    final removedSegments = _collectRemovedMediaSegments(lessons);
+
     try {
-      final saveOverride = widget.onSaveOverride;
-      if (saveOverride != null) {
-        await saveOverride(lessons);
-      } else {
-        await FirebaseFirestore.instance
-            .collection('courses')
-            .doc(courseId)
-            .update({
-              'lessons': lessons.map((lesson) => lesson.toMap()).toList(),
-              'lessonCount': lessons.length,
-              'updatedAt': FieldValue.serverTimestamp(),
-            });
-      }
+      await _persistLessons(lessons, courseId: courseId);
+
+      _lastPersistedLessons = lessons;
 
       if (mounted) {
         setState(() {
@@ -200,10 +196,19 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
           _message = 'レッスン情報を保存しました。';
         });
       }
+
+      if (courseId != null && removedSegments.isNotEmpty) {
+        unawaited(_deleteRemovedSegmentFiles(removedSegments));
+      }
     } on FirebaseException catch (error) {
       if (mounted) {
         setState(() {
-          _message = error.message ?? 'レッスン情報の保存に失敗しました。';
+          _message = describeFirebaseError(
+            error,
+            permissionDeniedMessage:
+                '権限の情報が最新でない可能性があります。アプリを再起動するか、'
+                '一度ログアウトして再度ログインしてから、もう一度お試しください。',
+          );
         });
       }
     } catch (error) {
@@ -217,6 +222,90 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         setState(() {
           _isSaving = false;
         });
+      }
+    }
+  }
+
+  /// Writes [lessons] to Firestore. If the write is rejected because the
+  /// signed-in user's role/permission information looks out of date (for
+  /// example, after switching roles or logging out from another device),
+  /// this refreshes the auth token once and retries a single time before
+  /// giving up.
+  Future<void> _persistLessons(
+    List<CourseLesson> lessons, {
+    required String? courseId,
+  }) async {
+    try {
+      await _writeLessons(lessons, courseId: courseId);
+    } on FirebaseException catch (error) {
+      final isPermissionError =
+          error.code == 'permission-denied' || error.code == 'unauthorized';
+      if (!isPermissionError || !(await _tryRefreshAuthToken())) {
+        rethrow;
+      }
+      await _writeLessons(lessons, courseId: courseId);
+    }
+  }
+
+  Future<void> _writeLessons(
+    List<CourseLesson> lessons, {
+    required String? courseId,
+  }) async {
+    final saveOverride = widget.onSaveOverride;
+    if (saveOverride != null) {
+      await saveOverride(lessons);
+      return;
+    }
+    await FirebaseFirestore.instance
+        .collection('courses')
+        .doc(courseId)
+        .update({
+          'lessons': lessons.map((lesson) => lesson.toMap()).toList(),
+          'lessonCount': lessons.length,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+  }
+
+  Future<bool> _tryRefreshAuthToken() async {
+    try {
+      await FirebaseAuth.instance.currentUser?.getIdToken(true);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Finds media parts that existed in the last known saved state but are
+  /// missing from [nextLessons], so their uploaded files can be cleaned up
+  /// from Storage once the save that removes them actually succeeds.
+  List<String> _collectRemovedMediaSegments(List<CourseLesson> nextLessons) {
+    final removedUrls = <String>[];
+    final lessonCount = _lastPersistedLessons.length < nextLessons.length
+        ? _lastPersistedLessons.length
+        : nextLessons.length;
+
+    for (var index = 0; index < lessonCount; index++) {
+      final nextSegmentIds = nextLessons[index].mediaSegments
+          .map((segment) => segment.id)
+          .toSet();
+      for (final segment in _lastPersistedLessons[index].mediaSegments) {
+        if (segment.hasUrl && !nextSegmentIds.contains(segment.id)) {
+          removedUrls.add(segment.url);
+        }
+      }
+    }
+    return removedUrls;
+  }
+
+  /// Best-effort cleanup: deletes Storage files for media parts that were
+  /// just removed by a successful "レッスン情報を保存". Failures are ignored
+  /// so cleanup never affects the (already successful) save itself.
+  Future<void> _deleteRemovedSegmentFiles(List<String> urls) async {
+    for (final url in urls) {
+      try {
+        await _mediaStorageService.deleteFileAtUrl(url);
+      } catch (_) {
+        // 掃除に失敗しても保存自体は成功しているため、ここでは無視する。
       }
     }
   }
@@ -274,6 +363,8 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       return;
     }
 
+    final previousUrl = segment.urlController.text.trim();
+
     setState(() {
       segment.isUploading = true;
       segment.uploadProgress = 0;
@@ -317,6 +408,16 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
             '${detectedDurationSec != null ? '（再生時間: ${detectedDurationSec}秒）' : ''}'
             '「レッスン情報を保存」を押して反映してください。';
       });
+
+      if (previousUrl.isNotEmpty && previousUrl != result.downloadUrl) {
+        // 同じパートにファイルを再アップロードした場合、古いファイルは
+        // もう使われないため、Storage の容量を無駄にしないよう削除する。
+        unawaited(
+          _mediaStorageService
+              .deleteFileAtUrl(previousUrl)
+              .catchError((_) {}),
+        );
+      }
     } on LessonMediaStorageException catch (error) {
       if (mounted) {
         setState(() {
@@ -394,9 +495,20 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       throw StateError('講座IDがないため一時保存できません。');
     }
 
+    final durationLabel = editor.durationController.text.trim().isEmpty
+        ? '1分30秒'
+        : editor.durationController.text.trim();
+
     await saveLessonWhiteboardDraft(
       courseId: courseId,
       lessonIndex: lessonIndex,
+      currentLesson: CourseLesson(
+        title: editor.titleController.text.trim(),
+        duration: durationLabel,
+        mediaSegments: editor.buildSegments(fallbackDurationLabel: durationLabel),
+        isPreview: editor.isPreview,
+        whiteboardLayers: editor.publishedWhiteboardLayers,
+      ),
       whiteboard: whiteboard,
     );
 
@@ -445,7 +557,8 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
               const SizedBox(height: 16),
             ],
             for (final entry in _lessonEditors.indexed) ...[
-              _LessonEditorCard(
+              _LessonEditorCardHost(
+                key: ObjectKey(entry.$2),
                 index: entry.$1 + 1,
                 lessonIndex: entry.$1,
                 course: _activeCourse,
@@ -453,7 +566,6 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                 canUploadMedia: canUploadMedia,
                 mediaConfig: _mediaConfig,
                 requiredText: _requiredText,
-                onChanged: () => setState(() {}),
                 onUploadSegment: (segment) => _uploadSegmentMedia(
                   lessonNumber: entry.$1 + 1,
                   editor: entry.$2,
@@ -663,6 +775,59 @@ class _LessonEditorState {
     for (final segment in segments) {
       segment.dispose();
     }
+  }
+}
+
+/// Owns a rebuild scope for a single lesson's editor card.
+///
+/// Without this, every keystroke or toggle inside any lesson card called
+/// [State.setState] on the whole [TeacherLessonManagePage], which rebuilt
+/// every other lesson card too - including any live audio/video preview
+/// player they might have open. Keeping [onChanged] local to this widget
+/// means editing lesson 1 no longer touches lesson 2 or 3's cards.
+class _LessonEditorCardHost extends StatefulWidget {
+  const _LessonEditorCardHost({
+    super.key,
+    required this.index,
+    required this.lessonIndex,
+    required this.course,
+    required this.editor,
+    required this.canUploadMedia,
+    required this.mediaConfig,
+    required this.requiredText,
+    required this.onUploadSegment,
+    required this.onDraftSaved,
+  });
+
+  final int index;
+  final int lessonIndex;
+  final Course course;
+  final _LessonEditorState editor;
+  final bool canUploadMedia;
+  final LessonMediaConfig mediaConfig;
+  final String? Function(String? value) requiredText;
+  final ValueChanged<_MediaSegmentEditorState> onUploadSegment;
+  final WhiteboardDraftSaveCallback onDraftSaved;
+
+  @override
+  State<_LessonEditorCardHost> createState() => _LessonEditorCardHostState();
+}
+
+class _LessonEditorCardHostState extends State<_LessonEditorCardHost> {
+  @override
+  Widget build(BuildContext context) {
+    return _LessonEditorCard(
+      index: widget.index,
+      lessonIndex: widget.lessonIndex,
+      course: widget.course,
+      editor: widget.editor,
+      canUploadMedia: widget.canUploadMedia,
+      mediaConfig: widget.mediaConfig,
+      requiredText: widget.requiredText,
+      onChanged: () => setState(() {}),
+      onUploadSegment: widget.onUploadSegment,
+      onDraftSaved: widget.onDraftSaved,
+    );
   }
 }
 
