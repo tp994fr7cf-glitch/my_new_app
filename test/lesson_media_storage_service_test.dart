@@ -15,14 +15,15 @@ void main() {
     expect(service.allowedExtensionsForMediaType('video'), contains('mp4'));
   });
 
-  test('storagePath builds course lesson path', () {
+  test('storagePath builds course lesson segment path', () {
     expect(
       service.storagePath(
         courseId: 'course-1',
         lessonNumber: 2,
+        segmentId: 'seg-abc',
         fileName: 'sample.mp3',
       ),
-      'courseMedia/course-1/lessons/2/sample.mp3',
+      'courseMedia/course-1/lessons/2/segments/seg-abc/sample.mp3',
     );
   });
 }

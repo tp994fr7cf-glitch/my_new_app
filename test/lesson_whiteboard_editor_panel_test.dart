@@ -1,9 +1,28 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:my_new_app/models/lesson_media_segment.dart';
 import 'package:my_new_app/models/lesson_whiteboard.dart';
-import 'package:my_new_app/services/lesson_media_playback.dart';
+import 'package:my_new_app/services/lesson_media_playlist_playback.dart';
 import 'package:my_new_app/widgets/lesson_whiteboard_canvas.dart';
 import 'package:my_new_app/widgets/lesson_whiteboard_editor_panel.dart';
+
+List<LessonMediaSegment> testMediaSegments({int durationSec = 90}) {
+  return [
+    LessonMediaSegment(
+      id: 'test-segment',
+      order: 0,
+      mediaType: 'audio',
+      url: 'https://example.com/lesson.mp3',
+      durationSec: durationSec,
+    ),
+  ];
+}
+
+LessonMediaPlaylistPlaybackFactory fakePlaylistPlaybackFactory({
+  int durationSec = 90,
+}) {
+  return () => FakeLessonMediaPlaylistPlayback(totalDurationSec: durationSec);
+}
 
 void main() {
   testWidgets('Teacher whiteboard editor shows strokes up to the seek position', (
@@ -39,13 +58,12 @@ void main() {
           body: LessonWhiteboardEditorPanel(
             courseId: 'course-1',
             lessonNumber: 1,
-            mediaUrl: 'https://example.com/lesson.mp3',
-            mediaDurationSec: 90,
+            mediaSegments: testMediaSegments(),
             durationLabel: '1分30秒',
             publishedWhiteboard: null,
             draftWhiteboard: draft,
             onDraftSaved: (_) async {},
-            playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(),
+            playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
           ),
         ),
       ),
@@ -120,15 +138,14 @@ void main() {
           body: LessonWhiteboardEditorPanel(
             courseId: 'course-1',
             lessonNumber: 1,
-            mediaUrl: 'https://example.com/lesson.mp3',
-            mediaDurationSec: 90,
+            mediaSegments: testMediaSegments(),
             durationLabel: '1分30秒',
             publishedWhiteboard: null,
             draftWhiteboard: draft,
             onDraftSaved: (whiteboard) async {
               savedWhiteboard = whiteboard;
             },
-            playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(),
+            playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
           ),
         ),
       ),
@@ -169,13 +186,12 @@ void main() {
           body: LessonWhiteboardEditorPanel(
             courseId: 'course-1',
             lessonNumber: 1,
-            mediaUrl: 'https://example.com/lesson.mp3',
-            mediaDurationSec: 90,
+            mediaSegments: testMediaSegments(),
             durationLabel: '1分30秒',
             publishedWhiteboard: published,
             draftWhiteboard: null,
             onDraftSaved: (_) async {},
-            playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(),
+            playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
           ),
         ),
       ),
@@ -226,13 +242,12 @@ void main() {
           body: LessonWhiteboardEditorPanel(
             courseId: 'course-1',
             lessonNumber: 1,
-            mediaUrl: 'https://example.com/lesson.mp3',
-            mediaDurationSec: 90,
+            mediaSegments: testMediaSegments(),
             durationLabel: '1分30秒',
             publishedWhiteboard: published,
             draftWhiteboard: redrawnDraft,
             onDraftSaved: (_) async {},
-            playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(),
+            playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
           ),
         ),
       ),
@@ -324,13 +339,12 @@ void main() {
           body: LessonWhiteboardEditorPanel(
             courseId: 'course-1',
             lessonNumber: 1,
-            mediaUrl: 'https://example.com/lesson.mp3',
-            mediaDurationSec: 90,
+            mediaSegments: testMediaSegments(),
             durationLabel: '1分30秒',
             publishedWhiteboard: published,
             draftWhiteboard: null,
             onDraftSaved: (_) async {},
-            playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(),
+            playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
           ),
         ),
       ),
@@ -389,13 +403,12 @@ void main() {
           body: LessonWhiteboardEditorPanel(
             courseId: 'course-1',
             lessonNumber: 1,
-            mediaUrl: 'https://example.com/lesson.mp3',
-            mediaDurationSec: 90,
+            mediaSegments: testMediaSegments(),
             durationLabel: '1分30秒',
             publishedWhiteboard: published,
             draftWhiteboard: draft,
             onDraftSaved: (_) async {},
-            playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(),
+            playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
           ),
         ),
       ),
@@ -433,15 +446,14 @@ void main() {
           body: LessonWhiteboardEditorPanel(
             courseId: 'course-1',
             lessonNumber: 1,
-            mediaUrl: 'https://example.com/lesson.mp3',
-            mediaDurationSec: 90,
+            mediaSegments: testMediaSegments(),
             durationLabel: '1分30秒',
             publishedWhiteboard: published,
             draftWhiteboard: null,
             onDraftSaved: (_) async {
               draftSaveCount++;
             },
-            playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(),
+            playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
           ),
         ),
       ),
@@ -493,8 +505,7 @@ class _DraftSaveHostState extends State<_DraftSaveHost> {
       body: LessonWhiteboardEditorPanel(
         courseId: 'course-1',
         lessonNumber: 1,
-        mediaUrl: 'https://example.com/lesson.mp3',
-        mediaDurationSec: 90,
+        mediaSegments: testMediaSegments(),
         durationLabel: '1分30秒',
         publishedWhiteboard: widget.publishedWhiteboard,
         draftWhiteboard: _draftWhiteboard,
@@ -503,7 +514,7 @@ class _DraftSaveHostState extends State<_DraftSaveHost> {
             _draftWhiteboard = whiteboard.isEmpty ? null : whiteboard;
           });
         },
-        playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(),
+        playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
       ),
     );
   }

@@ -16,7 +16,8 @@ import 'package:my_new_app/screens/teacher_course_list_page.dart';
 import 'package:my_new_app/screens/teacher_interaction_manage_page.dart';
 import 'package:my_new_app/screens/teacher_quiz_manage_page.dart';
 import 'package:my_new_app/screens/video_lesson_page.dart';
-import 'package:my_new_app/services/lesson_media_playback.dart';
+import 'package:my_new_app/models/lesson_media_segment.dart';
+import 'package:my_new_app/services/lesson_media_playlist_playback.dart';
 
 Course _courseWithPlayableMedia(Course base) {
   final lesson = base.lessons.first;
@@ -37,8 +38,15 @@ Course _courseWithPlayableMedia(Course base) {
       CourseLesson(
         title: lesson.title,
         duration: lesson.duration,
-        mediaType: lesson.mediaType,
-        mediaUrl: 'https://example.com/test-lesson.mp3',
+        mediaSegments: const [
+          LessonMediaSegment(
+            id: 'test-segment',
+            order: 0,
+            mediaType: 'audio',
+            url: 'https://example.com/test-lesson.mp3',
+            durationSec: 90,
+          ),
+        ],
         isPreview: lesson.isPreview,
       ),
       ...base.lessons.skip(1),
@@ -50,7 +58,7 @@ Course _courseWithPlayableMedia(Course base) {
 Widget _playableVideoLessonPage(
   Course course, {
   bool isTeacherPreview = false,
-  LessonMediaPlaybackFactory? playbackFactory,
+  LessonMediaPlaylistPlaybackFactory? playlistPlaybackFactory,
 }) {
   final playableCourse = _courseWithPlayableMedia(course);
   return MaterialApp(
@@ -59,9 +67,9 @@ Widget _playableVideoLessonPage(
       lesson: playableCourse.lessons.first,
       lessonNumber: 1,
       isTeacherPreview: isTeacherPreview,
-      playbackFactory:
-          playbackFactory ??
-          (({required isAudio}) => FakeLessonMediaPlayback()),
+      playlistPlaybackFactory:
+          playlistPlaybackFactory ??
+          (() => FakeLessonMediaPlaylistPlayback(totalDurationSec: 90)),
     ),
   );
 }
@@ -100,8 +108,8 @@ void main() {
     await tester.tap(find.text('受講を開始する'));
     await tester.pumpAndSettle();
 
-    expect(find.text('動画視聴'), findsOneWidget);
-    expect(find.text('動画ファイルが未設定です'), findsOneWidget);
+    expect(find.text('レッスン視聴'), findsOneWidget);
+    expect(find.text('メディアファイルが未設定です'), findsOneWidget);
     expect(find.text('レッスン1: Flutterで作るアプリの全体像'), findsOneWidget);
   });
 
@@ -2857,8 +2865,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('レッスン管理'), findsOneWidget);
-    expect(find.text('授業形式'), findsWidgets);
-    expect(find.text('動画・音声URL（仮）'), findsWidgets);
+    expect(find.text('メディアパート'), findsWidgets);
+    expect(find.text('パートを追加'), findsWidgets);
     await tester.scrollUntilVisible(
       find.text('クイズを管理').first,
       500,
@@ -2955,13 +2963,13 @@ void main() {
     );
 
     expect(find.text('音声授業'), findsOneWidget);
-    expect(find.text('音声ファイルが未設定です'), findsOneWidget);
+    expect(find.text('メディアファイルが未設定です'), findsOneWidget);
     await tester.scrollUntilVisible(
-      find.text('授業形式: 音声のみ'),
+      find.textContaining('パート数:'),
       500,
       scrollable: find.byType(Scrollable),
     );
-    expect(find.text('授業形式: 音声のみ'), findsOneWidget);
+    expect(find.textContaining('パート数:'), findsOneWidget);
     expect(find.text('動画プレイヤー'), findsNothing);
   });
 
@@ -3141,8 +3149,8 @@ void main() {
       _playableVideoLessonPage(
         course,
         isTeacherPreview: true,
-        playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(
-          naturalEndPosition: const Duration(milliseconds: 89900),
+        playlistPlaybackFactory: () => FakeLessonMediaPlaylistPlayback(
+          totalDurationSec: 90,
         ),
       ),
     );
@@ -3259,7 +3267,7 @@ void main() {
           course: playableCourse,
           lesson: playableCourse.lessons.first,
           lessonNumber: 1,
-          playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(),
+          playlistPlaybackFactory: () => FakeLessonMediaPlaylistPlayback(),
           onQuizAnswerSaveOverride:
               ({
                 required event,
@@ -3325,8 +3333,7 @@ Map<String, dynamic> _enrollmentData(String courseTitle, DateTime updatedAt) {
         {
           'title': 'レッスン1',
           'duration': '1分30秒',
-          'mediaType': 'video',
-          'mediaUrl': '',
+          'mediaSegments': <Map<String, dynamic>>[],
           'isPreview': false,
         },
       ],

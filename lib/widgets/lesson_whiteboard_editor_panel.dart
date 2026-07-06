@@ -4,9 +4,12 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../models/lesson_duration_parser.dart';
+import '../models/lesson_media_segment.dart';
+import '../models/lesson_media_timeline.dart';
 import '../models/lesson_player_view_state.dart';
 import '../models/lesson_whiteboard.dart';
 import '../services/lesson_media_playback.dart';
+import '../services/lesson_media_playlist_playback.dart';
 import 'lesson_whiteboard_canvas.dart';
 
 typedef WhiteboardDraftSaveCallback =
@@ -17,26 +20,24 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
     super.key,
     required this.courseId,
     required this.lessonNumber,
-    required this.mediaUrl,
-    required this.mediaDurationSec,
+    required this.mediaSegments,
     required this.durationLabel,
     required this.publishedWhiteboard,
     required this.draftWhiteboard,
     required this.onDraftSaved,
     this.onWhiteboardChanged,
-    this.playbackFactory = createLessonMediaPlayback,
+    this.playlistPlaybackFactory = createLessonMediaPlaylistPlayback,
   });
 
   final String courseId;
   final int lessonNumber;
-  final String mediaUrl;
-  final int mediaDurationSec;
+  final List<LessonMediaSegment> mediaSegments;
   final String durationLabel;
   final LessonWhiteboard? publishedWhiteboard;
   final LessonWhiteboard? draftWhiteboard;
   final WhiteboardDraftSaveCallback onDraftSaved;
   final ValueChanged<LessonWhiteboard>? onWhiteboardChanged;
-  final LessonMediaPlaybackFactory playbackFactory;
+  final LessonMediaPlaylistPlaybackFactory playlistPlaybackFactory;
 
   @override
   State<LessonWhiteboardEditorPanel> createState() =>
@@ -45,9 +46,11 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
 
 class _LessonWhiteboardEditorPanelState
     extends State<LessonWhiteboardEditorPanel> {
-  LessonMediaPlayback? _playback;
-  StreamSubscription<Duration>? _positionSubscription;
-  StreamSubscription<Duration?>? _durationSubscription;
+  LessonMediaPlaylistController? _playback;
+  LessonMediaTimeline get _timeline =>
+      LessonMediaTimeline(segments: widget.mediaSegments);
+  StreamSubscription<double>? _positionSubscription;
+  StreamSubscription<int>? _durationSubscription;
   StreamSubscription<bool>? _playingSubscription;
 
   List<WhiteboardStroke> _strokes = [];
@@ -88,7 +91,7 @@ class _LessonWhiteboardEditorPanelState
   void initState() {
     super.initState();
     _loadInitialStrokes();
-    if (lessonHasMediaSource(widget.mediaUrl)) {
+    if (lessonHasPlayableMedia(mediaSegments: widget.mediaSegments)) {
       unawaited(_initializeMediaPlayer());
     }
   }
@@ -96,7 +99,7 @@ class _LessonWhiteboardEditorPanelState
   @override
   void didUpdateWidget(covariant LessonWhiteboardEditorPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.mediaUrl != widget.mediaUrl) {
+    if (!_segmentsEqual(oldWidget.mediaSegments, widget.mediaSegments)) {
       unawaited(_reloadMediaPlayer());
     }
     if (oldWidget.draftWhiteboard != widget.draftWhiteboard ||
@@ -136,22 +139,39 @@ class _LessonWhiteboardEditorPanelState
     }
   }
 
+  bool _segmentsEqual(
+    List<LessonMediaSegment> left,
+    List<LessonMediaSegment> right,
+  ) {
+    if (left.length != right.length) {
+      return false;
+    }
+    for (var index = 0; index < left.length; index++) {
+      if (left[index].id != right[index].id ||
+          left[index].url != right[index].url ||
+          left[index].durationSec != right[index].durationSec) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   @override
   void dispose() {
     _positionSubscription?.cancel();
     _durationSubscription?.cancel();
     _playingSubscription?.cancel();
-    unawaited(_playback?.disposePlayer());
+    unawaited(_playback?.close());
     super.dispose();
   }
 
   Future<void> _reloadMediaPlayer() async {
-    await _playback?.disposePlayer();
+    await _playback?.close();
     _positionSubscription?.cancel();
     _durationSubscription?.cancel();
     _playingSubscription?.cancel();
     _playback = null;
-    if (!lessonHasMediaSource(widget.mediaUrl)) {
+    if (!lessonHasPlayableMedia(mediaSegments: widget.mediaSegments)) {
       setState(() {
         _isLoadingMedia = false;
         _mediaLoadError = null;
@@ -169,26 +189,25 @@ class _LessonWhiteboardEditorPanelState
     });
 
     try {
-      final playback = widget.playbackFactory(isAudio: true);
-      await playback.open(Uri.parse(widget.mediaUrl.trim()));
+      final playback = widget.playlistPlaybackFactory();
+      await playback.openSegments(widget.mediaSegments);
       if (!mounted) {
-        await playback.disposePlayer();
+        await playback.close();
         return;
       }
 
       _playback = playback;
-      _positionSubscription = playback.positionStream.listen((position) {
+      _positionSubscription = playback.globalPositionStream.listen((position) {
         if (!mounted) {
           return;
         }
-        final nextSec = position.inMilliseconds / 1000;
         setState(() {
-          _currentPositionSecExact = nextSec;
-          _currentPositionSec = nextSec.floor();
+          _currentPositionSecExact = position;
+          _currentPositionSec = position.floor();
         });
       });
-      _durationSubscription = playback.durationStream.listen((duration) {
-        _updateResolvedDuration(playerDuration: duration);
+      _durationSubscription = playback.totalDurationStream.listen((duration) {
+        _updateResolvedDuration(playerDuration: Duration(seconds: duration));
       });
       _playingSubscription = playback.playingStream.listen((isPlaying) {
         if (!mounted) {
@@ -222,9 +241,9 @@ class _LessonWhiteboardEditorPanelState
       return;
     }
 
-    final nextTotalDurationSec = resolveLessonMediaDurationSec(
-      playerDuration: playerDuration ?? _playback!.duration,
-      mediaDurationSec: widget.mediaDurationSec,
+    final nextTotalDurationSec = resolveTimelineDurationSec(
+      timeline: _timeline,
+      playerDuration: playerDuration ?? Duration(seconds: _playback!.totalDurationSec),
       durationLabel: widget.durationLabel,
     );
     if (nextTotalDurationSec <= _totalDurationSec) {
@@ -237,10 +256,10 @@ class _LessonWhiteboardEditorPanelState
     });
   }
 
-  void _applyResolvedPlaybackState(LessonMediaPlayback playback) {
-    final totalDurationSec = resolveLessonMediaDurationSec(
-      playerDuration: playback.duration,
-      mediaDurationSec: widget.mediaDurationSec,
+  void _applyResolvedPlaybackState(LessonMediaPlaylistController playback) {
+    final totalDurationSec = resolveTimelineDurationSec(
+      timeline: _timeline,
+      playerDuration: Duration(seconds: playback.totalDurationSec),
       durationLabel: widget.durationLabel,
     );
 
@@ -258,7 +277,7 @@ class _LessonWhiteboardEditorPanelState
   }
 
   bool get _canControlPlayback =>
-      lessonHasMediaSource(widget.mediaUrl) &&
+      lessonHasPlayableMedia(mediaSegments: widget.mediaSegments) &&
       _mediaLoadError == null &&
       _totalDurationSec > 0 &&
       (_playback?.isReady ?? false);
@@ -293,7 +312,7 @@ class _LessonWhiteboardEditorPanelState
       return;
     }
     final nextPosition = positionSec.clamp(0, _totalDurationSec);
-    await _playback?.seek(Duration(milliseconds: (nextPosition * 1000).round()));
+    await _playback?.seekGlobal(nextPosition.toDouble());
     setState(() {
       _currentPositionSec = nextPosition;
       _currentPositionSecExact = nextPosition.toDouble();
@@ -769,10 +788,16 @@ Future<void> saveLessonWhiteboardDraft({
       .map((lesson) => Map<String, dynamic>.from(lesson))
       .toList();
   final lessonMap = Map<String, dynamic>.from(lessons[lessonIndex]);
-  if (whiteboard.isEmpty) {
+  final draftLayers =
+      LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
+        whiteboard.isEmpty ? null : whiteboard,
+      ).toMapList();
+  if (draftLayers.isEmpty) {
+    lessonMap.remove('whiteboardDraftLayers');
     lessonMap.remove('whiteboardDraft');
   } else {
-    lessonMap['whiteboardDraft'] = whiteboard.toMap();
+    lessonMap['whiteboardDraftLayers'] = draftLayers;
+    lessonMap.remove('whiteboardDraft');
   }
   lessons[lessonIndex] = lessonMap;
 

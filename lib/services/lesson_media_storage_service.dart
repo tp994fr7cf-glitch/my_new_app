@@ -40,19 +40,21 @@ class LessonMediaStorageService {
   Reference lessonMediaRef({
     required String courseId,
     required int lessonNumber,
+    required String segmentId,
     required String fileName,
   }) {
     return FirebaseStorage.instance.ref(
-      'courseMedia/$courseId/lessons/$lessonNumber/$fileName',
+      'courseMedia/$courseId/lessons/$lessonNumber/segments/$segmentId/$fileName',
     );
   }
 
   String storagePath({
     required String courseId,
     required int lessonNumber,
+    required String segmentId,
     required String fileName,
   }) {
-    return 'courseMedia/$courseId/lessons/$lessonNumber/$fileName';
+    return 'courseMedia/$courseId/lessons/$lessonNumber/segments/$segmentId/$fileName';
   }
 
   List<String> allowedExtensionsForMediaType(String mediaType) {
@@ -105,6 +107,7 @@ class LessonMediaStorageService {
   Future<LessonMediaUploadResult> uploadLessonMediaFile({
     required String courseId,
     required int lessonNumber,
+    required String segmentId,
     required String mediaType,
     required PlatformFile pickedFile,
     void Function(double progress)? onProgress,
@@ -121,6 +124,9 @@ class LessonMediaStorageService {
     if (lessonNumber <= 0) {
       throw LessonMediaStorageException('レッスン番号が不正です。');
     }
+    if (segmentId.trim().isEmpty) {
+      throw LessonMediaStorageException('パートIDが不正です。');
+    }
 
     _validatePickedFile(pickedFile: pickedFile, mediaType: mediaType);
 
@@ -132,6 +138,7 @@ class LessonMediaStorageService {
     final ref = lessonMediaRef(
       courseId: courseId,
       lessonNumber: lessonNumber,
+      segmentId: segmentId,
       fileName: storedFileName,
     );
     final metadata = SettableMetadata(
@@ -139,6 +146,7 @@ class LessonMediaStorageService {
       customMetadata: {
         'courseId': courseId,
         'lessonNumber': '$lessonNumber',
+        'segmentId': segmentId,
         'mediaType': mediaType,
         'originalFileName': originalName,
       },
@@ -167,6 +175,7 @@ class LessonMediaStorageService {
       storagePath: storagePath(
         courseId: courseId,
         lessonNumber: lessonNumber,
+        segmentId: segmentId,
         fileName: storedFileName,
       ),
       contentType: contentType,
@@ -177,6 +186,7 @@ class LessonMediaStorageService {
   Future<LessonMediaUploadResult?> pickAndUploadLessonMedia({
     required String courseId,
     required int lessonNumber,
+    required String segmentId,
     required String mediaType,
     void Function(double progress)? onProgress,
   }) async {
@@ -187,6 +197,7 @@ class LessonMediaStorageService {
     return uploadLessonMediaFile(
       courseId: courseId,
       lessonNumber: lessonNumber,
+      segmentId: segmentId,
       mediaType: mediaType,
       pickedFile: pickedFile,
       onProgress: onProgress,
