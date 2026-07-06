@@ -280,7 +280,7 @@ void main() {
 
     await tester.tap(find.widgetWithText(OutlinedButton, '書き物を描き直す'));
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(FilledButton, '描き直す'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'リセットして描き直す'));
     await tester.pumpAndSettle();
 
     expect(find.widgetWithText(OutlinedButton, '書き物を一時保存'), findsOneWidget);
@@ -300,6 +300,161 @@ void main() {
       find.byType(LessonWhiteboardCanvas),
     );
     expect(canvas.strokes.single.id, 'draft-new');
+  });
+
+  testWidgets('Teacher whiteboard editor can edit published content from options', (
+    WidgetTester tester,
+  ) async {
+    const published = LessonWhiteboard(
+      strokes: [
+        WhiteboardStroke(
+          id: 'published',
+          timestampSec: 0,
+          points: [
+            WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
+            WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
+          ],
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonWhiteboardEditorPanel(
+            courseId: 'course-1',
+            lessonNumber: 1,
+            mediaUrl: 'https://example.com/lesson.mp3',
+            mediaDurationSec: 90,
+            durationLabel: '1分30秒',
+            publishedWhiteboard: published,
+            draftWhiteboard: null,
+            onDraftSaved: (_) async {},
+            playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(OutlinedButton, '書き物を描き直す'));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.widgetWithText(OutlinedButton, '公開しているものを編集する'),
+    );
+    await tester.pumpAndSettle();
+
+    final slider = tester.widget<Slider>(find.byType(Slider));
+    slider.onChanged!(10);
+    await tester.pumpAndSettle();
+
+    final canvas = tester.widget<LessonWhiteboardCanvas>(
+      find.byType(LessonWhiteboardCanvas),
+    );
+    expect(canvas.strokes.single.id, 'published');
+    expect(find.widgetWithText(OutlinedButton, '書き物を一時保存'), findsOneWidget);
+  });
+
+  testWidgets('Teacher whiteboard editor shows three edit options when draft exists', (
+    WidgetTester tester,
+  ) async {
+    const published = LessonWhiteboard(
+      strokes: [
+        WhiteboardStroke(
+          id: 'published',
+          timestampSec: 0,
+          points: [
+            WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
+            WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
+          ],
+        ),
+      ],
+    );
+    const draft = LessonWhiteboard(
+      strokes: [
+        WhiteboardStroke(
+          id: 'draft',
+          timestampSec: 0,
+          points: [
+            WhiteboardPoint(x: 0.2, y: 0.2, timestampSec: 0),
+            WhiteboardPoint(x: 0.8, y: 0.8, timestampSec: 10),
+          ],
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonWhiteboardEditorPanel(
+            courseId: 'course-1',
+            lessonNumber: 1,
+            mediaUrl: 'https://example.com/lesson.mp3',
+            mediaDurationSec: 90,
+            durationLabel: '1分30秒',
+            publishedWhiteboard: published,
+            draftWhiteboard: draft,
+            onDraftSaved: (_) async {},
+            playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(OutlinedButton, '編集の選び直し'));
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(OutlinedButton, '公開しているものを編集する'), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, '仮保存中のものを編集する'), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'リセットして描き直す'), findsOneWidget);
+  });
+
+  testWidgets('Teacher whiteboard deferred reset does not save until draft save', (
+    WidgetTester tester,
+  ) async {
+    const published = LessonWhiteboard(
+      strokes: [
+        WhiteboardStroke(
+          id: 'published',
+          timestampSec: 0,
+          points: [
+            WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
+            WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
+          ],
+        ),
+      ],
+    );
+    var draftSaveCount = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonWhiteboardEditorPanel(
+            courseId: 'course-1',
+            lessonNumber: 1,
+            mediaUrl: 'https://example.com/lesson.mp3',
+            mediaDurationSec: 90,
+            durationLabel: '1分30秒',
+            publishedWhiteboard: published,
+            draftWhiteboard: null,
+            onDraftSaved: (_) async {
+              draftSaveCount++;
+            },
+            playbackFactory: ({required isAudio}) => FakeLessonMediaPlayback(),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(OutlinedButton, '書き物を描き直す'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(OutlinedButton, 'リセットして描き直す'));
+    await tester.pumpAndSettle();
+
+    expect(draftSaveCount, 0);
+    expect(find.widgetWithText(OutlinedButton, '書き物を一時保存'), findsOneWidget);
   });
 }
 

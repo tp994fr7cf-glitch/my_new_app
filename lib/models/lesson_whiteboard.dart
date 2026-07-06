@@ -236,3 +236,27 @@ LessonWhiteboard mergeWhiteboardDraft({
   }
   return published ?? const LessonWhiteboard();
 }
+
+enum WhiteboardEditSessionKind {
+  none,
+  fresh,
+  published,
+  draft,
+  pendingReset,
+}
+
+/// Chooses which whiteboard should be published when saving lesson info.
+/// Unsaved in-memory edits are ignored when a published whiteboard already exists.
+LessonWhiteboard? resolveWhiteboardForLessonPublish({
+  required LessonWhiteboard? publishedWhiteboard,
+  required LessonWhiteboard? draftWhiteboard,
+  required LessonWhiteboard workingWhiteboard,
+}) {
+  if (draftWhiteboard != null && !draftWhiteboard.isEmpty) {
+    return draftWhiteboard;
+  }
+  if (publishedWhiteboard != null && !publishedWhiteboard.isEmpty) {
+    return publishedWhiteboard;
+  }
+  return workingWhiteboard.isEmpty ? null : workingWhiteboard;
+}
