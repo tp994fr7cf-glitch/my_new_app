@@ -1,5 +1,7 @@
 import 'dart:math';
 
+import '../utils/firestore_parsing.dart';
+
 class LessonMediaSegment {
   const LessonMediaSegment({
     required this.id,
@@ -23,12 +25,12 @@ class LessonMediaSegment {
 
   factory LessonMediaSegment.fromMap(Map data) {
     return LessonMediaSegment(
-      id: data['id'] as String? ?? '',
-      order: (data['order'] as num?)?.toInt() ?? 0,
-      title: data['title'] as String? ?? '',
-      mediaType: data['mediaType'] as String? ?? 'video',
-      url: data['url'] as String? ?? '',
-      durationSec: (data['durationSec'] as num?)?.toInt() ?? 0,
+      id: parseStringField(data['id']),
+      order: parseIntField(data['order']),
+      title: parseStringField(data['title']),
+      mediaType: parseStringField(data['mediaType'], fallback: 'video'),
+      url: parseStringField(data['url']),
+      durationSec: parseIntField(data['durationSec']),
     );
   }
 

@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 
+import '../utils/firestore_parsing.dart';
 import 'lesson_media_segment.dart';
 import 'lesson_media_timeline.dart';
 import 'lesson_timed_anchor.dart';
@@ -44,6 +46,17 @@ class Course {
     return Course.fromMap(doc.data() ?? {}, id: doc.id);
   }
 
+  static Course? tryFromFirestore(
+    DocumentSnapshot<Map<String, dynamic>> doc,
+  ) {
+    try {
+      return Course.fromFirestore(doc);
+    } catch (error, stackTrace) {
+      debugPrint('Skip course ${doc.id}: $error\n$stackTrace');
+      return null;
+    }
+  }
+
   factory Course.fromMap(Map data, {String? id}) {
     final lessonsData = data['lessons'];
     final lessonEventsData = data['lessonEvents'];
@@ -57,23 +70,43 @@ class Course {
       category: data['category'] as String? ?? '',
       level: data['level'] as String? ?? '',
       duration: data['duration'] as String? ?? '',
-      lessonCount: (data['lessonCount'] as num?)?.toInt() ?? 0,
-      rating: (data['rating'] as num?)?.toDouble() ?? 0,
-      priceLabel: data['priceLabel'] as String? ?? '',
-      description: data['description'] as String? ?? '',
+      lessonCount: parseIntField(data['lessonCount']),
+      rating: parseDoubleField(data['rating']),
+      priceLabel: parseStringField(data['priceLabel']),
+      description: parseStringField(data['description']),
       lessons: lessonsData is List
           ? lessonsData
                 .whereType<Map>()
-                .map((lessonData) => CourseLesson.fromMap(lessonData))
+                .map(_tryParseCourseLesson)
+                .whereType<CourseLesson>()
                 .toList()
           : const [],
       lessonEvents: lessonEventsData is List
           ? lessonEventsData
                 .whereType<Map>()
-                .map((eventData) => LessonEvent.fromMap(eventData))
+                .map(_tryParseLessonEvent)
+                .whereType<LessonEvent>()
                 .toList()
           : const [],
     );
+  }
+
+  static CourseLesson? _tryParseCourseLesson(Map lessonData) {
+    try {
+      return CourseLesson.fromMap(lessonData);
+    } catch (error, stackTrace) {
+      debugPrint('Skip lesson in course data: $error\n$stackTrace');
+      return null;
+    }
+  }
+
+  static LessonEvent? _tryParseLessonEvent(Map eventData) {
+    try {
+      return LessonEvent.fromMap(eventData);
+    } catch (error, stackTrace) {
+      debugPrint('Skip lesson event in course data: $error\n$stackTrace');
+      return null;
+    }
   }
 
   Map<String, dynamic> toFirestore() {
@@ -143,7 +176,8 @@ class CourseLesson {
     final parsedSegments = segmentsData is List
         ? segmentsData
               .whereType<Map>()
-              .map(LessonMediaSegment.fromMap)
+              .map(_tryParseMediaSegment)
+              .whereType<LessonMediaSegment>()
               .toList()
         : const <LessonMediaSegment>[];
 
@@ -154,7 +188,8 @@ class CourseLesson {
     var parsedPublishedLayers = whiteboardLayersData is List
         ? whiteboardLayersData
               .whereType<Map>()
-              .map(LessonWhiteboardLayer.fromMap)
+              .map(_tryParseWhiteboardLayer)
+              .whereType<LessonWhiteboardLayer>()
               .toList()
         : const <LessonWhiteboardLayer>[];
     if (parsedPublishedLayers.isEmpty && legacyWhiteboardData is Map) {
@@ -167,7 +202,8 @@ class CourseLesson {
     var parsedDraftLayers = whiteboardDraftLayersData is List
         ? whiteboardDraftLayersData
               .whereType<Map>()
-              .map(LessonWhiteboardLayer.fromMap)
+              .map(_tryParseWhiteboardLayer)
+              .whereType<LessonWhiteboardLayer>()
               .toList()
         : const <LessonWhiteboardLayer>[];
     if (parsedDraftLayers.isEmpty && legacyWhiteboardDraftData is Map) {
@@ -197,9 +233,27 @@ class CourseLesson {
         order: 0,
         mediaType: data['mediaType'] as String? ?? 'video',
         url: legacyUrl,
-        durationSec: (data['mediaDurationSec'] as num?)?.toInt() ?? 0,
+        durationSec: parseIntField(data['mediaDurationSec']),
       ),
     ];
+  }
+
+  static LessonMediaSegment? _tryParseMediaSegment(Map data) {
+    try {
+      return LessonMediaSegment.fromMap(data);
+    } catch (error, stackTrace) {
+      debugPrint('Skip media segment: $error\n$stackTrace');
+      return null;
+    }
+  }
+
+  static LessonWhiteboardLayer? _tryParseWhiteboardLayer(Map data) {
+    try {
+      return LessonWhiteboardLayer.fromMap(data);
+    } catch (error, stackTrace) {
+      debugPrint('Skip whiteboard layer: $error\n$stackTrace');
+      return null;
+    }
   }
 
   Map<String, dynamic> toMap() {
@@ -283,13 +337,15 @@ class LessonEvent {
 
     return LessonEvent(
       id: data['id'] as String? ?? '',
-      lessonNumber: (data['lessonNumber'] as num?)?.toInt() ?? 1,
-      timestampSec: (data['timestampSec'] as num?)?.toInt() ?? 0,
+      lessonNumber: parseIntField(data['lessonNumber'], fallback: 1),
+      timestampSec: parseIntField(data['timestampSec']),
       type: data['type'] as String? ?? 'quiz',
       quiz: quizData is Map ? LessonQuiz.fromMap(quizData) : null,
       anchorType: LessonTimedAnchorType.fromStorage(data['anchorType'] as String?),
       segmentId: data['segmentId'] as String?,
-      globalTimestampSec: (data['globalTimestampSec'] as num?)?.toInt(),
+      globalTimestampSec: data['globalTimestampSec'] == null
+          ? null
+          : parseIntField(data['globalTimestampSec']),
     );
   }
 
@@ -342,7 +398,7 @@ class LessonQuiz {
       choices: choicesData is List
           ? choicesData.whereType<String>().toList()
           : const [],
-      correctChoiceIndex: (data['correctChoiceIndex'] as num?)?.toInt() ?? 0,
+      correctChoiceIndex: parseIntField(data['correctChoiceIndex']),
       explanation: data['explanation'] as String? ?? '',
     );
   }

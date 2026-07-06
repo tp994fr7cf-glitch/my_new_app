@@ -25,7 +25,12 @@ class TeacherCourseListPage extends StatelessWidget {
         .collection('courses')
         .where('instructorId', isEqualTo: user.uid)
         .snapshots()
-        .map((snapshot) => snapshot.docs.map(Course.fromFirestore).toList());
+        .map(
+          (snapshot) => snapshot.docs
+              .map(Course.tryFromFirestore)
+              .whereType<Course>()
+              .toList(),
+        );
   }
 
   @override
