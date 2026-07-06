@@ -3,6 +3,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
+import '../models/lesson_media_timeline.dart';
 
 typedef QuizSaveOverride = Future<void> Function(List<LessonEvent> events);
 
@@ -193,7 +194,7 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
             correctChoiceIndex: editor.correctChoiceIndex,
             explanation: editor.explanationController.text.trim(),
           ),
-        ),
+        ).withResolvedGlobalTimestamp(_lessonTimeline()),
       );
     }
 
@@ -206,8 +207,19 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
       if (lessonCompare != 0) {
         return lessonCompare;
       }
-      return a.timestampSec.compareTo(b.timestampSec);
+      final timeline = _lessonTimeline();
+      return a
+          .resolveGlobalTimestampSec(timeline)
+          .compareTo(b.resolveGlobalTimestampSec(timeline));
     });
+  }
+
+  LessonMediaTimeline _lessonTimeline() {
+    final lessonIndex = widget.lessonNumber - 1;
+    if (lessonIndex < 0 || lessonIndex >= widget.course.lessons.length) {
+      return const LessonMediaTimeline(segments: []);
+    }
+    return widget.course.lessons[lessonIndex].mediaTimeline;
   }
 
   Future<void> _saveQuizzes() async {

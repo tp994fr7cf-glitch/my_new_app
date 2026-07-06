@@ -1,6 +1,12 @@
+import 'lesson_media_segment.dart';
+
 enum LessonPlayButtonVisual { play, pause, replay }
 
 bool lessonHasMediaSource(String mediaUrl) => mediaUrl.trim().isNotEmpty;
+
+bool lessonHasPlayableMedia({
+  required List<LessonMediaSegment> mediaSegments,
+}) => lessonHasMediaSegments(mediaSegments);
 
 int calculateCompletionThresholdSec({
   required int totalDurationSec,

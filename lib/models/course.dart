@@ -1,5 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import 'lesson_media_segment.dart';
+import 'lesson_media_timeline.dart';
+import 'lesson_timed_anchor.dart';
 import 'lesson_whiteboard.dart';
 
 class Course {
@@ -96,84 +99,147 @@ class CourseLesson {
   const CourseLesson({
     required this.title,
     required this.duration,
-    this.mediaType = 'video',
-    this.mediaUrl = '',
-    this.mediaDurationSec = 0,
+    this.mediaSegments = const [],
     this.isPreview = false,
-    this.whiteboard,
-    this.whiteboardDraft,
+    this.whiteboardLayers = const [],
+    this.whiteboardDraftLayers = const [],
   });
 
   final String title;
   final String duration;
-  final String mediaType;
-  final String mediaUrl;
-  final int mediaDurationSec;
+  final List<LessonMediaSegment> mediaSegments;
   final bool isPreview;
-  final LessonWhiteboard? whiteboard;
-  final LessonWhiteboard? whiteboardDraft;
+  final List<LessonWhiteboardLayer> whiteboardLayers;
+  final List<LessonWhiteboardLayer> whiteboardDraftLayers;
+
+  LessonMediaTimeline get mediaTimeline => LessonMediaTimeline(segments: mediaSegments);
+
+  bool get hasMedia => lessonHasMediaSegments(mediaSegments);
+
+  int get totalMediaDurationSec => mediaTimeline.totalDurationSec;
+
+  LessonWhiteboardLayerBundle get publishedWhiteboardBundle =>
+      LessonWhiteboardLayerBundle(layers: whiteboardLayers);
+
+  LessonWhiteboardLayerBundle get draftWhiteboardBundle =>
+      LessonWhiteboardLayerBundle(layers: whiteboardDraftLayers);
+
+  LessonWhiteboard? get whiteboard => publishedWhiteboardBundle.toLegacyWhiteboard();
+
+  LessonWhiteboard? get whiteboardDraft => draftWhiteboardBundle.toLegacyWhiteboard();
 
   bool get hasPublishedWhiteboard =>
       whiteboard != null && !whiteboard!.isEmpty;
 
+  bool get hasAudioSegment => mediaSegments.any((segment) => segment.isAudio && segment.hasUrl);
+
   factory CourseLesson.fromMap(Map data) {
-    final whiteboardData = data['whiteboard'];
-    final whiteboardDraftData = data['whiteboardDraft'];
+    final segmentsData = data['mediaSegments'];
+    final whiteboardLayersData = data['whiteboardLayers'];
+    final whiteboardDraftLayersData = data['whiteboardDraftLayers'];
+    final legacyWhiteboardData = data['whiteboard'];
+    final legacyWhiteboardDraftData = data['whiteboardDraft'];
+
+    final parsedSegments = segmentsData is List
+        ? segmentsData
+              .whereType<Map>()
+              .map(LessonMediaSegment.fromMap)
+              .toList()
+        : const <LessonMediaSegment>[];
+
+    final normalizedSegments = parsedSegments.isNotEmpty
+        ? LessonMediaSegment.normalizeOrders(parsedSegments)
+        : _legacySegmentsFromMap(data);
+
+    var parsedPublishedLayers = whiteboardLayersData is List
+        ? whiteboardLayersData
+              .whereType<Map>()
+              .map(LessonWhiteboardLayer.fromMap)
+              .toList()
+        : const <LessonWhiteboardLayer>[];
+    if (parsedPublishedLayers.isEmpty && legacyWhiteboardData is Map) {
+      parsedPublishedLayers =
+          LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
+            LessonWhiteboard.fromMap(legacyWhiteboardData),
+          ).layers;
+    }
+
+    var parsedDraftLayers = whiteboardDraftLayersData is List
+        ? whiteboardDraftLayersData
+              .whereType<Map>()
+              .map(LessonWhiteboardLayer.fromMap)
+              .toList()
+        : const <LessonWhiteboardLayer>[];
+    if (parsedDraftLayers.isEmpty && legacyWhiteboardDraftData is Map) {
+      parsedDraftLayers = LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
+        LessonWhiteboard.fromMap(legacyWhiteboardDraftData),
+      ).layers;
+    }
 
     return CourseLesson(
       title: data['title'] as String? ?? '',
       duration: data['duration'] as String? ?? '',
-      mediaType: data['mediaType'] as String? ?? 'video',
-      mediaUrl: data['mediaUrl'] as String? ?? '',
-      mediaDurationSec: (data['mediaDurationSec'] as num?)?.toInt() ?? 0,
+      mediaSegments: normalizedSegments,
       isPreview: data['isPreview'] as bool? ?? false,
-      whiteboard: whiteboardData is Map
-          ? LessonWhiteboard.fromMap(whiteboardData)
-          : null,
-      whiteboardDraft: whiteboardDraftData is Map
-          ? LessonWhiteboard.fromMap(whiteboardDraftData)
-          : null,
+      whiteboardLayers: parsedPublishedLayers,
+      whiteboardDraftLayers: parsedDraftLayers,
     );
   }
 
+  static List<LessonMediaSegment> _legacySegmentsFromMap(Map data) {
+    final legacyUrl = data['mediaUrl'] as String? ?? '';
+    if (legacyUrl.trim().isEmpty) {
+      return const [];
+    }
+    return [
+      LessonMediaSegment(
+        id: LessonMediaSegment.generateId(),
+        order: 0,
+        mediaType: data['mediaType'] as String? ?? 'video',
+        url: legacyUrl,
+        durationSec: (data['mediaDurationSec'] as num?)?.toInt() ?? 0,
+      ),
+    ];
+  }
+
   Map<String, dynamic> toMap() {
+    final normalizedSegments = LessonMediaSegment.normalizeOrders(mediaSegments);
+    final publishedLayerMaps =
+        LessonWhiteboardLayerBundle(layers: whiteboardLayers).toMapList();
+    final draftLayerMaps =
+        LessonWhiteboardLayerBundle(layers: whiteboardDraftLayers).toMapList();
+
     return {
       'title': title,
       'duration': duration,
-      'mediaType': mediaType,
-      'mediaUrl': mediaUrl,
-      if (mediaDurationSec > 0) 'mediaDurationSec': mediaDurationSec,
+      'mediaSegments': normalizedSegments.map((segment) => segment.toMap()).toList(),
       'isPreview': isPreview,
-      if (whiteboard != null && !whiteboard!.isEmpty)
-        'whiteboard': whiteboard!.toMap(),
-      if (whiteboardDraft != null && !whiteboardDraft!.isEmpty)
-        'whiteboardDraft': whiteboardDraft!.toMap(),
+      if (publishedLayerMaps.isNotEmpty) 'whiteboardLayers': publishedLayerMaps,
+      if (draftLayerMaps.isNotEmpty) 'whiteboardDraftLayers': draftLayerMaps,
     };
   }
 
   CourseLesson copyWith({
     String? title,
     String? duration,
-    String? mediaType,
-    String? mediaUrl,
-    int? mediaDurationSec,
+    List<LessonMediaSegment>? mediaSegments,
     bool? isPreview,
-    LessonWhiteboard? whiteboard,
-    LessonWhiteboard? whiteboardDraft,
-    bool clearWhiteboard = false,
-    bool clearWhiteboardDraft = false,
+    List<LessonWhiteboardLayer>? whiteboardLayers,
+    List<LessonWhiteboardLayer>? whiteboardDraftLayers,
+    bool clearWhiteboardLayers = false,
+    bool clearWhiteboardDraftLayers = false,
   }) {
     return CourseLesson(
       title: title ?? this.title,
       duration: duration ?? this.duration,
-      mediaType: mediaType ?? this.mediaType,
-      mediaUrl: mediaUrl ?? this.mediaUrl,
-      mediaDurationSec: mediaDurationSec ?? this.mediaDurationSec,
+      mediaSegments: mediaSegments ?? this.mediaSegments,
       isPreview: isPreview ?? this.isPreview,
-      whiteboard: clearWhiteboard ? null : (whiteboard ?? this.whiteboard),
-      whiteboardDraft: clearWhiteboardDraft
-          ? null
-          : (whiteboardDraft ?? this.whiteboardDraft),
+      whiteboardLayers: clearWhiteboardLayers
+          ? const []
+          : (whiteboardLayers ?? this.whiteboardLayers),
+      whiteboardDraftLayers: clearWhiteboardDraftLayers
+          ? const []
+          : (whiteboardDraftLayers ?? this.whiteboardDraftLayers),
     );
   }
 }
@@ -185,6 +251,9 @@ class LessonEvent {
     required this.timestampSec,
     required this.type,
     this.quiz,
+    this.anchorType = LessonTimedAnchorType.global,
+    this.segmentId,
+    this.globalTimestampSec,
   });
 
   final String id;
@@ -192,8 +261,22 @@ class LessonEvent {
   final int timestampSec;
   final String type;
   final LessonQuiz? quiz;
+  final LessonTimedAnchorType anchorType;
+  final String? segmentId;
+  final int? globalTimestampSec;
 
   bool get isQuiz => type == 'quiz' && quiz != null;
+
+  LessonTimedAnchor get timedAnchor => LessonTimedAnchor(
+    anchorType: anchorType,
+    timestampSec: timestampSec,
+    segmentId: segmentId,
+    globalTimestampSec: globalTimestampSec,
+  );
+
+  int resolveGlobalTimestampSec(LessonMediaTimeline timeline) {
+    return timedAnchor.resolveGlobalTimestampSec(timeline);
+  }
 
   factory LessonEvent.fromMap(Map data) {
     final quizData = data['quiz'];
@@ -204,6 +287,9 @@ class LessonEvent {
       timestampSec: (data['timestampSec'] as num?)?.toInt() ?? 0,
       type: data['type'] as String? ?? 'quiz',
       quiz: quizData is Map ? LessonQuiz.fromMap(quizData) : null,
+      anchorType: LessonTimedAnchorType.fromStorage(data['anchorType'] as String?),
+      segmentId: data['segmentId'] as String?,
+      globalTimestampSec: (data['globalTimestampSec'] as num?)?.toInt(),
     );
   }
 
@@ -214,7 +300,24 @@ class LessonEvent {
       'timestampSec': timestampSec,
       'type': type,
       if (quiz != null) 'quiz': quiz!.toMap(),
+      if (anchorType != LessonTimedAnchorType.global)
+        'anchorType': anchorType.toStorage(),
+      if (segmentId != null && segmentId!.isNotEmpty) 'segmentId': segmentId,
+      if (globalTimestampSec != null) 'globalTimestampSec': globalTimestampSec,
     };
+  }
+
+  LessonEvent withResolvedGlobalTimestamp(LessonMediaTimeline timeline) {
+    return LessonEvent(
+      id: id,
+      lessonNumber: lessonNumber,
+      timestampSec: timestampSec,
+      type: type,
+      quiz: quiz,
+      anchorType: anchorType,
+      segmentId: segmentId,
+      globalTimestampSec: resolveGlobalTimestampSec(timeline),
+    );
   }
 }
 
@@ -324,12 +427,48 @@ const sampleCourses = [
       CourseLesson(
         title: '短い会話を聞き取るコツ',
         duration: '1分30秒',
-        mediaType: 'audio',
+        mediaSegments: const [
+          LessonMediaSegment(
+            id: 'sample-audio-1',
+            order: 0,
+            mediaType: 'audio',
+          ),
+        ],
         isPreview: true,
       ),
-      CourseLesson(title: '頻出表現の聞き分け', duration: '1分30秒', mediaType: 'audio'),
-      CourseLesson(title: 'ニュース音声に慣れる', duration: '1分30秒', mediaType: 'audio'),
-      CourseLesson(title: 'シャドーイング実践', duration: '1分30秒', mediaType: 'audio'),
+      CourseLesson(
+        title: '頻出表現の聞き分け',
+        duration: '1分30秒',
+        mediaSegments: const [
+          LessonMediaSegment(
+            id: 'sample-audio-2',
+            order: 0,
+            mediaType: 'audio',
+          ),
+        ],
+      ),
+      CourseLesson(
+        title: 'ニュース音声に慣れる',
+        duration: '1分30秒',
+        mediaSegments: const [
+          LessonMediaSegment(
+            id: 'sample-audio-3',
+            order: 0,
+            mediaType: 'audio',
+          ),
+        ],
+      ),
+      CourseLesson(
+        title: 'シャドーイング実践',
+        duration: '1分30秒',
+        mediaSegments: const [
+          LessonMediaSegment(
+            id: 'sample-audio-4',
+            order: 0,
+            mediaType: 'audio',
+          ),
+        ],
+      ),
     ],
   ),
   Course(

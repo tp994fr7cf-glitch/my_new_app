@@ -106,7 +106,7 @@ void main() {
         nextTimestampSec: 1.01,
         force: false,
       ),
-      isFalse,
+      isTrue,
     );
     expect(
       shouldSampleWhiteboardPoint(

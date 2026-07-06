@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 
 import '../models/course.dart';
 import '../models/lesson_duration_parser.dart';
+import '../models/lesson_media_config.dart';
+import '../models/lesson_media_segment.dart';
 import '../models/lesson_player_view_state.dart';
 import '../models/lesson_whiteboard.dart';
 import '../services/lesson_media_duration_service.dart';
@@ -33,6 +35,7 @@ class TeacherLessonManagePage extends StatefulWidget {
 class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
   static const _mediaStorageService = LessonMediaStorageService();
   static const _durationService = LessonMediaDurationService();
+  static const _mediaConfig = LessonMediaConfig.current;
 
   late List<_LessonEditorState> _lessonEditors;
   late Course _activeCourse;
@@ -124,24 +127,21 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       final durationLabel = editor.durationController.text.trim().isEmpty
           ? '1分30秒'
           : editor.durationController.text.trim();
-      final mediaDurationSec = editor.mediaDurationSec > 0
-          ? editor.mediaDurationSec
-          : (parseLessonDurationLabel(durationLabel) ?? 0);
+      final segments = editor.buildSegments(fallbackDurationLabel: durationLabel);
+      final publishedLayers = resolveWhiteboardLayersForLessonPublish(
+        publishedLayers: editor.publishedWhiteboardLayers,
+        draftLayers: editor.draftWhiteboardLayers,
+        workingLayers: editor.workingWhiteboardLayers,
+      );
 
       lessons.add(
         CourseLesson(
           title: title,
           duration: durationLabel,
-          mediaType: editor.mediaType,
-          mediaUrl: editor.mediaUrlController.text.trim(),
-          mediaDurationSec: mediaDurationSec,
+          mediaSegments: segments,
           isPreview: editor.isPreview,
-          whiteboard: resolveWhiteboardForLessonPublish(
-            publishedWhiteboard: editor.publishedWhiteboard,
-            draftWhiteboard: editor.draftWhiteboard,
-            workingWhiteboard: editor.workingWhiteboard,
-          ),
-          whiteboardDraft: null,
+          whiteboardLayers: publishedLayers,
+          whiteboardDraftLayers: const [],
         ),
       );
     }
@@ -191,9 +191,9 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
             }
             final editor = _lessonEditors[index];
             final savedLesson = lessons[index];
-            editor.publishedWhiteboard = savedLesson.whiteboard;
-            editor.draftWhiteboard = null;
-            editor.workingWhiteboard = savedLesson.whiteboard ?? const LessonWhiteboard();
+            editor.publishedWhiteboardLayers = savedLesson.whiteboardLayers;
+            editor.draftWhiteboardLayers = const [];
+            editor.workingWhiteboardLayers = savedLesson.publishedWhiteboardBundle;
           }
           _message = 'レッスン情報を保存しました。';
         });
@@ -219,9 +219,10 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     }
   }
 
-  Future<void> _uploadLessonMedia({
+  Future<void> _uploadSegmentMedia({
     required int lessonNumber,
     required _LessonEditorState editor,
+    required _MediaSegmentEditorState segment,
   }) async {
     final courseId = widget.course.id;
     if (courseId == null) {
@@ -231,9 +232,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       return;
     }
 
-    final shouldPick = await _showUploadGuideDialog(
-      mediaType: editor.mediaType,
-    );
+    final shouldPick = await _showUploadGuideDialog(mediaType: segment.mediaType);
     if (!shouldPick || !mounted) {
       return;
     }
@@ -245,7 +244,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     PlatformFile? pickedFile;
     try {
       pickedFile = await _mediaStorageService.pickLessonMediaFile(
-        mediaType: editor.mediaType,
+        mediaType: segment.mediaType,
       );
     } on LessonMediaStorageException catch (error) {
       if (mounted) {
@@ -274,8 +273,8 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     }
 
     setState(() {
-      editor.isUploading = true;
-      editor.uploadProgress = 0;
+      segment.isUploading = true;
+      segment.uploadProgress = 0;
       _message = null;
     });
 
@@ -283,14 +282,15 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       final result = await _mediaStorageService.uploadLessonMediaFile(
         courseId: courseId,
         lessonNumber: lessonNumber,
-        mediaType: editor.mediaType,
+        segmentId: segment.id,
+        mediaType: segment.mediaType,
         pickedFile: pickedFile,
         onProgress: (progress) {
           if (!mounted) {
             return;
           }
           setState(() {
-            editor.uploadProgress = progress;
+            segment.uploadProgress = progress;
           });
         },
       );
@@ -302,31 +302,32 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         pickedFile,
       );
 
-      editor.mediaUrlController.text = result.downloadUrl;
+      segment.urlController.text = result.downloadUrl;
       if (detectedDurationSec != null && detectedDurationSec > 0) {
-        editor.mediaDurationSec = detectedDurationSec;
+        segment.durationSec = detectedDurationSec;
       }
       setState(() {
-        editor.isUploading = false;
-        editor.uploadProgress = null;
+        segment.isUploading = false;
+        segment.uploadProgress = null;
         _message =
-            'レッスン$lessonNumber の${_mediaStorageService.mediaTypeLabel(editor.mediaType)}をアップロードしました。'
+            'レッスン$lessonNumber のパート${segment.displayOrder}に'
+            '${_mediaStorageService.mediaTypeLabel(segment.mediaType)}をアップロードしました。'
             '${detectedDurationSec != null ? '（再生時間: ${detectedDurationSec}秒）' : ''}'
             '「レッスン情報を保存」を押して反映してください。';
       });
     } on LessonMediaStorageException catch (error) {
       if (mounted) {
         setState(() {
-          editor.isUploading = false;
-          editor.uploadProgress = null;
+          segment.isUploading = false;
+          segment.uploadProgress = null;
           _message = error.message;
         });
       }
     } catch (error) {
       if (mounted) {
         setState(() {
-          editor.isUploading = false;
-          editor.uploadProgress = null;
+          segment.isUploading = false;
+          segment.uploadProgress = null;
           _message = 'アップロードに失敗しました: $error';
         });
       }
@@ -390,8 +391,12 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
 
     if (mounted) {
       setState(() {
-        editor.draftWhiteboard = whiteboard.isEmpty ? null : whiteboard;
-        editor.workingWhiteboard = whiteboard;
+        final draftLayers = LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
+          whiteboard.isEmpty ? null : whiteboard,
+        ).layers;
+        editor.draftWhiteboardLayers = draftLayers;
+        editor.workingWhiteboardLayers =
+            LessonWhiteboardLayerBundle(layers: draftLayers);
       });
     }
   }
@@ -413,9 +418,8 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
             ),
             const SizedBox(height: 8),
             const Text(
-              '音声・動画ファイルは Firebase Storage にアップロードできます。'
-              'アップロード後は「レッスン情報を保存」を押してください。'
-              'エミュレータでは、先に PC から音声ファイルを Download フォルダへ入れる必要があります。',
+              '1レッスンに複数の音声・動画パートを追加できます。'
+              'アップロード後は「レッスン情報を保存」を押してください。',
             ),
             if (!canUploadMedia) ...[
               const SizedBox(height: 8),
@@ -436,11 +440,13 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                 course: _activeCourse,
                 editor: entry.$2,
                 canUploadMedia: canUploadMedia,
+                mediaConfig: _mediaConfig,
                 requiredText: _requiredText,
                 onChanged: () => setState(() {}),
-                onUpload: () => _uploadLessonMedia(
+                onUploadSegment: (segment) => _uploadSegmentMedia(
                   lessonNumber: entry.$1 + 1,
                   editor: entry.$2,
+                  segment: segment,
                 ),
                 onDraftSaved: (whiteboard) => _saveWhiteboardDraft(
                   lessonIndex: entry.$1,
@@ -476,56 +482,176 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
   }
 }
 
+class _MediaSegmentEditorState {
+  _MediaSegmentEditorState({
+    required this.id,
+    required this.order,
+    required this.titleController,
+    required this.urlController,
+    required this.mediaType,
+    this.durationSec = 0,
+    this.isUploading = false,
+    this.uploadProgress,
+  });
+
+  factory _MediaSegmentEditorState.fromSegment(LessonMediaSegment segment) {
+    return _MediaSegmentEditorState(
+      id: segment.id,
+      order: segment.order,
+      titleController: TextEditingController(text: segment.title),
+      urlController: TextEditingController(text: segment.url),
+      mediaType: segment.isAudio ? 'audio' : 'video',
+      durationSec: segment.durationSec,
+    );
+  }
+
+  final String id;
+  int order;
+  final TextEditingController titleController;
+  final TextEditingController urlController;
+  String mediaType;
+  int durationSec;
+  bool isUploading;
+  double? uploadProgress;
+
+  int get displayOrder => order + 1;
+
+  bool get hasUrl => urlController.text.trim().isNotEmpty;
+
+  LessonMediaSegment toSegment({required int fallbackDurationSec}) {
+    final duration = durationSec > 0 ? durationSec : fallbackDurationSec;
+    return LessonMediaSegment(
+      id: id,
+      order: order,
+      title: titleController.text.trim(),
+      mediaType: mediaType == 'audio' ? 'audio' : 'video',
+      url: urlController.text.trim(),
+      durationSec: hasUrl ? duration : 0,
+    );
+  }
+
+  void dispose() {
+    titleController.dispose();
+    urlController.dispose();
+  }
+}
+
 class _LessonEditorState {
   _LessonEditorState({
     required this.titleController,
     required this.durationController,
-    required this.mediaUrlController,
-    required this.mediaType,
+    required this.segments,
     required this.isPreview,
-    this.mediaDurationSec = 0,
-    this.isUploading = false,
-    this.uploadProgress,
-    this.publishedWhiteboard,
-    this.draftWhiteboard,
-    LessonWhiteboard? workingWhiteboard,
-  }) : workingWhiteboard = workingWhiteboard ?? const LessonWhiteboard();
+    this.publishedWhiteboardLayers = const [],
+    this.draftWhiteboardLayers = const [],
+    LessonWhiteboardLayerBundle? workingWhiteboardLayers,
+  }) : workingWhiteboardLayers =
+           workingWhiteboardLayers ??
+           mergeWhiteboardDraftLayers(
+             published: LessonWhiteboardLayerBundle(
+               layers: publishedWhiteboardLayers,
+             ),
+             draft: LessonWhiteboardLayerBundle(layers: draftWhiteboardLayers),
+           );
 
   factory _LessonEditorState.fromLesson(CourseLesson lesson) {
-    final merged = mergeWhiteboardDraft(
-      published: lesson.whiteboard,
-      draft: lesson.whiteboardDraft,
-    );
+    final segments = lesson.mediaSegments.isEmpty
+        ? <_MediaSegmentEditorState>[]
+        : lesson.mediaSegments
+              .map(_MediaSegmentEditorState.fromSegment)
+              .toList();
 
     return _LessonEditorState(
       titleController: TextEditingController(text: lesson.title),
       durationController: TextEditingController(text: lesson.duration),
-      mediaUrlController: TextEditingController(text: lesson.mediaUrl),
-      mediaType: lesson.mediaType == 'audio' ? 'audio' : 'video',
+      segments: segments,
       isPreview: lesson.isPreview,
-      mediaDurationSec: lesson.mediaDurationSec,
-      publishedWhiteboard: lesson.whiteboard,
-      draftWhiteboard: lesson.whiteboardDraft,
-      workingWhiteboard: merged,
+      publishedWhiteboardLayers: lesson.whiteboardLayers,
+      draftWhiteboardLayers: lesson.whiteboardDraftLayers,
+      workingWhiteboardLayers: mergeWhiteboardDraftLayers(
+        published: lesson.publishedWhiteboardBundle,
+        draft: lesson.draftWhiteboardBundle,
+      ),
     );
   }
 
   final TextEditingController titleController;
   final TextEditingController durationController;
-  final TextEditingController mediaUrlController;
-  String mediaType;
+  final List<_MediaSegmentEditorState> segments;
   bool isPreview;
-  int mediaDurationSec;
-  bool isUploading;
-  double? uploadProgress;
-  LessonWhiteboard? publishedWhiteboard;
-  LessonWhiteboard? draftWhiteboard;
-  LessonWhiteboard workingWhiteboard;
+  List<LessonWhiteboardLayer> publishedWhiteboardLayers;
+  List<LessonWhiteboardLayer> draftWhiteboardLayers;
+  LessonWhiteboardLayerBundle workingWhiteboardLayers;
+
+  bool get isAnySegmentUploading => segments.any((segment) => segment.isUploading);
+
+  bool get hasPlayableMedia => segments.any((segment) => segment.hasUrl);
+
+  bool get hasAudioSegment =>
+      segments.any((segment) => segment.mediaType == 'audio' && segment.hasUrl);
+
+  List<LessonMediaSegment> buildSegments({required String fallbackDurationLabel}) {
+    final fallbackDurationSec = parseLessonDurationLabel(fallbackDurationLabel) ?? 0;
+    return LessonMediaSegment.normalizeOrders(
+      segments
+          .map(
+            (segment) => segment.toSegment(fallbackDurationSec: fallbackDurationSec),
+          )
+          .where((segment) => segment.hasUrl)
+          .toList(),
+    );
+  }
+
+  _MediaSegmentEditorState addSegment({String mediaType = 'audio'}) {
+    final segment = _MediaSegmentEditorState(
+      id: LessonMediaSegment.generateId(),
+      order: segments.length,
+      titleController: TextEditingController(),
+      urlController: TextEditingController(),
+      mediaType: mediaType,
+    );
+    segments.add(segment);
+    return segment;
+  }
+
+  void moveSegmentUp(int index) {
+    if (index <= 0 || index >= segments.length) {
+      return;
+    }
+    final item = segments.removeAt(index);
+    segments.insert(index - 1, item);
+    _reindexSegments();
+  }
+
+  void moveSegmentDown(int index) {
+    if (index < 0 || index >= segments.length - 1) {
+      return;
+    }
+    final item = segments.removeAt(index);
+    segments.insert(index + 1, item);
+    _reindexSegments();
+  }
+
+  void removeSegmentAt(int index) {
+    if (index < 0 || index >= segments.length) {
+      return;
+    }
+    segments.removeAt(index).dispose();
+    _reindexSegments();
+  }
+
+  void _reindexSegments() {
+    for (var index = 0; index < segments.length; index++) {
+      segments[index].order = index;
+    }
+  }
 
   void dispose() {
     titleController.dispose();
     durationController.dispose();
-    mediaUrlController.dispose();
+    for (final segment in segments) {
+      segment.dispose();
+    }
   }
 }
 
@@ -536,9 +662,10 @@ class _LessonEditorCard extends StatelessWidget {
     required this.course,
     required this.editor,
     required this.canUploadMedia,
+    required this.mediaConfig,
     required this.requiredText,
     required this.onChanged,
-    required this.onUpload,
+    required this.onUploadSegment,
     required this.onDraftSaved,
   });
 
@@ -547,24 +674,54 @@ class _LessonEditorCard extends StatelessWidget {
   final Course course;
   final _LessonEditorState editor;
   final bool canUploadMedia;
+  final LessonMediaConfig mediaConfig;
   final String? Function(String? value) requiredText;
   final VoidCallback onChanged;
-  final VoidCallback onUpload;
+  final ValueChanged<_MediaSegmentEditorState> onUploadSegment;
   final WhiteboardDraftSaveCallback onDraftSaved;
+
+  Future<void> _showAddSegmentDialog(BuildContext context) async {
+    final mediaType = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('パートを追加'),
+          content: const Text('追加するファイルの種類を選んでください。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop('audio'),
+              child: const Text('音声'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop('video'),
+              child: const Text('動画'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('キャンセル'),
+            ),
+          ],
+        );
+      },
+    );
+    if (mediaType == null) {
+      return;
+    }
+    editor.addSegment(mediaType: mediaType);
+    onChanged();
+  }
 
   @override
   Widget build(BuildContext context) {
     const mediaStorageService = LessonMediaStorageService();
-    final mediaLabel = mediaStorageService.mediaTypeLabel(editor.mediaType);
-    final allowedExtensions = mediaStorageService.allowedExtensionsForMediaType(
-      editor.mediaType,
-    );
-    final hasMediaUrl = editor.mediaUrlController.text.trim().isNotEmpty;
-    final isAudioLesson = editor.mediaType == 'audio';
     final courseId = course.id ?? '';
     final durationLabel = editor.durationController.text.trim().isEmpty
         ? '1分30秒'
         : editor.durationController.text.trim();
+    final builtSegments = editor.buildSegments(fallbackDurationLabel: durationLabel);
+    final canAddSegment = mediaConfig.canAddSegment(
+      currentSegmentCount: editor.segments.length,
+    );
 
     return Card(
       child: Padding(
@@ -590,74 +747,66 @@ class _LessonEditorCard extends StatelessWidget {
               controller: editor.durationController,
               decoration: const InputDecoration(
                 border: OutlineInputBorder(),
-                labelText: '時間',
+                labelText: '時間（目安）',
                 hintText: '例: 1分30秒',
               ),
             ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              initialValue: editor.mediaType,
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                labelText: '授業形式',
-              ),
-              items: const [
-                DropdownMenuItem(value: 'video', child: Text('動画')),
-                DropdownMenuItem(value: 'audio', child: Text('音声のみ')),
-              ],
-              onChanged: editor.isUploading
-                  ? null
-                  : (value) {
-                      if (value == null) {
-                        return;
-                      }
-                      editor.mediaType = value;
-                      onChanged();
-                    },
-            ),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: !canUploadMedia || editor.isUploading ? null : onUpload,
-              icon: Icon(
-                editor.mediaType == 'audio'
-                    ? Icons.upload_file
-                    : Icons.video_file_outlined,
-              ),
-              label: Text('$mediaLabelファイルをアップロード'),
+            const SizedBox(height: 16),
+            Text(
+              'メディアパート',
+              style: Theme.of(context).textTheme.titleSmall,
             ),
             const SizedBox(height: 8),
-            Text(
-              '対応形式: ${allowedExtensions.join(' / ')}（50MBまで）',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            if (editor.isUploading) ...[
-              const SizedBox(height: 12),
-              LinearProgressIndicator(
-                value: editor.uploadProgress == null
-                    ? null
-                    : editor.uploadProgress!.clamp(0, 1),
-              ),
-              const SizedBox(height: 8),
-              Text('アップロード中… ${((editor.uploadProgress ?? 0) * 100).round()}%'),
-            ],
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: editor.mediaUrlController,
-              readOnly: true,
-              decoration: InputDecoration(
-                border: const OutlineInputBorder(),
-                labelText: '$mediaLabel URL',
-                hintText: 'アップロード後に自動入力されます',
-                suffixIcon: hasMediaUrl
-                    ? const Icon(Icons.check_circle_outline)
+            if (editor.segments.isEmpty)
+              const Text('パートはまだありません。必要なときだけ追加できます。'),
+            for (final entry in editor.segments.indexed) ...[
+              _SegmentEditorTile(
+                segment: entry.$2,
+                segmentIndex: entry.$1,
+                segmentCount: editor.segments.length,
+                canUploadMedia: canUploadMedia && !editor.isAnySegmentUploading,
+                mediaStorageService: mediaStorageService,
+                onChanged: onChanged,
+                onUpload: () => onUploadSegment(entry.$2),
+                onMoveUp: entry.$1 > 0
+                    ? () {
+                        editor.moveSegmentUp(entry.$1);
+                        onChanged();
+                      }
                     : null,
+                onMoveDown: entry.$1 < editor.segments.length - 1
+                    ? () {
+                        editor.moveSegmentDown(entry.$1);
+                        onChanged();
+                      }
+                    : null,
+                onRemove: () {
+                  editor.removeSegmentAt(entry.$1);
+                  onChanged();
+                },
               ),
+              const SizedBox(height: 12),
+            ],
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: !canAddSegment || editor.isAnySegmentUploading
+                      ? null
+                      : () => unawaited(_showAddSegmentDialog(context)),
+                  icon: const Icon(Icons.add),
+                  label: const Text('パートを追加'),
+                ),
+                if (builtSegments.isNotEmpty)
+                  Text('合計 ${builtSegments.fold<int>(0, (sum, s) => sum + s.durationSec)} 秒'),
+              ],
             ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('無料プレビュー'),
               value: editor.isPreview,
-              onChanged: editor.isUploading
+              onChanged: editor.isAnySegmentUploading
                   ? null
                   : (value) {
                       editor.isPreview = value;
@@ -665,7 +814,7 @@ class _LessonEditorCard extends StatelessWidget {
                     },
             ),
             OutlinedButton.icon(
-              onPressed: editor.isUploading
+              onPressed: editor.isAnySegmentUploading
                   ? null
                   : () {
                       Navigator.of(context).push(
@@ -680,22 +829,24 @@ class _LessonEditorCard extends StatelessWidget {
               icon: const Icon(Icons.quiz),
               label: const Text('クイズを管理'),
             ),
-            if (isAudioLesson && hasMediaUrl && courseId.isNotEmpty) ...[
+            if (editor.hasAudioSegment && editor.hasPlayableMedia && courseId.isNotEmpty) ...[
               const SizedBox(height: 16),
               const Divider(),
               const SizedBox(height: 16),
               LessonWhiteboardEditorPanel(
-                key: ValueKey('${courseId}_${index}_${editor.mediaUrlController.text}'),
+                key: ValueKey(
+                  '${courseId}_${index}_${builtSegments.map((s) => s.id).join('_')}',
+                ),
                 courseId: courseId,
                 lessonNumber: index,
-                mediaUrl: editor.mediaUrlController.text.trim(),
-                mediaDurationSec: editor.mediaDurationSec,
+                mediaSegments: builtSegments,
                 durationLabel: durationLabel,
-                publishedWhiteboard: editor.publishedWhiteboard,
-                draftWhiteboard: editor.draftWhiteboard,
+                publishedWhiteboard: editor.publishedWhiteboardLayers.toLegacyWhiteboard(),
+                draftWhiteboard: editor.draftWhiteboardLayers.toLegacyWhiteboard(),
                 onDraftSaved: onDraftSaved,
                 onWhiteboardChanged: (whiteboard) {
-                  editor.workingWhiteboard = whiteboard;
+                  editor.workingWhiteboardLayers =
+                      LessonWhiteboardLayerBundle.fromLegacyWhiteboard(whiteboard);
                 },
               ),
             ],
@@ -703,5 +854,144 @@ class _LessonEditorCard extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _SegmentEditorTile extends StatelessWidget {
+  const _SegmentEditorTile({
+    required this.segment,
+    required this.segmentIndex,
+    required this.segmentCount,
+    required this.canUploadMedia,
+    required this.mediaStorageService,
+    required this.onChanged,
+    required this.onUpload,
+    required this.onMoveUp,
+    required this.onMoveDown,
+    required this.onRemove,
+  });
+
+  final _MediaSegmentEditorState segment;
+  final int segmentIndex;
+  final int segmentCount;
+  final bool canUploadMedia;
+  final LessonMediaStorageService mediaStorageService;
+  final VoidCallback onChanged;
+  final VoidCallback onUpload;
+  final VoidCallback? onMoveUp;
+  final VoidCallback? onMoveDown;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final mediaLabel = mediaStorageService.mediaTypeLabel(segment.mediaType);
+    final allowedExtensions = mediaStorageService.allowedExtensionsForMediaType(
+      segment.mediaType,
+    );
+
+    return Card(
+      margin: EdgeInsets.zero,
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'パート${segment.displayOrder}',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            TextFormField(
+              controller: segment.titleController,
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                labelText: 'パートタイトル（任意）',
+                hintText: 'あとから変更できます',
+              ),
+              onChanged: (_) => onChanged(),
+            ),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              initialValue: segment.mediaType,
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                labelText: '種類',
+              ),
+              items: const [
+                DropdownMenuItem(value: 'audio', child: Text('音声')),
+                DropdownMenuItem(value: 'video', child: Text('動画')),
+              ],
+              onChanged: segment.isUploading
+                  ? null
+                  : (value) {
+                      if (value == null) {
+                        return;
+                      }
+                      segment.mediaType = value;
+                      onChanged();
+                    },
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: !canUploadMedia || segment.isUploading ? null : onUpload,
+              icon: Icon(
+                segment.mediaType == 'audio'
+                    ? Icons.upload_file
+                    : Icons.video_file_outlined,
+              ),
+              label: Text('$mediaLabelをアップロード'),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '対応形式: ${allowedExtensions.join(' / ')}（50MBまで）',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            if (segment.isUploading) ...[
+              const SizedBox(height: 8),
+              LinearProgressIndicator(
+                value: segment.uploadProgress?.clamp(0, 1),
+              ),
+            ],
+            if (segment.hasUrl) ...[
+              const SizedBox(height: 8),
+              Text(
+                'URL: ${segment.urlController.text}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              if (segment.durationSec > 0)
+                Text('長さ: ${segment.durationSec}秒'),
+            ],
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              children: [
+                IconButton(
+                  tooltip: '上へ',
+                  onPressed: onMoveUp,
+                  icon: const Icon(Icons.arrow_upward),
+                ),
+                IconButton(
+                  tooltip: '下へ',
+                  onPressed: onMoveDown,
+                  icon: const Icon(Icons.arrow_downward),
+                ),
+                IconButton(
+                  tooltip: '削除',
+                  onPressed: segment.isUploading ? null : onRemove,
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+extension on List<LessonWhiteboardLayer> {
+  LessonWhiteboard? toLegacyWhiteboard() {
+    return LessonWhiteboardLayerBundle(layers: this).toLegacyWhiteboard();
   }
 }

@@ -63,8 +63,7 @@ class _CourseCreatePageState extends State<CourseCreatePage> {
           (title) => {
             'title': title,
             'duration': '1分30秒',
-            'mediaType': 'video',
-            'mediaUrl': '',
+            'mediaSegments': <Map<String, dynamic>>[],
             'isPreview': false,
           },
         )

@@ -1,3 +1,5 @@
+import 'lesson_media_timeline.dart';
+
 int? parseLessonDurationLabel(String label) {
   final trimmed = label.trim();
   if (trimmed.isEmpty) {
@@ -45,4 +47,20 @@ int resolveLessonMediaDurationSec({
     return mediaDurationSec;
   }
   return parseLessonDurationLabel(durationLabel) ?? 0;
+}
+
+int resolveTimelineDurationSec({
+  required LessonMediaTimeline timeline,
+  required Duration? playerDuration,
+  required String durationLabel,
+}) {
+  final timelineTotal = timeline.totalDurationSec;
+  if (timelineTotal > 0) {
+    return timelineTotal;
+  }
+  return resolveLessonMediaDurationSec(
+    playerDuration: playerDuration,
+    mediaDurationSec: 0,
+    durationLabel: durationLabel,
+  );
 }
