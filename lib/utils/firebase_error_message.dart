@@ -9,7 +9,7 @@ String describeFirebaseError(
     return switch (error.code) {
       'permission-denied' ||
       'unauthorized' =>
-        '$permissionDeniedMessage（${error.plugin}/$error.code）',
+        '$permissionDeniedMessage（${error.plugin}/${error.code}）',
       'unavailable' => 'Firebase に接続できません。時間をおいて再試行してください。',
       _ => error.message ?? '${error.plugin}/${error.code}',
     };

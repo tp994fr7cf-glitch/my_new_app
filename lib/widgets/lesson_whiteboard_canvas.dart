@@ -131,7 +131,39 @@ class _LessonWhiteboardPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _LessonWhiteboardPainter oldDelegate) {
-    return !identical(oldDelegate.strokes, strokes);
+    if (identical(oldDelegate.strokes, strokes)) {
+      return false;
+    }
+    final oldStrokes = oldDelegate.strokes;
+    if (oldStrokes.length != strokes.length) {
+      return true;
+    }
+    for (var index = 0; index < strokes.length; index++) {
+      if (_strokeVisualsChanged(oldStrokes[index], strokes[index])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// A cheap approximation of "did this stroke's visible content change"
+  /// that avoids repainting on every position tick while a lesson plays
+  /// back, without needing a full point-by-point comparison. New strokes,
+  /// strokes gaining/losing revealed points, and style changes are all
+  /// caught; a stroke whose fully-revealed points are unchanged is not.
+  bool _strokeVisualsChanged(WhiteboardStroke previous, WhiteboardStroke next) {
+    if (previous.id != next.id ||
+        previous.colorArgb != next.colorArgb ||
+        previous.strokeWidth != next.strokeWidth ||
+        previous.points.length != next.points.length) {
+      return true;
+    }
+    if (previous.points.isEmpty) {
+      return false;
+    }
+    final previousLast = previous.points.last;
+    final nextLast = next.points.last;
+    return previousLast.x != nextLast.x || previousLast.y != nextLast.y;
   }
 }
 

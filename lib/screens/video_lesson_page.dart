@@ -353,12 +353,20 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     final clampedExact = positionSecExact
         .clamp(0.0, _totalDurationSec.toDouble())
         .toDouble();
-    final shouldUpdateWhiteboard =
+    final roundedSecondChanged = clampedPosition != _currentPositionSec;
+    // The whiteboard needs sub-second precision to stay smoothly in sync
+    // with playback, but everything else on this page (time label, slider,
+    // end-of-lesson checks) only cares about whole seconds. The underlying
+    // player can report a position update many times per second, and
+    // rebuilding this entire page on every single one of those updates is a
+    // major source of jank, especially on lower-powered devices/emulators.
+    // So unless the whiteboard needs it, only rebuild once per second.
+    final needsFineGrainedUpdate =
         _hasWhiteboard && clampedExact != _currentPositionSecExact;
-    final positionExactChanged = clampedExact != _currentPositionSecExact;
-    if (clampedPosition == _currentPositionSec &&
-        !shouldUpdateWhiteboard &&
-        !positionExactChanged) {
+    if (!roundedSecondChanged && !needsFineGrainedUpdate) {
+      // Still keep the exact position fresh for later comparisons (e.g.
+      // end-of-lesson detection) without forcing a rebuild of the page.
+      _currentPositionSecExact = clampedExact;
       return;
     }
 

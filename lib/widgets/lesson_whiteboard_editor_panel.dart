@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../models/course.dart';
 import '../models/lesson_duration_parser.dart';
 import '../models/lesson_media_segment.dart';
 import '../models/lesson_media_timeline.dart';
@@ -764,9 +765,19 @@ enum _WhiteboardEditChoice {
   reset,
 }
 
+/// Persists a whiteboard draft for a single lesson.
+///
+/// [currentLesson] must reflect the lesson's up-to-date state as shown on
+/// screen (title, duration, media parts, preview flag, published whiteboard).
+/// It is written back together with the new draft so that any local edits
+/// the teacher has not pressed "レッスン情報を保存" for yet (for example,
+/// removing a media part) are not silently reverted by this temporary save.
+/// Other lessons in the course are left untouched, using the latest data
+/// already stored on the server.
 Future<void> saveLessonWhiteboardDraft({
   required String courseId,
   required int lessonIndex,
+  required CourseLesson currentLesson,
   required LessonWhiteboard whiteboard,
 }) async {
   final snapshot = await FirebaseFirestore.instance
@@ -787,19 +798,14 @@ Future<void> saveLessonWhiteboardDraft({
       .whereType<Map>()
       .map((lesson) => Map<String, dynamic>.from(lesson))
       .toList();
-  final lessonMap = Map<String, dynamic>.from(lessons[lessonIndex]);
-  final draftLayers =
-      LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
-        whiteboard.isEmpty ? null : whiteboard,
-      ).toMapList();
-  if (draftLayers.isEmpty) {
-    lessonMap.remove('whiteboardDraftLayers');
-    lessonMap.remove('whiteboardDraft');
-  } else {
-    lessonMap['whiteboardDraftLayers'] = draftLayers;
-    lessonMap.remove('whiteboardDraft');
-  }
-  lessons[lessonIndex] = lessonMap;
+  final draftLayers = LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
+    whiteboard.isEmpty ? null : whiteboard,
+  ).layers;
+  final updatedLesson = currentLesson.copyWith(
+    whiteboardDraftLayers: draftLayers,
+    clearWhiteboardDraftLayers: draftLayers.isEmpty,
+  );
+  lessons[lessonIndex] = updatedLesson.toMap();
 
   await FirebaseFirestore.instance.collection('courses').doc(courseId).update({
     'lessons': lessons,
