@@ -38,22 +38,39 @@ LessonMediaPlayback createLessonMediaPlayback({required bool isAudio}) {
 }
 
 class AudioLessonMediaPlayback implements LessonMediaPlayback {
-  AudioLessonMediaPlayback() : _player = AudioPlayer();
+  AudioLessonMediaPlayback() : _player = AudioPlayer() {
+    _player.playingStream.listen(_handlePlayingChanged);
+    _player.positionStream.listen(_emitPosition);
+    _player.durationStream.listen((duration) {
+      if (!_durationController.isClosed) {
+        _durationController.add(duration);
+      }
+    });
+  }
+
+  static const Duration _positionRefreshInterval = Duration(seconds: 1);
 
   final AudioPlayer _player;
+  final StreamController<Duration> _positionController =
+      StreamController<Duration>.broadcast();
+  final StreamController<Duration?> _durationController =
+      StreamController<Duration?>.broadcast();
+  final StreamController<bool> _playingController =
+      StreamController<bool>.broadcast();
+  Timer? _positionRefreshTimer;
   bool _isReady = false;
 
   @override
   VideoPlayerController? get videoController => null;
 
   @override
-  Stream<Duration> get positionStream => _player.positionStream;
+  Stream<Duration> get positionStream => _positionController.stream;
 
   @override
-  Stream<Duration?> get durationStream => _player.durationStream;
+  Stream<Duration?> get durationStream => _durationController.stream;
 
   @override
-  Stream<bool> get playingStream => _player.playingStream;
+  Stream<bool> get playingStream => _playingController.stream;
 
   @override
   Duration get position => _player.position;
@@ -67,6 +84,42 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   @override
   bool get isReady => _isReady;
 
+  void _emitPosition(Duration position) {
+    if (!_positionController.isClosed) {
+      _positionController.add(position);
+    }
+  }
+
+  void _publishCurrentPosition() {
+    _emitPosition(_player.position);
+  }
+
+  void _handlePlayingChanged(bool playing) {
+    if (!_playingController.isClosed) {
+      _playingController.add(playing);
+    }
+    if (playing) {
+      _startPositionRefresh();
+    } else {
+      _stopPositionRefresh();
+      _publishCurrentPosition();
+    }
+  }
+
+  void _startPositionRefresh() {
+    _stopPositionRefresh();
+    _publishCurrentPosition();
+    _positionRefreshTimer = Timer.periodic(
+      _positionRefreshInterval,
+      (_) => _publishCurrentPosition(),
+    );
+  }
+
+  void _stopPositionRefresh() {
+    _positionRefreshTimer?.cancel();
+    _positionRefreshTimer = null;
+  }
+
   @override
   Future<void> open(Uri url) async {
     _isReady = false;
@@ -77,6 +130,10 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
     await _waitUntilReady();
     _isReady = true;
     await _waitForUsableDuration();
+    if (!_durationController.isClosed) {
+      _durationController.add(_player.duration);
+    }
+    _publishCurrentPosition();
   }
 
   bool _hasUsableDuration(Duration? duration) {
@@ -130,18 +187,30 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
       await _player.seek(_player.position);
     }
     await _player.play();
+    _publishCurrentPosition();
   }
 
   @override
-  Future<void> pause() => _player.pause();
+  Future<void> pause() async {
+    await _player.pause();
+    _stopPositionRefresh();
+    _publishCurrentPosition();
+  }
 
   @override
-  Future<void> seek(Duration position) => _player.seek(position);
+  Future<void> seek(Duration position) async {
+    await _player.seek(position);
+    _publishCurrentPosition();
+  }
 
   @override
   Future<void> disposePlayer() async {
     _isReady = false;
+    _stopPositionRefresh();
     await _player.dispose();
+    await _playingController.close();
+    await _positionController.close();
+    await _durationController.close();
   }
 }
 
