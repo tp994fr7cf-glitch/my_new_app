@@ -79,10 +79,19 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   Duration get position => _reportedPosition;
 
   Duration get _reportedPosition {
-    if (_player.playing && _anchorWallTime != null) {
-      return _anchorPosition + DateTime.now().difference(_anchorWallTime!);
+    if (!_player.playing) {
+      return _player.position;
     }
-    return _player.position;
+    _ensurePlaybackAnchor();
+    return _anchorPosition + DateTime.now().difference(_anchorWallTime!);
+  }
+
+  void _ensurePlaybackAnchor() {
+    if (_anchorWallTime != null) {
+      return;
+    }
+    _anchorPosition = _player.position;
+    _anchorWallTime = DateTime.now();
   }
 
   @override
@@ -101,7 +110,8 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   }
 
   void _onPlayerPositionUpdate(Duration position) {
-    if (_player.playing && _anchorWallTime != null) {
+    if (_player.playing) {
+      _ensurePlaybackAnchor();
       final driftMs =
           (position.inMilliseconds - _reportedPosition.inMilliseconds).abs();
       if (driftMs >= _anchorRecalibrateDriftMs) {
@@ -117,9 +127,10 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
     _emitPosition(_reportedPosition);
   }
 
-  void _resetPlaybackAnchor([Duration? position]) {
+  void _resetPlaybackAnchor({Duration? position, bool? playing}) {
     _anchorPosition = position ?? _player.position;
-    _anchorWallTime = _player.playing ? DateTime.now() : null;
+    final isPlaying = playing ?? _player.playing;
+    _anchorWallTime = isPlaying ? DateTime.now() : null;
   }
 
   void _handlePlayingChanged(bool playing) {
@@ -127,7 +138,7 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
       _playingController.add(playing);
     }
     if (playing) {
-      _resetPlaybackAnchor();
+      _resetPlaybackAnchor(playing: true);
       _startPositionRefresh();
     } else {
       _anchorWallTime = null;
@@ -217,7 +228,7 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
       await _player.seek(_player.position);
     }
     await _player.play();
-    _resetPlaybackAnchor();
+    _resetPlaybackAnchor(playing: true);
     _publishCurrentPosition();
   }
 
@@ -232,12 +243,7 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   @override
   Future<void> seek(Duration position) async {
     await _player.seek(position);
-    _anchorPosition = position;
-    if (_player.playing) {
-      _anchorWallTime = DateTime.now();
-    } else {
-      _anchorWallTime = null;
-    }
+    _resetPlaybackAnchor(position: position, playing: _player.playing);
     _publishCurrentPosition();
   }
 
@@ -353,6 +359,112 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
     await _playingController.close();
     await _positionController.close();
     await _durationController.close();
+  }
+}
+
+/// Test fake that mirrors audio playback: [position] reads are sub-second via a
+/// wall clock, while [positionStream] still ticks once per second for display.
+class WallClockFakeLessonMediaPlayback implements LessonMediaPlayback {
+  WallClockFakeLessonMediaPlayback({
+    Duration? totalDuration,
+  }) : _totalDuration = totalDuration ?? const Duration(seconds: 90);
+
+  final Duration _totalDuration;
+  final List<Uri> openedUrls = [];
+  Duration _storedPosition = Duration.zero;
+  Duration _anchorPosition = Duration.zero;
+  DateTime? _anchorWallTime;
+  bool _isPlaying = false;
+  bool _isReady = false;
+  Timer? _streamTimer;
+  final StreamController<Duration> _positionController =
+      StreamController<Duration>.broadcast();
+  final StreamController<Duration?> _durationController =
+      StreamController<Duration?>.broadcast();
+  final StreamController<bool> _playingController =
+      StreamController<bool>.broadcast();
+
+  @override
+  VideoPlayerController? get videoController => null;
+
+  @override
+  Stream<Duration> get positionStream => _positionController.stream;
+
+  @override
+  Stream<Duration?> get durationStream => _durationController.stream;
+
+  @override
+  Stream<bool> get playingStream => _playingController.stream;
+
+  @override
+  Duration get position {
+    if (!_isPlaying) {
+      return _storedPosition;
+    }
+    if (_anchorWallTime == null) {
+      _anchorPosition = _storedPosition;
+      _anchorWallTime = DateTime.now();
+    }
+    return _anchorPosition + DateTime.now().difference(_anchorWallTime!);
+  }
+
+  @override
+  Duration? get duration => _totalDuration;
+
+  @override
+  bool get isPlaying => _isPlaying;
+
+  @override
+  bool get isReady => _isReady;
+
+  @override
+  Future<void> open(Uri url) async {
+    openedUrls.add(url);
+    _storedPosition = Duration.zero;
+    _isReady = true;
+    _positionController.add(_storedPosition);
+    _durationController.add(_totalDuration);
+  }
+
+  @override
+  Future<void> play() async {
+    _isPlaying = true;
+    _anchorPosition = _storedPosition;
+    _anchorWallTime = DateTime.now();
+    _playingController.add(true);
+    _streamTimer?.cancel();
+    _streamTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _storedPosition = Duration(seconds: position.inSeconds);
+      _positionController.add(_storedPosition);
+    });
+    _positionController.add(_storedPosition);
+  }
+
+  @override
+  Future<void> pause() async {
+    _storedPosition = position;
+    _streamTimer?.cancel();
+    _streamTimer = null;
+    _isPlaying = false;
+    _anchorWallTime = null;
+    _playingController.add(false);
+  }
+
+  @override
+  Future<void> seek(Duration position) async {
+    _storedPosition = position;
+    _anchorPosition = position;
+    _anchorWallTime = _isPlaying ? DateTime.now() : null;
+    _positionController.add(_storedPosition);
+  }
+
+  @override
+  Future<void> disposePlayer() async {
+    _isReady = false;
+    _streamTimer?.cancel();
+    await _positionController.close();
+    await _durationController.close();
+    await _playingController.close();
   }
 }
 

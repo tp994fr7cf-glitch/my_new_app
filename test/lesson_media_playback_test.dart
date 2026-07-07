@@ -21,4 +21,17 @@ void main() {
       );
     }
   });
+
+  test('wall clock fake reports sub-second position between stream ticks', () async {
+    final player = WallClockFakeLessonMediaPlayback();
+    await player.open(Uri.parse('https://example.com/audio.mp3'));
+    await player.play();
+
+    final startMs = player.position.inMilliseconds;
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    final midMs = player.position.inMilliseconds;
+
+    expect(midMs - startMs, greaterThan(150));
+    await player.pause();
+  });
 }
