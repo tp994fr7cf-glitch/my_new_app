@@ -22,7 +22,7 @@ import '../models/watched_range.dart';
 import '../services/course_privacy_service.dart';
 import '../services/lesson_media_playback.dart';
 import '../services/lesson_media_playlist_playback.dart';
-import '../widgets/lesson_whiteboard_canvas.dart';
+import '../widgets/lesson_playback_synced_whiteboard.dart';
 import 'course_entry_gate.dart';
 import 'lesson_questions_page.dart';
 import 'lesson_notes_page.dart';
@@ -126,28 +126,6 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   int get _displayedPositionSec =>
       (_sliderDragPositionSec ?? _currentPositionSec.toDouble()).round();
-
-  double get _segmentLocalPositionSec {
-    if (_playlistPlayback == null || _mediaTimeline.isEmpty) {
-      return _currentPositionSecExact;
-    }
-    final position = _mediaTimeline.resolveGlobalSec(_currentPositionSecExact);
-    return position.localSec;
-  }
-
-  String? get _activeSegmentId => _playlistPlayback?.currentSegment?.id;
-
-  List<WhiteboardStroke> get _visibleWhiteboardStrokes {
-    if (!_hasWhiteboard) {
-      return const [];
-    }
-    return visibleWhiteboardBundleStrokes(
-      bundle: lesson.publishedWhiteboardBundle,
-      globalPositionSec: _currentPositionSecExact,
-      segmentLocalPositionSec: _segmentLocalPositionSec,
-      activeSegmentId: _activeSegmentId,
-    );
-  }
 
   bool get _isTeacherPreview => widget.isTeacherPreview;
   bool get _hasMediaSource =>
@@ -365,16 +343,10 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
 
     final roundedSecondChanged = clampedPosition != _currentPositionSec;
-    // The whiteboard needs sub-second precision to stay smoothly in sync
-    // with playback, but everything else on this page (time label, slider,
-    // end-of-lesson checks) only cares about whole seconds. The underlying
-    // player can report a position update many times per second, and
-    // rebuilding this entire page on every single one of those updates is a
-    // major source of jank, especially on lower-powered devices/emulators.
-    // So unless the whiteboard needs it, only rebuild once per second.
-    final needsFineGrainedUpdate =
-        _hasWhiteboard && clampedExact != _currentPositionSecExact;
-    if (!roundedSecondChanged && !needsFineGrainedUpdate) {
+    // Rebuild this page once per second. Sub-second whiteboard sync is handled
+    // by [LessonPlaybackSyncedWhiteboard] so audio playback can stay smooth
+    // without rebuilding the whole lesson view on every tick.
+    if (!roundedSecondChanged) {
       // Still keep the exact position fresh for later comparisons (e.g.
       // end-of-lesson detection) without forcing a rebuild of the page.
       _currentPositionSecExact = clampedExact;
@@ -2029,12 +2001,13 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                 style: Theme.of(context).textTheme.titleSmall,
               ),
               const SizedBox(height: 8),
-              SizedBox(
-                height: 220,
-                child: LessonWhiteboardCanvas(
-                  strokes: _visibleWhiteboardStrokes,
-                  drawingEnabled: false,
-                ),
+              LessonPlaybackSyncedWhiteboard(
+                bundle: lesson.publishedWhiteboardBundle,
+                timeline: _mediaTimeline,
+                playback: _playlistPlayback,
+                isPlaying: _isPlaying,
+                positionSecExact: _currentPositionSecExact,
+                totalDurationSec: _totalDurationSec,
               ),
             ],
             const SizedBox(height: 24),
