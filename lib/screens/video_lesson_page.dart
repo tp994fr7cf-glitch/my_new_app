@@ -59,6 +59,10 @@ class VideoLessonPage extends StatefulWidget {
 class _VideoLessonPageState extends State<VideoLessonPage>
     with WidgetsBindingObserver {
   static const double _completionRate = 0.92;
+  static const double _resumeSeekDriftToleranceSec = 1.0;
+  static const Duration _postSeekDisplaySyncInterval =
+      Duration(milliseconds: 250);
+  static const int _postSeekDisplaySyncTickCount = 6;
   static const Duration _resumeWindow = Duration(hours: 24);
   static const Duration _activeLearningHeartbeatInterval = Duration(
     seconds: 15,
@@ -295,9 +299,15 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         _handlePlayingStreamUpdate(isPlaying);
       });
       _segmentIndexSubscription = playback.segmentIndexStream.listen((_) {
-        if (mounted) {
-          setState(() {});
+        if (!mounted) {
+          return;
         }
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) {
+            return;
+          }
+          _syncDisplayedPlaybackPositionFromPlayer();
+        });
       });
 
       if (!mounted) {
@@ -376,8 +386,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     // So unless the whiteboard needs it, only rebuild once per second.
     final needsFineGrainedUpdate =
         _hasWhiteboard && clampedExact != _currentPositionSecExact;
-    final shouldForceDisplaySync = _isPostSeekDisplaySyncActive();
-    if (!roundedSecondChanged && !needsFineGrainedUpdate && !shouldForceDisplaySync) {
+    if (!roundedSecondChanged && !needsFineGrainedUpdate) {
       // Still keep the exact position fresh for later comparisons (e.g.
       // end-of-lesson detection) without forcing a rebuild of the page.
       _currentPositionSecExact = clampedExact;
@@ -492,7 +501,11 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       _hasPlaybackStarted = true;
       _message = null;
     });
-    await _seekMediaPlayback(_currentPositionSec);
+    if (_playbackPositionDriftSec() >= _resumeSeekDriftToleranceSec) {
+      await _seekMediaPlayback(_currentPositionSec);
+    } else {
+      _syncDisplayedPlaybackPositionFromPlayer();
+    }
     await _startMediaPlayback();
   }
 
@@ -537,23 +550,37 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
-    final globalSec = playback.liveGlobalPositionSec
-        .clamp(0.0, _totalDurationSec.toDouble());
-    setState(() {
-      _currentPositionSec = globalSec.round().clamp(0, _totalDurationSec);
-      _currentPositionSecExact = globalSec;
-    });
+    _applyDisplayPositionFromGlobalSec(playback.liveGlobalPositionSec);
   }
 
-  bool _isPostSeekDisplaySyncActive() {
-    return _postSeekDisplaySyncTimer != null;
+  int _flooredDisplaySecForGlobal(double globalSec) {
+    return globalSec.floor().clamp(0, _totalDurationSec);
+  }
+
+  double _playbackPositionDriftSec() {
+    final playback = _playlistPlayback;
+    if (playback == null) {
+      return 0;
+    }
+    return (playback.liveGlobalPositionSec - _currentPositionSecExact).abs();
+  }
+
+  void _applyDisplayPositionFromGlobalSec(double globalSec) {
+    final clampedGlobal = globalSec.clamp(
+      0.0,
+      _totalDurationSec.toDouble(),
+    );
+    setState(() {
+      _currentPositionSec = _flooredDisplaySecForGlobal(clampedGlobal);
+      _currentPositionSecExact = clampedGlobal;
+    });
   }
 
   void _startPostSeekDisplaySync() {
     _postSeekDisplaySyncTimer?.cancel();
     var ticks = 0;
     _postSeekDisplaySyncTimer = Timer.periodic(
-      const Duration(milliseconds: 250),
+      _postSeekDisplaySyncInterval,
       (timer) {
         if (!mounted) {
           timer.cancel();
@@ -562,7 +589,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         }
 
         ticks += 1;
-        if (ticks > 12) {
+        if (ticks > _postSeekDisplaySyncTickCount) {
           timer.cancel();
           _postSeekDisplaySyncTimer = null;
           return;
@@ -575,9 +602,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
         final globalSec = playback.liveGlobalPositionSec
             .clamp(0.0, _totalDurationSec.toDouble());
-        final nextSec = globalSec.round().clamp(0, _totalDurationSec);
-        if (nextSec == _currentPositionSec &&
-            globalSec == _currentPositionSecExact) {
+        final nextSec = _flooredDisplaySecForGlobal(globalSec);
+        if (nextSec == _currentPositionSec) {
           return;
         }
 
@@ -606,6 +632,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _playbackTimer?.cancel();
     await _playlistPlayback?.pause();
     if (mounted) {
+      _syncDisplayedPlaybackPositionFromPlayer();
       setState(() {
         _isPlaying = false;
       });
