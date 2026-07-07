@@ -23,11 +23,11 @@ List<LessonMediaSegment> twoPartLessonSegments() {
 }
 
 LessonMediaPlaylistPlayback createTrackingPlaylistPlayback({
-  List<FakeLessonMediaPlayback>? audioPlayers,
-  List<FakeLessonMediaPlayback>? videoPlayers,
+  List<LessonMediaPlayback>? audioPlayers,
+  List<LessonMediaPlayback>? videoPlayers,
 }) {
-  final audioPool = audioPlayers ?? [FakeLessonMediaPlayback()];
-  final videoPool = videoPlayers ?? [FakeLessonMediaPlayback()];
+  final audioPool = audioPlayers ?? <LessonMediaPlayback>[FakeLessonMediaPlayback()];
+  final videoPool = videoPlayers ?? <LessonMediaPlayback>[FakeLessonMediaPlayback()];
   var audioIndex = 0;
   var videoIndex = 0;
 
@@ -301,5 +301,22 @@ void main() {
     expect(playback.currentSegmentIndex, 0);
     expect(playback.isPlaying, isTrue);
     expect(playback.liveGlobalPositionSec, greaterThan(31));
+  });
+
+  test('liveGlobalPositionSec advances between one-second audio stream ticks',
+      () async {
+    final audioPlayer = WallClockFakeLessonMediaPlayback();
+    final videoPlayer = FakeLessonMediaPlayback();
+    final playback = createTrackingPlaylistPlayback(
+      audioPlayers: [audioPlayer],
+      videoPlayers: [videoPlayer],
+    );
+
+    await playback.openSegments(twoPartLessonSegments());
+    await playback.play();
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+
+    expect(playback.globalPositionSec, 0);
+    expect(playback.liveGlobalPositionSec, greaterThan(0.15));
   });
 }

@@ -51,7 +51,7 @@ class _LessonPlaybackSyncedWhiteboardState
   @override
   void didUpdateWidget(covariant LessonPlaybackSyncedWhiteboard oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!widget.isPlaying ||
+    if (!_tracksLivePlayback ||
         widget.positionSecExact != oldWidget.positionSecExact) {
       _livePositionSec = _resolvedPositionSec();
     }
@@ -64,9 +64,12 @@ class _LessonPlaybackSyncedWhiteboardState
     super.dispose();
   }
 
+  bool get _tracksLivePlayback =>
+      widget.playback != null && widget.playback!.isPlaying;
+
   void _syncRefreshTimer() {
     final shouldRefresh =
-        widget.isPlaying && widget.playback != null && widget.totalDurationSec > 0;
+        _tracksLivePlayback && widget.totalDurationSec > 0;
     if (shouldRefresh) {
       if (_refreshTimer == null) {
         _refreshTimer = Timer.periodic(_refreshInterval, (_) {
@@ -92,7 +95,7 @@ class _LessonPlaybackSyncedWhiteboardState
       return 0;
     }
 
-    if (widget.isPlaying && widget.playback != null) {
+    if (_tracksLivePlayback) {
       return widget.playback!.liveGlobalPositionSec.clamp(0.0, maxSec);
     }
     return widget.positionSecExact.clamp(0.0, maxSec);
@@ -107,7 +110,8 @@ class _LessonPlaybackSyncedWhiteboardState
 
   @override
   Widget build(BuildContext context) {
-    final positionSec = widget.isPlaying ? _livePositionSec : _resolvedPositionSec();
+    final positionSec =
+        _tracksLivePlayback ? _livePositionSec : _resolvedPositionSec();
     final strokes = visibleWhiteboardBundleStrokes(
       bundle: widget.bundle,
       globalPositionSec: positionSec,
