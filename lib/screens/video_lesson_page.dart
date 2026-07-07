@@ -302,12 +302,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         if (!mounted) {
           return;
         }
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) {
-            return;
-          }
-          _syncDisplayedPlaybackPositionFromPlayer();
-        });
+        unawaited(_syncDisplayedPlaybackPositionAfterSegmentChange());
       });
 
       if (!mounted) {
@@ -551,6 +546,16 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
 
     _applyDisplayPositionFromGlobalSec(playback.liveGlobalPositionSec);
+  }
+
+  Future<void> _syncDisplayedPlaybackPositionAfterSegmentChange() async {
+    // Segment activation is async; wait briefly so liveGlobalPositionSec
+    // reflects the newly active player instead of stale switch state.
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    if (!mounted) {
+      return;
+    }
+    _syncDisplayedPlaybackPositionFromPlayer();
   }
 
   int _flooredDisplaySecForGlobal(double globalSec) {
@@ -1934,9 +1939,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                               : null,
                           onChangeEnd: canControlPlayback
                               ? (value) {
-                                  final targetSec = value.round();
+                                  final targetSec = value
+                                      .round()
+                                      .clamp(0, _totalDurationSec);
                                   setState(() {
                                     _sliderDragPositionSec = null;
+                                    _currentPositionSec = targetSec;
+                                    _currentPositionSecExact =
+                                        targetSec.toDouble();
                                   });
                                   unawaited(_seekPlaybackPosition(targetSec));
                                 }
