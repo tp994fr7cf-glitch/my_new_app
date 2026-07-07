@@ -91,9 +91,6 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   bool _isAdvancing = false;
   double? _pendingSeekGlobalSec;
   bool _seekInProgress = false;
-  Timer? _audioPositionRefreshTimer;
-
-  static const Duration _audioPositionRefreshInterval = Duration(seconds: 1);
 
   Stream<double> get globalPositionStream => _globalPositionController.stream;
   Stream<int> get totalDurationStream => _totalDurationController.stream;
@@ -293,8 +290,6 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       _syncActivePlaybackPosition(forceEmit: true);
       if (shouldResumePlaying) {
         await play();
-      } else {
-        _startAudioPositionRefreshIfNeeded();
       }
     }
   }
@@ -312,7 +307,6 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   }
 
   Future<void> _detachActiveSubscriptions() async {
-    _stopAudioPositionRefresh();
     await _positionSubscription?.cancel();
     await _durationSubscription?.cancel();
     await _playingSubscription?.cancel();
@@ -342,29 +336,6 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
 
     _globalPositionSec = globalSec;
     _globalPositionController.add(_globalPositionSec);
-  }
-
-  void _startAudioPositionRefreshIfNeeded() {
-    _stopAudioPositionRefresh();
-    if (!_isPlaying || !currentSegmentIsAudio) {
-      return;
-    }
-
-    _audioPositionRefreshTimer = Timer.periodic(
-      _audioPositionRefreshInterval,
-      (_) {
-        if (!_isPlaying || _isSwitchingSegment || !currentSegmentIsAudio) {
-          _stopAudioPositionRefresh();
-          return;
-        }
-        _syncActivePlaybackPosition();
-      },
-    );
-  }
-
-  void _stopAudioPositionRefresh() {
-    _audioPositionRefreshTimer?.cancel();
-    _audioPositionRefreshTimer = null;
   }
 
   void _handleLocalPosition(Duration localPosition) {
@@ -447,14 +418,12 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _isPlaying = true;
     _playingController.add(true);
     _syncActivePlaybackPosition(forceEmit: true);
-    _startAudioPositionRefreshIfNeeded();
   }
 
   Future<void> pause() async {
     await _activePlayer?.pause();
     _isPlaying = false;
     _playingController.add(false);
-    _stopAudioPositionRefresh();
   }
 
   Future<void> seekGlobal(double globalSec) async {
@@ -483,11 +452,17 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     final position = _timeline.resolveGlobalSec(globalSec);
     if (position.segmentIndex != _currentSegmentIndex) {
       final wasPlaying = _isPlaying;
+      if (wasPlaying) {
+        await pause();
+      }
       await _activateSegment(
         position.segmentIndex,
         localStartSec: position.localSec,
-        resumePlaying: wasPlaying,
+        resumePlaying: false,
       );
+      if (wasPlaying) {
+        await play();
+      }
       return;
     }
 
@@ -510,7 +485,6 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _isReady = false;
     _isPlaying = false;
     _pendingSeekGlobalSec = null;
-    _stopAudioPositionRefresh();
     await _disposeAllSlots();
     _timeline = const LessonMediaTimeline(segments: []);
     _currentSegmentIndex = 0;

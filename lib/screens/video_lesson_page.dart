@@ -106,12 +106,10 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   int _totalDurationSec = 0;
   bool _isLoadingMedia = false;
   String? _mediaLoadError;
-  bool _isMediaSeekInProgress = false;
   LessonMediaPlaylistController? _playlistPlayback;
   StreamSubscription<double>? _positionSubscription;
   StreamSubscription<int>? _durationSubscription;
   StreamSubscription<bool>? _playingSubscription;
-  StreamSubscription<int>? _segmentIndexSubscription;
 
   Course get course => widget.course;
   CourseLesson get lesson => widget.lesson;
@@ -230,7 +228,6 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _positionSubscription?.cancel();
     _durationSubscription?.cancel();
     _playingSubscription?.cancel();
-    _segmentIndexSubscription?.cancel();
     unawaited(_playlistPlayback?.close());
     WidgetsBinding.instance.removeObserver(this);
     if (!_isTeacherPreview) {
@@ -299,12 +296,6 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       _playingSubscription = playback.playingStream.listen((isPlaying) {
         _handlePlayingStreamUpdate(isPlaying);
       });
-      _segmentIndexSubscription = playback.segmentIndexStream.listen((_) {
-        if (!mounted) {
-          return;
-        }
-        unawaited(_syncDisplayedPlaybackPositionAfterSegmentChange());
-      });
 
       if (!mounted) {
         await playback.close();
@@ -369,9 +360,6 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         .toDouble();
     if (_isDraggingSlider) {
       _currentPositionSecExact = clampedExact;
-      return;
-    }
-    if (_isMediaSeekInProgress) {
       return;
     }
 
@@ -534,20 +522,13 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
 
     final targetPosition = positionSec.clamp(0, _totalDurationSec);
-    _isMediaSeekInProgress = true;
-    try {
-      await _playlistPlayback!.seekGlobal(targetPosition.toDouble());
-      if (!mounted) {
-        return;
-      }
-
-      _syncDisplayedPlaybackPositionFromPlayer();
-      _startPostSeekDisplaySync();
-    } finally {
-      if (mounted) {
-        _isMediaSeekInProgress = false;
-      }
+    await _playlistPlayback!.seekGlobal(targetPosition.toDouble());
+    if (!mounted) {
+      return;
     }
+
+    _syncDisplayedPlaybackPositionFromPlayer();
+    _startPostSeekDisplaySync();
   }
 
   void _syncDisplayedPlaybackPositionFromPlayer() {
@@ -557,16 +538,6 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
 
     _applyDisplayPositionFromGlobalSec(playback.liveGlobalPositionSec);
-  }
-
-  Future<void> _syncDisplayedPlaybackPositionAfterSegmentChange() async {
-    // Segment activation is async; wait briefly so liveGlobalPositionSec
-    // reflects the newly active player instead of stale switch state.
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-    if (!mounted) {
-      return;
-    }
-    _syncDisplayedPlaybackPositionFromPlayer();
   }
 
   int _flooredDisplaySecForGlobal(double globalSec) {
