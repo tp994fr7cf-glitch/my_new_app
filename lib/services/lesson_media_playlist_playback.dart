@@ -16,6 +16,7 @@ abstract class LessonMediaPlaylistController {
   Stream<int> get segmentIndexStream;
 
   double get globalPositionSec;
+  double get liveGlobalPositionSec;
   int get totalDurationSec;
   int get currentSegmentIndex;
   bool get isPlaying;
@@ -97,6 +98,18 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   Stream<int> get segmentIndexStream => _segmentIndexController.stream;
 
   double get globalPositionSec => _globalPositionSec;
+
+  double get liveGlobalPositionSec {
+    if (_timeline.isEmpty || _activePlayer == null || _isSwitchingSegment) {
+      return _globalPositionSec;
+    }
+    final localSec = _activePlayer!.position.inMilliseconds / 1000;
+    return _timeline.globalSecForSegmentIndex(
+      segmentIndex: _currentSegmentIndex,
+      localSec: localSec,
+    );
+  }
+
   int get totalDurationSec => _totalDurationSec;
   int get currentSegmentIndex => _currentSegmentIndex;
   bool get isPlaying => _isPlaying;
@@ -170,11 +183,9 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     );
 
     if (slot.isPreparedFor(segmentIndex, url)) {
-      if (targetLocalSec > 0) {
-        await slot.player.seek(
-          Duration(milliseconds: (targetLocalSec * 1000).round()),
-        );
-      }
+      await slot.player.seek(
+        Duration(milliseconds: (targetLocalSec * 1000).round()),
+      );
       return;
     }
 
@@ -184,11 +195,9 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     await previousPrepare;
     try {
       if (slot.isPreparedFor(segmentIndex, url)) {
-        if (targetLocalSec > 0) {
-          await slot.player.seek(
-            Duration(milliseconds: (targetLocalSec * 1000).round()),
-          );
-        }
+        await slot.player.seek(
+          Duration(milliseconds: (targetLocalSec * 1000).round()),
+        );
         return;
       }
 
@@ -515,6 +524,7 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   Stream<int> get segmentIndexStream => _segmentIndexController.stream;
 
   double get globalPositionSec => _globalPositionSec;
+  double get liveGlobalPositionSec => _globalPositionSec;
   int get currentSegmentIndex => _currentSegmentIndex;
   bool get isPlaying => _isPlaying;
   bool get isReady => _isReady;

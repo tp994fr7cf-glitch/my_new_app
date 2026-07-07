@@ -88,6 +88,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   Timer? _playbackTimer;
   Timer? _studyTimer;
   Timer? _activeLearningHeartbeatTimer;
+  Timer? _postSeekDisplaySyncTimer;
   StreamSubscription<CourseEntryRequirement>? _entryRequirementSubscription;
   String? _sessionId;
   String? _segmentId;
@@ -219,6 +220,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _playbackTimer?.cancel();
     _studyTimer?.cancel();
     _activeLearningHeartbeatTimer?.cancel();
+    _postSeekDisplaySyncTimer?.cancel();
     _entryRequirementSubscription?.cancel();
     _positionSubscription?.cancel();
     _durationSubscription?.cancel();
@@ -374,7 +376,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     // So unless the whiteboard needs it, only rebuild once per second.
     final needsFineGrainedUpdate =
         _hasWhiteboard && clampedExact != _currentPositionSecExact;
-    if (!roundedSecondChanged && !needsFineGrainedUpdate) {
+    final shouldForceDisplaySync = _isPostSeekDisplaySyncActive();
+    if (!roundedSecondChanged && !needsFineGrainedUpdate && !shouldForceDisplaySync) {
       // Still keep the exact position fresh for later comparisons (e.g.
       // end-of-lesson detection) without forcing a rebuild of the page.
       _currentPositionSecExact = clampedExact;
@@ -524,10 +527,66 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
+    _syncDisplayedPlaybackPositionFromPlayer();
+    _startPostSeekDisplaySync();
+  }
+
+  void _syncDisplayedPlaybackPositionFromPlayer() {
+    final playback = _playlistPlayback;
+    if (playback == null || _totalDurationSec <= 0) {
+      return;
+    }
+
+    final globalSec = playback.liveGlobalPositionSec
+        .clamp(0.0, _totalDurationSec.toDouble());
     setState(() {
-      _currentPositionSec = targetPosition;
-      _currentPositionSecExact = targetPosition.toDouble();
+      _currentPositionSec = globalSec.round().clamp(0, _totalDurationSec);
+      _currentPositionSecExact = globalSec;
     });
+  }
+
+  bool _isPostSeekDisplaySyncActive() {
+    return _postSeekDisplaySyncTimer != null;
+  }
+
+  void _startPostSeekDisplaySync() {
+    _postSeekDisplaySyncTimer?.cancel();
+    var ticks = 0;
+    _postSeekDisplaySyncTimer = Timer.periodic(
+      const Duration(milliseconds: 250),
+      (timer) {
+        if (!mounted) {
+          timer.cancel();
+          _postSeekDisplaySyncTimer = null;
+          return;
+        }
+
+        ticks += 1;
+        if (ticks > 12) {
+          timer.cancel();
+          _postSeekDisplaySyncTimer = null;
+          return;
+        }
+
+        final playback = _playlistPlayback;
+        if (playback == null || _totalDurationSec <= 0 || _isDraggingSlider) {
+          return;
+        }
+
+        final globalSec = playback.liveGlobalPositionSec
+            .clamp(0.0, _totalDurationSec.toDouble());
+        final nextSec = globalSec.round().clamp(0, _totalDurationSec);
+        if (nextSec == _currentPositionSec &&
+            globalSec == _currentPositionSecExact) {
+          return;
+        }
+
+        setState(() {
+          _currentPositionSec = nextSec;
+          _currentPositionSecExact = globalSec;
+        });
+      },
+    );
   }
 
   Future<void> _startMediaPlayback() async {

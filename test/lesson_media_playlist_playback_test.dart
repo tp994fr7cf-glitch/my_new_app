@@ -146,4 +146,69 @@ void main() {
     expect(playback.isPlaying, isTrue);
     expect(videoPlayer.openedUrls, hasLength(1));
   });
+
+  test('revisiting a prepared video segment resets to the requested start position',
+      () async {
+    final audioPlayer = FakeLessonMediaPlayback();
+    final videoPlayer = FakeLessonMediaPlayback();
+    final playback = createTrackingPlaylistPlayback(
+      audioPlayers: [audioPlayer],
+      videoPlayers: [videoPlayer],
+    );
+
+    await playback.openSegments(twoPartLessonSegments());
+    await Future<void>.delayed(Duration.zero);
+
+    await playback.seekGlobal(100);
+    expect(playback.currentSegmentIndex, 1);
+    expect(videoPlayer.position, const Duration(seconds: 10));
+
+    await playback.seekGlobal(40);
+    expect(playback.currentSegmentIndex, 0);
+
+    await playback.seekGlobal(90);
+    expect(playback.currentSegmentIndex, 1);
+    expect(videoPlayer.position, Duration.zero);
+    expect(playback.globalPositionSec, closeTo(90, 0.01));
+  });
+
+  test('auto advance after rewinding to audio starts video from zero', () async {
+    final audioPlayer = FakeLessonMediaPlayback(
+      naturalEndPosition: const Duration(seconds: 2),
+    );
+    final videoPlayer = FakeLessonMediaPlayback();
+    final playback = createTrackingPlaylistPlayback(
+      audioPlayers: [audioPlayer],
+      videoPlayers: [videoPlayer],
+    );
+
+    await playback.openSegments([
+      LessonMediaSegment(
+        id: 'audio-part',
+        order: 0,
+        mediaType: 'audio',
+        url: 'https://example.com/audio.mp3',
+        durationSec: 2,
+      ),
+      LessonMediaSegment(
+        id: 'video-part',
+        order: 1,
+        mediaType: 'video',
+        url: 'https://example.com/video.mp4',
+        durationSec: 90,
+      ),
+    ]);
+    await Future<void>.delayed(Duration.zero);
+
+    await playback.seekGlobal(12);
+    expect(videoPlayer.position, const Duration(seconds: 10));
+
+    await playback.seekGlobal(0);
+    await playback.play();
+    await Future<void>.delayed(const Duration(seconds: 3));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(playback.currentSegmentIndex, 1);
+    expect(videoPlayer.position, Duration.zero);
+  });
 }
