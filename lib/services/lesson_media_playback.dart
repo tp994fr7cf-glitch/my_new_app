@@ -58,6 +58,8 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   final StreamController<bool> _playingController =
       StreamController<bool>.broadcast();
   Timer? _positionRefreshTimer;
+  Duration _anchorPosition = Duration.zero;
+  DateTime? _anchorWallTime;
   bool _isReady = false;
 
   @override
@@ -73,7 +75,14 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   Stream<bool> get playingStream => _playingController.stream;
 
   @override
-  Duration get position => _player.position;
+  Duration get position => _reportedPosition;
+
+  Duration get _reportedPosition {
+    if (_player.playing && _anchorWallTime != null) {
+      return _anchorPosition + DateTime.now().difference(_anchorWallTime!);
+    }
+    return _player.position;
+  }
 
   @override
   Duration? get duration => _player.duration;
@@ -91,7 +100,12 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   }
 
   void _publishCurrentPosition() {
-    _emitPosition(_player.position);
+    _emitPosition(_reportedPosition);
+  }
+
+  void _resetPlaybackAnchor([Duration? position]) {
+    _anchorPosition = position ?? _player.position;
+    _anchorWallTime = _player.playing ? DateTime.now() : null;
   }
 
   void _handlePlayingChanged(bool playing) {
@@ -99,8 +113,10 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
       _playingController.add(playing);
     }
     if (playing) {
+      _resetPlaybackAnchor();
       _startPositionRefresh();
     } else {
+      _anchorWallTime = null;
       _stopPositionRefresh();
       _publishCurrentPosition();
     }
@@ -187,12 +203,14 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
       await _player.seek(_player.position);
     }
     await _player.play();
+    _resetPlaybackAnchor();
     _publishCurrentPosition();
   }
 
   @override
   Future<void> pause() async {
     await _player.pause();
+    _anchorWallTime = null;
     _stopPositionRefresh();
     _publishCurrentPosition();
   }
@@ -200,6 +218,12 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   @override
   Future<void> seek(Duration position) async {
     await _player.seek(position);
+    _anchorPosition = position;
+    if (_player.playing) {
+      _anchorWallTime = DateTime.now();
+    } else {
+      _anchorWallTime = null;
+    }
     _publishCurrentPosition();
   }
 

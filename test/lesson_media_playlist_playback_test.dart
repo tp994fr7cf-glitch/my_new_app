@@ -215,9 +215,7 @@ void main() {
   test(
     'rewind from video to audio while playing keeps updating global position',
     () async {
-      final audioPlayer = FakeLessonMediaPlayback(
-        suppressPeriodicPositionTicks: true,
-      );
+      final audioPlayer = FakeLessonMediaPlayback();
       final videoPlayer = FakeLessonMediaPlayback();
       final playback = createTrackingPlaylistPlayback(
         audioPlayers: [audioPlayer],
@@ -243,7 +241,7 @@ void main() {
       expect(
         positions.where((position) => position >= 31).length,
         greaterThan(0),
-        reason: 'audio refresh should keep global position moving after rewind',
+        reason: 'pause-seek-play should keep global position moving after rewind',
       );
       expect(playback.liveGlobalPositionSec, greaterThan(31));
     },
