@@ -19,6 +19,12 @@ import 'package:my_new_app/screens/video_lesson_page.dart';
 import 'package:my_new_app/models/lesson_media_segment.dart';
 import 'package:my_new_app/services/lesson_media_playlist_playback.dart';
 
+void _completeSliderSeek(Slider slider, double value) {
+  slider.onChangeStart?.call(value);
+  slider.onChanged?.call(value);
+  slider.onChangeEnd?.call(value);
+}
+
 Course _courseWithPlayableMedia(Course base) {
   final lesson = base.lessons.first;
   return Course(
@@ -2982,13 +2988,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('00:00 / 01:30'), findsOneWidget);
-    expect(find.text('現在位置: 00:00'), findsOneWidget);
+    expect(find.text('現在位置: 00:00', skipOffstage: false), findsOneWidget);
 
     await tester.tap(find.widgetWithText(FilledButton, '再生'));
     await tester.pump(const Duration(seconds: 1));
 
     expect(find.text('00:01 / 01:30'), findsOneWidget);
-    expect(find.text('現在位置: 00:01'), findsOneWidget);
+    expect(find.text('現在位置: 00:01', skipOffstage: false), findsOneWidget);
     expect(find.widgetWithText(FilledButton, '一時停止'), findsOneWidget);
 
     await tester.tap(find.widgetWithText(FilledButton, '一時停止'));
@@ -3019,15 +3025,17 @@ void main() {
       scrollable: find.byType(Scrollable).first,
     );
     final slider = tester.widget<Slider>(find.byType(Slider));
-    slider.onChanged!(30);
+    _completeSliderSeek(slider, 30);
     await tester.pumpAndSettle();
 
+    expect(find.text('00:30 / 01:30'), findsOneWidget);
     expect(find.text('現在位置: 00:30', skipOffstage: false), findsOneWidget);
     expect(find.text('視聴時間: 1秒', skipOffstage: false), findsOneWidget);
 
     await tester.tap(find.widgetWithText(FilledButton, '再生'));
     await tester.pump(const Duration(seconds: 1));
 
+    expect(find.text('00:31 / 01:30'), findsOneWidget);
     expect(find.text('現在位置: 00:31', skipOffstage: false), findsOneWidget);
     expect(find.text('視聴時間: 2秒', skipOffstage: false), findsOneWidget);
   });
@@ -3041,15 +3049,15 @@ void main() {
     await tester.pumpAndSettle();
 
     final slider = tester.widget<Slider>(find.byType(Slider));
-    slider.onChanged!(30);
+    _completeSliderSeek(slider, 30);
     await tester.pumpAndSettle();
 
-    expect(find.text('現在位置: 00:30'), findsOneWidget);
+    expect(find.text('00:30 / 01:30'), findsOneWidget);
 
     await tester.tap(find.widgetWithText(FilledButton, '再生'));
     await tester.pump(const Duration(seconds: 1));
 
-    expect(find.text('現在位置: 00:31'), findsOneWidget);
+    expect(find.text('00:31 / 01:30'), findsOneWidget);
     expect(find.text('視聴時間: 1秒', skipOffstage: false), findsOneWidget);
   });
 
@@ -3104,7 +3112,7 @@ void main() {
     await tester.pumpAndSettle();
 
     final slider = tester.widget<Slider>(find.byType(Slider));
-    slider.onChanged!(90);
+    _completeSliderSeek(slider, 90);
     await tester.pumpAndSettle();
 
     expect(find.widgetWithText(FilledButton, 'もう一度再生'), findsOneWidget);
@@ -3126,11 +3134,11 @@ void main() {
 
     final sliderFinder = find.byType(Slider);
     final sliderAtEnd = tester.widget<Slider>(sliderFinder);
-    sliderAtEnd.onChanged!(90);
+    _completeSliderSeek(sliderAtEnd, 90);
     await tester.pumpAndSettle();
 
     final sliderRewound = tester.widget<Slider>(sliderFinder);
-    sliderRewound.onChanged!(30);
+    _completeSliderSeek(sliderRewound, 30);
     await tester.pumpAndSettle();
 
     await tester.tap(find.widgetWithText(FilledButton, '再生'));
@@ -3181,11 +3189,11 @@ void main() {
 
     final sliderFinder = find.byType(Slider);
     final sliderAtEnd = tester.widget<Slider>(sliderFinder);
-    sliderAtEnd.onChanged!(90);
+    _completeSliderSeek(sliderAtEnd, 90);
     await tester.pumpAndSettle();
 
     final sliderRewound = tester.widget<Slider>(sliderFinder);
-    sliderRewound.onChanged!(30);
+    _completeSliderSeek(sliderRewound, 30);
     await tester.pumpAndSettle();
 
     await tester.tap(find.widgetWithText(FilledButton, '再生'));

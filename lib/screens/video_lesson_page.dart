@@ -71,6 +71,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   int _currentPositionSec = 0;
   double _currentPositionSecExact = 0;
+  double? _sliderDragPositionSec;
   int _studySeconds = 0;
   int _watchSeconds = 0;
   int _cycleNumber = 1;
@@ -115,6 +116,11 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   bool get _currentSegmentIsAudio => _playlistPlayback?.currentSegmentIsAudio ?? true;
 
   bool get _hasWhiteboard => !lesson.publishedWhiteboardBundle.isEmpty;
+
+  bool get _isDraggingSlider => _sliderDragPositionSec != null;
+
+  int get _displayedPositionSec =>
+      (_sliderDragPositionSec ?? _currentPositionSec.toDouble()).round();
 
   double get _segmentLocalPositionSec {
     if (_playlistPlayback == null || _mediaTimeline.isEmpty) {
@@ -353,6 +359,11 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     final clampedExact = positionSecExact
         .clamp(0.0, _totalDurationSec.toDouble())
         .toDouble();
+    if (_isDraggingSlider) {
+      _currentPositionSecExact = clampedExact;
+      return;
+    }
+
     final roundedSecondChanged = clampedPosition != _currentPositionSec;
     // The whiteboard needs sub-second precision to stay smoothly in sync
     // with playback, but everything else on this page (time label, slider,
@@ -1802,7 +1813,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                         const SizedBox(height: 16),
                       ],
                       Text(
-                        '${formatLessonTime(_currentPositionSec)} / ${formatLessonTime(_totalDurationSec)}',
+                        '${formatLessonTime(_displayedPositionSec)} / ${formatLessonTime(_totalDurationSec)}',
                         style: const TextStyle(
                           fontSize: 20,
                           fontWeight: FontWeight.bold,
@@ -1812,16 +1823,36 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 32),
                         child: Slider(
-                          value: _currentPositionSec
+                          value: (_sliderDragPositionSec ??
+                                  _currentPositionSec.toDouble())
                               .clamp(0, _totalDurationSec)
                               .toDouble(),
                           min: 0,
                           max: sliderMax,
                           divisions: _totalDurationSec > 0 ? _totalDurationSec : null,
-                          label: formatLessonTime(_currentPositionSec),
+                          label: formatLessonTime(_displayedPositionSec),
+                          onChangeStart: canControlPlayback
+                              ? (_) {
+                                  setState(() {
+                                    _sliderDragPositionSec =
+                                        _currentPositionSec.toDouble();
+                                  });
+                                }
+                              : null,
                           onChanged: canControlPlayback
                               ? (value) {
-                                  _seekPlaybackPosition(value.round());
+                                  setState(() {
+                                    _sliderDragPositionSec = value;
+                                  });
+                                }
+                              : null,
+                          onChangeEnd: canControlPlayback
+                              ? (value) {
+                                  final targetSec = value.round();
+                                  setState(() {
+                                    _sliderDragPositionSec = null;
+                                  });
+                                  unawaited(_seekPlaybackPosition(targetSec));
                                 }
                               : null,
                         ),

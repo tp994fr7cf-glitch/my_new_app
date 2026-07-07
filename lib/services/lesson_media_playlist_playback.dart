@@ -35,6 +35,28 @@ abstract class LessonMediaPlaylistController {
   Future<void> close();
 }
 
+class _MediaPlayerSlot {
+  _MediaPlayerSlot({
+    required this.isAudio,
+    required this.createPlayer,
+  });
+
+  final bool isAudio;
+  final LessonMediaPlayback Function() createPlayer;
+  LessonMediaPlayback? _player;
+  int? loadedSegmentIndex;
+  String? loadedUrl;
+  Future<void>? _prepareFuture;
+
+  LessonMediaPlayback get player => _player ??= createPlayer();
+
+  bool isPreparedFor(int segmentIndex, String url) {
+    return loadedSegmentIndex == segmentIndex &&
+        loadedUrl == url &&
+        player.isReady;
+  }
+}
+
 class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   LessonMediaPlaylistPlayback({
     LessonMediaPlaybackFactory? playbackFactory,
@@ -52,6 +74,8 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
 
   LessonMediaTimeline _timeline = const LessonMediaTimeline(segments: []);
   LessonMediaPlayback? _activePlayer;
+  _MediaPlayerSlot? _audioSlot;
+  _MediaPlayerSlot? _videoSlot;
   StreamSubscription<Duration>? _positionSubscription;
   StreamSubscription<Duration?>? _durationSubscription;
   StreamSubscription<bool>? _playingSubscription;
@@ -63,6 +87,9 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   bool _isPlaying = false;
   bool _autoAdvanceEnabled = true;
   bool _isSwitchingSegment = false;
+  bool _isAdvancing = false;
+  double? _pendingSeekGlobalSec;
+  bool _seekInProgress = false;
 
   Stream<double> get globalPositionStream => _globalPositionController.stream;
   Stream<int> get totalDurationStream => _totalDurationController.stream;
@@ -105,52 +132,174 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       return;
     }
 
-    await _loadSegment(_currentSegmentIndex, localStartSec: 0);
+    await _activateSegment(0, localStartSec: 0);
   }
 
-  Future<void> _loadSegment(int segmentIndex, {required double localStartSec}) async {
+  _MediaPlayerSlot _slotForSegment(LessonMediaSegment segment) {
+    if (segment.isAudio) {
+      return _audioSlot ??= _MediaPlayerSlot(
+        isAudio: true,
+        createPlayer: () => _playbackFactory(isAudio: true),
+      );
+    }
+    return _videoSlot ??= _MediaPlayerSlot(
+      isAudio: false,
+      createPlayer: () => _playbackFactory(isAudio: false),
+    );
+  }
+
+  Future<void> _prepareSegmentInSlot(
+    int segmentIndex, {
+    double localStartSec = 0,
+  }) async {
+    final ordered = _timeline.orderedSegments;
+    if (segmentIndex < 0 || segmentIndex >= ordered.length) {
+      return;
+    }
+
+    final segment = ordered[segmentIndex];
+    if (!segment.hasUrl) {
+      return;
+    }
+
+    final slot = _slotForSegment(segment);
+    final url = segment.url.trim();
+    final targetLocalSec = localStartSec.clamp(
+      0.0,
+      segment.durationSec.toDouble(),
+    );
+
+    if (slot.isPreparedFor(segmentIndex, url)) {
+      if (targetLocalSec > 0) {
+        await slot.player.seek(
+          Duration(milliseconds: (targetLocalSec * 1000).round()),
+        );
+      }
+      return;
+    }
+
+    final previousPrepare = slot._prepareFuture;
+    final prepareCompleter = Completer<void>();
+    slot._prepareFuture = prepareCompleter.future;
+    await previousPrepare;
+    try {
+      if (slot.isPreparedFor(segmentIndex, url)) {
+        if (targetLocalSec > 0) {
+          await slot.player.seek(
+            Duration(milliseconds: (targetLocalSec * 1000).round()),
+          );
+        }
+        return;
+      }
+
+      if (slot.player.isPlaying) {
+        await slot.player.pause();
+      }
+      await slot.player.open(Uri.parse(url));
+      slot.loadedSegmentIndex = segmentIndex;
+      slot.loadedUrl = url;
+      if (targetLocalSec > 0) {
+        await slot.player.seek(
+          Duration(milliseconds: (targetLocalSec * 1000).round()),
+        );
+      }
+    } finally {
+      if (!prepareCompleter.isCompleted) {
+        prepareCompleter.complete();
+      }
+      if (identical(slot._prepareFuture, prepareCompleter.future)) {
+        slot._prepareFuture = null;
+      }
+    }
+  }
+
+  Future<void> _preloadNextSegment(int segmentIndex) async {
+    if (segmentIndex < 0 || segmentIndex >= _timeline.segmentCount) {
+      return;
+    }
+    try {
+      await _prepareSegmentInSlot(segmentIndex);
+    } catch (_) {
+      // Preload failures should not interrupt active playback.
+    }
+  }
+
+  Future<void> _activateSegment(
+    int segmentIndex, {
+    required double localStartSec,
+    bool? resumePlaying,
+  }) async {
     final ordered = _timeline.orderedSegments;
     if (segmentIndex < 0 || segmentIndex >= ordered.length) {
       return;
     }
 
     _isSwitchingSegment = true;
-    await _disposeActivePlayer();
+    try {
+      final segment = ordered[segmentIndex];
+      if (!segment.hasUrl) {
+        _isReady = false;
+        return;
+      }
 
-    final segment = ordered[segmentIndex];
-    if (!segment.hasUrl) {
-      _isReady = false;
+      if (_activePlayer != null && _activePlayer!.isPlaying) {
+        await _activePlayer!.pause();
+      }
+
+      await _prepareSegmentInSlot(
+        segmentIndex,
+        localStartSec: localStartSec,
+      );
+
+      final slot = _slotForSegment(segment);
+      await _detachActiveSubscriptions();
+
+      _activePlayer = slot.player;
+      _currentSegmentIndex = segmentIndex;
+      _segmentIndexController.add(_currentSegmentIndex);
+      _attachActiveSubscriptions();
+
+      final targetLocalSec = localStartSec.clamp(
+        0.0,
+        segment.durationSec.toDouble(),
+      );
+      _globalPositionSec = _timeline.globalSecForSegmentIndex(
+        segmentIndex: segmentIndex,
+        localSec: targetLocalSec,
+      );
+      _globalPositionController.add(_globalPositionSec);
+      _isReady = slot.player.isReady;
+      _emitTotalDuration();
+
+      unawaited(_preloadNextSegment(segmentIndex + 1));
+
+      if (resumePlaying == true) {
+        await play();
+      }
+    } finally {
       _isSwitchingSegment = false;
+    }
+  }
+
+  void _attachActiveSubscriptions() {
+    final player = _activePlayer;
+    if (player == null) {
       return;
     }
-
-    final player = _playbackFactory(isAudio: segment.isAudio);
-    await player.open(Uri.parse(segment.url.trim()));
-    final targetLocalSec = localStartSec.clamp(
-      0.0,
-      segment.durationSec.toDouble(),
-    );
-    if (targetLocalSec > 0) {
-      await player.seek(Duration(milliseconds: (targetLocalSec * 1000).round()));
-    }
-
-    _activePlayer = player;
-    _currentSegmentIndex = segmentIndex;
-    _segmentIndexController.add(_currentSegmentIndex);
     _positionSubscription = player.positionStream.listen(_handleLocalPosition);
     _durationSubscription = player.durationStream.listen((_) {
       _emitTotalDuration();
     });
     _playingSubscription = player.playingStream.listen(_handlePlayingUpdate);
+  }
 
-    _globalPositionSec = _timeline.globalSecForSegmentIndex(
-      segmentIndex: segmentIndex,
-      localSec: targetLocalSec,
-    );
-    _globalPositionController.add(_globalPositionSec);
-    _isReady = player.isReady;
-    _isSwitchingSegment = false;
-    _emitTotalDuration();
+  Future<void> _detachActiveSubscriptions() async {
+    await _positionSubscription?.cancel();
+    await _durationSubscription?.cancel();
+    await _playingSubscription?.cancel();
+    _positionSubscription = null;
+    _durationSubscription = null;
+    _playingSubscription = null;
   }
 
   void _handleLocalPosition(Duration localPosition) {
@@ -179,22 +328,28 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   }
 
   Future<void> _advanceToNextSegmentOrStop() async {
-    if (_isSwitchingSegment) {
+    if (_isSwitchingSegment || _isAdvancing) {
       return;
     }
-    final nextIndex = _currentSegmentIndex + 1;
-    final ordered = _timeline.orderedSegments;
-    if (nextIndex >= ordered.length) {
-      _globalPositionSec = _totalDurationSec.toDouble();
-      _globalPositionController.add(_globalPositionSec);
-      await pause();
-      return;
-    }
+    _isAdvancing = true;
+    try {
+      final nextIndex = _currentSegmentIndex + 1;
+      final ordered = _timeline.orderedSegments;
+      if (nextIndex >= ordered.length) {
+        _globalPositionSec = _totalDurationSec.toDouble();
+        _globalPositionController.add(_globalPositionSec);
+        await pause();
+        return;
+      }
 
-    final wasPlaying = _isPlaying;
-    await _loadSegment(nextIndex, localStartSec: 0);
-    if (wasPlaying) {
-      await play();
+      final wasPlaying = _isPlaying;
+      await _activateSegment(
+        nextIndex,
+        localStartSec: 0,
+        resumePlaying: wasPlaying,
+      );
+    } finally {
+      _isAdvancing = false;
     }
   }
 
@@ -239,16 +394,32 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       return;
     }
 
+    _pendingSeekGlobalSec = globalSec.clamp(
+      0.0,
+      _totalDurationSec.toDouble(),
+    );
+    if (_seekInProgress) {
+      return;
+    }
+
+    _seekInProgress = true;
+    while (_pendingSeekGlobalSec != null) {
+      final target = _pendingSeekGlobalSec!;
+      _pendingSeekGlobalSec = null;
+      await _seekGlobalImmediate(target);
+    }
+    _seekInProgress = false;
+  }
+
+  Future<void> _seekGlobalImmediate(double globalSec) async {
     final position = _timeline.resolveGlobalSec(globalSec);
     if (position.segmentIndex != _currentSegmentIndex) {
       final wasPlaying = _isPlaying;
-      await _loadSegment(
+      await _activateSegment(
         position.segmentIndex,
         localStartSec: position.localSec,
+        resumePlaying: wasPlaying,
       );
-      if (wasPlaying) {
-        await play();
-      }
       return;
     }
 
@@ -270,7 +441,8 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   Future<void> disposePlayer() async {
     _isReady = false;
     _isPlaying = false;
-    await _disposeActivePlayer();
+    _pendingSeekGlobalSec = null;
+    await _disposeAllSlots();
     _timeline = const LessonMediaTimeline(segments: []);
     _currentSegmentIndex = 0;
     _globalPositionSec = 0;
@@ -285,14 +457,16 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     await _segmentIndexController.close();
   }
 
-  Future<void> _disposeActivePlayer() async {
-    await _positionSubscription?.cancel();
-    await _durationSubscription?.cancel();
-    await _playingSubscription?.cancel();
-    _positionSubscription = null;
-    _durationSubscription = null;
-    _playingSubscription = null;
-    await _activePlayer?.disposePlayer();
+  Future<void> _disposeAllSlots() async {
+    await _detachActiveSubscriptions();
+    if (_audioSlot != null) {
+      await _audioSlot!.player.disposePlayer();
+      _audioSlot = null;
+    }
+    if (_videoSlot != null) {
+      await _videoSlot!.player.disposePlayer();
+      _videoSlot = null;
+    }
     _activePlayer = null;
   }
 }

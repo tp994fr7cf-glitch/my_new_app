@@ -67,7 +67,13 @@ class _LessonWhiteboardEditorPanelState
   int _currentPositionSec = 0;
   int _totalDurationSec = 0;
   double _currentPositionSecExact = 0;
+  double? _sliderDragPositionSec;
   double? _strokeStartSec;
+
+  bool get _isDraggingSlider => _sliderDragPositionSec != null;
+
+  int get _displayedPositionSec =>
+      (_sliderDragPositionSec ?? _currentPositionSec.toDouble()).round();
 
   bool get _drawingEnabled => _isPlaying;
   bool get _hasPublishedWhiteboard =>
@@ -200,6 +206,10 @@ class _LessonWhiteboardEditorPanelState
       _playback = playback;
       _positionSubscription = playback.globalPositionStream.listen((position) {
         if (!mounted) {
+          return;
+        }
+        if (_isDraggingSlider) {
+          _currentPositionSecExact = position;
           return;
         }
         setState(() {
@@ -652,19 +662,39 @@ class _LessonWhiteboardEditorPanelState
           ),
         ] else if (_canControlPlayback) ...[
           Text(
-            '${formatLessonTime(_currentPositionSec)} / ${formatLessonTime(_totalDurationSec)}',
+            '${formatLessonTime(_displayedPositionSec)} / ${formatLessonTime(_totalDurationSec)}',
             style: const TextStyle(fontWeight: FontWeight.bold),
           ),
           Slider(
-            value: _currentPositionSec.clamp(0, _totalDurationSec).toDouble(),
+            value: (_sliderDragPositionSec ?? _currentPositionSec.toDouble())
+                .clamp(0, _totalDurationSec)
+                .toDouble(),
             min: 0,
             max: sliderMax,
             divisions: _totalDurationSec > 0 ? _totalDurationSec : null,
-            label: formatLessonTime(_currentPositionSec),
+            label: formatLessonTime(_displayedPositionSec),
+            onChangeStart: _isPlaying
+                ? null
+                : (_) {
+                    setState(() {
+                      _sliderDragPositionSec = _currentPositionSec.toDouble();
+                    });
+                  },
             onChanged: _isPlaying
                 ? null
                 : (value) {
-                    unawaited(_seekPlaybackPosition(value.round()));
+                    setState(() {
+                      _sliderDragPositionSec = value;
+                    });
+                  },
+            onChangeEnd: _isPlaying
+                ? null
+                : (value) {
+                    final targetSec = value.round();
+                    setState(() {
+                      _sliderDragPositionSec = null;
+                    });
+                    unawaited(_seekPlaybackPosition(targetSec));
                   },
           ),
         ],
