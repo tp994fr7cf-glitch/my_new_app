@@ -24,6 +24,12 @@ LessonMediaPlaylistPlaybackFactory fakePlaylistPlaybackFactory({
   return () => FakeLessonMediaPlaylistPlayback(totalDurationSec: durationSec);
 }
 
+void _completeSliderSeek(Slider slider, double value) {
+  slider.onChangeStart?.call(value);
+  slider.onChanged?.call(value);
+  slider.onChangeEnd?.call(value);
+}
+
 void main() {
   testWidgets('Teacher whiteboard editor shows strokes up to the seek position', (
     WidgetTester tester,
@@ -77,7 +83,7 @@ void main() {
     expect(canvas.strokes, isEmpty);
 
     final slider = tester.widget<Slider>(find.byType(Slider));
-    slider.onChanged!(60);
+    _completeSliderSeek(slider, 60);
     await tester.pumpAndSettle();
 
     canvas = tester.widget<LessonWhiteboardCanvas>(
@@ -85,7 +91,7 @@ void main() {
     );
     expect(canvas.strokes, hasLength(2));
 
-    slider.onChanged!(25);
+    _completeSliderSeek(slider, 25);
     await tester.pumpAndSettle();
 
     canvas = tester.widget<LessonWhiteboardCanvas>(
@@ -96,7 +102,7 @@ void main() {
     expect(canvas.strokes.single.points, hasLength(2));
     expect(canvas.strokes.single.points.last.timestampSec, 15);
 
-    slider.onChanged!(60);
+    _completeSliderSeek(slider, 60);
     await tester.pumpAndSettle();
 
     canvas = tester.widget<LessonWhiteboardCanvas>(
@@ -153,7 +159,7 @@ void main() {
     await tester.pumpAndSettle();
 
     final slider = tester.widget<Slider>(find.byType(Slider));
-    slider.onChanged!(25);
+    _completeSliderSeek(slider, 25);
     await tester.pumpAndSettle();
 
     await tester.tap(find.widgetWithText(OutlinedButton, '書き物を一時保存'));
@@ -258,7 +264,7 @@ void main() {
     expect(find.widgetWithText(OutlinedButton, '書き物を描き直す'), findsNothing);
 
     final slider = tester.widget<Slider>(find.byType(Slider));
-    slider.onChanged!(10);
+    _completeSliderSeek(slider, 10);
     await tester.pumpAndSettle();
 
     final canvas = tester.widget<LessonWhiteboardCanvas>(
@@ -308,7 +314,7 @@ void main() {
     expect(find.widgetWithText(OutlinedButton, '書き物を描き直す'), findsNothing);
 
     final slider = tester.widget<Slider>(find.byType(Slider));
-    slider.onChanged!(10);
+    _completeSliderSeek(slider, 10);
     await tester.pumpAndSettle();
 
     final canvas = tester.widget<LessonWhiteboardCanvas>(
@@ -359,7 +365,7 @@ void main() {
     await tester.pumpAndSettle();
 
     final slider = tester.widget<Slider>(find.byType(Slider));
-    slider.onChanged!(10);
+    _completeSliderSeek(slider, 10);
     await tester.pumpAndSettle();
 
     final canvas = tester.widget<LessonWhiteboardCanvas>(

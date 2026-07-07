@@ -253,11 +253,14 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
   FakeLessonMediaPlayback({
     Duration? totalDuration,
     Duration? naturalEndPosition,
+    this.openDelay = Duration.zero,
   }) : _totalDuration = totalDuration ?? const Duration(seconds: 90),
        _naturalEndPosition = naturalEndPosition;
 
   final Duration _totalDuration;
   final Duration? _naturalEndPosition;
+  final Duration openDelay;
+  final List<Uri> openedUrls = [];
   Duration _position = Duration.zero;
   bool _isPlaying = false;
   bool _isReady = false;
@@ -295,6 +298,10 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
 
   @override
   Future<void> open(Uri url) async {
+    openedUrls.add(url);
+    if (openDelay > Duration.zero) {
+      await Future<void>.delayed(openDelay);
+    }
     _position = Duration.zero;
     _isReady = true;
     _positionController.add(_position);
