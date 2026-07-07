@@ -106,6 +106,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   int _totalDurationSec = 0;
   bool _isLoadingMedia = false;
   String? _mediaLoadError;
+  bool _hasReconciledOpenPlaybackPosition = false;
   LessonMediaPlaylistController? _playlistPlayback;
   StreamSubscription<double>? _positionSubscription;
   StreamSubscription<int>? _durationSubscription;
@@ -457,6 +458,45 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         _mediaLoadError = null;
       }
     });
+    unawaited(_reconcileOpenPlaybackPosition());
+  }
+
+  Future<void> _reconcileOpenPlaybackPosition() async {
+    if (!mounted ||
+        _hasReconciledOpenPlaybackPosition ||
+        _isLoadingLearningState ||
+        _isLoadingMedia ||
+        _playlistPlayback == null ||
+        _totalDurationSec <= 0 ||
+        _isTeacherPreview) {
+      return;
+    }
+
+    _hasReconciledOpenPlaybackPosition = true;
+
+    final savedPositionSec = _currentPositionSec;
+    final finishedPriorAttempt = _pendingCompletion ||
+        savedPositionSec >= _completionThresholdSec ||
+        savedPositionSec >= _totalDurationSec - 1;
+
+    if (finishedPriorAttempt) {
+      if (mounted) {
+        setState(() {
+          _currentPositionSec = 0;
+          _currentPositionSecExact = 0;
+          _pendingCompletion = false;
+        });
+      }
+      await _playlistPlayback!.seekGlobal(0);
+      if (mounted) {
+        _syncDisplayedPlaybackPositionFromPlayer();
+      }
+      return;
+    }
+
+    if (_hasPlaybackStarted && savedPositionSec > 0) {
+      await _seekMediaPlayback(savedPositionSec);
+    }
   }
 
   Future<void> _togglePlayback() async {
@@ -1133,6 +1173,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     setState(() {
       _isLoadingLearningState = false;
     });
+    unawaited(_reconcileOpenPlaybackPosition());
   }
 
   Future<QueryDocumentSnapshot<Map<String, dynamic>>?> _latestCycleSession(

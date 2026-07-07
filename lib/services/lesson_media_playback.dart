@@ -40,7 +40,7 @@ LessonMediaPlayback createLessonMediaPlayback({required bool isAudio}) {
 class AudioLessonMediaPlayback implements LessonMediaPlayback {
   AudioLessonMediaPlayback() : _player = AudioPlayer() {
     _player.playingStream.listen(_handlePlayingChanged);
-    _player.positionStream.listen(_emitPosition);
+    _player.positionStream.listen(_onPlayerPositionUpdate);
     _player.durationStream.listen((duration) {
       if (!_durationController.isClosed) {
         _durationController.add(duration);
@@ -49,6 +49,7 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   }
 
   static const Duration _positionRefreshInterval = Duration(seconds: 1);
+  static const int _anchorRecalibrateDriftMs = 1000;
 
   final AudioPlayer _player;
   final StreamController<Duration> _positionController =
@@ -97,6 +98,19 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
     if (!_positionController.isClosed) {
       _positionController.add(position);
     }
+  }
+
+  void _onPlayerPositionUpdate(Duration position) {
+    if (_player.playing && _anchorWallTime != null) {
+      final driftMs =
+          (position.inMilliseconds - _reportedPosition.inMilliseconds).abs();
+      if (driftMs >= _anchorRecalibrateDriftMs) {
+        _anchorPosition = position;
+        _anchorWallTime = DateTime.now();
+      }
+      return;
+    }
+    _emitPosition(position);
   }
 
   void _publishCurrentPosition() {
