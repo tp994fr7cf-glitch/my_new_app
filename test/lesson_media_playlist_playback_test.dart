@@ -211,4 +211,75 @@ void main() {
     expect(playback.currentSegmentIndex, 1);
     expect(videoPlayer.position, Duration.zero);
   });
+
+  test(
+    'rewind from video to audio while playing keeps updating global position',
+    () async {
+      final audioPlayer = FakeLessonMediaPlayback(
+        suppressPeriodicPositionTicks: true,
+      );
+      final videoPlayer = FakeLessonMediaPlayback();
+      final playback = createTrackingPlaylistPlayback(
+        audioPlayers: [audioPlayer],
+        videoPlayers: [videoPlayer],
+      );
+
+      await playback.openSegments(twoPartLessonSegments());
+      await Future<void>.delayed(Duration.zero);
+
+      await playback.seekGlobal(100);
+      await playback.play();
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      final positions = <double>[];
+      final sub = playback.globalPositionStream.listen(positions.add);
+
+      await playback.seekGlobal(30);
+      await Future<void>.delayed(const Duration(seconds: 2, milliseconds: 500));
+      await sub.cancel();
+
+      expect(playback.currentSegmentIndex, 0);
+      expect(playback.isPlaying, isTrue);
+      expect(
+        positions.where((position) => position >= 31).length,
+        greaterThan(0),
+        reason: 'audio refresh should keep global position moving after rewind',
+      );
+      expect(playback.liveGlobalPositionSec, greaterThan(31));
+    },
+  );
+
+  test('cross-segment activation emits global position before segment index',
+      () async {
+    final audioPlayer = FakeLessonMediaPlayback();
+    final videoPlayer = FakeLessonMediaPlayback();
+    final playback = createTrackingPlaylistPlayback(
+      audioPlayers: [audioPlayer],
+      videoPlayers: [videoPlayer],
+    );
+
+    await playback.openSegments(twoPartLessonSegments());
+    await Future<void>.delayed(Duration.zero);
+    await playback.seekGlobal(100);
+
+    final events = <String>[];
+    final positionSub = playback.globalPositionStream.listen(
+      (position) => events.add('pos:${position.toStringAsFixed(0)}'),
+    );
+    final segmentSub = playback.segmentIndexStream.listen(
+      (index) => events.add('seg:$index'),
+    );
+
+    await playback.seekGlobal(30);
+    await Future<void>.delayed(Duration.zero);
+
+    await positionSub.cancel();
+    await segmentSub.cancel();
+
+    final lastSegmentEventIndex = events.lastIndexWhere(
+      (event) => event.startsWith('seg:'),
+    );
+    expect(lastSegmentEventIndex, greaterThan(0));
+    expect(events[lastSegmentEventIndex - 1], startsWith('pos:'));
+  });
 }

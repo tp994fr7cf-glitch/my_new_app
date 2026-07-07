@@ -254,12 +254,14 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
     Duration? totalDuration,
     Duration? naturalEndPosition,
     this.openDelay = Duration.zero,
+    this.suppressPeriodicPositionTicks = false,
   }) : _totalDuration = totalDuration ?? const Duration(seconds: 90),
        _naturalEndPosition = naturalEndPosition;
 
   final Duration _totalDuration;
   final Duration? _naturalEndPosition;
   final Duration openDelay;
+  final bool suppressPeriodicPositionTicks;
   final List<Uri> openedUrls = [];
   Duration _position = Duration.zero;
   bool _isPlaying = false;
@@ -322,7 +324,9 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
       if (_position >= stopAt) {
         if (_position > stopAt) {
           _position = stopAt;
-          _positionController.add(_position);
+          if (!suppressPeriodicPositionTicks) {
+            _positionController.add(_position);
+          }
         }
         unawaited(pause());
         return;
@@ -331,7 +335,9 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
       if (_position > stopAt) {
         _position = stopAt;
       }
-      _positionController.add(_position);
+      if (!suppressPeriodicPositionTicks) {
+        _positionController.add(_position);
+      }
       if (_position >= stopAt) {
         unawaited(pause());
       }
