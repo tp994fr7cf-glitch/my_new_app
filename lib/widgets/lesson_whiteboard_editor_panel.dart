@@ -75,6 +75,24 @@ class _LessonWhiteboardEditorPanelState
   int get _displayedPositionSec =>
       (_sliderDragPositionSec ?? _currentPositionSec.toDouble()).round();
 
+  /// Position used when timestamping whiteboard points as they are drawn.
+  ///
+  /// [_currentPositionSecExact] only updates once per second for audio
+  /// (mirroring the stabilized display stream), which would make every
+  /// point drawn within the same second share an identical timestamp and
+  /// look "stepped" during playback. While actively recording, read the
+  /// player's live sub-second position directly instead.
+  double get _recordingPositionSec {
+    final playback = _playback;
+    if (_isPlaying && playback != null && _totalDurationSec > 0) {
+      return playback.liveGlobalPositionSec.clamp(
+        0.0,
+        _totalDurationSec.toDouble(),
+      );
+    }
+    return _currentPositionSecExact;
+  }
+
   bool get _drawingEnabled => _isPlaying;
   bool get _hasPublishedWhiteboard =>
       widget.publishedWhiteboard != null && !widget.publishedWhiteboard!.isEmpty;
@@ -332,7 +350,7 @@ class _LessonWhiteboardEditorPanelState
   }
 
   void _handleStrokeStart() {
-    _strokeStartSec = _currentPositionSecExact;
+    _strokeStartSec = _recordingPositionSec;
     _inProgressPoints = [];
   }
 
@@ -345,7 +363,7 @@ class _LessonWhiteboardEditorPanelState
       return;
     }
 
-    final timestampSec = _currentPositionSecExact;
+    final timestampSec = _recordingPositionSec;
     final timedPoint = WhiteboardPoint(
       x: point.x,
       y: point.y,
@@ -371,7 +389,7 @@ class _LessonWhiteboardEditorPanelState
   }
 
   List<WhiteboardPoint> _finalizeStrokePoints(WhiteboardPoint endPoint) {
-    final timestampSec = _currentPositionSecExact;
+    final timestampSec = _recordingPositionSec;
     final timedEndPoint = WhiteboardPoint(
       x: endPoint.x,
       y: endPoint.y,
@@ -409,7 +427,7 @@ class _LessonWhiteboardEditorPanelState
       final stroke = WhiteboardStroke(
         id: '${DateTime.now().microsecondsSinceEpoch}',
         timestampSec: _strokeStartSec!,
-        endTimestampSec: _currentPositionSecExact,
+        endTimestampSec: _recordingPositionSec,
         points: points,
       );
       setState(() {
@@ -426,7 +444,7 @@ class _LessonWhiteboardEditorPanelState
       final stroke = WhiteboardStroke(
         id: '${DateTime.now().microsecondsSinceEpoch}',
         timestampSec: _strokeStartSec!,
-        endTimestampSec: _currentPositionSecExact,
+        endTimestampSec: _recordingPositionSec,
         points: List<WhiteboardPoint>.from(_inProgressPoints),
       );
       setState(() {
