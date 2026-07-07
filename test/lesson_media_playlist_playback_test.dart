@@ -282,4 +282,26 @@ void main() {
     expect(lastSegmentEventIndex, greaterThan(0));
     expect(events[lastSegmentEventIndex - 1], startsWith('pos:'));
   });
+
+  test('cross-segment seek resumes playback after switching completes', () async {
+    final audioPlayer = FakeLessonMediaPlayback();
+    final videoPlayer = FakeLessonMediaPlayback();
+    final playback = createTrackingPlaylistPlayback(
+      audioPlayers: [audioPlayer],
+      videoPlayers: [videoPlayer],
+    );
+
+    await playback.openSegments(twoPartLessonSegments());
+    await Future<void>.delayed(Duration.zero);
+    await playback.seekGlobal(100);
+    await playback.play();
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+
+    await playback.seekGlobal(30);
+    await Future<void>.delayed(const Duration(seconds: 2, milliseconds: 500));
+
+    expect(playback.currentSegmentIndex, 0);
+    expect(playback.isPlaying, isTrue);
+    expect(playback.liveGlobalPositionSec, greaterThan(31));
+  });
 }

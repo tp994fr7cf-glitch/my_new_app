@@ -247,12 +247,15 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     }
 
     _isSwitchingSegment = true;
+    var shouldResumePlaying = false;
     try {
       final segment = ordered[segmentIndex];
       if (!segment.hasUrl) {
         _isReady = false;
         return;
       }
+
+      shouldResumePlaying = resumePlaying == true;
 
       if (_activePlayer != null && _activePlayer!.isPlaying) {
         await _activePlayer!.pause();
@@ -285,14 +288,14 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       _emitTotalDuration();
 
       unawaited(_preloadNextSegment(segmentIndex + 1));
-
-      if (resumePlaying == true) {
-        await play();
-      }
     } finally {
       _isSwitchingSegment = false;
       _syncActivePlaybackPosition(forceEmit: true);
-      _startAudioPositionRefreshIfNeeded();
+      if (shouldResumePlaying) {
+        await play();
+      } else {
+        _startAudioPositionRefreshIfNeeded();
+      }
     }
   }
 

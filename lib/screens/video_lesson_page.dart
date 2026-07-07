@@ -106,6 +106,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   int _totalDurationSec = 0;
   bool _isLoadingMedia = false;
   String? _mediaLoadError;
+  bool _isMediaSeekInProgress = false;
   LessonMediaPlaylistController? _playlistPlayback;
   StreamSubscription<double>? _positionSubscription;
   StreamSubscription<int>? _durationSubscription;
@@ -370,6 +371,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       _currentPositionSecExact = clampedExact;
       return;
     }
+    if (_isMediaSeekInProgress) {
+      return;
+    }
 
     final roundedSecondChanged = clampedPosition != _currentPositionSec;
     // The whiteboard needs sub-second precision to stay smoothly in sync
@@ -530,13 +534,20 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
 
     final targetPosition = positionSec.clamp(0, _totalDurationSec);
-    await _playlistPlayback!.seekGlobal(targetPosition.toDouble());
-    if (!mounted) {
-      return;
-    }
+    _isMediaSeekInProgress = true;
+    try {
+      await _playlistPlayback!.seekGlobal(targetPosition.toDouble());
+      if (!mounted) {
+        return;
+      }
 
-    _syncDisplayedPlaybackPositionFromPlayer();
-    _startPostSeekDisplaySync();
+      _syncDisplayedPlaybackPositionFromPlayer();
+      _startPostSeekDisplaySync();
+    } finally {
+      if (mounted) {
+        _isMediaSeekInProgress = false;
+      }
+    }
   }
 
   void _syncDisplayedPlaybackPositionFromPlayer() {
