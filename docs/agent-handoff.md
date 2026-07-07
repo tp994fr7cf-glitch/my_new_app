@@ -60,13 +60,16 @@ cd C:\Users\naona\StudioProjects\my_new_app
 | 動画パートのホワイトボード | **滑らか** |
 | 一時停止 → シーク → 再生 | 問題なさそう |
 
-### 未解決 — 最優先バグ
+### 未解決 — 最優先バグ（→ PR #59 で録画側を修正・要ユーザー確認）
 
 | 症状 | 詳細 |
 |------|------|
-| **音声パートのホワイトボードが1秒ごとにカクッと進む** | 動画パートは滑らか。PR #56・#57 後もエミュレータで **未改善**（ユーザー 2026-07-07 確認） |
+| **音声パートのホワイトボードが1秒ごとにカクッと進む** | 動画パートは滑らか。PR #56・#57（再生側の修正）後もエミュレータで未改善だった |
 
 テストレッスン: 音声 90秒（WAV）→ 動画 90秒（MP4）= 合計 3分
+
+**2026-07-07 追記（PR #59）: 根本原因は「再生側」ではなく「録画側」だった可能性が高い。**
+詳細は本章末尾の「PR #59」の節を参照。
 
 ---
 
@@ -108,9 +111,54 @@ cd C:\Users\naona\StudioProjects\my_new_app
 5. 先生エディタ（`lesson_whiteboard_editor_panel.dart`）も `globalPositionStream` 依存 → 録画データが粗い可能性
 6. フェイクテストだけでマージしない。エミュレータ or 実機確認を前提にする
 
+### PR #59（2026-07-07）: 録画側（先生の書く場所）を修正
+
+**見つけたこと**: 上記「疑うべきポイント 5」がそのまま原因でした。
+
+- 先生用の録画パネル `lib/widgets/lesson_whiteboard_editor_panel.dart` は、ペンの点を
+  記録するタイミングの時間（`timestampSec`）を `_currentPositionSecExact` から取っていた
+- `_currentPositionSecExact` は `playback.globalPositionStream` から来る値で、これは
+  音声パートでは **1秒に1回しか更新されない**（表示を安定させるための仕様、#52〜#55 で導入）
+- つまり、先生が音声パート中にペンで描くと、同じ1秒の間に描いた点は
+  すべて同じ `timestampSec` になっていた可能性が高い
+- 再生側（`visiblePortionOfWhiteboardStroke`）は「点の `timestampSec` <= 再生位置」で
+  線を伸ばすしくみなので、点そのものが1秒刻みなら、再生側をどれだけ滑らかにしても
+  （#56・#57）直らない、という説明がつく
+
+**やったこと（最小 diff）**:
+
+- `lesson_whiteboard_editor_panel.dart` に `_recordingPositionSec` を追加
+  - 再生中（録画中）は `playback.liveGlobalPositionSec`（滑らかな値）を使う
+  - 再生していない時は今までどおり `_currentPositionSecExact` を使う
+  - 追加のタイマーや `setState` は増やしていない（ペンの点を打つ既存のイベントの中で
+    読むだけなので、画面の重さへの影響はない）
+- ペンの点を記録する4か所（ストローク開始・点の記録・ストローク終了2か所）を
+  `_recordingPositionSec` に置き換え
+- 画面に出す時間表示・スライダーは変更していない（1秒刻みのままでよい、と判断）
+- テスト追加: `test/lesson_whiteboard_editor_panel_test.dart` に、
+  「globalPositionStream が0で固まっていても、liveGlobalPositionSec が
+  0.2秒→0.4秒→0.6秒と進めば、点の timestampSec もその値になる」ことを確認するテストを追加
+
+**まだ終わっていないこと（次の agent 引き継ぎ）**:
+
+1. **本番 Firestore の実データは未確認**。この Cloud Agent 環境には Firebase の認証情報が無く、
+   本番 `my-new-app-naona-20260523` の Firestore を直接見ることができなかった。
+   ユーザーまたは次の agent が Firebase Console か PC から、テストレッスンの
+   `publishedWhiteboardBundle` 内ストロークの `points[].timestampSec` を見て、
+   本当に1秒刻みだったかを確認するとよい（任意、直接の修正には不要だが仮説の裏取りになる）
+2. **既存のテストレッスンは録画し直しが必要な可能性が高い**。
+   この修正は「これから録画する分」だけ滑らかになる。既存データはコード修正では変わらない。
+   → ユーザーには、音声パートのホワイトボードを一度「編集する」→「リセットして描き直す」で
+   録画し直してもらい、受講画面で滑らかになったか確認してもらう
+3. 実機（本物のスマホ・ブラウザ）でも確認できると、エミュレータ固有の問題を排除できてより安心
+4. もしこれでも直らない場合は、次に疑うべきは
+   「(B) `liveGlobalPositionSec` 自体が実機で細かく変わっていない」（#57 で対応したはずの経路）。
+   その場合は `AudioLessonMediaPlayback._reportedPosition`（壁時計アンカー）を
+   実機ログで確認する
+
 ---
 
-## 5. 完了 PR（#49〜#57）
+## 5. 完了 PR（#49〜#59）
 
 | PR | 内容 |
 |----|------|
@@ -121,8 +169,10 @@ cd C:\Users\naona\StudioProjects\my_new_app
 | #53 | pause-seek-play 準備・壁時計 |
 | #54 | **巻き戻し時の時間表示フリーズ修正**（pause-seek-play） |
 | #55 | 音声ジッター修正・レッスン開き直し表示 |
-| #56 | ホワイトボード専用50ms更新ウィジェット |
-| #57 | 音声壁時計アンカー常時有効化 |
+| #56 | ホワイトボード専用50ms更新ウィジェット（再生側・実機で未改善） |
+| #57 | 音声壁時計アンカー常時有効化（再生側・実機で未改善） |
+| #58 | 引き継ぎノート更新 |
+| #59 | **録画側の修正**: 先生がペンで描く時の timestampSec を live 位置に変更（要ユーザー確認・要録画し直し） |
 
 ---
 
@@ -142,8 +192,13 @@ cd C:\Users\naona\StudioProjects\my_new_app
 
 - `test/lesson_media_playlist_playback_test.dart` — プレイリスト9件+live位置1件
 - `test/lesson_media_playback_test.dart` — 壁時計フェイク
-- `test/lesson_playback_synced_whiteboard_test.dart` — ウィジェット
+- `test/lesson_playback_synced_whiteboard_test.dart` — ウィジェット（受講側の表示）
+- `test/lesson_whiteboard_editor_panel_test.dart` — 録画パネル（#59 で live 位置の記録テストを追加）
 - `lesson_questions_page_test.dart` — 元からハング・失敗（無関係）
+
+（2026-07-07 確認: `flutter test` を全体で流すと `widget_test.dart` / `lesson_notes_page_test.dart` など
+計29件が Cloud Agent 環境で失敗するが、これは今回の変更前の main でも同じ数だけ失敗する、
+この環境固有の既存問題。個別ファイルを単独で流すとほぼ通る。）
 
 ---
 
@@ -166,7 +221,7 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 **以下を1つのブロックとしてそのままコピーすること。ブロックを分割しないこと。**
 
 ```
-【引き継ぎ】my_new_app Flutter/Firebase 学習アプリ（2026-07-07）
+【引き継ぎ】my_new_app Flutter/Firebase 学習アプリ（2026-07-07・PR #59 引継ぎ更新）
 
 ■ リポジトリ / 環境
 - GitHub: https://github.com/tp994fr7cf-glitch/my_new_app
@@ -174,14 +229,16 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 - ローカル: C:\Users\naona\StudioProjects\my_new_app（Windows、PowerShell 使用可）
 - Firebase: my-new-app-naona-20260523
 - 本番 Web: https://my-new-app-naona-20260523.web.app
-- main 先端: c24f274（PR #57 マージ後）
+- main 先端: dfbc1c5（PR #59 はこの時点でまだ未マージ・レビュー待ち）
 - ブランチ名ルール（Cloud Agent）: cursor/<名前>-c48f
 
 ■ ユーザー preferences（必読）
 - 常に日本語。プログラミング初心者向けに専門用語を避ける
 - 小学生にでもわかるやさしい言葉で、背景を補足しつつ説明する
 - 「調査のみ」と言われたら実装しない
-- 修正完了後は PR→マージ→デプロイまで agent が進める（許可不要）
+- 修正完了後は PR→マージ→デプロイまで agent が進める、とユーザーは指定しているが、
+  Cloud Agent の運用ルールにより PR のマージは agent が自動では行わない
+  （ユーザーに「マージしてください」と伝える、または明示的な指示があればマージする）
 - PowerShell で何か実行するときは必ず最初に:
   cd C:\Users\naona\StudioProjects\my_new_app
 
@@ -191,25 +248,41 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 - 視聴完了後のレッスン開き直し表示（#55）
 - 動画パートのホワイトボードは滑らか
 
-■ 未解決・最優先バグ
-- 音声パートのホワイトボードが1秒ごとにカクッと進む（動画は滑らか）
-- PR #56（ホワイトボード50ms更新）も #57（音声壁時計アンカー）もエミュレータで未改善
+■ 未解決・最優先バグ → PR #59 で「録画側」を修正済み（マージ・実機確認待ち）
+- 症状: 音声パートのホワイトボードが1秒ごとにカクッと進む（動画は滑らか）
+- PR #56（ホワイトボード50ms更新）・#57（音声壁時計アンカー）は「再生側」の修正だったが、
+  エミュレータで未改善だった
+- PR #59 で判明: 原因は再生側ではなく「先生が録画するときの保存」だった可能性が高い。
+  lib/widgets/lesson_whiteboard_editor_panel.dart が、ペンの点の時刻(timestampSec)を
+  1秒刻みの playback.globalPositionStream から取っていたため、点そのものが粗く保存されていた
+- PR #59 の修正: 録画中は playback.liveGlobalPositionSec（滑らかな値）を使うように変更
+- 重要: 修正が効くのは「これから録画する分」のみ。既存のテストレッスンの音声パートの
+  書き物は、修正後にユーザーが「編集する」→「リセットして描き直す」で録画し直す必要がある
 - テストレッスン: 音声90秒+動画90秒
+- 本番 Firestore の実データ（点の timestampSec が本当に1秒刻みだったか）は
+  Cloud Agent 環境に Firebase 認証情報が無いため未確認。裏取りできると仮説がより確実になる
 
 ■ 技術メモ（次がハマりどころ）
 - ホワイトボードは点の timestampSec <= 再生位置 で線を伸ばす（lib/models/lesson_whiteboard.dart）
 - 音声 positionStream は意図的に1秒刻み（表示安定化）。細かい位置は liveGlobalPositionSec / 壁時計アンカー想定
-- #56: lib/widgets/lesson_playback_synced_whiteboard.dart（50msで liveGlobalPositionSec を読む）
+- #56: lib/widgets/lesson_playback_synced_whiteboard.dart（50msで liveGlobalPositionSec を読む・受講側の表示）
 - #57: lib/services/lesson_media_playback.dart（_ensurePlaybackAnchor、playing:true でアンカー）
-- テストは WallClockFakeLessonMediaPlayback で通るが実機 just_audio では未確認 → フェイクだけ信頼しない
-- 疑うべき: (1)実機で liveGlobalPositionSec が本当に細かく変わるか (2)ストローク点のタイムスタンプが1秒刻みで保存されていないか (3)レイヤー anchorType/segmentId (4)先生エディタの録画時位置が粗い（lesson_whiteboard_editor_panel.dart は globalPositionStream 依存）
+- #59: lib/widgets/lesson_whiteboard_editor_panel.dart（_recordingPositionSec を追加、録画中は
+  playback.liveGlobalPositionSec を使う。先生の録画側）
+- テストは WallClockFakeLessonMediaPlayback / 独自フェイクで通るが実機 just_audio では未確認 → フェイクだけ信頼しない
+- PR #59 でも直らない場合に疑うべき: (1)実機で liveGlobalPositionSec が本当に細かく変わるか
+  (2)レイヤー anchorType/segmentId (3)AudioLessonMediaPlayback._reportedPosition の壁時計アンカーが
+  実機でずれていないか
 
 ■ 完了 PR（再生関連）
-#49 seek/preload / #50 display sync / #51 segment sync / #52 audio poll / #53 playing rewind / #54 pause-seek-play（時間表示フリーズ修正）/ #55 jitter+reopen / #56 whiteboard widget / #57 wall clock anchor
+#49 seek/preload / #50 display sync / #51 segment sync / #52 audio poll / #53 playing rewind /
+#54 pause-seek-play（時間表示フリーズ修正）/ #55 jitter+reopen / #56 whiteboard widget（再生側） /
+#57 wall clock anchor（再生側） / #58 引継ぎ更新 / #59 録画側の timestampSec 修正（未マージ）
 
 ■ 開発スタイル
 - 最小 diff、過剰設計しない、既存意図を壊さない
-- PR #50-57 は層を重ねすぎた反省。根本原因を先に実機で確認してから直す
+- PR #50-57 は再生側だけ層を重ねすぎた反省。#59 で録画側に切り分けた
+- 実データ確認なしに片側だけ直し続けない（Firestore の実データ確認が理想）
 
 ■ ローカル確認（ユーザー PC）
 cd C:\Users\naona\StudioProjects\my_new_app
