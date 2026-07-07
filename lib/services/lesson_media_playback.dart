@@ -474,6 +474,7 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
     Duration? naturalEndPosition,
     this.openDelay = Duration.zero,
     this.suppressPeriodicPositionTicks = false,
+    this.republishPositionOnPause = false,
   }) : _totalDuration = totalDuration ?? const Duration(seconds: 90),
        _naturalEndPosition = naturalEndPosition;
 
@@ -481,6 +482,12 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
   final Duration? _naturalEndPosition;
   final Duration openDelay;
   final bool suppressPeriodicPositionTicks;
+
+  /// When true, mimics [AudioLessonMediaPlayback.pause] re-publishing its
+  /// last known position as a side effect of pausing. Real audio playback
+  /// does this; most fakes/tests don't need to reproduce it, so it is
+  /// opt-in to avoid changing existing test behavior.
+  final bool republishPositionOnPause;
   final List<Uri> openedUrls = [];
   Duration _position = Duration.zero;
   bool _isPlaying = false;
@@ -569,6 +576,9 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
     _timer = null;
     _isPlaying = false;
     _playingController.add(false);
+    if (republishPositionOnPause) {
+      _positionController.add(_position);
+    }
   }
 
   @override

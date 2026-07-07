@@ -319,4 +319,70 @@ void main() {
     expect(playback.globalPositionSec, 0);
     expect(playback.liveGlobalPositionSec, greaterThan(0.15));
   });
+
+  test(
+    'seeking from audio to video while playing does not flash the stale audio position',
+    () async {
+      // Mirrors AudioLessonMediaPlayback.pause(), which republishes its
+      // last known (pre-seek) position as a side effect of pausing.
+      final audioPlayer = FakeLessonMediaPlayback(
+        republishPositionOnPause: true,
+      );
+      final videoPlayer = FakeLessonMediaPlayback();
+      final playback = createTrackingPlaylistPlayback(
+        audioPlayers: [audioPlayer],
+        videoPlayers: [videoPlayer],
+      );
+
+      await playback.openSegments(twoPartLessonSegments());
+      await Future<void>.delayed(Duration.zero);
+      await playback.play();
+      await audioPlayer.seek(const Duration(seconds: 45));
+
+      final positions = <double>[];
+      final sub = playback.globalPositionStream.listen(positions.add);
+
+      await playback.seekGlobal(100);
+      await sub.cancel();
+
+      // None of the positions emitted while switching to the video segment
+      // should regress back into the audio segment (below 90s); the stale
+      // position pause() republishes must be ignored while the switch is
+      // in progress.
+      expect(positions.where((position) => position < 90), isEmpty);
+      expect(playback.currentSegmentIndex, 1);
+      expect(playback.isPlaying, isTrue);
+    },
+  );
+
+  test(
+    'a failed cross-segment seek does not permanently block future seeks',
+    () async {
+      final audioPlayer = FakeLessonMediaPlayback();
+      final videoPlayer = _ThrowingOpenFakeLessonMediaPlayback();
+      final playback = createTrackingPlaylistPlayback(
+        audioPlayers: [audioPlayer],
+        videoPlayers: [videoPlayer],
+      );
+
+      await playback.openSegments(twoPartLessonSegments());
+      await Future<void>.delayed(Duration.zero);
+      await playback.play();
+
+      await expectLater(playback.seekGlobal(100), throwsA(anything));
+
+      // A failed segment activation must not leave seekGlobal permanently
+      // stuck (e.g. via a never-reset in-progress flag).
+      await playback.seekGlobal(10);
+      expect(playback.currentSegmentIndex, 0);
+      expect(playback.globalPositionSec, closeTo(10, 0.01));
+    },
+  );
+}
+
+class _ThrowingOpenFakeLessonMediaPlayback extends FakeLessonMediaPlayback {
+  @override
+  Future<void> open(Uri url) async {
+    throw LessonMediaLoadException('preload failed for test');
+  }
 }

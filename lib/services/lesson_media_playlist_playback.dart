@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:video_player/video_player.dart';
 
 import '../models/lesson_media_segment.dart';
@@ -440,28 +441,52 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     }
 
     _seekInProgress = true;
-    while (_pendingSeekGlobalSec != null) {
-      final target = _pendingSeekGlobalSec!;
+    try {
+      while (_pendingSeekGlobalSec != null) {
+        final target = _pendingSeekGlobalSec!;
+        _pendingSeekGlobalSec = null;
+        await _seekGlobalImmediate(target);
+      }
+    } finally {
+      // Always clear this even if a segment activation above throws (e.g.
+      // the new segment's media fails to load), so a single failed seek
+      // does not permanently block all future seeks.
       _pendingSeekGlobalSec = null;
-      await _seekGlobalImmediate(target);
+      _seekInProgress = false;
     }
-    _seekInProgress = false;
   }
 
   Future<void> _seekGlobalImmediate(double globalSec) async {
     final position = _timeline.resolveGlobalSec(globalSec);
     if (position.segmentIndex != _currentSegmentIndex) {
       final wasPlaying = _isPlaying;
-      if (wasPlaying) {
-        await pause();
-      }
-      await _activateSegment(
-        position.segmentIndex,
-        localStartSec: position.localSec,
-        resumePlaying: false,
-      );
-      if (wasPlaying) {
-        await play();
+      // Mark the switch as starting immediately, before pausing the
+      // about-to-be-abandoned player. Pausing a real audio player can
+      // republish its last known (pre-seek) position as a side effect; if
+      // that happens before this flag is set, the stale position briefly
+      // (or persistently, if activation is slow) overwrites the freshly
+      // requested segment's position on screen.
+      _isSwitchingSegment = true;
+      try {
+        if (wasPlaying) {
+          await pause();
+        }
+        await _activateSegment(
+          position.segmentIndex,
+          localStartSec: position.localSec,
+          resumePlaying: false,
+        );
+        if (wasPlaying) {
+          await play();
+        }
+      } catch (error, stackTrace) {
+        debugPrint(
+          'LessonMediaPlaylistPlayback: cross-segment seek to '
+          '${position.segmentIndex} failed: $error\n$stackTrace',
+        );
+        rethrow;
+      } finally {
+        _isSwitchingSegment = false;
       }
       return;
     }
