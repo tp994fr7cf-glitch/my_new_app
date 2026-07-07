@@ -48,7 +48,7 @@ cd C:\Users\naona\StudioProjects\my_new_app
 
 ## 3. 現在の main の状態（2026-07-07）
 
-**main 先端: c24f274（PR #57 マージ後）**
+**main 先端: 530f3ad（PR #59 マージ後。PR #60 はレビュー待ち）**
 
 ### ユーザー確認済み — 直っていること（回帰なし）
 
@@ -58,18 +58,22 @@ cd C:\Users\naona\StudioProjects\my_new_app
 | 時間表示・スライダーのガタつき | **直っている**（#55） |
 | レッスン開き直しの誤った「視聴完了」表示 | **直っている**（#55） |
 | 動画パートのホワイトボード | **滑らか** |
+| 音声パートのホワイトボード（録画し直した後） | **滑らかになった**（#59） |
 | 一時停止 → シーク → 再生 | 問題なさそう |
 
-### 未解決 — 最優先バグ（→ PR #59 で録画側を修正・要ユーザー確認）
+### 未解決だったバグ → PR #60 で修正済み（要ユーザー確認）
 
 | 症状 | 詳細 |
 |------|------|
-| **音声パートのホワイトボードが1秒ごとにカクッと進む** | 動画パートは滑らか。PR #56・#57（再生側の修正）後もエミュレータで未改善だった |
+| **音声再生中に動画パートへスライドしても反映されない** | 音声が流れ続ける／スライダーが音声側に戻る／一時停止を押すとそこで初めて動画に飛ぶ。一時停止してからのスライドは問題ない |
 
 テストレッスン: 音声 90秒（WAV）→ 動画 90秒（MP4）= 合計 3分
 
-**2026-07-07 追記（PR #59）: 根本原因は「再生側」ではなく「録画側」だった可能性が高い。**
-詳細は本章末尾の「PR #59」の節を参照。
+**2026-07-07 追記（PR #59→#60 の経緯）**:
+- PR #59: 音声パートのホワイトボードのカクつきは「録画側」（先生がペンで描く時の時刻の粗さ）が
+  原因と判明。修正・ユーザー確認済み（録画し直しが必要）
+- PR #59 の確認中に、ユーザーが**別の不具合**（音声→動画スライドが反映されない）を発見。
+  これを PR #60 で調査・修正。詳細は本章末尾の「PR #60」の節を参照
 
 ---
 
@@ -156,9 +160,55 @@ cd C:\Users\naona\StudioProjects\my_new_app
    その場合は `AudioLessonMediaPlayback._reportedPosition`（壁時計アンカー）を
    実機ログで確認する
 
+### PR #60（2026-07-07）: 音声→動画へスライドしても反映されない不具合を修正
+
+PR #59 のホワイトボード修正をユーザーが確認した際に発見された**別の不具合**。
+
+**症状（ユーザー報告）**:
+- 音声パート再生中にスライダーを動画パートまで動かしても、音声が再生され続ける
+- スライダーの位置も音声側に勝手に戻る
+- 一時停止ボタンを押すと、なぜか一時停止せず動画パートに飛んで再生される（＝ボタンを押した時に初めて反映される）
+- 一時停止してからスライドする場合は問題ない（再生中のスライドだけで起きる）
+- スライド直後、再生速度が安定しない印象
+
+**見つけた原因（2つが重なっている）**:
+
+1. **パート切り替えの最初に音声を止めた瞬間、「古い音声の位置」がもう一度画面に送られる**
+   - `AudioLessonMediaPlayback.pause()`（`lib/services/lesson_media_playback.dart`）は、止めた直後に
+     `_publishCurrentPosition()` を呼んで「その時点の位置」を再送信する
+   - パート切り替え処理 `_seekGlobalImmediate`（`lib/services/lesson_media_playlist_playback.dart`）は、
+     このタイミングではまだ「切り替え中」の目印（`_isSwitchingSegment`）を立てていなかったため、
+     この古い位置がそのまま画面（`globalPositionStream`）に届いてしまっていた
+   - これがスライダーが音声側に戻る・音声が続いて聞こえる、の直接原因
+2. **動画パートへの切り替え中にエラーが起きると、二度とスライドが効かなくなる**
+   - `seekGlobal()` の中の `_seekInProgress`（多重シーク防止フラグ）は、切り替え処理が例外を投げると
+     `false` に戻らないまま残ってしまい、以後のシークが全て無視される、という潜在バグがあった
+   - 動画の読み込みはネットワーク・コーデックの都合で失敗しやすく、これも再生速度の不安定さに関係している可能性
+
+**修正内容（最小 diff）**:
+- `lib/services/lesson_media_playlist_playback.dart`
+  - `_isSwitchingSegment` を、`pause()` を呼ぶ**前**（パート切り替えの一番最初）から立てるように変更
+  - `seekGlobal()` の繰り返し処理を `try/finally` で囲み、エラーが起きても必ず `_seekInProgress` /
+    `_pendingSeekGlobalSec` をリセットするように変更
+  - 切り替え失敗時に `debugPrint` でログを残すように変更（原因調査用、UIの動作は変えていない）
+- `lib/services/lesson_media_playback.dart`
+  - テスト用の「ふりの音声プレイヤー」`FakeLessonMediaPlayback` に、本物の音声プレイヤーと同じ
+    「一時停止時に古い位置を再送信する」動きを再現できる `republishPositionOnPause` オプションを追加
+    （既定は無効なので既存のテストへの影響なし）
+- `test/lesson_media_playlist_playback_test.dart` にテストを2つ追加
+  - 「音声再生中に動画へスライドしても、古い音声の位置が一度も画面に出ないこと」
+  - 「動画の読み込みが失敗しても、その後のシークがブロックされずに動くこと」
+  - **修正前のコードに戻すとこの2つのテストがどちらも失敗する**ことを確認済み（原因の裏付けになる）
+
+**まだ確認できていないこと**:
+- 実機・エミュレータでの動作確認はできていない（この Cloud Agent 環境には端末がない）。
+  ユーザーに `git pull` → `flutter run` の上で、同じ操作（音声再生中に動画へスライド）を
+  試してもらい、直っているか確認してもらう必要がある
+- 動画から音声へのスライドは PR #54 で既に対応済みで、今回は変えていない（回帰していないか一応確認を推奨）
+
 ---
 
-## 5. 完了 PR（#49〜#59）
+## 5. 完了 PR（#49〜#60）
 
 | PR | 内容 |
 |----|------|
@@ -172,7 +222,8 @@ cd C:\Users\naona\StudioProjects\my_new_app
 | #56 | ホワイトボード専用50ms更新ウィジェット（再生側・実機で未改善） |
 | #57 | 音声壁時計アンカー常時有効化（再生側・実機で未改善） |
 | #58 | 引き継ぎノート更新 |
-| #59 | **録画側の修正**: 先生がペンで描く時の timestampSec を live 位置に変更（要ユーザー確認・要録画し直し） |
+| #59 | **録画側の修正**: 先生がペンで描く時の timestampSec を live 位置に変更（ユーザー確認済み・直った） |
+| #60 | **音声→動画スライド不具合の修正**: 切り替え中のフラグを早める＋シーク失敗時の復旧（要ユーザー確認） |
 
 ---
 
@@ -221,7 +272,7 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 **以下を1つのブロックとしてそのままコピーすること。ブロックを分割しないこと。**
 
 ```
-【引き継ぎ】my_new_app Flutter/Firebase 学習アプリ（2026-07-07・PR #59 引継ぎ更新）
+【引き継ぎ】my_new_app Flutter/Firebase 学習アプリ（2026-07-07・PR #60 引継ぎ更新）
 
 ■ リポジトリ / 環境
 - GitHub: https://github.com/tp994fr7cf-glitch/my_new_app
@@ -229,7 +280,7 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 - ローカル: C:\Users\naona\StudioProjects\my_new_app（Windows、PowerShell 使用可）
 - Firebase: my-new-app-naona-20260523
 - 本番 Web: https://my-new-app-naona-20260523.web.app
-- main 先端: dfbc1c5（PR #59 はこの時点でまだ未マージ・レビュー待ち）
+- main 先端: 530f3ad（PR #59 マージ後。PR #60 はこの時点でまだ未マージ・レビュー待ち）
 - ブランチ名ルール（Cloud Agent）: cursor/<名前>-c48f
 
 ■ ユーザー preferences（必読）
@@ -247,42 +298,46 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 - 時間表示・スライダーのガタつきなし（#55）
 - 視聴完了後のレッスン開き直し表示（#55）
 - 動画パートのホワイトボードは滑らか
+- 音声パートのホワイトボードも、録画し直した後は滑らかになった（#59・ユーザー確認済み）
 
-■ 未解決・最優先バグ → PR #59 で「録画側」を修正済み（マージ・実機確認待ち）
-- 症状: 音声パートのホワイトボードが1秒ごとにカクッと進む（動画は滑らか）
-- PR #56（ホワイトボード50ms更新）・#57（音声壁時計アンカー）は「再生側」の修正だったが、
-  エミュレータで未改善だった
-- PR #59 で判明: 原因は再生側ではなく「先生が録画するときの保存」だった可能性が高い。
-  lib/widgets/lesson_whiteboard_editor_panel.dart が、ペンの点の時刻(timestampSec)を
-  1秒刻みの playback.globalPositionStream から取っていたため、点そのものが粗く保存されていた
-- PR #59 の修正: 録画中は playback.liveGlobalPositionSec（滑らかな値）を使うように変更
-- 重要: 修正が効くのは「これから録画する分」のみ。既存のテストレッスンの音声パートの
-  書き物は、修正後にユーザーが「編集する」→「リセットして描き直す」で録画し直す必要がある
-- テストレッスン: 音声90秒+動画90秒
-- 本番 Firestore の実データ（点の timestampSec が本当に1秒刻みだったか）は
-  Cloud Agent 環境に Firebase 認証情報が無いため未確認。裏取りできると仮説がより確実になる
+■ 未解決バグ → PR #60 で修正済み（要ユーザー確認）
+- 症状: 音声パート再生中にスライダーを動画パートまで動かしても、音声が再生され続ける／
+  スライダーが音声側に勝手に戻る／一時停止ボタンを押すとそこで初めて動画に飛ぶ／
+  一時停止してからスライドすれば問題ない／スライド直後は再生速度が不安定な印象
+- 原因1: パート切り替えの最初に音声を止めた瞬間、音声プレイヤーが「古い位置」を
+  もう一度画面に送ってしまう（AudioLessonMediaPlayback.pause() の副作用）。
+  切り替え中フラグ(_isSwitchingSegment)が立つのがその後だったため、古い位置が
+  そのまま画面（globalPositionStream）に届いていた
+- 原因2: 動画の読み込みに失敗すると、seekGlobal() の多重シーク防止フラグ
+  (_seekInProgress) が false に戻らず、以後のシークが永久に無視される潜在バグがあった
+- 修正: lib/services/lesson_media_playlist_playback.dart で
+  (1) pause() を呼ぶ前に _isSwitchingSegment を立てる
+  (2) seekGlobal() を try/finally で囲み失敗時も必ずフラグを戻す
+  (3) 失敗時に debugPrint でログを残す
+- テスト2件追加（test/lesson_media_playlist_playback_test.dart）。
+  修正前のコードに戻すとどちらも失敗することを確認済み（原因の裏付け）
+- 未確認: 実機・エミュレータでの動作確認（この Cloud Agent 環境には端末が無い）
 
-■ 技術メモ（次がハマりどころ）
+■ 技術メモ（ホワイトボード関連・#56〜#59の経緯）
 - ホワイトボードは点の timestampSec <= 再生位置 で線を伸ばす（lib/models/lesson_whiteboard.dart）
-- 音声 positionStream は意図的に1秒刻み（表示安定化）。細かい位置は liveGlobalPositionSec / 壁時計アンカー想定
-- #56: lib/widgets/lesson_playback_synced_whiteboard.dart（50msで liveGlobalPositionSec を読む・受講側の表示）
-- #57: lib/services/lesson_media_playback.dart（_ensurePlaybackAnchor、playing:true でアンカー）
-- #59: lib/widgets/lesson_whiteboard_editor_panel.dart（_recordingPositionSec を追加、録画中は
-  playback.liveGlobalPositionSec を使う。先生の録画側）
-- テストは WallClockFakeLessonMediaPlayback / 独自フェイクで通るが実機 just_audio では未確認 → フェイクだけ信頼しない
-- PR #59 でも直らない場合に疑うべき: (1)実機で liveGlobalPositionSec が本当に細かく変わるか
-  (2)レイヤー anchorType/segmentId (3)AudioLessonMediaPlayback._reportedPosition の壁時計アンカーが
-  実機でずれていないか
+- 音声 positionStream は意図的に1秒刻み（表示安定化）。細かい位置は liveGlobalPositionSec / 壁時計アンカー
+- #56/#57 は「再生側」の修正だったが効果なし。#59 で「録画側」
+  （lib/widgets/lesson_whiteboard_editor_panel.dart の _recordingPositionSec）を直したところ、
+  録画し直した後は滑らかになったとユーザー確認済み
+- テストは WallClockFakeLessonMediaPlayback / 独自フェイクで通るが実機 just_audio との差に注意
+  → フェイクが本物の挙動（pause 時の位置再送信など）を再現していないと、
+  同種のバグをテストで検知できない（#60 で経験済み。republishPositionOnPause オプションを追加）
 
 ■ 完了 PR（再生関連）
 #49 seek/preload / #50 display sync / #51 segment sync / #52 audio poll / #53 playing rewind /
 #54 pause-seek-play（時間表示フリーズ修正）/ #55 jitter+reopen / #56 whiteboard widget（再生側） /
-#57 wall clock anchor（再生側） / #58 引継ぎ更新 / #59 録画側の timestampSec 修正（未マージ）
+#57 wall clock anchor（再生側） / #58 引継ぎ更新 / #59 録画側の timestampSec 修正（マージ・確認済み）/
+#60 音声→動画スライド不具合修正（未マージ）
 
 ■ 開発スタイル
 - 最小 diff、過剰設計しない、既存意図を壊さない
-- PR #50-57 は再生側だけ層を重ねすぎた反省。#59 で録画側に切り分けた
-- 実データ確認なしに片側だけ直し続けない（Firestore の実データ確認が理想）
+- 直す前に「本当にそこが原因か」をコードと実際のログ・データで裏取りする
+  （#56/#57 は裏取りせず直し続けて失敗、#59/#60 は裏取り＋再現テストで前進できた）
 
 ■ ローカル確認（ユーザー PC）
 cd C:\Users\naona\StudioProjects\my_new_app
