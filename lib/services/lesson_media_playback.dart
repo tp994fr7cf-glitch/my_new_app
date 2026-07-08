@@ -37,6 +37,23 @@ LessonMediaPlayback createLessonMediaPlayback({required bool isAudio}) {
   return isAudio ? AudioLessonMediaPlayback() : VideoLessonMediaPlayback();
 }
 
+/// Whether a video player's `isPlaying=false` update should be ignored
+/// rather than treated as a real pause.
+///
+/// video_player/ExoPlayer report `isPlaying=false` whenever playback is
+/// momentarily buffering (e.g. re-buffering right after a seek, or a brief
+/// network stall), even though `play()` was never paused and playback
+/// intends to resume as soon as buffering finishes. Propagating that as a
+/// real pause incorrectly stops playback state upstream (observed as an
+/// unwanted auto-pause near the end of a video segment, and whenever
+/// rewinding, since rewinding always triggers a short buffering period).
+bool shouldSuppressVideoPlayingUpdate({
+  required bool isPlaying,
+  required bool isBuffering,
+}) {
+  return !isPlaying && isBuffering;
+}
+
 class AudioLessonMediaPlayback implements LessonMediaPlayback {
   AudioLessonMediaPlayback() : _player = AudioPlayer() {
     _player.playingStream.listen(_handlePlayingChanged);
@@ -319,10 +336,20 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
   }
 
   void _notifyPlaying() {
-    if (_controller == null || _playingController.isClosed) {
+    final controller = _controller;
+    if (controller == null || _playingController.isClosed) {
       return;
     }
-    _playingController.add(_controller!.value.isPlaying);
+    final value = controller.value;
+    if (shouldSuppressVideoPlayingUpdate(
+      isPlaying: value.isPlaying,
+      isBuffering: value.isBuffering,
+    )) {
+      // Keep reporting whatever "playing" state was last known until
+      // buffering resolves; see shouldSuppressVideoPlayingUpdate for why.
+      return;
+    }
+    _playingController.add(value.isPlaying);
   }
 
   @override
@@ -473,6 +500,7 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
     Duration? totalDuration,
     Duration? naturalEndPosition,
     this.openDelay = Duration.zero,
+    this.seekDelay = Duration.zero,
     this.suppressPeriodicPositionTicks = false,
     this.republishPositionOnPause = false,
   }) : _totalDuration = totalDuration ?? const Duration(seconds: 90),
@@ -481,6 +509,10 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
   final Duration _totalDuration;
   final Duration? _naturalEndPosition;
   final Duration openDelay;
+
+  /// Artificial delay before a seek() call resolves, used to simulate a
+  /// slow/real native seek and reproduce races between overlapping seeks.
+  final Duration seekDelay;
   final bool suppressPeriodicPositionTicks;
 
   /// When true, mimics [AudioLessonMediaPlayback.pause] re-publishing its
@@ -489,6 +521,9 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
   /// opt-in to avoid changing existing test behavior.
   final bool republishPositionOnPause;
   final List<Uri> openedUrls = [];
+
+  /// Every position (in seconds) that [seek] was called with, in order.
+  final List<double> seekCallsSec = [];
   Duration _position = Duration.zero;
   bool _isPlaying = false;
   bool _isReady = false;
@@ -583,6 +618,10 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
 
   @override
   Future<void> seek(Duration position) async {
+    seekCallsSec.add(position.inMilliseconds / 1000);
+    if (seekDelay > Duration.zero) {
+      await Future<void>.delayed(seekDelay);
+    }
     _position = position;
     _positionController.add(_position);
   }
