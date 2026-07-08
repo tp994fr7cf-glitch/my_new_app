@@ -165,6 +165,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   Future<void> _prepareSegmentInSlot(
     int segmentIndex, {
     double localStartSec = 0,
+    bool repositionIfAlreadyPrepared = true,
   }) async {
     final ordered = _timeline.orderedSegments;
     if (segmentIndex < 0 || segmentIndex >= ordered.length) {
@@ -183,22 +184,22 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       segment.durationSec.toDouble(),
     );
 
-    if (slot.isPreparedFor(segmentIndex, url)) {
-      await slot.player.seek(
-        Duration(milliseconds: (targetLocalSec * 1000).round()),
-      );
-      return;
-    }
-
+    // Always funnel work on this slot through the same completer, even when
+    // it looks already-prepared. Without this, a preload "touch" of an
+    // already-open slot and a real activation seek for that same slot could
+    // both issue native seek() calls to the underlying player concurrently,
+    // with no guarantee about which one the player ends up honoring.
     final previousPrepare = slot._prepareFuture;
     final prepareCompleter = Completer<void>();
     slot._prepareFuture = prepareCompleter.future;
     await previousPrepare;
     try {
       if (slot.isPreparedFor(segmentIndex, url)) {
-        await slot.player.seek(
-          Duration(milliseconds: (targetLocalSec * 1000).round()),
-        );
+        if (repositionIfAlreadyPrepared) {
+          await slot.player.seek(
+            Duration(milliseconds: (targetLocalSec * 1000).round()),
+          );
+        }
         return;
       }
 
@@ -228,7 +229,15 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       return;
     }
     try {
-      await _prepareSegmentInSlot(segmentIndex);
+      // Only ensure the segment is open/buffered; don't reposition it. It
+      // may already be prepared at a meaningful position (e.g. we just
+      // switched away from it moments ago), and resetting it to 0 here
+      // serves no preloading purpose while risking a race with a genuine
+      // seek back into this same segment shortly after.
+      await _prepareSegmentInSlot(
+        segmentIndex,
+        repositionIfAlreadyPrepared: false,
+      );
     } catch (_) {
       // Preload failures should not interrupt active playback.
     }

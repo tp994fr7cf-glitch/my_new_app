@@ -378,6 +378,85 @@ void main() {
       expect(playback.globalPositionSec, closeTo(10, 0.01));
     },
   );
+
+  test(
+    'preloading a segment that is already prepared does not reposition it',
+    () async {
+      final audioPlayer = FakeLessonMediaPlayback();
+      final videoPlayer = FakeLessonMediaPlayback();
+      final playback = createTrackingPlaylistPlayback(
+        audioPlayers: [audioPlayer],
+        videoPlayers: [videoPlayer],
+      );
+
+      await playback.openSegments(twoPartLessonSegments());
+      await Future<void>.delayed(Duration.zero);
+      await playback.play();
+
+      // Switch audio -> video (real activation, wants to land at 10s local).
+      await playback.seekGlobal(100);
+      expect(videoPlayer.seekCallsSec, [10.0]);
+
+      // Switch back video -> audio. Activating audio preloads video again
+      // as the "next" segment. That preload must not reposition video: it
+      // is already open and sitting at a meaningful position (10s), and
+      // resetting it to 0 here serves no preloading purpose while risking
+      // a race with a future real seek back into video.
+      await playback.seekGlobal(30);
+      await Future<void>.delayed(Duration.zero);
+      expect(videoPlayer.seekCallsSec, [10.0]);
+    },
+  );
+
+  test(
+    'repeated audio/video round trips while playing always land on the requested segment',
+    () async {
+      final audioPlayer = FakeLessonMediaPlayback();
+      // A real seek takes measurable time; delay video's seek() so an
+      // unwanted concurrent seek (e.g. a stale preload repositioning this
+      // same player) would have a real window to race against it.
+      final videoPlayer = FakeLessonMediaPlayback(
+        seekDelay: const Duration(milliseconds: 50),
+      );
+      final playback = createTrackingPlaylistPlayback(
+        audioPlayers: [audioPlayer],
+        videoPlayers: [videoPlayer],
+      );
+
+      await playback.openSegments(twoPartLessonSegments());
+      await Future<void>.delayed(Duration.zero);
+      await playback.play();
+
+      // audio -> video -> audio -> video, all while continuously playing,
+      // reproducing the reported repeat-switch failure.
+      await playback.seekGlobal(100);
+      expect(playback.currentSegmentIndex, 1);
+      expect(playback.isPlaying, isTrue);
+
+      await playback.seekGlobal(30);
+      expect(playback.currentSegmentIndex, 0);
+      expect(playback.isPlaying, isTrue);
+
+      await playback.seekGlobal(120);
+      expect(playback.currentSegmentIndex, 1);
+      expect(playback.isPlaying, isTrue);
+      expect(playback.globalPositionSec, closeTo(120, 0.01));
+
+      // Only the two explicit switches into video should have ever
+      // repositioned it; no stray preload-triggered seek (e.g. back to 0)
+      // should have snuck in between them.
+      expect(videoPlayer.seekCallsSec, [10.0, 30.0]);
+
+      // Same-segment (audio-to-audio) seeks must also still work right
+      // after a round trip through video, matching the report that even
+      // unrelated seeks stopped working once this happened.
+      await playback.seekGlobal(30);
+      expect(playback.currentSegmentIndex, 0);
+      await playback.seekGlobal(60);
+      expect(playback.currentSegmentIndex, 0);
+      expect(playback.globalPositionSec, closeTo(60, 0.01));
+    },
+  );
 }
 
 class _ThrowingOpenFakeLessonMediaPlayback extends FakeLessonMediaPlayback {

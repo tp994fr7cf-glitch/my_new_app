@@ -34,4 +34,35 @@ void main() {
     expect(midMs - startMs, greaterThan(150));
     await player.pause();
   });
+
+  group('shouldSuppressVideoPlayingUpdate', () {
+    test('suppresses isPlaying=false caused by buffering', () {
+      expect(
+        shouldSuppressVideoPlayingUpdate(isPlaying: false, isBuffering: true),
+        isTrue,
+        reason:
+            'A momentary buffering stall (e.g. right after a rewind) '
+            'should not be treated as the user pausing playback.',
+      );
+    });
+
+    test('does not suppress a genuine pause while not buffering', () {
+      expect(
+        shouldSuppressVideoPlayingUpdate(isPlaying: false, isBuffering: false),
+        isFalse,
+        reason: 'A real pause (or natural end-of-video) must still be reported.',
+      );
+    });
+
+    test('never suppresses isPlaying=true, buffering or not', () {
+      expect(
+        shouldSuppressVideoPlayingUpdate(isPlaying: true, isBuffering: true),
+        isFalse,
+      );
+      expect(
+        shouldSuppressVideoPlayingUpdate(isPlaying: true, isBuffering: false),
+        isFalse,
+      );
+    });
+  });
 }
