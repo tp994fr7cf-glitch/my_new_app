@@ -457,6 +457,93 @@ void main() {
       expect(playback.globalPositionSec, closeTo(60, 0.01));
     },
   );
+
+  test(
+    'a pause() that arrives while a cross-segment seek is in flight is '
+    'honored once the switch settles, instead of being overridden by a '
+    'stale "was playing" snapshot',
+    () async {
+      final audioPlayer = FakeLessonMediaPlayback();
+      // Give the video segment's seek a real delay, so pause() below has a
+      // genuine window to land while `_activateSegment` for the video
+      // segment is still in flight (mirroring what real native players do).
+      final videoPlayer = FakeLessonMediaPlayback(
+        seekDelay: const Duration(milliseconds: 50),
+      );
+      final playback = createTrackingPlaylistPlayback(
+        audioPlayers: [audioPlayer],
+        videoPlayers: [videoPlayer],
+      );
+
+      await playback.openSegments(twoPartLessonSegments());
+      await Future<void>.delayed(Duration.zero);
+      await playback.play();
+      expect(playback.isPlaying, isTrue);
+
+      // Start a cross-segment seek into video while playing (this captures
+      // "was playing" as true internally), but don't await it yet.
+      final seekFuture = playback.seekGlobal(100);
+
+      // While that switch is still resolving (video's seek() is delayed),
+      // the user taps pause. Without the fix, this direct pause() would
+      // race the switch's own pause-old/activate-new/resume-if-needed
+      // sequence and get silently overridden by the stale "was playing"
+      // snapshot once the switch finishes, forcing playback to resume
+      // against the user's actual request.
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      await playback.pause();
+
+      await seekFuture;
+
+      expect(playback.currentSegmentIndex, 1);
+      expect(
+        playback.isPlaying,
+        isFalse,
+        reason:
+            'the pause requested mid-switch must win over the pre-switch '
+            '"was playing" snapshot',
+      );
+      expect(videoPlayer.isPlaying, isFalse);
+    },
+  );
+
+  test(
+    'a play() that arrives while a segment switch is in flight is honored '
+    'even if the switch itself was not going to resume playback',
+    () async {
+      final audioPlayer = FakeLessonMediaPlayback();
+      final videoPlayer = FakeLessonMediaPlayback(
+        seekDelay: const Duration(milliseconds: 50),
+      );
+      final playback = createTrackingPlaylistPlayback(
+        audioPlayers: [audioPlayer],
+        videoPlayers: [videoPlayer],
+      );
+
+      await playback.openSegments(twoPartLessonSegments());
+      await Future<void>.delayed(Duration.zero);
+      expect(playback.isPlaying, isFalse);
+
+      // Tap a specific part while paused (e.g. the "part navigation"
+      // buttons): this switches segments without asking for playback to
+      // resume on its own.
+      final seekFuture = playback.seekToSegmentIndex(1);
+
+      // While that switch is still resolving, the user taps play.
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      await playback.play();
+
+      await seekFuture;
+
+      expect(playback.currentSegmentIndex, 1);
+      expect(
+        playback.isPlaying,
+        isTrue,
+        reason: 'the play requested mid-switch must be honored once it settles',
+      );
+      expect(videoPlayer.isPlaying, isTrue);
+    },
+  );
 }
 
 class _ThrowingOpenFakeLessonMediaPlayback extends FakeLessonMediaPlayback {

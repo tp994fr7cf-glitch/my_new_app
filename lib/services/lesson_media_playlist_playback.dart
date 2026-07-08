@@ -101,6 +101,13 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   double? _pendingSeekGlobalSec;
   bool _seekInProgress = false;
 
+  /// A user-initiated play()/pause() request that arrived while a segment
+  /// switch (or seek) was still in flight. `null` means no such request is
+  /// pending. See [play] / [pause] for why this exists.
+  bool? _pendingUserPlayIntent;
+
+  bool get _switchOrSeekActive => _isSwitchingSegment || _seekInProgress;
+
   Stream<double> get globalPositionStream => _globalPositionController.stream;
   Stream<int> get totalDurationStream => _totalDurationController.stream;
   Stream<bool> get playingStream => _playingController.stream;
@@ -357,8 +364,23 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     } finally {
       _isSwitchingSegment = false;
       _syncActivePlaybackPosition(forceEmit: true);
-      if (shouldResumePlaying) {
-        await play();
+
+      // If the user tapped play/pause while this switch was in flight, that
+      // request was deferred (see `play`/`pause`) instead of racing the
+      // switch's own pause-old/activate-new/resume-if-needed sequence.
+      // Honor it now, now that the switch has fully settled, instead of the
+      // `resumePlaying` snapshot the caller captured before the switch
+      // (possibly stale by now).
+      final pendingIntent = _pendingUserPlayIntent;
+      _pendingUserPlayIntent = null;
+      final effectiveResume = pendingIntent ?? shouldResumePlaying;
+      _logSwitch(
+        '_activateSegment settling: segmentIndex=$segmentIndex '
+        'shouldResumePlaying=$shouldResumePlaying pendingIntent=$pendingIntent '
+        'effectiveResume=$effectiveResume',
+      );
+      if (effectiveResume) {
+        await _playInternal();
       }
     }
   }
@@ -443,7 +465,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       if (nextIndex >= ordered.length) {
         _globalPositionSec = _totalDurationSec.toDouble();
         _globalPositionController.add(_globalPositionSec);
-        await pause();
+        await _pauseInternal();
         return;
       }
 
@@ -476,22 +498,57 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _totalDurationController.add(_totalDurationSec);
   }
 
+  /// Public entry point for user/UI-initiated play requests.
+  ///
+  /// If a segment switch or seek is currently in flight, calling the real
+  /// player here directly would race with that switch's own
+  /// pause-old/activate-new/resume-if-needed sequence: this method's write
+  /// to `_isPlaying` (and the native play() call) could land in between
+  /// that sequence reading its "was it playing before" snapshot and using
+  /// it, making the snapshot stale by the time it's used. That exact race
+  /// was observed on real devices (never in fakes/tests) as "sliding into
+  /// a new part sometimes leaves it paused until play/pause is tapped".
+  /// Deferring to `_pendingUserPlayIntent` lets the in-flight switch apply
+  /// this request itself, once it has fully settled.
   Future<void> play() async {
+    if (_switchOrSeekActive) {
+      _logSwitch(
+        'play: deferred, switch/seek active (currentSegmentIndex=$_currentSegmentIndex)',
+      );
+      _pendingUserPlayIntent = true;
+      return;
+    }
+    await _playInternal();
+  }
+
+  /// Public entry point for user/UI-initiated pause requests. See [play].
+  Future<void> pause() async {
+    if (_switchOrSeekActive) {
+      _logSwitch(
+        'pause: deferred, switch/seek active (currentSegmentIndex=$_currentSegmentIndex)',
+      );
+      _pendingUserPlayIntent = false;
+      return;
+    }
+    await _pauseInternal();
+  }
+
+  Future<void> _playInternal() async {
     if (_activePlayer == null) {
       return;
     }
     if (_globalPositionSec >= _totalDurationSec && _totalDurationSec > 0) {
       await seekGlobal(0);
     }
-    _logSwitch('play: currentSegmentIndex=$_currentSegmentIndex');
+    _logSwitch('_playInternal: currentSegmentIndex=$_currentSegmentIndex');
     await _activePlayer!.play();
     _isPlaying = true;
     _playingController.add(true);
     _syncActivePlaybackPosition(forceEmit: true);
   }
 
-  Future<void> pause() async {
-    _logSwitch('pause: currentSegmentIndex=$_currentSegmentIndex');
+  Future<void> _pauseInternal() async {
+    _logSwitch('_pauseInternal: currentSegmentIndex=$_currentSegmentIndex');
     await _activePlayer?.pause();
     _isPlaying = false;
     _playingController.add(false);
@@ -559,16 +616,21 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       _isSwitchingSegment = true;
       try {
         if (wasPlaying) {
-          await pause();
+          await _pauseInternal();
         }
+        // Let `_activateSegment` itself decide, in its own finally block,
+        // whether to resume playback once the switch has fully settled.
+        // Deciding it here instead (via a separate `if (wasPlaying) await
+        // play()` after this call) would rely on the same `wasPlaying`
+        // snapshot even if a real play()/pause() request from the user
+        // arrived in the meantime, which is exactly the race that made a
+        // freshly-activated segment sometimes stay silently paused on real
+        // devices until play/pause was tapped again.
         await _activateSegment(
           position.segmentIndex,
           localStartSec: position.localSec,
-          resumePlaying: false,
+          resumePlaying: wasPlaying,
         );
-        if (wasPlaying) {
-          await play();
-        }
       } catch (error, stackTrace) {
         debugPrint(
           'LessonMediaPlaylistPlayback: cross-segment seek to '
