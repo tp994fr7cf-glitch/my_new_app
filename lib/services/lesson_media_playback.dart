@@ -37,6 +37,14 @@ LessonMediaPlayback createLessonMediaPlayback({required bool isAudio}) {
   return isAudio ? AudioLessonMediaPlayback() : VideoLessonMediaPlayback();
 }
 
+/// Temporary diagnostic logging to help track down a reported audio/video
+/// segment-switch failure that could not be reproduced with fakes in tests.
+/// Safe to remove once the root cause is confirmed; prints only, no
+/// behavior change.
+void _logPlayback(String message) {
+  debugPrint('[LessonMediaSwitchDebug] $message');
+}
+
 /// Whether a video player's `isPlaying=false` update should be ignored
 /// rather than treated as a real pause.
 ///
@@ -180,6 +188,7 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
 
   @override
   Future<void> open(Uri url) async {
+    _logPlayback('AudioLessonMediaPlayback.open: url=$url');
     _isReady = false;
     if (kIsWeb) {
       await _player.setWebCrossOrigin(WebCrossOrigin.anonymous);
@@ -192,6 +201,9 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
       _durationController.add(_player.duration);
     }
     _publishCurrentPosition();
+    _logPlayback(
+      'AudioLessonMediaPlayback.open: done url=$url duration=${_player.duration}',
+    );
   }
 
   bool _hasUsableDuration(Duration? duration) {
@@ -241,6 +253,7 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
 
   @override
   Future<void> play() async {
+    _logPlayback('AudioLessonMediaPlayback.play');
     if (_player.processingState == ProcessingState.completed) {
       await _player.seek(_player.position);
     }
@@ -251,6 +264,7 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
 
   @override
   Future<void> pause() async {
+    _logPlayback('AudioLessonMediaPlayback.pause');
     await _player.pause();
     _anchorWallTime = null;
     _stopPositionRefresh();
@@ -259,9 +273,11 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
 
   @override
   Future<void> seek(Duration position) async {
+    _logPlayback('AudioLessonMediaPlayback.seek: position=$position');
     await _player.seek(position);
     _resetPlaybackAnchor(position: position, playing: _player.playing);
     _publishCurrentPosition();
+    _logPlayback('AudioLessonMediaPlayback.seek: done position=$position');
   }
 
   @override
@@ -313,6 +329,7 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
 
   @override
   Future<void> open(Uri url) async {
+    _logPlayback('VideoLessonMediaPlayback.open: url=$url');
     _isReady = false;
     final controller = VideoPlayerController.networkUrl(url);
     _controller = controller;
@@ -320,6 +337,11 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
     await controller.initialize();
     _isReady = controller.value.isInitialized;
     _onControllerUpdate();
+    _logPlayback(
+      'VideoLessonMediaPlayback.open: done url=$url '
+      'isInitialized=${controller.value.isInitialized} '
+      'duration=${controller.value.duration}',
+    );
   }
 
   void _onControllerUpdate() {
@@ -347,6 +369,11 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
     )) {
       // Keep reporting whatever "playing" state was last known until
       // buffering resolves; see shouldSuppressVideoPlayingUpdate for why.
+      _logPlayback(
+        'VideoLessonMediaPlayback._notifyPlaying: suppressed '
+        'isPlaying=${value.isPlaying} isBuffering=${value.isBuffering} '
+        'position=${value.position}',
+      );
       return;
     }
     _playingController.add(value.isPlaying);
@@ -354,6 +381,7 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
 
   @override
   Future<void> play() async {
+    _logPlayback('VideoLessonMediaPlayback.play');
     final controller = _controller;
     if (controller != null &&
         controller.value.isInitialized &&
@@ -367,14 +395,20 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
 
   @override
   Future<void> pause() async {
+    _logPlayback('VideoLessonMediaPlayback.pause');
     await _controller?.pause();
     _notifyPlaying();
   }
 
   @override
   Future<void> seek(Duration position) async {
+    _logPlayback('VideoLessonMediaPlayback.seek: position=$position');
     await _controller?.seekTo(position);
     _onControllerUpdate();
+    _logPlayback(
+      'VideoLessonMediaPlayback.seek: done position=$position '
+      'actualPosition=${_controller?.value.position}',
+    );
   }
 
   @override
