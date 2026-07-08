@@ -10,6 +10,14 @@ import 'lesson_media_playback.dart';
 typedef LessonMediaPlaylistPlaybackFactory =
     LessonMediaPlaylistController Function();
 
+/// Temporary diagnostic logging to help track down a reported audio/video
+/// segment-switch failure that could not be reproduced with fakes in tests.
+/// Safe to remove once the root cause is confirmed; prints only, no
+/// behavior change.
+void _logSwitch(String message) {
+  debugPrint('[LessonMediaSwitchDebug] $message');
+}
+
 abstract class LessonMediaPlaylistController {
   Stream<double> get globalPositionStream;
   Stream<int> get totalDurationStream;
@@ -184,6 +192,15 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       segment.durationSec.toDouble(),
     );
 
+    _logSwitch(
+      '_prepareSegmentInSlot start: segmentIndex=$segmentIndex '
+      'isAudio=${slot.isAudio} targetLocalSec=$targetLocalSec '
+      'repositionIfAlreadyPrepared=$repositionIfAlreadyPrepared '
+      'loadedSegmentIndex=${slot.loadedSegmentIndex} '
+      'playerIsReady=${slot._player?.isReady} '
+      'hasPendingPrepare=${slot._prepareFuture != null}',
+    );
+
     // Always funnel work on this slot through the same completer, even when
     // it looks already-prepared. Without this, a preload "touch" of an
     // already-open slot and a real activation seek for that same slot could
@@ -196,13 +213,25 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     try {
       if (slot.isPreparedFor(segmentIndex, url)) {
         if (repositionIfAlreadyPrepared) {
+          _logSwitch(
+            '_prepareSegmentInSlot: already prepared, seeking to '
+            '$targetLocalSec (isAudio=${slot.isAudio})',
+          );
           await slot.player.seek(
             Duration(milliseconds: (targetLocalSec * 1000).round()),
+          );
+        } else {
+          _logSwitch(
+            '_prepareSegmentInSlot: already prepared, skipping reposition '
+            '(isAudio=${slot.isAudio})',
           );
         }
         return;
       }
 
+      _logSwitch(
+        '_prepareSegmentInSlot: not prepared, opening url (isAudio=${slot.isAudio})',
+      );
       if (slot.player.isPlaying) {
         await slot.player.pause();
       }
@@ -214,6 +243,16 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
           Duration(milliseconds: (targetLocalSec * 1000).round()),
         );
       }
+      _logSwitch(
+        '_prepareSegmentInSlot: opened+seeked (isAudio=${slot.isAudio}) '
+        'segmentIndex=$segmentIndex',
+      );
+    } catch (error, stackTrace) {
+      _logSwitch(
+        '_prepareSegmentInSlot: ERROR segmentIndex=$segmentIndex '
+        'isAudio=${slot.isAudio} error=$error\n$stackTrace',
+      );
+      rethrow;
     } finally {
       if (!prepareCompleter.isCompleted) {
         prepareCompleter.complete();
@@ -228,6 +267,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     if (segmentIndex < 0 || segmentIndex >= _timeline.segmentCount) {
       return;
     }
+    _logSwitch('_preloadNextSegment: segmentIndex=$segmentIndex');
     try {
       // Only ensure the segment is open/buffered; don't reposition it. It
       // may already be prepared at a meaningful position (e.g. we just
@@ -238,8 +278,9 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
         segmentIndex,
         repositionIfAlreadyPrepared: false,
       );
-    } catch (_) {
+    } catch (error) {
       // Preload failures should not interrupt active playback.
+      _logSwitch('_preloadNextSegment: FAILED segmentIndex=$segmentIndex error=$error');
     }
   }
 
@@ -253,12 +294,21 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       return;
     }
 
+    _logSwitch(
+      '_activateSegment start: segmentIndex=$segmentIndex '
+      'localStartSec=$localStartSec resumePlaying=$resumePlaying '
+      'currentSegmentIndex=$_currentSegmentIndex',
+    );
+
     _isSwitchingSegment = true;
     var shouldResumePlaying = false;
     try {
       final segment = ordered[segmentIndex];
       if (!segment.hasUrl) {
         _isReady = false;
+        _logSwitch(
+          '_activateSegment ABORT: segmentIndex=$segmentIndex has no url',
+        );
         return;
       }
 
@@ -295,6 +345,15 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       _emitTotalDuration();
 
       unawaited(_preloadNextSegment(segmentIndex + 1));
+      _logSwitch(
+        '_activateSegment done: segmentIndex=$segmentIndex '
+        'globalPositionSec=$_globalPositionSec isReady=$_isReady',
+      );
+    } catch (error, stackTrace) {
+      _logSwitch(
+        '_activateSegment ERROR: segmentIndex=$segmentIndex error=$error\n$stackTrace',
+      );
+      rethrow;
     } finally {
       _isSwitchingSegment = false;
       _syncActivePlaybackPosition(forceEmit: true);
@@ -424,6 +483,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     if (_globalPositionSec >= _totalDurationSec && _totalDurationSec > 0) {
       await seekGlobal(0);
     }
+    _logSwitch('play: currentSegmentIndex=$_currentSegmentIndex');
     await _activePlayer!.play();
     _isPlaying = true;
     _playingController.add(true);
@@ -431,6 +491,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   }
 
   Future<void> pause() async {
+    _logSwitch('pause: currentSegmentIndex=$_currentSegmentIndex');
     await _activePlayer?.pause();
     _isPlaying = false;
     _playingController.add(false);
@@ -441,11 +502,21 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       return;
     }
 
+    _logSwitch(
+      'seekGlobal called: globalSec=$globalSec '
+      'seekInProgress=$_seekInProgress '
+      'currentSegmentIndex=$_currentSegmentIndex',
+    );
+
     _pendingSeekGlobalSec = globalSec.clamp(
       0.0,
       _totalDurationSec.toDouble(),
     );
     if (_seekInProgress) {
+      _logSwitch(
+        'seekGlobal: another seek already in progress, queued '
+        'target=$_pendingSeekGlobalSec',
+      );
       return;
     }
 
@@ -456,17 +527,27 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
         _pendingSeekGlobalSec = null;
         await _seekGlobalImmediate(target);
       }
+    } catch (error, stackTrace) {
+      _logSwitch('seekGlobal: ERROR globalSec=$globalSec error=$error\n$stackTrace');
+      rethrow;
     } finally {
       // Always clear this even if a segment activation above throws (e.g.
       // the new segment's media fails to load), so a single failed seek
       // does not permanently block all future seeks.
       _pendingSeekGlobalSec = null;
       _seekInProgress = false;
+      _logSwitch('seekGlobal: finished globalSec=$globalSec');
     }
   }
 
   Future<void> _seekGlobalImmediate(double globalSec) async {
     final position = _timeline.resolveGlobalSec(globalSec);
+    _logSwitch(
+      '_seekGlobalImmediate: globalSec=$globalSec -> '
+      'segmentIndex=${position.segmentIndex} localSec=${position.localSec} '
+      'currentSegmentIndex=$_currentSegmentIndex '
+      'crossSegment=${position.segmentIndex != _currentSegmentIndex}',
+    );
     if (position.segmentIndex != _currentSegmentIndex) {
       final wasPlaying = _isPlaying;
       // Mark the switch as starting immediately, before pausing the
@@ -500,6 +581,10 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       return;
     }
 
+    _logSwitch(
+      '_seekGlobalImmediate: same-segment seek to localSec=${position.localSec} '
+      'segmentIndex=${position.segmentIndex}',
+    );
     await _activePlayer?.seek(
       Duration(milliseconds: (position.localSec * 1000).round()),
     );
