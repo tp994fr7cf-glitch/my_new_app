@@ -508,6 +508,56 @@ void main() {
   );
 
   test(
+    'a pause() that arrives while a same-segment seek is in flight still '
+    'takes effect immediately, instead of being silently lost',
+    () async {
+      // Regression test: an earlier fix for the cross-segment race
+      // (above) deferred play()/pause() taps entirely while any seek was
+      // in flight, relying on the switch itself to apply them once
+      // settled. That worked for cross-segment switches (which go through
+      // `_activateSegment`), but a same-segment seek never does, so a
+      // deferred tap landing during one was silently dropped forever -
+      // making the pause button appear to "stop responding" after any
+      // slider drag within the current part. play()/pause() must always
+      // take effect the instant they're called, with no such window.
+      final audioPlayer = FakeLessonMediaPlayback(
+        seekDelay: const Duration(milliseconds: 50),
+      );
+      final videoPlayer = FakeLessonMediaPlayback();
+      final playback = createTrackingPlaylistPlayback(
+        audioPlayers: [audioPlayer],
+        videoPlayers: [videoPlayer],
+      );
+
+      await playback.openSegments(twoPartLessonSegments());
+      await Future<void>.delayed(Duration.zero);
+      await playback.play();
+      expect(playback.isPlaying, isTrue);
+
+      // A same-segment seek (still within the audio part): this never
+      // calls `_activateSegment`.
+      final seekFuture = playback.seekGlobal(30);
+
+      // While that seek's delayed native seek() is still resolving, the
+      // user taps pause.
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      await playback.pause();
+
+      expect(
+        playback.isPlaying,
+        isFalse,
+        reason: 'pause() must take effect immediately, not be deferred',
+      );
+      expect(audioPlayer.isPlaying, isFalse);
+
+      await seekFuture;
+
+      expect(playback.currentSegmentIndex, 0);
+      expect(playback.isPlaying, isFalse);
+    },
+  );
+
+  test(
     'a play() that arrives while a segment switch is in flight is honored '
     'even if the switch itself was not going to resume playback',
     () async {
