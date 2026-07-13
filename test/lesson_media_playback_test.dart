@@ -1,7 +1,38 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:my_new_app/services/lesson_media_playback.dart';
 
 void main() {
+  test(
+    'audio play command completes without waiting for playback to stop',
+    () async {
+      // just_audio's play Future stays pending until pause/stop/completion.
+      // The app-level play command must still finish as soon as playback has
+      // been started, or a video-to-audio switch holds the playlist seek lock.
+      final playbackUntilStopped = Completer<void>();
+      var started = false;
+
+      await AudioLessonMediaPlayback.completePlayCommandOnStart(
+        playbackUntilStopped: playbackUntilStopped.future,
+        onStarted: () {
+          started = true;
+        },
+        onError: (_, __) {},
+      ).timeout(const Duration(milliseconds: 100));
+
+      expect(started, isTrue);
+      expect(
+        playbackUntilStopped.isCompleted,
+        isFalse,
+        reason: 'The underlying playback should still be running.',
+      );
+
+      playbackUntilStopped.complete();
+      await Future<void>.delayed(Duration.zero);
+    },
+  );
+
   test('fake audio playback emits monotonic positions while playing', () async {
     final player = FakeLessonMediaPlayback();
     final positions = <Duration>[];

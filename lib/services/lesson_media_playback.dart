@@ -73,6 +73,32 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
     });
   }
 
+  /// Treats `play` as a start command, without waiting for the whole playback
+  /// session to end.
+  ///
+  /// `just_audio` deliberately keeps the Future returned by `AudioPlayer.play`
+  /// pending until playback is paused, stopped, or completed. The playlist
+  /// controller, however, needs this wrapper's Future to complete once the
+  /// start command has been issued; otherwise a resumed audio segment keeps
+  /// the playlist's seek lock held for the entire time it is playing.
+  @visibleForTesting
+  static Future<void> completePlayCommandOnStart({
+    required Future<void> playbackUntilStopped,
+    required VoidCallback onStarted,
+    required void Function(Object error, StackTrace stackTrace) onError,
+  }) {
+    unawaited(
+      playbackUntilStopped.then<void>(
+        (_) {},
+        onError: (Object error, StackTrace stackTrace) {
+          onError(error, stackTrace);
+        },
+      ),
+    );
+    onStarted();
+    return Future<void>.value();
+  }
+
   static const Duration _positionRefreshInterval = Duration(seconds: 1);
   static const int _anchorRecalibrateDriftMs = 1000;
 
@@ -257,9 +283,18 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
     if (_player.processingState == ProcessingState.completed) {
       await _player.seek(_player.position);
     }
-    await _player.play();
-    _resetPlaybackAnchor(playing: true);
-    _publishCurrentPosition();
+    await completePlayCommandOnStart(
+      playbackUntilStopped: _player.play(),
+      onStarted: () {
+        _resetPlaybackAnchor(playing: _player.playing);
+        _publishCurrentPosition();
+      },
+      onError: (error, stackTrace) {
+        _logPlayback(
+          'AudioLessonMediaPlayback.play: ERROR error=$error\n$stackTrace',
+        );
+      },
+    );
   }
 
   @override
