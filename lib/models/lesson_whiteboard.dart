@@ -112,14 +112,18 @@ class LessonWhiteboardLayerBundle {
   }
 
   LessonWhiteboardLayer? get primaryLayer {
-    final ordered = orderedLayers.where((layer) => !layer.isEmpty).toList();
-    if (ordered.isEmpty) {
-      return null;
+    final ordered = orderedLayers;
+    for (final layer in ordered) {
+      if (layer.id == LessonWhiteboardLayer.primaryLayerId) {
+        return layer;
+      }
     }
-    return ordered.firstWhere(
-      (layer) => layer.id == LessonWhiteboardLayer.primaryLayerId,
-      orElse: () => ordered.first,
-    );
+    for (final layer in ordered) {
+      if (!layer.isEmpty) {
+        return layer;
+      }
+    }
+    return null;
   }
 
   factory LessonWhiteboardLayerBundle.fromMap(Object? data) {

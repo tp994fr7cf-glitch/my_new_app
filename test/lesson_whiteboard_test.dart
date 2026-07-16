@@ -567,6 +567,13 @@ void main() {
       ],
     );
 
+    expect(
+      bundle.toLegacyWhiteboard(),
+      isNull,
+      reason:
+          'An empty primary layer must not expose secondary strokes as primary.',
+    );
+
     final updated = bundle.copyWithPrimaryStrokes(
       strokes: const [
         WhiteboardStroke(
