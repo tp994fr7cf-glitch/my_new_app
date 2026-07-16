@@ -43,6 +43,7 @@ dependencies:
   cloud_firestore: ^6.4.1
   just_audio: ^0.10.5
   video_player: ^2.10.1
+  web: ^1.1.1
 
 dev_dependencies:
   flutter_test:

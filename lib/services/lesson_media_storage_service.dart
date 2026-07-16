@@ -4,8 +4,11 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 
+import 'lesson_media_file_picker.dart' as platform_picker;
+import 'lesson_media_file_picker_error.dart';
 import 'lesson_media_upload_stub.dart'
-    if (dart.library.io) 'lesson_media_upload_io.dart' as platform_upload;
+    if (dart.library.io) 'lesson_media_upload_io.dart'
+    as platform_upload;
 
 class LessonMediaStorageException implements Exception {
   LessonMediaStorageException(this.message);
@@ -82,26 +85,30 @@ class LessonMediaStorageService {
     return mediaType == 'audio' ? FileType.audio : FileType.video;
   }
 
-  Future<PlatformFile?> pickLessonMediaFile({
-    required String mediaType,
-  }) async {
+  Future<PlatformFile?> pickLessonMediaFile({required String mediaType}) async {
     final allowedExtensions = allowedExtensionsForMediaType(mediaType);
     final mediaLabel = mediaTypeLabel(mediaType);
-    final pickResult = await FilePicker.platform.pickFiles(
-      type: kIsWeb ? FileType.custom : pickerTypeForMediaType(mediaType),
-      allowedExtensions: kIsWeb ? allowedExtensions : null,
-      allowMultiple: false,
-      withData: kIsWeb,
-      dialogTitle: '$mediaLabelファイルを選択',
-      lockParentWindow: kIsWeb,
-    );
-    if (pickResult == null || pickResult.files.isEmpty) {
+    PlatformFile? pickedFile;
+    try {
+      pickedFile = await platform_picker.pickLessonMediaFileForPlatform(
+        mediaLabel: mediaLabel,
+        allowedExtensions: allowedExtensions,
+        pickerType: pickerTypeForMediaType(mediaType),
+        maxBytes: maxBytes,
+      );
+    } on LessonMediaFilePickerException catch (error) {
+      throw LessonMediaStorageException(error.message);
+    }
+    if (pickedFile == null) {
       return null;
     }
 
-    final pickedFile = pickResult.files.single;
     _validatePickedFile(pickedFile: pickedFile, mediaType: mediaType);
     return pickedFile;
+  }
+
+  void cancelActiveFilePicker() {
+    platform_picker.cancelLessonMediaFilePickerForPlatform();
   }
 
   Future<LessonMediaUploadResult> uploadLessonMediaFile({
