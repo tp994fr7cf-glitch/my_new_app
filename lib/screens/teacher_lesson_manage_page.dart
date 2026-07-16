@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
@@ -25,10 +26,14 @@ class TeacherLessonManagePage extends StatefulWidget {
     super.key,
     required this.course,
     this.onSaveOverride,
+    this.mediaStorageService = const LessonMediaStorageService(),
+    this.durationService = const LessonMediaDurationService(),
   });
 
   final Course course;
   final LessonSaveOverride? onSaveOverride;
+  final LessonMediaStorageService mediaStorageService;
+  final LessonMediaDurationService durationService;
 
   @override
   State<TeacherLessonManagePage> createState() =>
@@ -36,8 +41,6 @@ class TeacherLessonManagePage extends StatefulWidget {
 }
 
 class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
-  static const _mediaStorageService = LessonMediaStorageService();
-  static const _durationService = LessonMediaDurationService();
   static const _mediaConfig = LessonMediaConfig.current;
 
   late List<_LessonEditorState> _lessonEditors;
@@ -303,7 +306,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
   Future<void> _deleteRemovedSegmentFiles(List<String> urls) async {
     for (final url in urls) {
       try {
-        await _mediaStorageService.deleteFileAtUrl(url);
+        await widget.mediaStorageService.deleteFileAtUrl(url);
       } catch (_) {
         // 掃除に失敗しても保存自体は成功しているため、ここでは無視する。
       }
@@ -314,6 +317,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     required int lessonNumber,
     required _LessonEditorState editor,
     required _MediaSegmentEditorState segment,
+    bool showGuide = true,
   }) async {
     final courseId = widget.course.id;
     if (courseId == null) {
@@ -323,9 +327,13 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       return;
     }
 
-    final shouldPick = await _showUploadGuideDialog(mediaType: segment.mediaType);
-    if (!shouldPick || !mounted) {
-      return;
+    if (showGuide && !kIsWeb) {
+      final shouldPick = await _showUploadGuideDialog(
+        mediaType: segment.mediaType,
+      );
+      if (!shouldPick || !mounted) {
+        return;
+      }
     }
 
     setState(() {
@@ -334,7 +342,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
 
     PlatformFile? pickedFile;
     try {
-      pickedFile = await _mediaStorageService.pickLessonMediaFile(
+      pickedFile = await widget.mediaStorageService.pickLessonMediaFile(
         mediaType: segment.mediaType,
       );
     } on LessonMediaStorageException catch (error) {
@@ -372,7 +380,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     });
 
     try {
-      final result = await _mediaStorageService.uploadLessonMediaFile(
+      final result = await widget.mediaStorageService.uploadLessonMediaFile(
         courseId: courseId,
         lessonNumber: lessonNumber,
         segmentId: segment.id,
@@ -391,9 +399,8 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         return;
       }
 
-      final detectedDurationSec = await _durationService.detectDurationSec(
-        pickedFile,
-      );
+      final detectedDurationSec = await widget.durationService
+          .detectDurationSec(pickedFile);
 
       segment.urlController.text = result.downloadUrl;
       if (detectedDurationSec != null && detectedDurationSec > 0) {
@@ -404,7 +411,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         segment.uploadProgress = null;
         _message =
             'レッスン$lessonNumber のパート${segment.displayOrder}に'
-            '${_mediaStorageService.mediaTypeLabel(segment.mediaType)}をアップロードしました。'
+            '${widget.mediaStorageService.mediaTypeLabel(segment.mediaType)}をアップロードしました。'
             '${detectedDurationSec != null ? '（再生時間: ${detectedDurationSec}秒）' : ''}'
             '「レッスン情報を保存」を押して反映してください。';
       });
@@ -413,7 +420,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         // 同じパートにファイルを再アップロードした場合、古いファイルは
         // もう使われないため、Storage の容量を無駄にしないよう削除する。
         unawaited(
-          _mediaStorageService
+          widget.mediaStorageService
               .deleteFileAtUrl(previousUrl)
               .catchError((_) {}),
         );
@@ -447,10 +454,9 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
   }
 
   Future<bool> _showUploadGuideDialog({required String mediaType}) async {
-    final mediaLabel = _mediaStorageService.mediaTypeLabel(mediaType);
-    final allowedExtensions = _mediaStorageService.allowedExtensionsForMediaType(
-      mediaType,
-    );
+    final mediaLabel = widget.mediaStorageService.mediaTypeLabel(mediaType);
+    final allowedExtensions = widget.mediaStorageService
+        .allowedExtensionsForMediaType(mediaType);
     final result = await showDialog<bool>(
       context: context,
       builder: (dialogContext) {
@@ -556,29 +562,41 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
               const LinearProgressIndicator(),
               const SizedBox(height: 16),
             ],
-            for (final entry in _lessonEditors.indexed) ...[
-              _LessonEditorCardHost(
-                key: ObjectKey(entry.$2),
-                index: entry.$1 + 1,
-                lessonIndex: entry.$1,
-                course: _activeCourse,
-                editor: entry.$2,
-                canUploadMedia: canUploadMedia,
-                mediaConfig: _mediaConfig,
-                requiredText: _requiredText,
-                onUploadSegment: (segment) => _uploadSegmentMedia(
-                  lessonNumber: entry.$1 + 1,
-                  editor: entry.$2,
-                  segment: segment,
-                ),
-                onDraftSaved: (whiteboard) => _saveWhiteboardDraft(
+            if (!_isLoadingLessons)
+              for (final entry in _lessonEditors.indexed) ...[
+                _LessonEditorCardHost(
+                  key: ObjectKey(entry.$2),
+                  index: entry.$1 + 1,
                   lessonIndex: entry.$1,
+                  course: _activeCourse,
                   editor: entry.$2,
-                  whiteboard: whiteboard,
+                  canUploadMedia: canUploadMedia,
+                  mediaConfig: _mediaConfig,
+                  mediaStorageService: widget.mediaStorageService,
+                  requiredText: _requiredText,
+                  onAddSegment: (segment) {
+                    unawaited(
+                      _uploadSegmentMedia(
+                        lessonNumber: entry.$1 + 1,
+                        editor: entry.$2,
+                        segment: segment,
+                        showGuide: false,
+                      ),
+                    );
+                  },
+                  onUploadSegment: (segment) => _uploadSegmentMedia(
+                    lessonNumber: entry.$1 + 1,
+                    editor: entry.$2,
+                    segment: segment,
+                  ),
+                  onDraftSaved: (whiteboard) => _saveWhiteboardDraft(
+                    lessonIndex: entry.$1,
+                    editor: entry.$2,
+                    whiteboard: whiteboard,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 16),
-            ],
+                const SizedBox(height: 16),
+              ],
             if (_message != null) ...[
               Card(
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -594,7 +612,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
               const SizedBox(height: 16),
             ],
             FilledButton.icon(
-              onPressed: _isSaving ? null : _saveLessons,
+              onPressed: _isSaving || _isLoadingLessons ? null : _saveLessons,
               icon: const Icon(Icons.save),
               label: const Text('レッスン情報を保存'),
             ),
@@ -794,7 +812,9 @@ class _LessonEditorCardHost extends StatefulWidget {
     required this.editor,
     required this.canUploadMedia,
     required this.mediaConfig,
+    required this.mediaStorageService,
     required this.requiredText,
+    required this.onAddSegment,
     required this.onUploadSegment,
     required this.onDraftSaved,
   });
@@ -805,7 +825,9 @@ class _LessonEditorCardHost extends StatefulWidget {
   final _LessonEditorState editor;
   final bool canUploadMedia;
   final LessonMediaConfig mediaConfig;
+  final LessonMediaStorageService mediaStorageService;
   final String? Function(String? value) requiredText;
+  final ValueChanged<_MediaSegmentEditorState> onAddSegment;
   final ValueChanged<_MediaSegmentEditorState> onUploadSegment;
   final WhiteboardDraftSaveCallback onDraftSaved;
 
@@ -823,8 +845,10 @@ class _LessonEditorCardHostState extends State<_LessonEditorCardHost> {
       editor: widget.editor,
       canUploadMedia: widget.canUploadMedia,
       mediaConfig: widget.mediaConfig,
+      mediaStorageService: widget.mediaStorageService,
       requiredText: widget.requiredText,
       onChanged: () => setState(() {}),
+      onAddSegment: widget.onAddSegment,
       onUploadSegment: widget.onUploadSegment,
       onDraftSaved: widget.onDraftSaved,
     );
@@ -839,8 +863,10 @@ class _LessonEditorCard extends StatelessWidget {
     required this.editor,
     required this.canUploadMedia,
     required this.mediaConfig,
+    required this.mediaStorageService,
     required this.requiredText,
     required this.onChanged,
+    required this.onAddSegment,
     required this.onUploadSegment,
     required this.onDraftSaved,
   });
@@ -851,45 +877,50 @@ class _LessonEditorCard extends StatelessWidget {
   final _LessonEditorState editor;
   final bool canUploadMedia;
   final LessonMediaConfig mediaConfig;
+  final LessonMediaStorageService mediaStorageService;
   final String? Function(String? value) requiredText;
   final VoidCallback onChanged;
+  final ValueChanged<_MediaSegmentEditorState> onAddSegment;
   final ValueChanged<_MediaSegmentEditorState> onUploadSegment;
   final WhiteboardDraftSaveCallback onDraftSaved;
 
-  Future<void> _showAddSegmentDialog(BuildContext context) async {
-    final mediaType = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('パートを追加'),
-          content: const Text('追加するファイルの種類を選んでください。'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop('audio'),
-              child: const Text('音声'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop('video'),
-              child: const Text('動画'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('キャンセル'),
-            ),
-          ],
-        );
-      },
+  void _showAddSegmentDialog(BuildContext context) {
+    unawaited(
+      showDialog<void>(
+        context: context,
+        builder: (dialogContext) {
+          void addSegment(String mediaType) {
+            final segment = editor.addSegment(mediaType: mediaType);
+            onChanged();
+            onAddSegment(segment);
+            Navigator.of(dialogContext).pop();
+          }
+
+          return AlertDialog(
+            title: const Text('パートを追加'),
+            content: const Text('追加するファイルの種類を選んでください。'),
+            actions: [
+              TextButton(
+                onPressed: () => addSegment('audio'),
+                child: const Text('音声'),
+              ),
+              TextButton(
+                onPressed: () => addSegment('video'),
+                child: const Text('動画'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('キャンセル'),
+              ),
+            ],
+          );
+        },
+      ),
     );
-    if (mediaType == null) {
-      return;
-    }
-    editor.addSegment(mediaType: mediaType);
-    onChanged();
   }
 
   @override
   Widget build(BuildContext context) {
-    const mediaStorageService = LessonMediaStorageService();
     final courseId = course.id ?? '';
     final durationLabel = editor.durationController.text.trim().isEmpty
         ? '1分30秒'
@@ -970,7 +1001,7 @@ class _LessonEditorCard extends StatelessWidget {
                 OutlinedButton.icon(
                   onPressed: !canAddSegment || editor.isAnySegmentUploading
                       ? null
-                      : () => unawaited(_showAddSegmentDialog(context)),
+                      : () => _showAddSegmentDialog(context),
                   icon: const Icon(Icons.add),
                   label: const Text('パートを追加'),
                 ),
