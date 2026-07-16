@@ -32,6 +32,7 @@ Future<PlatformFile?> pickLessonMediaFileForPlatform({
   var readingFile = false;
   late final void Function() cancelThisPicker;
   final previousFocus = document.activeElement as HTMLElement?;
+  final backgroundInertStates = <(HTMLElement, bool)>[];
 
   final overlay = HTMLDivElement()
     ..id = _overlayId
@@ -132,6 +133,12 @@ Future<PlatformFile?> pickLessonMediaFileForPlatform({
       cursor: pointer;
     ''';
 
+  void restoreBackgroundInteraction() {
+    for (final (element, wasInert) in backgroundInertStates) {
+      element.inert = wasInert;
+    }
+  }
+
   void finish(PlatformFile? file) {
     if (completed) {
       return;
@@ -141,6 +148,7 @@ Future<PlatformFile?> pickLessonMediaFileForPlatform({
       _cancelActivePicker = null;
     }
     overlay.remove();
+    restoreBackgroundInteraction();
     if (previousFocus != null && previousFocus.isConnected) {
       previousFocus.focus();
     }
@@ -156,6 +164,7 @@ Future<PlatformFile?> pickLessonMediaFileForPlatform({
       _cancelActivePicker = null;
     }
     overlay.remove();
+    restoreBackgroundInteraction();
     if (previousFocus != null && previousFocus.isConnected) {
       previousFocus.focus();
     }
@@ -229,6 +238,11 @@ Future<PlatformFile?> pickLessonMediaFileForPlatform({
     ..appendChild(chooseButton)
     ..appendChild(cancelButton);
   overlay.appendChild(card);
+  for (var index = 0; index < body.children.length; index++) {
+    final element = body.children.item(index) as HTMLElement;
+    backgroundInertStates.add((element, element.inert));
+    element.inert = true;
+  }
   body.appendChild(overlay);
   input.focus();
 

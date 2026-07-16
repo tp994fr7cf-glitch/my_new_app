@@ -8,4 +8,6 @@ bool get fileInputIsVisibleToPointer => false;
 
 bool get fileInputReceivesCenterHit => false;
 
+bool get backgroundIsInert => false;
+
 void cancelPicker() {}

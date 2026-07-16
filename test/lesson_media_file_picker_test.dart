@@ -24,11 +24,13 @@ void main() {
     expect(dom_probe.fileInputIsAttached, isTrue);
     expect(dom_probe.fileInputIsVisibleToPointer, isTrue);
     expect(dom_probe.fileInputReceivesCenterHit, isTrue);
+    expect(dom_probe.backgroundIsInert, isTrue);
 
     dom_probe.cancelPicker();
 
     expect(await pickFuture, isNull);
     expect(dom_probe.overlayExists, isFalse);
+    expect(dom_probe.backgroundIsInert, isFalse);
   });
 
   test('Webで次のファイル選択を始めたら前の選択を安全に終了する', () async {

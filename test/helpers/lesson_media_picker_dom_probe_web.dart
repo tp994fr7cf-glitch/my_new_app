@@ -39,6 +39,20 @@ bool get fileInputReceivesCenterHit {
   return hit == input;
 }
 
+bool get backgroundIsInert {
+  final body = document.body;
+  if (body == null) {
+    return false;
+  }
+  for (var index = 0; index < body.children.length; index++) {
+    final element = body.children.item(index) as HTMLElement;
+    if (element.id != 'lesson-media-file-picker-overlay' && !element.inert) {
+      return false;
+    }
+  }
+  return true;
+}
+
 void cancelPicker() {
   final button =
       document.getElementById('lesson-media-file-picker-cancel')
