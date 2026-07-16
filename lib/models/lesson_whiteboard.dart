@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'lesson_media_timeline.dart';
 import 'lesson_timed_anchor.dart';
 
 class LessonWhiteboardLayer {
@@ -36,15 +37,14 @@ class LessonWhiteboardLayer {
       id: data['id'] as String? ?? primaryLayerId,
       order: (data['order'] as num?)?.toInt() ?? 0,
       title: data['title'] as String? ?? '',
-      anchorType: LessonTimedAnchorType.fromStorage(data['anchorType'] as String?),
+      anchorType: LessonTimedAnchorType.fromStorage(
+        data['anchorType'] as String?,
+      ),
       segmentId: data['segmentId'] as String?,
       visibleFromSec: (data['visibleFromSec'] as num?)?.toDouble(),
       visibleUntilSec: (data['visibleUntilSec'] as num?)?.toDouble(),
       strokes: strokesData is List
-          ? strokesData
-                .whereType<Map>()
-                .map(WhiteboardStroke.fromMap)
-                .toList()
+          ? strokesData.whereType<Map>().map(WhiteboardStroke.fromMap).toList()
           : const [],
       updatedAtMs: (data['updatedAtMs'] as num?)?.toInt() ?? 0,
     );
@@ -54,7 +54,8 @@ class LessonWhiteboardLayer {
     if (isEmpty &&
         title.isEmpty &&
         visibleFromSec == null &&
-        visibleUntilSec == null) {
+        visibleUntilSec == null &&
+        updatedAtMs <= 0) {
       return const {};
     }
 
@@ -111,14 +112,18 @@ class LessonWhiteboardLayerBundle {
   }
 
   LessonWhiteboardLayer? get primaryLayer {
-    final ordered = orderedLayers.where((layer) => !layer.isEmpty).toList();
-    if (ordered.isEmpty) {
-      return null;
+    final ordered = orderedLayers;
+    for (final layer in ordered) {
+      if (layer.id == LessonWhiteboardLayer.primaryLayerId) {
+        return layer;
+      }
     }
-    return ordered.firstWhere(
-      (layer) => layer.id == LessonWhiteboardLayer.primaryLayerId,
-      orElse: () => ordered.first,
-    );
+    for (final layer in ordered) {
+      if (!layer.isEmpty) {
+        return layer;
+      }
+    }
+    return null;
   }
 
   factory LessonWhiteboardLayerBundle.fromMap(Object? data) {
@@ -176,7 +181,13 @@ class LessonWhiteboardLayerBundle {
     required List<WhiteboardStroke> strokes,
     int? updatedAtMs,
   }) {
-    final primary = primaryLayer;
+    LessonWhiteboardLayer? primary;
+    for (final layer in orderedLayers) {
+      if (layer.id == LessonWhiteboardLayer.primaryLayerId) {
+        primary = layer;
+        break;
+      }
+    }
     if (primary == null) {
       if (strokes.isEmpty) {
         return this;
@@ -185,17 +196,19 @@ class LessonWhiteboardLayerBundle {
         layers: [
           LessonWhiteboardLayer(
             id: LessonWhiteboardLayer.primaryLayerId,
-            order: 0,
+            order: -1,
             anchorType: LessonTimedAnchorType.global,
             strokes: strokes,
             updatedAtMs: updatedAtMs ?? DateTime.now().millisecondsSinceEpoch,
           ),
+          ...orderedLayers,
         ],
       );
     }
 
+    final primaryId = primary.id;
     final nextLayers = orderedLayers.map((layer) {
-      if (layer.id != primary.id) {
+      if (layer.id != primaryId) {
         return layer;
       }
       return layer.copyWith(
@@ -244,10 +257,7 @@ class LessonWhiteboard {
     return LessonWhiteboard(
       version: (data['version'] as num?)?.toInt() ?? currentVersion,
       strokes: strokesData is List
-          ? strokesData
-                .whereType<Map>()
-                .map(WhiteboardStroke.fromMap)
-                .toList()
+          ? strokesData.whereType<Map>().map(WhiteboardStroke.fromMap).toList()
           : const [],
       updatedAtMs: (data['updatedAtMs'] as num?)?.toInt() ?? 0,
     );
@@ -272,19 +282,37 @@ class WhiteboardStroke {
     required this.timestampSec,
     required this.points,
     this.endTimestampSec,
+    this.segmentId,
+    this.segmentTimestampSec,
+    this.segmentEndTimestampSec,
     this.colorArgb = 0xFF000000,
     this.strokeWidth = 3,
   });
 
   final String id;
+
+  /// Original lesson-wide time, retained for legacy playback and recovery.
   final double timestampSec;
   final double? endTimestampSec;
+
+  /// Stable media-part link used by newly recorded strokes.
+  final String? segmentId;
+
+  /// Time within [segmentId], preferred over [timestampSec] during playback.
+  final double? segmentTimestampSec;
+  final double? segmentEndTimestampSec;
   final List<WhiteboardPoint> points;
   final int colorArgb;
   final double strokeWidth;
 
   bool get hasPointTimestamps =>
       points.isNotEmpty && points.every((point) => point.hasTimestamp);
+
+  bool get hasSegmentAnchor =>
+      segmentId != null && segmentId!.isNotEmpty && segmentTimestampSec != null;
+
+  bool get hasSegmentPointAnchors =>
+      points.isNotEmpty && points.every((point) => point.hasSegmentAnchor);
 
   factory WhiteboardStroke.fromMap(Map data) {
     final pointsData = data['points'];
@@ -293,11 +321,12 @@ class WhiteboardStroke {
       id: data['id'] as String? ?? '',
       timestampSec: (data['timestampSec'] as num?)?.toDouble() ?? 0,
       endTimestampSec: (data['endTimestampSec'] as num?)?.toDouble(),
+      segmentId: data['segmentId'] as String?,
+      segmentTimestampSec: (data['segmentTimestampSec'] as num?)?.toDouble(),
+      segmentEndTimestampSec: (data['segmentEndTimestampSec'] as num?)
+          ?.toDouble(),
       points: pointsData is List
-          ? pointsData
-                .whereType<Map>()
-                .map(WhiteboardPoint.fromMap)
-                .toList()
+          ? pointsData.whereType<Map>().map(WhiteboardPoint.fromMap).toList()
           : const [],
       colorArgb: (data['colorArgb'] as num?)?.toInt() ?? 0xFF000000,
       strokeWidth: (data['strokeWidth'] as num?)?.toDouble() ?? 3,
@@ -309,20 +338,70 @@ class WhiteboardStroke {
       'id': id,
       'timestampSec': timestampSec,
       if (endTimestampSec != null) 'endTimestampSec': endTimestampSec,
+      if (segmentId != null && segmentId!.isNotEmpty) 'segmentId': segmentId,
+      if (segmentTimestampSec != null)
+        'segmentTimestampSec': segmentTimestampSec,
+      if (segmentEndTimestampSec != null)
+        'segmentEndTimestampSec': segmentEndTimestampSec,
       'points': points.map((point) => point.toMap()).toList(),
       'colorArgb': colorArgb,
       'strokeWidth': strokeWidth,
     };
   }
 
-  WhiteboardStroke copyWith({
-    List<WhiteboardPoint>? points,
-  }) {
+  WhiteboardStroke copyWith({List<WhiteboardPoint>? points}) {
     return WhiteboardStroke(
       id: id,
       timestampSec: timestampSec,
       endTimestampSec: endTimestampSec,
+      segmentId: segmentId,
+      segmentTimestampSec: segmentTimestampSec,
+      segmentEndTimestampSec: segmentEndTimestampSec,
       points: points ?? this.points,
+      colorArgb: colorArgb,
+      strokeWidth: strokeWidth,
+    );
+  }
+
+  WhiteboardStroke withoutSegmentAnchor() {
+    return WhiteboardStroke(
+      id: id,
+      timestampSec: timestampSec,
+      endTimestampSec: endTimestampSec,
+      points: points
+          .map((point) => point.withoutSegmentAnchor())
+          .toList(growable: false),
+      colorArgb: colorArgb,
+      strokeWidth: strokeWidth,
+    );
+  }
+
+  WhiteboardStroke reassignToSegment(
+    String nextSegmentId, {
+    double? maxLocalSec,
+  }) {
+    double? clampLocal(double? value) {
+      if (value == null || maxLocalSec == null) {
+        return value;
+      }
+      return value.clamp(0.0, maxLocalSec).toDouble();
+    }
+
+    return WhiteboardStroke(
+      id: id,
+      timestampSec: timestampSec,
+      endTimestampSec: endTimestampSec,
+      segmentId: nextSegmentId,
+      segmentTimestampSec: clampLocal(segmentTimestampSec),
+      segmentEndTimestampSec: clampLocal(segmentEndTimestampSec),
+      points: points
+          .map(
+            (point) => point.reassignToSegment(
+              nextSegmentId,
+              maxLocalSec: maxLocalSec,
+            ),
+          )
+          .toList(growable: false),
       colorArgb: colorArgb,
       strokeWidth: strokeWidth,
     );
@@ -334,19 +413,30 @@ class WhiteboardPoint {
     required this.x,
     required this.y,
     this.timestampSec,
+    this.segmentId,
+    this.segmentTimestampSec,
   });
 
   final double x;
   final double y;
+
+  /// Original lesson-wide time, retained for legacy playback and recovery.
   final double? timestampSec;
+  final String? segmentId;
+  final double? segmentTimestampSec;
 
   bool get hasTimestamp => timestampSec != null;
+
+  bool get hasSegmentAnchor =>
+      segmentId != null && segmentId!.isNotEmpty && segmentTimestampSec != null;
 
   factory WhiteboardPoint.fromMap(Map data) {
     return WhiteboardPoint(
       x: (data['x'] as num?)?.toDouble() ?? 0,
       y: (data['y'] as num?)?.toDouble() ?? 0,
       timestampSec: (data['timestampSec'] as num?)?.toDouble(),
+      segmentId: data['segmentId'] as String?,
+      segmentTimestampSec: (data['segmentTimestampSec'] as num?)?.toDouble(),
     );
   }
 
@@ -355,10 +445,32 @@ class WhiteboardPoint {
       'x': x,
       'y': y,
       if (timestampSec != null) 'timestampSec': timestampSec,
+      if (segmentId != null && segmentId!.isNotEmpty) 'segmentId': segmentId,
+      if (segmentTimestampSec != null)
+        'segmentTimestampSec': segmentTimestampSec,
     };
   }
 
   Offset toOffset() => Offset(x, y);
+
+  WhiteboardPoint withoutSegmentAnchor() {
+    return WhiteboardPoint(x: x, y: y, timestampSec: timestampSec);
+  }
+
+  WhiteboardPoint reassignToSegment(
+    String nextSegmentId, {
+    double? maxLocalSec,
+  }) {
+    return WhiteboardPoint(
+      x: x,
+      y: y,
+      timestampSec: timestampSec,
+      segmentId: nextSegmentId,
+      segmentTimestampSec: segmentTimestampSec == null || maxLocalSec == null
+          ? segmentTimestampSec
+          : segmentTimestampSec!.clamp(0.0, maxLocalSec).toDouble(),
+    );
+  }
 }
 
 const double whiteboardMinPointIntervalSec = 0.05;
@@ -410,6 +522,116 @@ List<WhiteboardStroke> visibleWhiteboardStrokes({
   return visibleStrokes;
 }
 
+bool isWhiteboardStrokeOrphaned({
+  required WhiteboardStroke stroke,
+  required LessonMediaTimeline timeline,
+}) {
+  final availableIds = timeline.orderedSegments
+      .map((segment) => segment.id)
+      .toSet();
+  final linkedIds = <String>{
+    if (stroke.segmentId != null && stroke.segmentId!.isNotEmpty)
+      stroke.segmentId!,
+    for (final point in stroke.points)
+      if (point.segmentId != null && point.segmentId!.isNotEmpty)
+        point.segmentId!,
+  };
+  return linkedIds.any((segmentId) => !availableIds.contains(segmentId));
+}
+
+List<WhiteboardStroke> findOrphanedWhiteboardStrokes({
+  required Iterable<WhiteboardStroke> strokes,
+  required LessonMediaTimeline timeline,
+}) {
+  return strokes
+      .where(
+        (stroke) =>
+            isWhiteboardStrokeOrphaned(stroke: stroke, timeline: timeline),
+      )
+      .toList(growable: false);
+}
+
+WhiteboardStroke? visiblePortionOfWhiteboardStrokeAtPlayback({
+  required WhiteboardStroke stroke,
+  required LessonMediaTimeline timeline,
+  required double globalPositionSec,
+  required double segmentLocalPositionSec,
+  required String? activeSegmentId,
+  bool hideOrphanedSegmentAnchors = true,
+}) {
+  final hasAnySegmentAnchor =
+      stroke.hasSegmentAnchor ||
+      stroke.points.any((point) => point.hasSegmentAnchor);
+  if (!hasAnySegmentAnchor) {
+    return visiblePortionOfWhiteboardStroke(
+      stroke: stroke,
+      positionSec: globalPositionSec,
+    );
+  }
+
+  final isOrphaned = isWhiteboardStrokeOrphaned(
+    stroke: stroke,
+    timeline: timeline,
+  );
+  if (isOrphaned) {
+    if (hideOrphanedSegmentAnchors) {
+      return null;
+    }
+    return visiblePortionOfWhiteboardStroke(
+      stroke: stroke,
+      positionSec: globalPositionSec,
+    );
+  }
+
+  if (activeSegmentId == null || activeSegmentId.isEmpty) {
+    return null;
+  }
+
+  if (stroke.hasSegmentPointAnchors) {
+    final visiblePoints = stroke.points
+        .where(
+          (point) =>
+              point.segmentId == activeSegmentId &&
+              point.segmentTimestampSec! <= segmentLocalPositionSec,
+        )
+        .toList(growable: false);
+    if (visiblePoints.length < 2) {
+      return null;
+    }
+    return stroke.copyWith(points: visiblePoints);
+  }
+
+  if (!stroke.hasSegmentAnchor ||
+      stroke.segmentId != activeSegmentId ||
+      stroke.segmentTimestampSec! > segmentLocalPositionSec) {
+    return null;
+  }
+  return stroke;
+}
+
+List<WhiteboardStroke> visibleWhiteboardStrokesAtPlayback({
+  required Iterable<WhiteboardStroke> strokes,
+  required LessonMediaTimeline timeline,
+  required double globalPositionSec,
+  required double segmentLocalPositionSec,
+  required String? activeSegmentId,
+  bool hideOrphanedSegmentAnchors = true,
+}) {
+  return strokes
+      .map(
+        (stroke) => visiblePortionOfWhiteboardStrokeAtPlayback(
+          stroke: stroke,
+          timeline: timeline,
+          globalPositionSec: globalPositionSec,
+          segmentLocalPositionSec: segmentLocalPositionSec,
+          activeSegmentId: activeSegmentId,
+          hideOrphanedSegmentAnchors: hideOrphanedSegmentAnchors,
+        ),
+      )
+      .whereType<WhiteboardStroke>()
+      .toList(growable: false);
+}
+
 WhiteboardStroke? visiblePortionOfWhiteboardStroke({
   required WhiteboardStroke stroke,
   required double positionSec,
@@ -424,7 +646,8 @@ WhiteboardStroke? visiblePortionOfWhiteboardStroke({
 
   final visiblePoints = stroke.points
       .where(
-        (point) => point.timestampSec != null && point.timestampSec! <= positionSec,
+        (point) =>
+            point.timestampSec != null && point.timestampSec! <= positionSec,
       )
       .toList(growable: false);
   if (visiblePoints.length < 2) {
@@ -454,13 +677,7 @@ LessonWhiteboardLayerBundle mergeWhiteboardDraftLayers({
   return published ?? const LessonWhiteboardLayerBundle();
 }
 
-enum WhiteboardEditSessionKind {
-  none,
-  fresh,
-  published,
-  draft,
-  pendingReset,
-}
+enum WhiteboardEditSessionKind { none, fresh, published, draft, pendingReset }
 
 /// Chooses which whiteboard should be published when saving lesson info.
 /// Unsaved in-memory edits are ignored when a published whiteboard already exists.
@@ -525,11 +742,15 @@ List<WhiteboardStroke> visibleWhiteboardLayerStrokes({
   if (!isWhiteboardLayerVisible(layer: layer, positionSec: positionSec)) {
     return const [];
   }
-  return visibleWhiteboardStrokes(strokes: layer.strokes, positionSec: positionSec);
+  return visibleWhiteboardStrokes(
+    strokes: layer.strokes,
+    positionSec: positionSec,
+  );
 }
 
 List<WhiteboardStroke> visibleWhiteboardBundleStrokes({
   required LessonWhiteboardLayerBundle bundle,
+  required LessonMediaTimeline timeline,
   required double globalPositionSec,
   required double segmentLocalPositionSec,
   String? activeSegmentId,
@@ -538,6 +759,11 @@ List<WhiteboardStroke> visibleWhiteboardBundleStrokes({
   for (final layer in bundle.orderedLayers) {
     if (layer.anchorType == LessonTimedAnchorType.segment) {
       final layerSegmentId = layer.segmentId;
+      if (layerSegmentId != null &&
+          layerSegmentId.isNotEmpty &&
+          timeline.segmentById(layerSegmentId) == null) {
+        continue;
+      }
       if (layerSegmentId != null &&
           layerSegmentId.isNotEmpty &&
           activeSegmentId != null &&
@@ -550,8 +776,17 @@ List<WhiteboardStroke> visibleWhiteboardBundleStrokes({
       globalPositionSec: globalPositionSec,
       segmentLocalPositionSec: segmentLocalPositionSec,
     );
+    if (!isWhiteboardLayerVisible(layer: layer, positionSec: positionSec)) {
+      continue;
+    }
     visibleStrokes.addAll(
-      visibleWhiteboardLayerStrokes(layer: layer, positionSec: positionSec),
+      visibleWhiteboardStrokesAtPlayback(
+        strokes: layer.strokes,
+        timeline: timeline,
+        globalPositionSec: positionSec,
+        segmentLocalPositionSec: segmentLocalPositionSec,
+        activeSegmentId: activeSegmentId,
+      ),
     );
   }
   return visibleStrokes;
