@@ -249,13 +249,14 @@ class _ControllableLivePositionFakePlayback
        _globalPositionSec = initialGlobalPositionSec,
        _currentSegmentIndex = initialSegmentIndex;
 
+  @override
   final int totalDurationSec;
   final List<LessonMediaSegment> _segments;
 
-  double _globalPositionSec;
+  final double _globalPositionSec;
   double liveOffsetSec = 0;
-  bool _isPlaying = true;
-  int _currentSegmentIndex;
+  final bool _isPlaying = true;
+  final int _currentSegmentIndex;
 
   @override
   double get globalPositionSec => _globalPositionSec;

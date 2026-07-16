@@ -202,8 +202,9 @@ class LessonWhiteboardLayerBundle {
       );
     }
 
+    final primaryId = primary.id;
     final nextLayers = orderedLayers.map((layer) {
-      if (layer.id != primary.id) {
+      if (layer.id != primaryId) {
         return layer;
       }
       return layer.copyWith(

@@ -125,12 +125,12 @@ class _LessonWhiteboardEditorPanelState
         activeSegment != null &&
         _timeline.segmentById(activeSegment.id) != null;
     final activeSegmentId = hasActiveSegment
-        ? activeSegment!.id
+        ? activeSegment.id
         : resolvedPosition.segmentId;
     final segmentLocalPositionSec = hasActiveSegment
         ? (_currentPositionSecExact -
-                  _timeline.startGlobalSecForSegmentId(activeSegment!.id))
-              .clamp(0.0, activeSegment!.durationSec.toDouble())
+                  _timeline.startGlobalSecForSegmentId(activeSegment.id))
+              .clamp(0.0, activeSegment.durationSec.toDouble())
               .toDouble()
         : resolvedPosition.localSec;
     return visibleWhiteboardStrokesAtPlayback(
