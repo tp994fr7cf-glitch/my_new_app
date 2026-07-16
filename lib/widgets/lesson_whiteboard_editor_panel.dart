@@ -26,6 +26,7 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
     required this.publishedWhiteboard,
     required this.draftWhiteboard,
     required this.onDraftSaved,
+    this.hasSavedEmptyDraft = false,
     this.onWhiteboardChanged,
     this.playlistPlaybackFactory = createLessonMediaPlaylistPlayback,
   });
@@ -37,6 +38,7 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
   final LessonWhiteboard? publishedWhiteboard;
   final LessonWhiteboard? draftWhiteboard;
   final WhiteboardDraftSaveCallback onDraftSaved;
+  final bool hasSavedEmptyDraft;
   final ValueChanged<LessonWhiteboard>? onWhiteboardChanged;
   final LessonMediaPlaylistPlaybackFactory playlistPlaybackFactory;
 
@@ -69,6 +71,8 @@ class _LessonWhiteboardEditorPanelState
   double _currentPositionSecExact = 0;
   double? _sliderDragPositionSec;
   double? _strokeStartSec;
+  String? _strokeSegmentId;
+  double? _strokeSegmentTimestampSec;
 
   bool get _isDraggingSlider => _sliderDragPositionSec != null;
 
@@ -95,20 +99,86 @@ class _LessonWhiteboardEditorPanelState
 
   bool get _drawingEnabled => _isPlaying;
   bool get _hasPublishedWhiteboard =>
-      widget.publishedWhiteboard != null && !widget.publishedWhiteboard!.isEmpty;
+      widget.publishedWhiteboard != null &&
+      !widget.publishedWhiteboard!.isEmpty;
 
   bool get _hasUnpublishedDraft {
     final draft = widget.draftWhiteboard;
-    return draft != null && !draft.isEmpty;
+    return widget.hasSavedEmptyDraft || (draft != null && !draft.isEmpty);
   }
 
   bool get _shouldShowEditingCanvas =>
       _editSessionKind != WhiteboardEditSessionKind.none;
 
   List<WhiteboardStroke> get _visibleStrokes {
-    return visibleWhiteboardStrokes(
+    if (_timeline.isEmpty) {
+      return visibleWhiteboardStrokes(
+        strokes: _strokes,
+        positionSec: _currentPositionSecExact,
+      );
+    }
+    final resolvedPosition = _timeline.resolveGlobalSec(
+      _currentPositionSecExact,
+    );
+    final activeSegment = _playback?.currentSegment;
+    final hasActiveSegment =
+        activeSegment != null &&
+        _timeline.segmentById(activeSegment.id) != null;
+    final activeSegmentId = hasActiveSegment
+        ? activeSegment!.id
+        : resolvedPosition.segmentId;
+    final segmentLocalPositionSec = hasActiveSegment
+        ? (_currentPositionSecExact -
+                  _timeline.startGlobalSecForSegmentId(activeSegment!.id))
+              .clamp(0.0, activeSegment!.durationSec.toDouble())
+              .toDouble()
+        : resolvedPosition.localSec;
+    return visibleWhiteboardStrokesAtPlayback(
       strokes: _strokes,
-      positionSec: _currentPositionSecExact,
+      timeline: _timeline,
+      globalPositionSec: resolvedPosition.globalSec,
+      segmentLocalPositionSec: segmentLocalPositionSec,
+      activeSegmentId: activeSegmentId,
+      hideOrphanedSegmentAnchors: false,
+    );
+  }
+
+  Iterable<WhiteboardStroke> get _currentWhiteboardStrokes {
+    if (_shouldShowEditingCanvas) {
+      return _strokes;
+    }
+    return widget.publishedWhiteboard?.strokes ?? const [];
+  }
+
+  List<WhiteboardStroke> get _orphanedStrokes => findOrphanedWhiteboardStrokes(
+    strokes: _currentWhiteboardStrokes,
+    timeline: _timeline,
+  );
+
+  _WhiteboardRecordingAnchor get _recordingAnchor {
+    final globalSec = _recordingPositionSec;
+    if (_timeline.isEmpty) {
+      return _WhiteboardRecordingAnchor(globalSec: globalSec);
+    }
+    final activeSegment = _playback?.currentSegment;
+    if (activeSegment != null &&
+        _timeline.segmentById(activeSegment.id) != null) {
+      final segmentStartSec = _timeline.startGlobalSecForSegmentId(
+        activeSegment.id,
+      );
+      return _WhiteboardRecordingAnchor(
+        globalSec: globalSec,
+        segmentId: activeSegment.id,
+        segmentTimestampSec: (globalSec - segmentStartSec)
+            .clamp(0.0, activeSegment.durationSec.toDouble())
+            .toDouble(),
+      );
+    }
+    final position = _timeline.resolveGlobalSec(globalSec);
+    return _WhiteboardRecordingAnchor(
+      globalSec: position.globalSec,
+      segmentId: position.segmentId,
+      segmentTimestampSec: position.localSec,
     );
   }
 
@@ -127,7 +197,8 @@ class _LessonWhiteboardEditorPanelState
     if (!_segmentsEqual(oldWidget.mediaSegments, widget.mediaSegments)) {
       unawaited(_reloadMediaPlayer());
     }
-    if (oldWidget.draftWhiteboard != widget.draftWhiteboard ||
+    if (oldWidget.hasSavedEmptyDraft != widget.hasSavedEmptyDraft ||
+        oldWidget.draftWhiteboard != widget.draftWhiteboard ||
         oldWidget.publishedWhiteboard != widget.publishedWhiteboard) {
       if (_inProgressStroke == null && !_isPlaying) {
         _loadInitialStrokes(
@@ -140,21 +211,21 @@ class _LessonWhiteboardEditorPanelState
   }
 
   void _loadInitialStrokes({bool preserveActiveSession = false}) {
-    if (!_hasPublishedWhiteboard) {
+    if (_hasUnpublishedDraft) {
       final draft = widget.draftWhiteboard;
       _strokes = draft != null && !draft.isEmpty
           ? List<WhiteboardStroke>.from(draft.strokes)
           : [];
-      _editSessionKind = WhiteboardEditSessionKind.fresh;
-      return;
-    }
-
-    if (_hasUnpublishedDraft) {
-      _strokes = List<WhiteboardStroke>.from(widget.draftWhiteboard!.strokes);
       if (!preserveActiveSession ||
           _editSessionKind == WhiteboardEditSessionKind.none) {
         _editSessionKind = WhiteboardEditSessionKind.draft;
       }
+      return;
+    }
+
+    if (!_hasPublishedWhiteboard) {
+      _strokes = [];
+      _editSessionKind = WhiteboardEditSessionKind.fresh;
       return;
     }
 
@@ -258,7 +329,7 @@ class _LessonWhiteboardEditorPanelState
     } catch (error) {
       if (mounted) {
         setState(() {
-          _mediaLoadError = '音声の読み込みに失敗しました: $error';
+          _mediaLoadError = 'メディアの読み込みに失敗しました: $error';
           _isLoadingMedia = false;
         });
       }
@@ -272,7 +343,8 @@ class _LessonWhiteboardEditorPanelState
 
     final nextTotalDurationSec = resolveTimelineDurationSec(
       timeline: _timeline,
-      playerDuration: playerDuration ?? Duration(seconds: _playback!.totalDurationSec),
+      playerDuration:
+          playerDuration ?? Duration(seconds: _playback!.totalDurationSec),
       durationLabel: widget.durationLabel,
     );
     if (nextTotalDurationSec <= _totalDurationSec) {
@@ -296,7 +368,7 @@ class _LessonWhiteboardEditorPanelState
       _totalDurationSec = totalDurationSec;
       _isLoadingMedia = false;
       if (!playback.isReady) {
-        _mediaLoadError = '音声の読み込みに失敗しました。';
+        _mediaLoadError = 'メディアの読み込みに失敗しました。';
       } else if (totalDurationSec <= 0) {
         _mediaLoadError = '再生時間を取得できませんでした。';
       } else {
@@ -350,7 +422,10 @@ class _LessonWhiteboardEditorPanelState
   }
 
   void _handleStrokeStart() {
-    _strokeStartSec = _recordingPositionSec;
+    final anchor = _recordingAnchor;
+    _strokeStartSec = anchor.globalSec;
+    _strokeSegmentId = anchor.segmentId;
+    _strokeSegmentTimestampSec = anchor.segmentTimestampSec;
     _inProgressPoints = [];
   }
 
@@ -363,16 +438,18 @@ class _LessonWhiteboardEditorPanelState
       return;
     }
 
-    final timestampSec = _recordingPositionSec;
+    final anchor = _recordingAnchor;
     final timedPoint = WhiteboardPoint(
       x: point.x,
       y: point.y,
-      timestampSec: timestampSec,
+      timestampSec: anchor.globalSec,
+      segmentId: anchor.segmentId,
+      segmentTimestampSec: anchor.segmentTimestampSec,
     );
     if (!shouldSampleWhiteboardPoint(
       existingPoints: _inProgressPoints,
       nextPoint: timedPoint,
-      nextTimestampSec: timestampSec,
+      nextTimestampSec: anchor.globalSec,
       force: force,
     )) {
       return;
@@ -383,17 +460,21 @@ class _LessonWhiteboardEditorPanelState
       _inProgressStroke = WhiteboardStroke(
         id: 'in-progress',
         timestampSec: _strokeStartSec!,
+        segmentId: _strokeSegmentId,
+        segmentTimestampSec: _strokeSegmentTimestampSec,
         points: _inProgressPoints,
       );
     });
   }
 
   List<WhiteboardPoint> _finalizeStrokePoints(WhiteboardPoint endPoint) {
-    final timestampSec = _recordingPositionSec;
+    final anchor = _recordingAnchor;
     final timedEndPoint = WhiteboardPoint(
       x: endPoint.x,
       y: endPoint.y,
-      timestampSec: timestampSec,
+      timestampSec: anchor.globalSec,
+      segmentId: anchor.segmentId,
+      segmentTimestampSec: anchor.segmentTimestampSec,
     );
     final points = List<WhiteboardPoint>.from(_inProgressPoints);
     if (points.isEmpty) {
@@ -409,7 +490,7 @@ class _LessonWhiteboardEditorPanelState
     if (shouldSampleWhiteboardPoint(
       existingPoints: points,
       nextPoint: timedEndPoint,
-      nextTimestampSec: timestampSec,
+      nextTimestampSec: anchor.globalSec,
       force: true,
     )) {
       points.add(timedEndPoint);
@@ -424,10 +505,16 @@ class _LessonWhiteboardEditorPanelState
 
     final points = _finalizeStrokePoints(point);
     if (points.length >= 2) {
+      final endAnchor = _recordingAnchor;
       final stroke = WhiteboardStroke(
         id: '${DateTime.now().microsecondsSinceEpoch}',
         timestampSec: _strokeStartSec!,
-        endTimestampSec: _recordingPositionSec,
+        endTimestampSec: endAnchor.globalSec,
+        segmentId: _strokeSegmentId,
+        segmentTimestampSec: _strokeSegmentTimestampSec,
+        segmentEndTimestampSec: endAnchor.segmentId == _strokeSegmentId
+            ? endAnchor.segmentTimestampSec
+            : null,
         points: points,
       );
       setState(() {
@@ -441,10 +528,16 @@ class _LessonWhiteboardEditorPanelState
 
   void _finishInProgressStroke() {
     if (_inProgressPoints.length >= 2 && _strokeStartSec != null) {
+      final endAnchor = _recordingAnchor;
       final stroke = WhiteboardStroke(
         id: '${DateTime.now().microsecondsSinceEpoch}',
         timestampSec: _strokeStartSec!,
-        endTimestampSec: _recordingPositionSec,
+        endTimestampSec: endAnchor.globalSec,
+        segmentId: _strokeSegmentId,
+        segmentTimestampSec: _strokeSegmentTimestampSec,
+        segmentEndTimestampSec: endAnchor.segmentId == _strokeSegmentId
+            ? endAnchor.segmentTimestampSec
+            : null,
         points: List<WhiteboardPoint>.from(_inProgressPoints),
       );
       setState(() {
@@ -460,6 +553,8 @@ class _LessonWhiteboardEditorPanelState
       _inProgressStroke = null;
       _inProgressPoints = [];
       _strokeStartSec = null;
+      _strokeSegmentId = null;
+      _strokeSegmentTimestampSec = null;
     });
   }
 
@@ -657,22 +752,145 @@ class _LessonWhiteboardEditorPanelState
     await _seekPlaybackPosition(0);
   }
 
+  Future<void> _showOrphanedStrokeOptions() async {
+    final choice = await showDialog<_OrphanedWhiteboardChoice>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('削除済みパートの書き物'),
+          content: const Text('リンク先のパートが削除された書き物を、どのように整理しますか？'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('キャンセル'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(
+                dialogContext,
+              ).pop(_OrphanedWhiteboardChoice.delete),
+              child: const Text('削除する'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(
+                dialogContext,
+              ).pop(_OrphanedWhiteboardChoice.useGlobalTime),
+              child: const Text('全体の時刻として残す'),
+            ),
+            FilledButton(
+              onPressed: widget.mediaSegments.isEmpty
+                  ? null
+                  : () => Navigator.of(
+                      dialogContext,
+                    ).pop(_OrphanedWhiteboardChoice.reassign),
+              child: const Text('別のパートへ移す'),
+            ),
+          ],
+        );
+      },
+    );
+    if (choice == null || !mounted) {
+      return;
+    }
+
+    String? targetSegmentId;
+    if (choice == _OrphanedWhiteboardChoice.reassign) {
+      targetSegmentId = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) {
+          final segments = _timeline.orderedSegments;
+          return SimpleDialog(
+            title: const Text('移動先のパートを選択'),
+            children: [
+              for (final entry in segments.indexed)
+                SimpleDialogOption(
+                  onPressed: () => Navigator.of(dialogContext).pop(entry.$2.id),
+                  child: Text(
+                    entry.$2.title.isEmpty
+                        ? 'パート${entry.$1 + 1}'
+                        : 'パート${entry.$1 + 1}: ${entry.$2.title}',
+                  ),
+                ),
+            ],
+          );
+        },
+      );
+      if (targetSegmentId == null || !mounted) {
+        return;
+      }
+    }
+
+    _applyOrphanedStrokeChoice(choice, targetSegmentId: targetSegmentId);
+  }
+
+  void _applyOrphanedStrokeChoice(
+    _OrphanedWhiteboardChoice choice, {
+    String? targetSegmentId,
+  }) {
+    final source = _shouldShowEditingCanvas
+        ? _strokes
+        : List<WhiteboardStroke>.from(
+            widget.publishedWhiteboard?.strokes ?? const [],
+          );
+    final orphanedIds = findOrphanedWhiteboardStrokes(
+      strokes: source,
+      timeline: _timeline,
+    ).map((stroke) => stroke.id).toSet();
+    if (orphanedIds.isEmpty) {
+      return;
+    }
+
+    final repaired = <WhiteboardStroke>[];
+    for (final stroke in source) {
+      if (!orphanedIds.contains(stroke.id)) {
+        repaired.add(stroke);
+        continue;
+      }
+      switch (choice) {
+        case _OrphanedWhiteboardChoice.delete:
+          break;
+        case _OrphanedWhiteboardChoice.useGlobalTime:
+          repaired.add(stroke.withoutSegmentAnchor());
+        case _OrphanedWhiteboardChoice.reassign:
+          if (targetSegmentId != null) {
+            final targetSegment = _timeline.segmentById(targetSegmentId);
+            repaired.add(
+              stroke.reassignToSegment(
+                targetSegmentId,
+                maxLocalSec: targetSegment?.durationSec.toDouble(),
+              ),
+            );
+          }
+      }
+    }
+
+    setState(() {
+      _strokes = repaired;
+      if (repaired.isEmpty) {
+        _editSessionKind = WhiteboardEditSessionKind.pendingReset;
+      } else if (!_shouldShowEditingCanvas) {
+        _editSessionKind = WhiteboardEditSessionKind.published;
+      }
+      _message = 'リンク切れの書き物を整理しました。一時保存で確定してください。';
+    });
+    _notifyWhiteboardChanged();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final sliderMax = _totalDurationSec > 0 ? _totalDurationSec.toDouble() : 1.0;
+    final sliderMax = _totalDurationSec > 0
+        ? _totalDurationSec.toDouble()
+        : 1.0;
+    final orphanedStrokeCount = _orphanedStrokes.length;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          '音声プレビュー',
-          style: Theme.of(context).textTheme.titleSmall,
-        ),
+        Text('メディアプレビュー', style: Theme.of(context).textTheme.titleSmall),
         const SizedBox(height: 8),
         if (_isLoadingMedia) ...[
           const LinearProgressIndicator(),
           const SizedBox(height: 8),
-          const Text('音声を読み込み中…'),
+          const Text('メディアを読み込み中…'),
         ] else if (_mediaLoadError != null) ...[
           Text(
             _mediaLoadError!,
@@ -717,15 +935,40 @@ class _LessonWhiteboardEditorPanelState
           ),
         ],
         const SizedBox(height: 16),
-        Text(
-          'ホワイトボード',
-          style: Theme.of(context).textTheme.titleSmall,
-        ),
+        Text('ホワイトボード', style: Theme.of(context).textTheme.titleSmall),
         const SizedBox(height: 4),
+        if (orphanedStrokeCount > 0) ...[
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.errorContainer,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '削除済みパートにリンクされた書き物が'
+                  '$orphanedStrokeCount件あります。受講者には表示されません。',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onErrorContainer,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                TextButton(
+                  onPressed: _isSavingDraft
+                      ? null
+                      : () => unawaited(_showOrphanedStrokeOptions()),
+                  child: const Text('リンク切れの書き物を整理'),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
         Text(
-          _isPlaying
-              ? '再生中はペンで書けます。'
-              : 'スタートを押すと音声が流れ、同時に書けるようになります。',
+          _isPlaying ? '再生中はペンで書けます。' : 'スタートを押すとメディアが再生され、同時に書けるようになります。',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 8),
@@ -739,7 +982,9 @@ class _LessonWhiteboardEditorPanelState
           ),
           const SizedBox(height: 8),
           OutlinedButton.icon(
-            onPressed: _isSavingDraft ? null : () => unawaited(_showEditOptions()),
+            onPressed: _isSavingDraft
+                ? null
+                : () => unawaited(_showEditOptions()),
             icon: const Icon(Icons.edit_outlined),
             label: const Text('書き物を描き直す'),
           ),
@@ -768,7 +1013,9 @@ class _LessonWhiteboardEditorPanelState
                 label: const Text('スタート'),
               ),
               OutlinedButton.icon(
-                onPressed: !_isPlaying ? null : () => unawaited(_pauseRecording()),
+                onPressed: !_isPlaying
+                    ? null
+                    : () => unawaited(_pauseRecording()),
                 icon: const Icon(Icons.pause),
                 label: const Text('一時停止'),
               ),
@@ -791,26 +1038,35 @@ class _LessonWhiteboardEditorPanelState
                 label: const Text('リセット'),
               ),
               OutlinedButton.icon(
-                onPressed: _isSavingDraft ? null : () => unawaited(_showEditOptions()),
+                onPressed: _isSavingDraft
+                    ? null
+                    : () => unawaited(_showEditOptions()),
                 icon: const Icon(Icons.edit_outlined),
                 label: const Text('編集の選び直し'),
               ),
             ],
           ),
         ],
-        if (_message != null) ...[
-          const SizedBox(height: 8),
-          Text(_message!),
-        ],
+        if (_message != null) ...[const SizedBox(height: 8), Text(_message!)],
       ],
     );
   }
 }
 
-enum _WhiteboardEditChoice {
-  published,
-  draft,
-  reset,
+enum _WhiteboardEditChoice { published, draft, reset }
+
+enum _OrphanedWhiteboardChoice { reassign, useGlobalTime, delete }
+
+class _WhiteboardRecordingAnchor {
+  const _WhiteboardRecordingAnchor({
+    required this.globalSec,
+    this.segmentId,
+    this.segmentTimestampSec,
+  });
+
+  final double globalSec;
+  final String? segmentId;
+  final double? segmentTimestampSec;
 }
 
 /// Persists a whiteboard draft for a single lesson.
@@ -838,7 +1094,9 @@ Future<void> saveLessonWhiteboardDraft({
 
   final course = snapshot.data() ?? {};
   final lessonsData = course['lessons'];
-  if (lessonsData is! List || lessonIndex < 0 || lessonIndex >= lessonsData.length) {
+  if (lessonsData is! List ||
+      lessonIndex < 0 ||
+      lessonIndex >= lessonsData.length) {
     throw StateError('レッスンが見つかりません。');
   }
 
@@ -846,9 +1104,14 @@ Future<void> saveLessonWhiteboardDraft({
       .whereType<Map>()
       .map((lesson) => Map<String, dynamic>.from(lesson))
       .toList();
-  final draftLayers = LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
-    whiteboard.isEmpty ? null : whiteboard,
-  ).layers;
+  final baseDraftBundle = currentLesson.whiteboardDraftLayers.isNotEmpty
+      ? currentLesson.draftWhiteboardBundle
+      : currentLesson.publishedWhiteboardBundle;
+  final updatedDraftBundle = baseDraftBundle.copyWithPrimaryStrokes(
+    strokes: whiteboard.strokes,
+    updatedAtMs: whiteboard.updatedAtMs,
+  );
+  final draftLayers = updatedDraftBundle.orderedLayers;
   final updatedLesson = currentLesson.copyWith(
     whiteboardDraftLayers: draftLayers,
     clearWhiteboardDraftLayers: draftLayers.isEmpty,

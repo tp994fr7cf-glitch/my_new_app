@@ -68,8 +68,7 @@ class _LessonPlaybackSyncedWhiteboardState
       widget.playback != null && widget.playback!.isPlaying;
 
   void _syncRefreshTimer() {
-    final shouldRefresh =
-        _tracksLivePlayback && widget.totalDurationSec > 0;
+    final shouldRefresh = _tracksLivePlayback && widget.totalDurationSec > 0;
     if (shouldRefresh) {
       if (_refreshTimer == null) {
         _refreshTimer = Timer.periodic(_refreshInterval, (_) {
@@ -105,15 +104,27 @@ class _LessonPlaybackSyncedWhiteboardState
     if (widget.timeline.isEmpty) {
       return globalSec;
     }
+    final activeSegment = widget.playback?.currentSegment;
+    if (activeSegment != null &&
+        widget.timeline.segmentById(activeSegment.id) != null) {
+      final segmentStartSec = widget.timeline.startGlobalSecForSegmentId(
+        activeSegment.id,
+      );
+      return (globalSec - segmentStartSec)
+          .clamp(0.0, activeSegment.durationSec.toDouble())
+          .toDouble();
+    }
     return widget.timeline.resolveGlobalSec(globalSec).localSec;
   }
 
   @override
   Widget build(BuildContext context) {
-    final positionSec =
-        _tracksLivePlayback ? _livePositionSec : _resolvedPositionSec();
+    final positionSec = _tracksLivePlayback
+        ? _livePositionSec
+        : _resolvedPositionSec();
     final strokes = visibleWhiteboardBundleStrokes(
       bundle: widget.bundle,
+      timeline: widget.timeline,
       globalPositionSec: positionSec,
       segmentLocalPositionSec: _segmentLocalPositionSec(positionSec),
       activeSegmentId: widget.playback?.currentSegment?.id,
@@ -121,10 +132,7 @@ class _LessonPlaybackSyncedWhiteboardState
 
     return SizedBox(
       height: widget.height,
-      child: LessonWhiteboardCanvas(
-        strokes: strokes,
-        drawingEnabled: false,
-      ),
+      child: LessonWhiteboardCanvas(strokes: strokes, drawingEnabled: false),
     );
   }
 }
