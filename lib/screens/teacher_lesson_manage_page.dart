@@ -63,6 +63,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
 
   @override
   void dispose() {
+    widget.mediaStorageService.cancelActiveFilePicker();
     for (final editor in _lessonEditors) {
       editor.dispose();
     }

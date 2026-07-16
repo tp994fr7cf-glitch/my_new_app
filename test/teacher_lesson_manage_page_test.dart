@@ -7,6 +7,7 @@ import 'package:my_new_app/services/lesson_media_storage_service.dart';
 
 class _RecordingMediaStorageService extends LessonMediaStorageService {
   int pickCount = 0;
+  int cancelCount = 0;
   String? pickedMediaType;
 
   @override
@@ -16,6 +17,11 @@ class _RecordingMediaStorageService extends LessonMediaStorageService {
     pickCount++;
     pickedMediaType = mediaType;
     return null;
+  }
+
+  @override
+  void cancelActiveFilePicker() {
+    cancelCount++;
   }
 }
 
@@ -66,6 +72,9 @@ void main() {
         expect(storageService.pickedMediaType, testCase.mediaType);
         expect(find.text(testCase.uploadLabel), findsOneWidget);
         expect(find.text('ファイル選択をキャンセルしました。'), findsOneWidget);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(storageService.cancelCount, 1);
       },
     );
   }
