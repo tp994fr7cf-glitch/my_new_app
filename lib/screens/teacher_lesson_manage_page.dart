@@ -133,18 +133,12 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       final durationLabel = editor.durationController.text.trim().isEmpty
           ? '1分30秒'
           : editor.durationController.text.trim();
-      final segments = editor.buildSegments(
-        fallbackDurationLabel: durationLabel,
-      );
-      final resolvedPublishedLayers = resolveWhiteboardLayersForLessonPublish(
+      final segments = editor.buildSegments(fallbackDurationLabel: durationLabel);
+      final publishedLayers = resolveWhiteboardLayersForLessonPublish(
         publishedLayers: editor.publishedWhiteboardLayers,
         draftLayers: editor.draftWhiteboardLayers,
         workingLayers: editor.workingWhiteboardLayers,
       );
-      final publishedLayers =
-          resolvedPublishedLayers.any((layer) => !layer.isEmpty)
-          ? resolvedPublishedLayers
-          : const <LessonWhiteboardLayer>[];
 
       lessons.add(
         CourseLesson(
@@ -197,8 +191,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
             final savedLesson = lessons[index];
             editor.publishedWhiteboardLayers = savedLesson.whiteboardLayers;
             editor.draftWhiteboardLayers = const [];
-            editor.workingWhiteboardLayers =
-                savedLesson.publishedWhiteboardBundle;
+            editor.workingWhiteboardLayers = savedLesson.publishedWhiteboardBundle;
           }
           _message = 'レッスン情報を保存しました。';
         });
@@ -330,9 +323,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       return;
     }
 
-    final shouldPick = await _showUploadGuideDialog(
-      mediaType: segment.mediaType,
-    );
+    final shouldPick = await _showUploadGuideDialog(mediaType: segment.mediaType);
     if (!shouldPick || !mounted) {
       return;
     }
@@ -422,7 +413,9 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         // 同じパートにファイルを再アップロードした場合、古いファイルは
         // もう使われないため、Storage の容量を無駄にしないよう削除する。
         unawaited(
-          _mediaStorageService.deleteFileAtUrl(previousUrl).catchError((_) {}),
+          _mediaStorageService
+              .deleteFileAtUrl(previousUrl)
+              .catchError((_) {}),
         );
       }
     } on LessonMediaStorageException catch (error) {
@@ -455,8 +448,9 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
 
   Future<bool> _showUploadGuideDialog({required String mediaType}) async {
     final mediaLabel = _mediaStorageService.mediaTypeLabel(mediaType);
-    final allowedExtensions = _mediaStorageService
-        .allowedExtensionsForMediaType(mediaType);
+    final allowedExtensions = _mediaStorageService.allowedExtensionsForMediaType(
+      mediaType,
+    );
     final result = await showDialog<bool>(
       context: context,
       builder: (dialogContext) {
@@ -504,13 +498,6 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     final durationLabel = editor.durationController.text.trim().isEmpty
         ? '1分30秒'
         : editor.durationController.text.trim();
-    final baseDraftBundle = editor.draftWhiteboardLayers.isNotEmpty
-        ? LessonWhiteboardLayerBundle(layers: editor.draftWhiteboardLayers)
-        : LessonWhiteboardLayerBundle(layers: editor.publishedWhiteboardLayers);
-    final updatedDraftBundle = baseDraftBundle.copyWithPrimaryStrokes(
-      strokes: whiteboard.strokes,
-      updatedAtMs: whiteboard.updatedAtMs,
-    );
 
     await saveLessonWhiteboardDraft(
       courseId: courseId,
@@ -518,23 +505,21 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       currentLesson: CourseLesson(
         title: editor.titleController.text.trim(),
         duration: durationLabel,
-        mediaSegments: editor.buildSegments(
-          fallbackDurationLabel: durationLabel,
-        ),
+        mediaSegments: editor.buildSegments(fallbackDurationLabel: durationLabel),
         isPreview: editor.isPreview,
         whiteboardLayers: editor.publishedWhiteboardLayers,
-        whiteboardDraftLayers: editor.draftWhiteboardLayers,
       ),
       whiteboard: whiteboard,
     );
 
     if (mounted) {
       setState(() {
-        final draftLayers = updatedDraftBundle.orderedLayers;
+        final draftLayers = LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
+          whiteboard.isEmpty ? null : whiteboard,
+        ).layers;
         editor.draftWhiteboardLayers = draftLayers;
-        editor.workingWhiteboardLayers = LessonWhiteboardLayerBundle(
-          layers: draftLayers,
-        );
+        editor.workingWhiteboardLayers =
+            LessonWhiteboardLayerBundle(layers: draftLayers);
       });
     }
   }
@@ -721,26 +706,19 @@ class _LessonEditorState {
   List<LessonWhiteboardLayer> draftWhiteboardLayers;
   LessonWhiteboardLayerBundle workingWhiteboardLayers;
 
-  bool get isAnySegmentUploading =>
-      segments.any((segment) => segment.isUploading);
+  bool get isAnySegmentUploading => segments.any((segment) => segment.isUploading);
 
   bool get hasPlayableMedia => segments.any((segment) => segment.hasUrl);
 
-  bool get hasWhiteboardContent =>
-      publishedWhiteboardLayers.any((layer) => !layer.isEmpty) ||
-      draftWhiteboardLayers.any((layer) => !layer.isEmpty) ||
-      !workingWhiteboardLayers.isEmpty;
+  bool get hasAudioSegment =>
+      segments.any((segment) => segment.mediaType == 'audio' && segment.hasUrl);
 
-  List<LessonMediaSegment> buildSegments({
-    required String fallbackDurationLabel,
-  }) {
-    final fallbackDurationSec =
-        parseLessonDurationLabel(fallbackDurationLabel) ?? 0;
+  List<LessonMediaSegment> buildSegments({required String fallbackDurationLabel}) {
+    final fallbackDurationSec = parseLessonDurationLabel(fallbackDurationLabel) ?? 0;
     return LessonMediaSegment.normalizeOrders(
       segments
           .map(
-            (segment) =>
-                segment.toSegment(fallbackDurationSec: fallbackDurationSec),
+            (segment) => segment.toSegment(fallbackDurationSec: fallbackDurationSec),
           )
           .where((segment) => segment.hasUrl)
           .toList(),
@@ -916,9 +894,7 @@ class _LessonEditorCard extends StatelessWidget {
     final durationLabel = editor.durationController.text.trim().isEmpty
         ? '1分30秒'
         : editor.durationController.text.trim();
-    final builtSegments = editor.buildSegments(
-      fallbackDurationLabel: durationLabel,
-    );
+    final builtSegments = editor.buildSegments(fallbackDurationLabel: durationLabel);
     final canAddSegment = mediaConfig.canAddSegment(
       currentSegmentCount: editor.segments.length,
     );
@@ -952,7 +928,10 @@ class _LessonEditorCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 16),
-            Text('メディアパート', style: Theme.of(context).textTheme.titleSmall),
+            Text(
+              'メディアパート',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
             const SizedBox(height: 8),
             if (editor.segments.isEmpty)
               const Text('パートはまだありません。必要なときだけ追加できます。'),
@@ -996,9 +975,7 @@ class _LessonEditorCard extends StatelessWidget {
                   label: const Text('パートを追加'),
                 ),
                 if (builtSegments.isNotEmpty)
-                  Text(
-                    '合計 ${builtSegments.fold<int>(0, (sum, s) => sum + s.durationSec)} 秒',
-                  ),
+                  Text('合計 ${builtSegments.fold<int>(0, (sum, s) => sum + s.durationSec)} 秒'),
               ],
             ),
             SwitchListTile(
@@ -1028,32 +1005,24 @@ class _LessonEditorCard extends StatelessWidget {
               icon: const Icon(Icons.quiz),
               label: const Text('クイズを管理'),
             ),
-            if ((editor.hasPlayableMedia || editor.hasWhiteboardContent) &&
-                courseId.isNotEmpty) ...[
+            if (editor.hasAudioSegment && editor.hasPlayableMedia && courseId.isNotEmpty) ...[
               const SizedBox(height: 16),
               const Divider(),
               const SizedBox(height: 16),
               LessonWhiteboardEditorPanel(
-                key: ValueKey('${courseId}_$index'),
+                key: ValueKey(
+                  '${courseId}_${index}_${builtSegments.map((s) => s.id).join('_')}',
+                ),
                 courseId: courseId,
                 lessonNumber: index,
                 mediaSegments: builtSegments,
                 durationLabel: durationLabel,
-                publishedWhiteboard: editor.publishedWhiteboardLayers
-                    .toLegacyWhiteboard(),
-                draftWhiteboard: editor.draftWhiteboardLayers
-                    .toLegacyWhiteboard(),
-                hasSavedEmptyDraft:
-                    editor.draftWhiteboardLayers.isNotEmpty &&
-                    editor.draftWhiteboardLayers.toLegacyWhiteboard() == null,
+                publishedWhiteboard: editor.publishedWhiteboardLayers.toLegacyWhiteboard(),
+                draftWhiteboard: editor.draftWhiteboardLayers.toLegacyWhiteboard(),
                 onDraftSaved: onDraftSaved,
                 onWhiteboardChanged: (whiteboard) {
-                  editor.workingWhiteboardLayers = editor
-                      .workingWhiteboardLayers
-                      .copyWithPrimaryStrokes(
-                        strokes: whiteboard.strokes,
-                        updatedAtMs: whiteboard.updatedAtMs,
-                      );
+                  editor.workingWhiteboardLayers =
+                      LessonWhiteboardLayerBundle.fromLegacyWhiteboard(whiteboard);
                 },
               ),
             ],
@@ -1141,9 +1110,7 @@ class _SegmentEditorTile extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             OutlinedButton.icon(
-              onPressed: !canUploadMedia || segment.isUploading
-                  ? null
-                  : onUpload,
+              onPressed: !canUploadMedia || segment.isUploading ? null : onUpload,
               icon: Icon(
                 segment.mediaType == 'audio'
                     ? Icons.upload_file
@@ -1168,7 +1135,8 @@ class _SegmentEditorTile extends StatelessWidget {
                 'URL: ${segment.urlController.text}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
-              if (segment.durationSec > 0) Text('長さ: ${segment.durationSec}秒'),
+              if (segment.durationSec > 0)
+                Text('長さ: ${segment.durationSec}秒'),
             ],
             const SizedBox(height: 8),
             Wrap(
