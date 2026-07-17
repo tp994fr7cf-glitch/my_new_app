@@ -3169,6 +3169,60 @@ void main() {
     },
   );
 
+  testWidgets('user pause during auto-advance resume seek wins over autoplay', (
+    WidgetTester tester,
+  ) async {
+    final course = _courseWithIndependentLesson(
+      sampleCourses.first,
+      playbackMode: LessonPlaybackMode.independentSingle,
+    );
+    final segments = course.lessons.first.effectivePublishedMediaSegments;
+    final playback = FakeLessonMediaPlaylistPlayback(
+      totalDurationSec: 10,
+      segments: segments,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: VideoLessonPage(
+          course: course,
+          lesson: course.lessons.first,
+          lessonNumber: 1,
+          playlistPlaybackFactory: () => playback,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const ValueKey('lesson-part-button-published-b')),
+    );
+    await tester.pumpAndSettle();
+    _completeSliderSeek(tester.widget<Slider>(find.byType(Slider)), 2);
+    await tester.pump();
+    await tester.tap(
+      find.byKey(const ValueKey('lesson-part-button-published-a')),
+    );
+    await tester.pumpAndSettle();
+
+    playback.seekDelay = const Duration(milliseconds: 100);
+    await tester.tap(find.widgetWithText(FilledButton, '再生'));
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+
+    expect(
+      find.byKey(const ValueKey('lesson-part-player-published-b')),
+      findsOneWidget,
+    );
+    await tester.tap(find.widgetWithText(FilledButton, '一時停止'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 150));
+    await tester.pump();
+
+    expect(playback.isPlaying, isFalse);
+    expect(find.widgetWithText(FilledButton, '再生'), findsOneWidget);
+  });
+
   testWidgets(
     'independent exact-end seek stays on the part without completing it',
     (WidgetTester tester) async {
@@ -3242,7 +3296,6 @@ void main() {
         id: 'missing-upload',
         order: 0,
         mediaType: 'audio',
-        title: '壊れた公開パート',
         durationSec: 30,
       );
       const valid = LessonMediaSegment(
@@ -3294,7 +3347,7 @@ void main() {
         find.byKey(const ValueKey('unplayable-published-parts-notice')),
         findsOneWidget,
       );
-      expect(find.textContaining('壊れた公開パート（メディア未設定）'), findsOneWidget);
+      expect(find.textContaining('パート1（メディア未設定）'), findsOneWidget);
       expect(find.text('再生可能パート'), findsWidgets);
       expect(find.widgetWithText(FilledButton, '再生'), findsOneWidget);
     },

@@ -124,6 +124,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   bool _isExplicitPlaybackReposition = false;
   double? _pendingExplicitRepositionGlobalSec;
   int? _pendingAutoAdvancedSegmentIndex;
+  int? _pendingAutoAdvanceIntentGeneration;
+  int _userPlaybackIntentGeneration = 0;
+  bool _userWantsPlayback = false;
   final Map<String, double> _mediaSegmentResumePositionsSec = {};
   final Set<String> _completedMediaSegmentIds = {};
 
@@ -425,6 +428,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         segmentIndex + 1 < _publishedMediaSegments.length
         ? segmentIndex + 1
         : null;
+    _pendingAutoAdvanceIntentGeneration = _userPlaybackIntentGeneration;
   }
 
   void _handleMediaSegmentChanged(int segmentIndex) {
@@ -438,7 +442,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         _pendingAutoAdvancedSegmentIndex == segmentIndex &&
         !_isExplicitPartSwitch &&
         !_isExplicitPlaybackReposition;
+    final autoAdvanceIntentGeneration = _pendingAutoAdvanceIntentGeneration;
     _pendingAutoAdvancedSegmentIndex = null;
+    _pendingAutoAdvanceIntentGeneration = null;
 
     setState(() {
       _currentMediaSegmentIndex = segmentIndex;
@@ -446,12 +452,17 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       _lastWatchProgressSegmentIndex = segmentIndex;
       _sliderDragPositionSec = null;
     });
-    if (shouldRestoreNextPartResume) {
-      unawaited(_resumeAutoAdvancedPart(segmentIndex));
+    if (shouldRestoreNextPartResume && autoAdvanceIntentGeneration != null) {
+      unawaited(
+        _resumeAutoAdvancedPart(segmentIndex, autoAdvanceIntentGeneration),
+      );
     }
   }
 
-  Future<void> _resumeAutoAdvancedPart(int segmentIndex) async {
+  Future<void> _resumeAutoAdvancedPart(
+    int segmentIndex,
+    int resumeDecisionGeneration,
+  ) async {
     await Future<void>.delayed(Duration.zero);
     final playback = _playlistPlayback;
     if (!mounted ||
@@ -480,7 +491,33 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         _isExplicitPlaybackReposition = false;
       }
     }
-    await playback.play();
+    await _settleAutoAdvancePlaybackIntent(
+      playback,
+      resumeDecisionGeneration: resumeDecisionGeneration,
+    );
+  }
+
+  Future<void> _settleAutoAdvancePlaybackIntent(
+    LessonMediaPlaylistController playback, {
+    required int resumeDecisionGeneration,
+  }) async {
+    var observedGeneration = _userPlaybackIntentGeneration;
+    var shouldPlay = observedGeneration == resumeDecisionGeneration
+        ? true
+        : _userWantsPlayback;
+    while (mounted &&
+        playback.currentSegmentIndex == _currentMediaSegmentIndex) {
+      if (shouldPlay) {
+        await playback.play();
+      } else {
+        await playback.pause();
+      }
+      if (observedGeneration == _userPlaybackIntentGeneration) {
+        return;
+      }
+      observedGeneration = _userPlaybackIntentGeneration;
+      shouldPlay = _userWantsPlayback;
+    }
   }
 
   void _handlePlaybackPosition(
@@ -787,6 +824,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
+    _userPlaybackIntentGeneration++;
+    _userWantsPlayback = true;
     if (_isIndependentPlayback) {
       if (_sessionCompleted) {
         final segmentIndex = _currentMediaSegmentIndex;
@@ -952,6 +991,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   Future<void> _pausePlayback() async {
     _playbackTimer?.cancel();
+    _userPlaybackIntentGeneration++;
+    _userWantsPlayback = false;
     await _playlistPlayback?.pause();
     if (mounted) {
       _syncDisplayedPlaybackPositionFromPlayer();
@@ -2327,14 +2368,13 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   }
 
   Widget _buildUnplayablePartsNotice(BuildContext context) {
-    final invalidParts = _unplayablePublishedMediaSegments;
-    if (invalidParts.isEmpty) {
+    final publishedParts = _allPublishedMediaSegments;
+    if (!publishedParts.any((segment) => !segment.hasUrl)) {
       return const SizedBox.shrink();
     }
     final labels = [
-      for (final segment in invalidParts)
-        '${_partTitle(segment, _allPublishedMediaSegments.indexOf(segment))}'
-            '（メディア未設定）',
+      for (final entry in publishedParts.indexed)
+        if (!entry.$2.hasUrl) '${_partTitle(entry.$2, entry.$1)}（メディア未設定）',
     ];
     return Card(
       key: const ValueKey('unplayable-published-parts-notice'),

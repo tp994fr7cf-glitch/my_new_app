@@ -111,6 +111,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   final bool _autoAdvanceEnabled = true;
   bool _isSwitchingSegment = false;
   bool _isAdvancing = false;
+  bool _isResetting = false;
   _PlaylistSeekTarget? _pendingSeekTarget;
   Future<void>? _seekDrainFuture;
 
@@ -174,28 +175,33 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
 
   @override
   Future<void> openSegments(List<LessonMediaSegment> segments) async {
-    await disposePlayer();
-    // Published metadata can outlive a failed/removed upload. Keep those
-    // entries visible to the UI, but never let an URL-less entry prevent a
-    // later valid part from opening.
-    _timeline = LessonMediaTimeline(
-      segments: LessonMediaSegment.normalizeOrders(
-        segments.where((segment) => segment.hasUrl).toList(),
-      ),
-    );
-    _totalDurationSec = _timeline.totalDurationSec;
-    _totalDurationController.add(_totalDurationSec);
-    _globalPositionSec = 0;
-    _globalPositionController.add(_globalPositionSec);
-    _currentSegmentIndex = 0;
-    _segmentIndexController.add(_currentSegmentIndex);
+    _isResetting = true;
+    try {
+      await _disposePlayerInternal();
+      // Published metadata can outlive a failed/removed upload. Keep those
+      // entries visible to the UI, but never let an URL-less entry prevent a
+      // later valid part from opening.
+      _timeline = LessonMediaTimeline(
+        segments: LessonMediaSegment.normalizeOrders(
+          segments.where((segment) => segment.hasUrl).toList(),
+        ),
+      );
+      _totalDurationSec = _timeline.totalDurationSec;
+      _totalDurationController.add(_totalDurationSec);
+      _globalPositionSec = 0;
+      _globalPositionController.add(_globalPositionSec);
+      _currentSegmentIndex = 0;
+      _segmentIndexController.add(_currentSegmentIndex);
 
-    if (_timeline.isEmpty) {
-      _isReady = true;
-      return;
+      if (_timeline.isEmpty) {
+        _isReady = true;
+        return;
+      }
+
+      await _activateSegment(0, localStartSec: 0);
+    } finally {
+      _isResetting = false;
     }
-
-    await _activateSegment(0, localStartSec: 0);
   }
 
   _MediaPlayerSlot _slotForSegment(LessonMediaSegment segment) {
@@ -505,7 +511,8 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   }
 
   Future<void> _handleNaturalCompletion() async {
-    if (_isSwitchingSegment ||
+    if (_isResetting ||
+        _isSwitchingSegment ||
         _seekDrainFuture != null ||
         _isAdvancing ||
         !_autoAdvanceEnabled) {
@@ -585,6 +592,9 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   /// stale. See `_activateSegment`'s use of `resumeDecisionGeneration`.
   @override
   Future<void> play() async {
+    if (_isResetting) {
+      return;
+    }
     _playbackIntentGeneration++;
     await _playInternal();
   }
@@ -592,6 +602,9 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   /// Public entry point for user/UI-initiated pause requests. See [play].
   @override
   Future<void> pause() async {
+    if (_isResetting) {
+      return;
+    }
     _playbackIntentGeneration++;
     await _pauseInternal();
   }
@@ -617,7 +630,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
 
   @override
   Future<void> seekGlobal(double globalSec) async {
-    if (_timeline.isEmpty) {
+    if (_isResetting || _timeline.isEmpty) {
       return;
     }
     final clampedGlobalSec = globalSec.clamp(0.0, _totalDurationSec.toDouble());
@@ -756,7 +769,9 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     int segmentIndex, {
     double localStartSec = 0,
   }) async {
-    if (segmentIndex < 0 || segmentIndex >= _timeline.segmentCount) {
+    if (_isResetting ||
+        segmentIndex < 0 ||
+        segmentIndex >= _timeline.segmentCount) {
       return;
     }
     final globalSec = _timeline.globalSecForSegmentIndex(
@@ -779,6 +794,24 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
 
   @override
   Future<void> disposePlayer() async {
+    _isResetting = true;
+    try {
+      await _disposePlayerInternal();
+    } finally {
+      _isResetting = false;
+    }
+  }
+
+  Future<void> _disposePlayerInternal() async {
+    final activeSeekDrain = _seekDrainFuture;
+    if (activeSeekDrain != null) {
+      try {
+        await activeSeekDrain;
+      } catch (_) {
+        // The original seek caller still receives the failure. Disposal must
+        // nevertheless continue so partially prepared players are released.
+      }
+    }
     _isReady = false;
     _isPlaying = false;
     _pendingSeekTarget = null;
@@ -821,6 +854,7 @@ LessonMediaPlaylistController createLessonMediaPlaylistPlayback() {
 class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   FakeLessonMediaPlaylistPlayback({
     this.totalDurationSec = 90,
+    this.seekDelay = Duration.zero,
     List<LessonMediaSegment>? segments,
   }) : _segments = List<LessonMediaSegment>.from(
          segments ??
@@ -837,6 +871,7 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
 
   @override
   final int totalDurationSec;
+  Duration seekDelay;
   final List<LessonMediaSegment> _segments;
   final StreamController<double> _globalPositionController =
       StreamController<double>.broadcast();
@@ -949,6 +984,9 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
 
   @override
   Future<void> seekGlobal(double globalSec) async {
+    if (seekDelay > Duration.zero) {
+      await Future<void>.delayed(seekDelay);
+    }
     _globalPositionSec = globalSec.clamp(0, totalDurationSec.toDouble());
     _globalPositionController.add(_globalPositionSec);
     if (_segments.isNotEmpty) {
@@ -970,6 +1008,9 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   }) async {
     if (_segments.isEmpty) {
       return;
+    }
+    if (seekDelay > Duration.zero) {
+      await Future<void>.delayed(seekDelay);
     }
     final timeline = LessonMediaTimeline(segments: _segments);
     final targetIndex = segmentIndex.clamp(0, _segments.length - 1);

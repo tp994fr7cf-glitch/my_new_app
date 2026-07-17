@@ -188,6 +188,54 @@ void main() {
   });
 
   test(
+    'openSegments waits for an in-flight seek before replacing players',
+    () async {
+      final oldAudioPlayer = FakeLessonMediaPlayback(
+        seekDelay: const Duration(milliseconds: 50),
+      );
+      final newAudioPlayer = FakeLessonMediaPlayback();
+      final playback = createTrackingPlaylistPlayback(
+        audioPlayers: [oldAudioPlayer, newAudioPlayer],
+      );
+      await playback.openSegments(twoPartLessonSegments());
+      await Future<void>.delayed(Duration.zero);
+
+      final seek = playback.seekGlobal(10);
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      var reopenCompleted = false;
+      final reopen = playback
+          .openSegments([
+            LessonMediaSegment(
+              id: 'replacement',
+              order: 0,
+              mediaType: 'audio',
+              url: 'https://example.com/replacement.mp3',
+              durationSec: 15,
+            ),
+          ])
+          .then((_) {
+            reopenCompleted = true;
+          });
+
+      await Future<void>.delayed(const Duration(milliseconds: 15));
+      expect(
+        reopenCompleted,
+        isFalse,
+        reason: 'the old native seek must settle before its player is disposed',
+      );
+
+      await Future.wait([seek, reopen]);
+      expect(playback.currentSegment?.id, 'replacement');
+      expect(playback.currentSegmentIndex, 0);
+      expect(playback.globalPositionSec, 0);
+      expect(
+        newAudioPlayer.openedUrls.single.toString(),
+        'https://example.com/replacement.mp3',
+      );
+    },
+  );
+
+  test(
     'natural audio completion advances even when playing=false arrives first',
     () async {
       final audioPlayer = FakeLessonMediaPlayback(
