@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:my_new_app/models/course.dart';
 import 'package:my_new_app/models/lesson_media_segment.dart';
+import 'package:my_new_app/models/lesson_payload_size_validator.dart';
 import 'package:my_new_app/models/lesson_playback_mode.dart';
+import 'package:my_new_app/models/lesson_publication_validator.dart';
 import 'package:my_new_app/models/lesson_whiteboard.dart';
 import 'package:my_new_app/models/lesson_whiteboard_board_set.dart';
 import 'package:my_new_app/screens/teacher_lesson_manage_page.dart';
@@ -50,7 +52,11 @@ const _lockedSegment = LessonMediaSegment(
   durationSec: 30,
 );
 
-Course _courseWithLesson(CourseLesson lesson) {
+Course _courseWithLesson(
+  CourseLesson lesson, {
+  String description = 'テスト用講座',
+  int lessonContentVersion = 0,
+}) {
   return Course(
     id: 'course-1',
     title: 'テスト講座',
@@ -61,8 +67,9 @@ Course _courseWithLesson(CourseLesson lesson) {
     lessonCount: 1,
     rating: 0,
     priceLabel: '無料',
-    description: 'テスト用講座',
+    description: description,
     lessons: [lesson],
+    lessonContentVersion: lessonContentVersion,
   );
 }
 
@@ -94,12 +101,161 @@ void main() {
     expect(promoted.single.toMap(), isNot(contains('draftBoardSet')));
   });
 
+  test(
+    'external lesson drafts are accepted only for the loaded course version',
+    () {
+      final matching = matchingLessonDraft({
+        'baseLessonContentVersion': 4,
+        'draftRevision': 2,
+        'boardSet': const BoardSet(
+          boards: [LessonWhiteboardBoard(id: 'matching', order: 0)],
+        ).toMap(),
+      }, lessonContentVersion: 4);
+      final stale = matchingLessonDraft({
+        'baseLessonContentVersion': 3,
+        'draftRevision': 7,
+        'boardSet': const BoardSet(
+          boards: [LessonWhiteboardBoard(id: 'stale', order: 0)],
+        ).toMap(),
+      }, lessonContentVersion: 4);
+
+      expect(matching?.draftRevision, 2);
+      expect(matching?.boardSet.boardById('matching'), isNotNull);
+      expect(stale, isNull);
+    },
+  );
+
+  test(
+    'publication ignores a vanished external draft but preserves embedded fallback',
+    () {
+      const published = BoardSet(
+        boards: [LessonWhiteboardBoard(id: 'published', order: 0)],
+      );
+      const vanished = BoardSet(
+        boards: [LessonWhiteboardBoard(id: 'vanished', order: 0)],
+      );
+      const legacy = BoardSet(
+        boards: [LessonWhiteboardBoard(id: 'legacy', order: 0)],
+      );
+      final retained = retainPersistedLessonBoardSets(
+        latestLessons: const [
+          CourseLesson(
+            title: 'external',
+            duration: '1秒',
+            publishedBoardSet: published,
+          ),
+          CourseLesson(
+            title: 'legacy',
+            duration: '1秒',
+            publishedBoardSet: published,
+            draftBoardSet: legacy,
+          ),
+        ],
+        editedLessons: const [
+          CourseLesson(
+            title: 'external edit',
+            duration: '1秒',
+            publishedBoardSet: vanished,
+          ),
+          CourseLesson(
+            title: 'legacy edit',
+            duration: '1秒',
+            publishedBoardSet: vanished,
+          ),
+        ],
+      );
+
+      expect(
+        retained.first.publishedBoardSet.boardById('published'),
+        isNotNull,
+      );
+      expect(retained.first.publishedBoardSet.boardById('vanished'), isNull);
+      expect(retained.last.publishedBoardSet.boardById('legacy'), isNotNull);
+    },
+  );
+
   test('lesson content versions initialize, increment, and stop at max', () {
+    expect(logicalLessonContentVersion(null), 0);
+    expect(lessonContentVersionMatches(null, 0), isTrue);
+    expect(lessonContentVersionMatches(7, 6), isFalse);
     expect(nextLessonContentVersion(null), 1);
     expect(nextLessonContentVersion(7), 8);
+    expect(nextLessonDraftRevision(null), 1);
+    expect(nextLessonDraftRevision(3), 4);
     expect(
       () => nextLessonContentVersion(2147483647),
       throwsA(isA<StateError>()),
+    );
+  });
+
+  test('two stale tabs cannot overwrite a newer whiteboard draft revision', () {
+    final firstTabRevision = nextExpectedLessonDraftRevision(
+      storedValue: 3,
+      expectedRevision: 3,
+    );
+    expect(firstTabRevision, 4);
+
+    expect(
+      () => nextExpectedLessonDraftRevision(
+        storedValue: firstTabRevision,
+        expectedRevision: 3,
+      ),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          lessonDraftRevisionConflictMessage,
+        ),
+      ),
+    );
+  });
+
+  test('publication rejects a draft changed by a second tab after load', () {
+    Map<String, dynamic> draftData(int revision) => {
+      'baseLessonContentVersion': 8,
+      'draftRevision': revision,
+      'boardSet': const BoardSet(
+        boards: [LessonWhiteboardBoard(id: 'draft', order: 0)],
+      ).toMap(),
+    };
+
+    expect(
+      lessonDraftForPublication(
+        draftData(2),
+        lessonContentVersion: 8,
+        expectedDraftRevision: 2,
+      ),
+      isNotNull,
+    );
+    expect(
+      () => lessonDraftForPublication(
+        draftData(3),
+        lessonContentVersion: 8,
+        expectedDraftRevision: 2,
+      ),
+      throwsA(
+        isA<LessonPublicationValidationException>().having(
+          (error) => error.message,
+          'message',
+          lessonDraftRevisionConflictMessage,
+        ),
+      ),
+    );
+    expect(
+      () => lessonDraftForPublication(
+        draftData(1),
+        lessonContentVersion: 8,
+        expectedDraftRevision: 0,
+      ),
+      throwsA(isA<LessonPublicationValidationException>()),
+    );
+    expect(
+      () => lessonDraftForPublication(
+        null,
+        lessonContentVersion: 8,
+        expectedDraftRevision: 2,
+      ),
+      throwsA(isA<LessonPublicationValidationException>()),
     );
   });
 
@@ -420,4 +576,34 @@ void main() {
     );
     expect(saved?.draftBoardSet, isEmpty);
   });
+
+  testWidgets(
+    'lesson override validates the complete prospective course payload',
+    (tester) async {
+      var saveCalled = false;
+      final course = _courseWithLesson(
+        const CourseLesson(title: '大きな講座', duration: '10秒'),
+        description: List.filled(300000, 'あ').join(),
+      );
+      await tester.binding.setSurfaceSize(const Size(800, 1200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TeacherLessonManagePage(
+            course: course,
+            onSaveOverride: (_) async {
+              saveCalled = true;
+            },
+          ),
+        ),
+      );
+
+      await tester.ensureVisible(find.text('レッスン情報を保存'));
+      await tester.tap(find.text('レッスン情報を保存'));
+      await tester.pumpAndSettle();
+
+      expect(saveCalled, isFalse);
+      expect(find.text(lessonPayloadTooLargeMessage), findsOneWidget);
+    },
+  );
 }

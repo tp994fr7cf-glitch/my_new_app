@@ -107,8 +107,18 @@ service cloud.firestore {
         .affectedKeys().hasAny(['lessons']);
       let hadVersion = resource.data.keys()
         .hasAny(['lessonContentVersion']);
-      return !changesLessons
-        || (request.resource.data.lessonContentVersion is int
+      let hasVersion = request.resource.data.keys()
+        .hasAny(['lessonContentVersion']);
+      return (!changesLessons
+          && hadVersion == hasVersion
+          && (!hadVersion
+            || (resource.data.lessonContentVersion is int
+              && resource.data.lessonContentVersion >= 1
+              && resource.data.lessonContentVersion <= 2147483647
+              && request.resource.data.lessonContentVersion
+                == resource.data.lessonContentVersion)))
+        || (changesLessons
+          && request.resource.data.lessonContentVersion is int
           && request.resource.data.lessonContentVersion >= 1
           && request.resource.data.lessonContentVersion <= 2147483647
           && ((!hadVersion
@@ -119,6 +129,13 @@ service cloud.firestore {
               && resource.data.lessonContentVersion < 2147483647
               && request.resource.data.lessonContentVersion
                 == resource.data.lessonContentVersion + 1)));
+    }
+
+    function validLessonContentVersionCreate() {
+      return !request.resource.data.keys()
+          .hasAny(['lessonContentVersion'])
+        || (request.resource.data.lessonContentVersion is int
+          && request.resource.data.lessonContentVersion == 1);
     }
 
     function canUpdateOwnTeacherCourse() {
@@ -1411,7 +1428,8 @@ service cloud.firestore {
       allow create: if signedIn()
         && courseId.matches('sample-.*')
         && request.resource.data.status == 'published'
-        && request.resource.data.source == 'developmentSeed';
+        && request.resource.data.source == 'developmentSeed'
+        && validLessonContentVersionCreate();
 
       allow update: if signedIn()
         && courseId.matches('sample-.*')
@@ -1426,7 +1444,8 @@ service cloud.firestore {
         && request.resource.data.source == 'teacherCreated'
         && request.resource.data.courseCode is string
         && request.resource.data.title is string
-        && request.resource.data.lessons is list;
+        && request.resource.data.lessons is list
+        && validLessonContentVersionCreate();
 
       // CourseLesson, LessonEvent, and board-set data live inside arrays/maps.
       // Rules cannot iterate those nested values or prove that published media
@@ -1437,10 +1456,21 @@ service cloud.firestore {
       allow update: if canUpdateOwnTeacherCourse();
 
       match /lessonDrafts/{lessonNumber} {
+        function currentLessonContentVersion() {
+          let courseData = get(
+            /databases/$(database)/documents/courses/$(courseId)
+          ).data;
+          return courseData.keys().hasAny(['lessonContentVersion'])
+            ? courseData.lessonContentVersion
+            : 0;
+        }
+
         function validLessonDraft() {
           return request.resource.data.keys().hasOnly([
               'lessonNumber',
               'boardSet',
+              'baseLessonContentVersion',
+              'draftRevision',
               'updatedAt'
             ])
             && lessonNumber.matches('^[1-9][0-9]{0,3}$')
@@ -1454,12 +1484,30 @@ service cloud.firestore {
             && request.resource.data.boardSet.boards.size() <= 20
             && request.resource.data.boardSet.switchEvents is list
             && request.resource.data.boardSet.switchEvents.size() <= 10000
+            && request.resource.data.baseLessonContentVersion is int
+            && request.resource.data.baseLessonContentVersion
+              == currentLessonContentVersion()
+            && request.resource.data.draftRevision is int
+            && request.resource.data.draftRevision >= 1
+            && request.resource.data.draftRevision <= 2147483647
             && request.resource.data.updatedAt is timestamp;
         }
 
         allow read: if isCourseInstructor(courseId);
-        allow create, update: if isCourseInstructor(courseId)
-          && validLessonDraft();
+        allow create: if isCourseInstructor(courseId)
+          && validLessonDraft()
+          && request.resource.data.draftRevision == 1;
+        allow update: if isCourseInstructor(courseId)
+          && validLessonDraft()
+          && (
+            (!resource.data.keys().hasAny(['draftRevision'])
+              && request.resource.data.draftRevision == 1)
+            || (resource.data.draftRevision is int
+              && resource.data.draftRevision >= 1
+              && resource.data.draftRevision < 2147483647
+              && request.resource.data.draftRevision
+                == resource.data.draftRevision + 1)
+          );
         allow delete: if isCourseInstructor(courseId);
       }
 

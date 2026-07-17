@@ -9,14 +9,60 @@ import 'lesson_timed_anchor.dart';
 import 'lesson_whiteboard.dart';
 import 'lesson_whiteboard_board_set.dart';
 
-int nextLessonContentVersion(Object? storedValue) {
+const String lessonContentVersionConflictMessage =
+    'レッスン情報が更新されています。画面を再読み込みしてください。';
+const String lessonDraftRevisionConflictMessage =
+    '書き物の下書きが更新されています。画面を再読み込みしてください。';
+
+int logicalLessonContentVersion(Object? storedValue) {
   if (storedValue == null) {
-    return 1;
+    return 0;
   }
-  if (storedValue is! int || storedValue < 1 || storedValue >= 2147483647) {
+  if (storedValue is! int || storedValue < 1 || storedValue > 2147483647) {
     throw StateError('レッスン内容のバージョン情報が不正または上限に達したため保存できません。');
   }
-  return storedValue + 1;
+  return storedValue;
+}
+
+int nextLessonContentVersion(Object? storedValue) {
+  final current = logicalLessonContentVersion(storedValue);
+  if (current >= 2147483647) {
+    throw StateError('レッスン内容のバージョン情報が不正または上限に達したため保存できません。');
+  }
+  return current + 1;
+}
+
+bool lessonContentVersionMatches(Object? storedValue, int expectedVersion) {
+  return logicalLessonContentVersion(storedValue) == expectedVersion;
+}
+
+int logicalLessonDraftRevision(Object? storedValue) {
+  if (storedValue == null) {
+    return 0;
+  }
+  if (storedValue is! int || storedValue < 1 || storedValue > 2147483647) {
+    throw StateError('書き物の下書きリビジョンが不正または上限に達したため保存できません。');
+  }
+  return storedValue;
+}
+
+int nextLessonDraftRevision(Object? storedValue) {
+  final current = logicalLessonDraftRevision(storedValue);
+  if (current >= 2147483647) {
+    throw StateError('書き物の下書きリビジョンが不正または上限に達したため保存できません。');
+  }
+  return current + 1;
+}
+
+int nextExpectedLessonDraftRevision({
+  required Object? storedValue,
+  required int expectedRevision,
+}) {
+  final current = logicalLessonDraftRevision(storedValue);
+  if (current != expectedRevision) {
+    throw StateError(lessonDraftRevisionConflictMessage);
+  }
+  return nextLessonDraftRevision(storedValue);
 }
 
 class Course {

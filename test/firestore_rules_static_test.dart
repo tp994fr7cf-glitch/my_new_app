@@ -55,7 +55,16 @@ void main() {
 
   test('lesson array writes require a monotonic content version', () {
     expect(rules, contains('function validLessonContentVersionUpdate()'));
+    expect(rules, contains('function validLessonContentVersionCreate()'));
     expect(rules, contains("hasAny(['lessonContentVersion'])"));
+    expect(rules, contains('hadVersion == hasVersion'));
+    expect(
+      rules,
+      contains(
+        'request.resource.data.lessonContentVersion\n'
+        '                == resource.data.lessonContentVersion',
+      ),
+    );
     expect(
       rules,
       contains(
@@ -75,6 +84,21 @@ void main() {
     expect(
       rules,
       contains('request.resource.data.boardSet.boards.size() <= 20'),
+    );
+    expect(
+      rules,
+      contains(
+        'request.resource.data.baseLessonContentVersion\n'
+        '              == currentLessonContentVersion()',
+      ),
+    );
+    expect(rules, contains('request.resource.data.draftRevision == 1'));
+    expect(
+      rules,
+      contains(
+        'request.resource.data.draftRevision\n'
+        '                == resource.data.draftRevision + 1',
+      ),
     );
     expect(rules, contains('allow delete: if isCourseInstructor(courseId);'));
   });

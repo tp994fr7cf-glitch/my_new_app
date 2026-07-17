@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/course.dart';
 import '../models/lesson_media_segment.dart';
+import '../models/lesson_payload_size_validator.dart';
 import '../models/lesson_quiz_placement.dart';
 import '../models/lesson_timed_anchor.dart';
 
@@ -303,6 +304,11 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
           replacementQuizEvents: replacementEvents,
           lesson: latestCourse.lessons[widget.lessonNumber - 1],
         );
+        validateCourseDocumentForPersistence({
+          ...latestCourse.toFirestore(),
+          'lessonEvents': events.map((event) => event.toMap()).toList(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
         await saveOverride(events);
       } else {
         final courseRef = FirebaseFirestore.instance
@@ -331,8 +337,14 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
             replacementQuizEvents: replacementEvents,
             lesson: transactionCourse.lessons[lessonIndex],
           );
+          final eventMaps = mergedEvents.map((event) => event.toMap()).toList();
+          validateCourseDocumentForPersistence({
+            ...(snapshot.data() ?? const <String, dynamic>{}),
+            'lessonEvents': eventMaps,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
           transaction.update(courseRef, {
-            'lessonEvents': mergedEvents.map((event) => event.toMap()).toList(),
+            'lessonEvents': eventMaps,
             'updatedAt': FieldValue.serverTimestamp(),
           });
           return (course: transactionCourse, events: mergedEvents);
@@ -350,6 +362,12 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
         });
       }
     } on QuizPlacementException catch (error) {
+      if (mounted) {
+        setState(() {
+          _message = error.message;
+        });
+      }
+    } on LessonPayloadValidationException catch (error) {
       if (mounted) {
         setState(() {
           _message = error.message;

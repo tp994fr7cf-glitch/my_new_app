@@ -26,7 +26,65 @@ typedef LessonDraftSaveOverride =
     Future<void> Function({
       required int lessonNumber,
       required BoardSet boardSet,
+      required int expectedLessonContentVersion,
     });
+typedef VersionedLessonDraftSaveOverride =
+    Future<int> Function({
+      required int lessonNumber,
+      required BoardSet boardSet,
+      required int expectedLessonContentVersion,
+      required int expectedDraftRevision,
+    });
+
+const String lessonCountConflictMessage =
+    '保存済みレッスンの件数が変わりました。画面を読み込み直してから再度お試しください。';
+
+({BoardSet boardSet, int draftRevision})? matchingLessonDraft(
+  Map<String, dynamic>? data, {
+  required int lessonContentVersion,
+  int? expectedDraftRevision,
+}) {
+  if (data == null ||
+      data['baseLessonContentVersion'] != lessonContentVersion ||
+      data['draftRevision'] is! int ||
+      (data['draftRevision'] as int) < 1 ||
+      (data['draftRevision'] as int) > 2147483647 ||
+      (expectedDraftRevision != null &&
+          data['draftRevision'] != expectedDraftRevision) ||
+      data['boardSet'] is! Map) {
+    return null;
+  }
+  return (
+    boardSet: BoardSet.fromMap(data['boardSet']),
+    draftRevision: data['draftRevision'] as int,
+  );
+}
+
+({BoardSet boardSet, int draftRevision})? lessonDraftForPublication(
+  Map<String, dynamic>? data, {
+  required int lessonContentVersion,
+  required int expectedDraftRevision,
+}) {
+  if (data == null) {
+    if (expectedDraftRevision == 0) {
+      return null;
+    }
+    throw const LessonPublicationValidationException(
+      lessonDraftRevisionConflictMessage,
+    );
+  }
+  final matchingDraft = matchingLessonDraft(
+    data,
+    lessonContentVersion: lessonContentVersion,
+    expectedDraftRevision: expectedDraftRevision,
+  );
+  if (matchingDraft == null) {
+    throw const LessonPublicationValidationException(
+      lessonDraftRevisionConflictMessage,
+    );
+  }
+  return matchingDraft;
+}
 
 List<CourseLesson> overlayLessonDraftBoardSets(
   List<CourseLesson> lessons,
@@ -57,6 +115,21 @@ List<CourseLesson> promoteLessonDraftBoardSets(
   ];
 }
 
+List<CourseLesson> retainPersistedLessonBoardSets({
+  required List<CourseLesson> latestLessons,
+  required List<CourseLesson> editedLessons,
+}) {
+  return [
+    for (var index = 0; index < editedLessons.length; index++)
+      editedLessons[index].copyWith(
+        publishedBoardSet: latestLessons[index].draftBoardSet.isNotEmpty
+            ? latestLessons[index].draftBoardSet
+            : latestLessons[index].publishedBoardSet,
+        clearDraftBoardSet: true,
+      ),
+  ];
+}
+
 String _playbackModeExplanation(LessonPlaybackMode mode) {
   return switch (mode) {
     LessonPlaybackMode.continuous => 'すべてのパートを順番に一貫して再生します。',
@@ -71,7 +144,7 @@ List<CourseLesson> _prepareLessonsForPublication({
 }) {
   if (previousLessons.length != nextLessons.length) {
     throw const LessonPublicationValidationException(
-      '保存済みレッスンの件数が変わりました。画面を読み込み直してから再度お試しください。',
+      lessonCountConflictMessage,
     );
   }
   final publishedLessons = [
@@ -81,7 +154,7 @@ List<CourseLesson> _prepareLessonsForPublication({
         next: nextLessons[index],
       ),
   ];
-  validateLessonsForPersistence(publishedLessons);
+  validateLessonBoardSetsForPersistence(publishedLessons);
   return publishedLessons;
 }
 
@@ -89,10 +162,24 @@ class _LessonSaveResult {
   const _LessonSaveResult({
     required this.lessons,
     required this.previousLessons,
+    required this.lessonContentVersion,
   });
 
   final List<CourseLesson> lessons;
   final List<CourseLesson> previousLessons;
+  final int lessonContentVersion;
+}
+
+class _LoadedLessonData {
+  const _LoadedLessonData({
+    required this.course,
+    required this.draftBoardSets,
+    required this.draftRevisions,
+  });
+
+  final Course course;
+  final Map<int, BoardSet> draftBoardSets;
+  final Map<int, int> draftRevisions;
 }
 
 class TeacherLessonManagePage extends StatefulWidget {
@@ -101,7 +188,9 @@ class TeacherLessonManagePage extends StatefulWidget {
     required this.course,
     this.onSaveOverride,
     this.onLessonDraftSaveOverride,
+    this.onVersionedLessonDraftSaveOverride,
     this.initialLessonDrafts = const {},
+    this.initialLessonDraftRevisions = const {},
     this.mediaStorageService = const LessonMediaStorageService(),
     this.durationService = const LessonMediaDurationService(),
   });
@@ -109,7 +198,9 @@ class TeacherLessonManagePage extends StatefulWidget {
   final Course course;
   final LessonSaveOverride? onSaveOverride;
   final LessonDraftSaveOverride? onLessonDraftSaveOverride;
+  final VersionedLessonDraftSaveOverride? onVersionedLessonDraftSaveOverride;
   final Map<int, BoardSet> initialLessonDrafts;
+  final Map<int, int> initialLessonDraftRevisions;
   final LessonMediaStorageService mediaStorageService;
   final LessonMediaDurationService durationService;
 
@@ -124,6 +215,8 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
   late List<_LessonEditorState> _lessonEditors;
   late Course _activeCourse;
   late List<CourseLesson> _lastPersistedLessons;
+  late int _loadedLessonContentVersion;
+  late Map<int, int> _loadedDraftRevisions;
   bool _isSaving = false;
   bool _isLoadingLessons = false;
   String? _message;
@@ -132,6 +225,10 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
   void initState() {
     super.initState();
     _activeCourse = widget.course;
+    _loadedLessonContentVersion = widget.course.lessonContentVersion;
+    _loadedDraftRevisions = Map<int, int>.from(
+      widget.initialLessonDraftRevisions,
+    );
     final initialLessons = overlayLessonDraftBoardSets(
       _activeCourse.lessons,
       widget.initialLessonDrafts,
@@ -161,40 +258,54 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     });
 
     try {
-      final snapshot = await FirebaseFirestore.instance
+      final courseReference = FirebaseFirestore.instance
           .collection('courses')
-          .doc(courseId)
-          .get();
-      if (!mounted || !snapshot.exists) {
+          .doc(courseId);
+      final loaded = await FirebaseFirestore.instance
+          .runTransaction<_LoadedLessonData?>((transaction) async {
+            final snapshot = await transaction.get(courseReference);
+            if (!snapshot.exists) {
+              return null;
+            }
+            final latestCourse = Course.fromFirestore(snapshot);
+            final draftBoardSets = <int, BoardSet>{};
+            final draftRevisions = <int, int>{};
+            for (
+              var lessonNumber = 1;
+              lessonNumber <= latestCourse.lessons.length;
+              lessonNumber++
+            ) {
+              final draftSnapshot = await transaction.get(
+                courseReference.collection('lessonDrafts').doc('$lessonNumber'),
+              );
+              final matchingDraft = matchingLessonDraft(
+                draftSnapshot.data(),
+                lessonContentVersion: latestCourse.lessonContentVersion,
+              );
+              if (matchingDraft != null) {
+                draftBoardSets[lessonNumber] = matchingDraft.boardSet;
+                draftRevisions[lessonNumber] = matchingDraft.draftRevision;
+              }
+            }
+            return _LoadedLessonData(
+              course: latestCourse,
+              draftBoardSets: draftBoardSets,
+              draftRevisions: draftRevisions,
+            );
+          });
+      if (!mounted || loaded == null) {
         return;
       }
 
-      final latestCourse = Course.fromFirestore(snapshot);
-      final draftSnapshot = await FirebaseFirestore.instance
-          .collection('courses')
-          .doc(courseId)
-          .collection('lessonDrafts')
-          .get();
-      final draftBoardSets = <int, BoardSet>{};
-      for (final draftDocument in draftSnapshot.docs) {
-        final data = draftDocument.data();
-        final lessonNumber = data['lessonNumber'] is String
-            ? int.tryParse(data['lessonNumber'] as String)
-            : int.tryParse(draftDocument.id);
-        if (lessonNumber == null ||
-            lessonNumber < 1 ||
-            lessonNumber > latestCourse.lessons.length ||
-            data['boardSet'] is! Map) {
-          continue;
-        }
-        draftBoardSets[lessonNumber] = BoardSet.fromMap(data['boardSet']);
-      }
+      final latestCourse = loaded.course;
       final lessonsWithDrafts = overlayLessonDraftBoardSets(
         latestCourse.lessons,
-        draftBoardSets,
+        loaded.draftBoardSets,
       );
       setState(() {
         _activeCourse = latestCourse;
+        _loadedLessonContentVersion = latestCourse.lessonContentVersion;
+        _loadedDraftRevisions = loaded.draftRevisions;
         _lastPersistedLessons = lessonsWithDrafts;
         for (final editor in _lessonEditors) {
           editor.dispose();
@@ -285,6 +396,14 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       );
 
       _lastPersistedLessons = savedLessons;
+      _loadedLessonContentVersion = result.lessonContentVersion;
+      _loadedDraftRevisions.clear();
+      _activeCourse = Course.fromMap({
+        ..._activeCourse.toFirestore(),
+        'lessons': savedLessons.map((lesson) => lesson.toMap()).toList(),
+        'lessonCount': savedLessons.length,
+        'lessonContentVersion': result.lessonContentVersion,
+      }, id: _activeCourse.id);
 
       if (mounted) {
         setState(() {
@@ -371,10 +490,21 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         previousLessons: _lastPersistedLessons,
         nextLessons: lessons,
       );
+      final nextVersion = nextLessonContentVersion(
+        _loadedLessonContentVersion == 0 ? null : _loadedLessonContentVersion,
+      );
+      validateCourseDocumentForPersistence({
+        ..._activeCourse.toFirestore(),
+        'lessons': publishedLessons.map((lesson) => lesson.toMap()).toList(),
+        'lessonCount': publishedLessons.length,
+        'lessonContentVersion': nextVersion,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
       await saveOverride(publishedLessons);
       return _LessonSaveResult(
         lessons: publishedLessons,
         previousLessons: _lastPersistedLessons,
+        lessonContentVersion: nextVersion,
       );
     }
     final courseReference = FirebaseFirestore.instance
@@ -388,7 +518,21 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         throw StateError('講座が見つかりません。');
       }
       final snapshotData = snapshot.data() ?? const <String, dynamic>{};
+      if (!lessonContentVersionMatches(
+        snapshotData['lessonContentVersion'],
+        _loadedLessonContentVersion,
+      )) {
+        throw const LessonPublicationValidationException(
+          lessonContentVersionConflictMessage,
+        );
+      }
+      final currentVersion = _loadedLessonContentVersion;
       final latestLessons = Course.fromFirestore(snapshot).lessons;
+      if (latestLessons.length != lessons.length) {
+        throw const LessonPublicationValidationException(
+          lessonCountConflictMessage,
+        );
+      }
       final draftLessonCount = latestLessons.length > lessons.length
           ? latestLessons.length
           : lessons.length;
@@ -402,29 +546,47 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       for (var index = 0; index < draftReferences.length; index++) {
         final draftSnapshot = await transaction.get(draftReferences[index]);
         final draftData = draftSnapshot.data();
-        if (draftSnapshot.exists) {
+        final lessonNumber = index + 1;
+        final expectedDraftRevision = _loadedDraftRevisions[lessonNumber] ?? 0;
+        final matchingDraft = lessonDraftForPublication(
+          draftData,
+          lessonContentVersion: currentVersion,
+          expectedDraftRevision: expectedDraftRevision,
+        );
+        if (matchingDraft != null) {
           draftReferencesToDelete.add(draftReferences[index]);
-          if (draftData?['boardSet'] is Map) {
-            transactionDrafts[index + 1] = BoardSet.fromMap(
-              draftData!['boardSet'],
-            );
-          }
+          transactionDrafts[lessonNumber] = matchingDraft.boardSet;
         }
       }
+      final lessonsWithPersistedBoardSets = retainPersistedLessonBoardSets(
+        latestLessons: latestLessons,
+        editedLessons: lessons,
+      );
       final nextLessonsWithDrafts = promoteLessonDraftBoardSets(
-        lessons,
+        lessonsWithPersistedBoardSets,
         transactionDrafts,
       );
       final publishedLessons = _prepareLessonsForPublication(
         previousLessons: latestLessons,
         nextLessons: nextLessonsWithDrafts,
       );
-      transaction.update(courseReference, {
-        'lessons': publishedLessons.map((lesson) => lesson.toMap()).toList(),
+      final nextVersion = nextLessonContentVersion(
+        snapshotData['lessonContentVersion'],
+      );
+      final lessonMaps = publishedLessons
+          .map((lesson) => lesson.toMap())
+          .toList();
+      validateCourseDocumentForPersistence({
+        ...snapshotData,
+        'lessons': lessonMaps,
         'lessonCount': publishedLessons.length,
-        'lessonContentVersion': nextLessonContentVersion(
-          snapshotData['lessonContentVersion'],
-        ),
+        'lessonContentVersion': nextVersion,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      transaction.update(courseReference, {
+        'lessons': lessonMaps,
+        'lessonCount': publishedLessons.length,
+        'lessonContentVersion': nextVersion,
         'updatedAt': FieldValue.serverTimestamp(),
       });
       for (final draftReference in draftReferencesToDelete) {
@@ -433,6 +595,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       return _LessonSaveResult(
         lessons: publishedLessons,
         previousLessons: latestLessons,
+        lessonContentVersion: nextVersion,
       );
     });
   }
@@ -688,13 +851,34 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         ? '1分30秒'
         : editor.durationController.text.trim();
 
+    final lessonNumber = lessonIndex + 1;
+    final expectedDraftRevision = _loadedDraftRevisions[lessonNumber] ?? 0;
+    final expectedNextDraftRevision = nextLessonDraftRevision(
+      expectedDraftRevision == 0 ? null : expectedDraftRevision,
+    );
+    final versionedSaveOverride = widget.onVersionedLessonDraftSaveOverride;
     final saveOverride = widget.onLessonDraftSaveOverride;
-    if (saveOverride != null) {
-      await saveOverride(lessonNumber: lessonIndex + 1, boardSet: boardSet);
+    final int savedDraftRevision;
+    if (versionedSaveOverride != null) {
+      savedDraftRevision = await versionedSaveOverride(
+        lessonNumber: lessonNumber,
+        boardSet: boardSet,
+        expectedLessonContentVersion: _loadedLessonContentVersion,
+        expectedDraftRevision: expectedDraftRevision,
+      );
+    } else if (saveOverride != null) {
+      await saveOverride(
+        lessonNumber: lessonNumber,
+        boardSet: boardSet,
+        expectedLessonContentVersion: _loadedLessonContentVersion,
+      );
+      savedDraftRevision = expectedNextDraftRevision;
     } else {
-      await saveLessonWhiteboardDraft(
+      savedDraftRevision = await saveLessonWhiteboardDraft(
         courseId: courseId,
         lessonIndex: lessonIndex,
+        expectedLessonContentVersion: _loadedLessonContentVersion,
+        expectedDraftRevision: expectedDraftRevision,
         currentLesson: editor.buildCurrentLesson(
           title: editor.titleController.text.trim(),
           durationLabel: durationLabel,
@@ -702,6 +886,10 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         boardSet: boardSet,
       );
     }
+    if (savedDraftRevision != expectedNextDraftRevision) {
+      throw StateError('書き物の下書きリビジョンが不正なため保存できません。');
+    }
+    _loadedDraftRevisions[lessonNumber] = savedDraftRevision;
 
     if (mounted) {
       setState(() {

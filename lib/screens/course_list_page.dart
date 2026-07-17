@@ -55,22 +55,41 @@ class _CourseListPageState extends State<CourseListPage> {
     });
 
     try {
-      final batch = FirebaseFirestore.instance.batch();
       final coursesRef = FirebaseFirestore.instance.collection('courses');
 
       for (final course in sampleCourses) {
         final docRef = coursesRef.doc(course.id);
-        batch.set(docRef, {
-          ...course.toFirestore(),
-          'lessonContentVersion': FieldValue.increment(1),
-          'status': 'published',
-          'source': 'developmentSeed',
-          'createdAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
+        await FirebaseFirestore.instance.runTransaction((transaction) async {
+          final snapshot = await transaction.get(docRef);
+          final existingData = snapshot.data();
+          final courseData = course.toFirestore();
+          final lessonsChanged =
+              existingData == null ||
+              !_firestoreValuesEqual(
+                existingData['lessons'],
+                courseData['lessons'],
+              );
+          final writeData = <String, dynamic>{
+            ...courseData,
+            'status': 'published',
+            'source': 'developmentSeed',
+            'createdAt':
+                existingData?['createdAt'] ?? FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+          };
+          if (existingData == null) {
+            writeData['lessonContentVersion'] = 1;
+          } else if (lessonsChanged) {
+            writeData['lessonContentVersion'] = nextLessonContentVersion(
+              existingData['lessonContentVersion'],
+            );
+          } else if (existingData.containsKey('lessonContentVersion')) {
+            writeData['lessonContentVersion'] =
+                existingData['lessonContentVersion'];
+          }
+          transaction.set(docRef, writeData);
         });
       }
-
-      await batch.commit();
 
       if (mounted) {
         setState(() {
@@ -96,6 +115,30 @@ class _CourseListPageState extends State<CourseListPage> {
         });
       }
     }
+  }
+
+  bool _firestoreValuesEqual(Object? left, Object? right) {
+    if (left is Map && right is Map) {
+      if (left.length != right.length ||
+          left.keys.any((key) => !right.containsKey(key))) {
+        return false;
+      }
+      return left.keys.every(
+        (key) => _firestoreValuesEqual(left[key], right[key]),
+      );
+    }
+    if (left is List && right is List) {
+      if (left.length != right.length) {
+        return false;
+      }
+      for (var index = 0; index < left.length; index++) {
+        if (!_firestoreValuesEqual(left[index], right[index])) {
+          return false;
+        }
+      }
+      return true;
+    }
+    return left == right;
   }
 
   List<Course> _filteredCourses(List<Course> courses) {

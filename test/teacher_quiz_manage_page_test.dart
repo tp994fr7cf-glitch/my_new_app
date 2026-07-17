@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:my_new_app/models/course.dart';
 import 'package:my_new_app/models/lesson_media_segment.dart';
+import 'package:my_new_app/models/lesson_payload_size_validator.dart';
 import 'package:my_new_app/models/lesson_playback_mode.dart';
 import 'package:my_new_app/models/lesson_timed_anchor.dart';
 import 'package:my_new_app/screens/teacher_quiz_manage_page.dart';
@@ -36,6 +37,7 @@ void main() {
     ],
     List<String> publishedSegmentIds = const ['a', 'b'],
     LessonPlaybackMode playbackMode = LessonPlaybackMode.continuous,
+    String description = '',
   }) {
     return Course(
       id: 'course',
@@ -47,7 +49,7 @@ void main() {
       lessonCount: 1,
       rating: 0,
       priceLabel: '無料',
-      description: '',
+      description: description,
       lessons: [
         CourseLesson(
           title: lessonTitle,
@@ -218,4 +220,34 @@ void main() {
     expect(saved.single.timestampSec, 12);
     expect(saved.single.quizVersion, 1);
   });
+
+  testWidgets(
+    'quiz override validates the complete prospective course payload',
+    (tester) async {
+      var saveCalled = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TeacherQuizManagePage(
+            course: course(description: List.filled(300000, 'あ').join()),
+            lessonNumber: 1,
+            onSaveOverride: (_) async {
+              saveCalled = true;
+            },
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('クイズを追加'));
+      await tester.pumpAndSettle();
+      await enterQuizContent(tester);
+      await tester.ensureVisible(find.text('クイズを保存'));
+      await tester.tap(find.text('クイズを保存'));
+      await tester.pumpAndSettle();
+      await tester.drag(find.byType(ListView), const Offset(0, -1200));
+      await tester.pumpAndSettle();
+
+      expect(saveCalled, isFalse);
+      expect(find.text(lessonPayloadTooLargeMessage), findsOneWidget);
+    },
+  );
 }

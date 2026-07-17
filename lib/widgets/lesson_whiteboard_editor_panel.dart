@@ -1099,9 +1099,11 @@ enum _WhiteboardEditChoice { published, draft, reset }
 /// Drafts are stored outside the learner-readable course document. The
 /// [currentLesson] parameter remains for source compatibility with existing
 /// callers, but lesson/media fields are deliberately never persisted here.
-Future<void> saveLessonWhiteboardDraft({
+Future<int> saveLessonWhiteboardDraft({
   required String courseId,
   required int lessonIndex,
+  int expectedLessonContentVersion = 0,
+  int expectedDraftRevision = 0,
   required CourseLesson currentLesson,
   LessonWhiteboard? whiteboard,
   BoardSet? boardSet,
@@ -1119,14 +1121,37 @@ Future<void> saveLessonWhiteboardDraft({
               ).layers,
             ));
   validateBoardSetForPersistence(draftBoardSet);
-  await FirebaseFirestore.instance
+  final courseReference = FirebaseFirestore.instance
       .collection('courses')
-      .doc(courseId)
+      .doc(courseId);
+  final draftReference = courseReference
       .collection('lessonDrafts')
-      .doc('${lessonIndex + 1}')
-      .set({
-        'lessonNumber': '${lessonIndex + 1}',
-        'boardSet': draftBoardSet.toMap(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      .doc('${lessonIndex + 1}');
+  return FirebaseFirestore.instance.runTransaction<int>((transaction) async {
+    final courseSnapshot = await transaction.get(courseReference);
+    if (!courseSnapshot.exists) {
+      throw StateError('講座が見つかりません。');
+    }
+    final storedVersion = courseSnapshot.data()?['lessonContentVersion'];
+    if (!lessonContentVersionMatches(
+      storedVersion,
+      expectedLessonContentVersion,
+    )) {
+      throw StateError(lessonContentVersionConflictMessage);
+    }
+    final currentVersion = expectedLessonContentVersion;
+    final existingDraft = await transaction.get(draftReference);
+    final nextDraftRevision = nextExpectedLessonDraftRevision(
+      storedValue: existingDraft.data()?['draftRevision'],
+      expectedRevision: expectedDraftRevision,
+    );
+    transaction.set(draftReference, {
+      'lessonNumber': '${lessonIndex + 1}',
+      'boardSet': draftBoardSet.toMap(),
+      'baseLessonContentVersion': currentVersion,
+      'draftRevision': nextDraftRevision,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+    return nextDraftRevision;
+  });
 }

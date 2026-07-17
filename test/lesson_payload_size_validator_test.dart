@@ -1,3 +1,4 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:my_new_app/models/course.dart';
 import 'package:my_new_app/models/lesson_payload_size_validator.dart';
@@ -105,6 +106,64 @@ void main() {
       ),
     );
   });
+
+  test('rejects more than 10000 board switch events before Firestore', () {
+    final boardSet = BoardSet(
+      boards: const [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+        ),
+      ],
+      switchEvents: [
+        for (var index = 0; index <= maxLessonBoardSwitchEvents; index++)
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: LessonWhiteboardBoard.defaultBoardId,
+            globalTimestampSec: index.toDouble(),
+            sequence: index,
+          ),
+      ],
+    );
+
+    expect(
+      () => validateBoardSetForPersistence(boardSet),
+      throwsA(
+        isA<LessonPayloadValidationException>().having(
+          (error) => error.message,
+          'message',
+          lessonBoardSwitchEventLimitMessage,
+        ),
+      ),
+    );
+  });
+
+  test(
+    'complete course validation includes metadata and normalizes sentinels',
+    () {
+      expect(
+        () => validateCourseDocumentForPersistence({
+          'lessons': const <Object>[],
+          'updatedAt': Timestamp.now(),
+          'serverUpdatedAt': FieldValue.serverTimestamp(),
+        }),
+        returnsNormally,
+      );
+
+      expect(
+        () => validateCourseDocumentForPersistence({
+          'lessons': const <Object>[],
+          'description': List.filled(300000, 'あ').join(),
+        }),
+        throwsA(
+          isA<LessonPayloadValidationException>().having(
+            (error) => error.message,
+            'message',
+            lessonPayloadTooLargeMessage,
+          ),
+        ),
+      );
+    },
+  );
 
   test('rejects a board payload near the Firestore document limit', () {
     final largeJapaneseTitle = List.filled(300000, 'あ').join();
