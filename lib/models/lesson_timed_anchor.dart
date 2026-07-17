@@ -30,20 +30,22 @@ class LessonTimedAnchor {
   final int? globalTimestampSec;
 
   int resolveGlobalTimestampSec(LessonMediaTimeline timeline) {
-    if (globalTimestampSec != null) {
-      return globalTimestampSec!;
-    }
     if (anchorType == LessonTimedAnchorType.segment) {
       final segmentId = this.segmentId;
-      if (segmentId == null || segmentId.isEmpty) {
-        return timestampSec;
+      if (segmentId != null &&
+          segmentId.isNotEmpty &&
+          timeline.segmentById(segmentId) != null) {
+        return timeline
+            .globalSecForSegmentLocal(
+              segmentId: segmentId,
+              localSec: timestampSec.toDouble(),
+            )
+            .round();
       }
-      return timeline
-          .globalSecForSegmentLocal(
-            segmentId: segmentId,
-            localSec: timestampSec.toDouble(),
-          )
-          .round();
+      return globalTimestampSec ?? timestampSec;
+    }
+    if (globalTimestampSec != null) {
+      return globalTimestampSec!;
     }
     return timestampSec;
   }

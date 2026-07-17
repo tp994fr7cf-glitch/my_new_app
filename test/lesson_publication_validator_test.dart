@@ -1,0 +1,146 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:my_new_app/models/course.dart';
+import 'package:my_new_app/models/lesson_media_segment.dart';
+import 'package:my_new_app/models/lesson_playback_mode.dart';
+import 'package:my_new_app/models/lesson_publication_validator.dart';
+
+void main() {
+  const locked = LessonMediaSegment(
+    id: 'locked',
+    order: 0,
+    title: 'Original title',
+    mediaType: 'video',
+    url: 'https://example.com/locked.mp4',
+    durationSec: 30,
+  );
+  const tail = LessonMediaSegment(
+    id: 'tail',
+    order: 1,
+    title: 'Tail',
+    mediaType: 'audio',
+    url: 'https://example.com/tail.mp3',
+    durationSec: 20,
+  );
+
+  CourseLesson previousLesson() {
+    return const CourseLesson(
+      title: 'Lesson',
+      duration: '30秒',
+      mediaSegments: [locked],
+      publishedSegmentIds: ['locked'],
+      playbackMode: LessonPlaybackMode.independentSingle,
+    );
+  }
+
+  String? validate(CourseLesson next) {
+    return validateAppendOnlyLessonPublication(
+      previous: previousLesson(),
+      next: next,
+    );
+  }
+
+  test('allows a title edit and append-only tail additions', () {
+    final next = previousLesson().copyWith(
+      mediaSegments: [locked.copyWith(title: 'Edited title'), tail],
+      publishedSegmentIds: const ['locked', 'tail'],
+      contentRevision: 2,
+    );
+
+    expect(validate(next), isNull);
+  });
+
+  test('allows changing mode before any part has been published', () {
+    final previous = previousLesson().copyWith(
+      publishedSegmentIds: const [],
+      playbackMode: LessonPlaybackMode.continuous,
+    );
+    final next = previous.copyWith(
+      playbackMode: LessonPlaybackMode.independentPanels,
+    );
+
+    expect(
+      validateAppendOnlyLessonPublication(previous: previous, next: next),
+      isNull,
+    );
+  });
+
+  test('rejects changing mode after a part has been published', () {
+    final next = previousLesson().copyWith(
+      playbackMode: LessonPlaybackMode.independentPanels,
+    );
+
+    expect(validate(next), lessonPlaybackModeLockedError);
+  });
+
+  test('rejects removal and replacement of a locked part', () {
+    final removed = previousLesson().copyWith(
+      mediaSegments: const [],
+      publishedSegmentIds: const [],
+    );
+    final replaced = previousLesson().copyWith(
+      mediaSegments: [locked.copyWith(id: 'replacement')],
+      publishedSegmentIds: const ['replacement'],
+    );
+
+    expect(validate(removed), lessonPublishedSegmentsLockedError);
+    expect(validate(replaced), lessonPublishedSegmentsLockedError);
+  });
+
+  test('rejects locked media type, URL, duration, and order changes', () {
+    final changes = [
+      locked.copyWith(mediaType: 'audio'),
+      locked.copyWith(url: 'https://example.com/other.mp4'),
+      locked.copyWith(durationSec: 31),
+      locked.copyWith(order: 1),
+    ];
+
+    for (final changedSegment in changes) {
+      final next = previousLesson().copyWith(
+        mediaSegments: [changedSegment],
+      );
+      expect(
+        validate(next),
+        lessonPublishedSegmentsLockedError,
+        reason: 'change to ${changedSegment.toMap()} must be rejected',
+      );
+    }
+  });
+
+  test('rejects reordering a locked prefix', () {
+    final previous = previousLesson().copyWith(
+      mediaSegments: const [locked, tail],
+      publishedSegmentIds: const ['locked', 'tail'],
+    );
+    final next = previous.copyWith(
+      mediaSegments: [
+        tail.copyWith(order: 0),
+        locked.copyWith(order: 1),
+      ],
+    );
+
+    expect(
+      LessonPublicationValidator.validate(previous: previous, next: next),
+      lessonPublishedSegmentsLockedError,
+    );
+  });
+
+  test('rejects unpublishing a locked part or publishing a non-prefix gap', () {
+    final unpublished = previousLesson().copyWith(
+      publishedSegmentIds: const [],
+    );
+    final invalidGap = previousLesson().copyWith(
+      mediaSegments: const [
+        locked,
+        LessonMediaSegment(id: 'draft', order: 1),
+        LessonMediaSegment(id: 'published-after-gap', order: 2),
+      ],
+      publishedSegmentIds: const ['locked', 'published-after-gap'],
+    );
+
+    expect(validate(unpublished), lessonPublishedSegmentsLockedError);
+    expect(
+      validate(invalidGap),
+      lessonPublishedSegmentsLockedError,
+    );
+  });
+}

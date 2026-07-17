@@ -4,8 +4,10 @@ import 'package:flutter/foundation.dart';
 import '../utils/firestore_parsing.dart';
 import 'lesson_media_segment.dart';
 import 'lesson_media_timeline.dart';
+import 'lesson_playback_mode.dart';
 import 'lesson_timed_anchor.dart';
 import 'lesson_whiteboard.dart';
+import 'lesson_whiteboard_board_set.dart';
 
 class Course {
   const Course({
@@ -134,28 +136,103 @@ class CourseLesson {
     required this.duration,
     this.mediaSegments = const [],
     this.isPreview = false,
-    this.whiteboardLayers = const [],
-    this.whiteboardDraftLayers = const [],
-  });
+    List<LessonWhiteboardLayer> whiteboardLayers = const [],
+    List<LessonWhiteboardLayer> whiteboardDraftLayers = const [],
+    this.playbackMode = LessonPlaybackMode.continuous,
+    List<String>? publishedSegmentIds,
+    this.contentRevision = 1,
+    BoardSet? publishedBoardSet,
+    BoardSet? draftBoardSet,
+  }) : _legacyPublishedLayers = whiteboardLayers,
+       _legacyDraftLayers = whiteboardDraftLayers,
+       _publishedSegmentIds = publishedSegmentIds ?? const [],
+       _hasExplicitPublishedSegmentIds = publishedSegmentIds != null,
+       _publishedBoardSet = publishedBoardSet,
+       _draftBoardSet = draftBoardSet;
 
   final String title;
   final String duration;
   final List<LessonMediaSegment> mediaSegments;
   final bool isPreview;
-  final List<LessonWhiteboardLayer> whiteboardLayers;
-  final List<LessonWhiteboardLayer> whiteboardDraftLayers;
+  final LessonPlaybackMode playbackMode;
+  final List<String> _publishedSegmentIds;
+  final int contentRevision;
+  final List<LessonWhiteboardLayer> _legacyPublishedLayers;
+  final List<LessonWhiteboardLayer> _legacyDraftLayers;
+  final bool _hasExplicitPublishedSegmentIds;
+  final BoardSet? _publishedBoardSet;
+  final BoardSet? _draftBoardSet;
 
-  LessonMediaTimeline get mediaTimeline => LessonMediaTimeline(segments: mediaSegments);
+  List<String> get publishedSegmentIds {
+    if (_hasExplicitPublishedSegmentIds) {
+      return _publishedSegmentIds;
+    }
+    return LessonMediaSegment.normalizeOrders(
+      mediaSegments,
+    ).map((segment) => segment.id).toList();
+  }
 
-  bool get hasMedia => lessonHasMediaSegments(mediaSegments);
+  Set<String> get lockedSegmentIds {
+    return publishedSegmentIds.toSet();
+  }
+
+  List<LessonMediaSegment> get effectivePublishedMediaSegments {
+    final lockedIds = lockedSegmentIds;
+    return LessonMediaSegment.normalizeOrders(
+      mediaSegments.where((segment) => lockedIds.contains(segment.id)).toList(),
+    );
+  }
+
+  LessonMediaTimeline get mediaTimeline =>
+      LessonMediaTimeline(segments: effectivePublishedMediaSegments);
+
+  bool get hasMedia => lessonHasMediaSegments(effectivePublishedMediaSegments);
 
   int get totalMediaDurationSec => mediaTimeline.totalDurationSec;
 
-  LessonWhiteboardLayerBundle get publishedWhiteboardBundle =>
-      LessonWhiteboardLayerBundle(layers: whiteboardLayers);
+  List<LessonWhiteboardLayer> get whiteboardLayers {
+    final boardSet = _publishedBoardSet;
+    if (boardSet != null) {
+      return boardSet.defaultBoard?.layerBundle.layers ?? const [];
+    }
+    return _legacyPublishedLayers;
+  }
 
-  LessonWhiteboardLayerBundle get draftWhiteboardBundle =>
-      LessonWhiteboardLayerBundle(layers: whiteboardDraftLayers);
+  List<LessonWhiteboardLayer> get whiteboardDraftLayers {
+    final boardSet = _draftBoardSet;
+    if (boardSet != null) {
+      return boardSet.defaultBoard?.layerBundle.layers ?? const [];
+    }
+    return _legacyDraftLayers;
+  }
+
+  BoardSet get publishedBoardSet {
+    return _publishedBoardSet ??
+        (_legacyPublishedLayers.isEmpty
+            ? const BoardSet()
+            : BoardSet.fromLegacyLayers(_legacyPublishedLayers));
+  }
+
+  BoardSet get draftBoardSet {
+    return _draftBoardSet ??
+        (_legacyDraftLayers.isEmpty
+            ? const BoardSet()
+            : BoardSet.fromLegacyLayers(_legacyDraftLayers));
+  }
+
+  BoardSet get publishedWhiteboardBoardSet => publishedBoardSet;
+
+  BoardSet get draftWhiteboardBoardSet => draftBoardSet;
+
+  LessonWhiteboardLayerBundle get publishedWhiteboardBundle {
+    return publishedBoardSet.defaultBoard?.layerBundle ??
+        const LessonWhiteboardLayerBundle();
+  }
+
+  LessonWhiteboardLayerBundle get draftWhiteboardBundle {
+    return draftBoardSet.defaultBoard?.layerBundle ??
+        const LessonWhiteboardLayerBundle();
+  }
 
   LessonWhiteboard? get whiteboard => publishedWhiteboardBundle.toLegacyWhiteboard();
 
@@ -164,7 +241,9 @@ class CourseLesson {
   bool get hasPublishedWhiteboard =>
       whiteboard != null && !whiteboard!.isEmpty;
 
-  bool get hasAudioSegment => mediaSegments.any((segment) => segment.isAudio && segment.hasUrl);
+  bool get hasAudioSegment => effectivePublishedMediaSegments.any(
+    (segment) => segment.isAudio && segment.hasUrl,
+  );
 
   factory CourseLesson.fromMap(Map data) {
     final segmentsData = data['mediaSegments'];
@@ -172,6 +251,8 @@ class CourseLesson {
     final whiteboardDraftLayersData = data['whiteboardDraftLayers'];
     final legacyWhiteboardData = data['whiteboard'];
     final legacyWhiteboardDraftData = data['whiteboardDraft'];
+    final publishedBoardSetData = data['publishedBoardSet'];
+    final draftBoardSetData = data['draftBoardSet'];
 
     final parsedSegments = segmentsData is List
         ? segmentsData
@@ -212,6 +293,11 @@ class CourseLesson {
       ).layers;
     }
 
+    final parsedContentRevision = parseIntField(
+      data['contentRevision'],
+      fallback: 1,
+    );
+
     return CourseLesson(
       title: data['title'] as String? ?? '',
       duration: data['duration'] as String? ?? '',
@@ -219,6 +305,19 @@ class CourseLesson {
       isPreview: data['isPreview'] as bool? ?? false,
       whiteboardLayers: parsedPublishedLayers,
       whiteboardDraftLayers: parsedDraftLayers,
+      playbackMode: LessonPlaybackMode.fromStorage(
+        data['playbackMode'] as String?,
+      ),
+      publishedSegmentIds: data.containsKey('publishedSegmentIds')
+          ? _parseStringList(data['publishedSegmentIds'])
+          : null,
+      contentRevision: parsedContentRevision < 1 ? 1 : parsedContentRevision,
+      publishedBoardSet: publishedBoardSetData is Map
+          ? BoardSet.fromMap(publishedBoardSetData)
+          : null,
+      draftBoardSet: draftBoardSetData is Map
+          ? BoardSet.fromMap(draftBoardSetData)
+          : null,
     );
   }
 
@@ -229,7 +328,10 @@ class CourseLesson {
     }
     return [
       LessonMediaSegment(
-        id: LessonMediaSegment.generateId(),
+        id: LessonMediaSegment.deterministicLegacyId(
+          url: legacyUrl,
+          mediaType: data['mediaType'] as String? ?? 'video',
+        ),
         order: 0,
         mediaType: data['mediaType'] as String? ?? 'video',
         url: legacyUrl,
@@ -256,18 +358,30 @@ class CourseLesson {
     }
   }
 
+  static List<String> _parseStringList(Object? data) {
+    if (data is! List) {
+      return const [];
+    }
+    return data.whereType<String>().toList();
+  }
+
   Map<String, dynamic> toMap() {
     final normalizedSegments = LessonMediaSegment.normalizeOrders(mediaSegments);
-    final publishedLayerMaps =
-        LessonWhiteboardLayerBundle(layers: whiteboardLayers).toMapList();
-    final draftLayerMaps =
-        LessonWhiteboardLayerBundle(layers: whiteboardDraftLayers).toMapList();
+    final publishedLayerMaps = publishedWhiteboardBundle.toMapList();
+    final draftLayerMaps = draftWhiteboardBundle.toMapList();
 
     return {
       'title': title,
       'duration': duration,
       'mediaSegments': normalizedSegments.map((segment) => segment.toMap()).toList(),
       'isPreview': isPreview,
+      'playbackMode': playbackMode.toStorage(),
+      'publishedSegmentIds': _hasExplicitPublishedSegmentIds
+          ? _publishedSegmentIds
+          : normalizedSegments.map((segment) => segment.id).toList(),
+      'contentRevision': contentRevision,
+      'publishedBoardSet': publishedBoardSet.toMap(),
+      'draftBoardSet': draftBoardSet.toMap(),
       if (publishedLayerMaps.isNotEmpty) 'whiteboardLayers': publishedLayerMaps,
       if (draftLayerMaps.isNotEmpty) 'whiteboardDraftLayers': draftLayerMaps,
     };
@@ -280,20 +394,63 @@ class CourseLesson {
     bool? isPreview,
     List<LessonWhiteboardLayer>? whiteboardLayers,
     List<LessonWhiteboardLayer>? whiteboardDraftLayers,
+    LessonPlaybackMode? playbackMode,
+    List<String>? publishedSegmentIds,
+    int? contentRevision,
+    BoardSet? publishedBoardSet,
+    BoardSet? draftBoardSet,
     bool clearWhiteboardLayers = false,
     bool clearWhiteboardDraftLayers = false,
+    bool clearPublishedBoardSet = false,
+    bool clearDraftBoardSet = false,
   }) {
+    final nextPublishedLayers = clearWhiteboardLayers
+        ? const <LessonWhiteboardLayer>[]
+        : (whiteboardLayers ?? this.whiteboardLayers);
+    final nextDraftLayers = clearWhiteboardDraftLayers
+        ? const <LessonWhiteboardLayer>[]
+        : (whiteboardDraftLayers ?? this.whiteboardDraftLayers);
+
+    var nextPublishedBoardSet = clearPublishedBoardSet
+        ? const BoardSet()
+        : (publishedBoardSet ?? _publishedBoardSet);
+    if (publishedBoardSet == null &&
+        !clearPublishedBoardSet &&
+        _publishedBoardSet != null &&
+        (whiteboardLayers != null || clearWhiteboardLayers)) {
+      nextPublishedBoardSet = _publishedBoardSet.copyWithDefaultLayerBundle(
+        LessonWhiteboardLayerBundle(layers: nextPublishedLayers),
+      );
+    }
+
+    var nextDraftBoardSet = clearDraftBoardSet
+        ? const BoardSet()
+        : (draftBoardSet ?? _draftBoardSet);
+    if (draftBoardSet == null &&
+        !clearDraftBoardSet &&
+        _draftBoardSet != null &&
+        (whiteboardDraftLayers != null || clearWhiteboardDraftLayers)) {
+      nextDraftBoardSet = _draftBoardSet.copyWithDefaultLayerBundle(
+        LessonWhiteboardLayerBundle(layers: nextDraftLayers),
+      );
+    }
+
     return CourseLesson(
       title: title ?? this.title,
       duration: duration ?? this.duration,
       mediaSegments: mediaSegments ?? this.mediaSegments,
       isPreview: isPreview ?? this.isPreview,
-      whiteboardLayers: clearWhiteboardLayers
-          ? const []
-          : (whiteboardLayers ?? this.whiteboardLayers),
-      whiteboardDraftLayers: clearWhiteboardDraftLayers
-          ? const []
-          : (whiteboardDraftLayers ?? this.whiteboardDraftLayers),
+      whiteboardLayers: nextPublishedLayers,
+      whiteboardDraftLayers: nextDraftLayers,
+      playbackMode: playbackMode ?? this.playbackMode,
+      publishedSegmentIds:
+          publishedSegmentIds ??
+          (_hasExplicitPublishedSegmentIds
+              ? this.publishedSegmentIds
+              : (mediaSegments == null ? null : lockedSegmentIds.toList())),
+      contentRevision: contentRevision ?? this.contentRevision,
+      publishedBoardSet: nextPublishedBoardSet,
+      draftBoardSet: nextDraftBoardSet,
     );
   }
 }
