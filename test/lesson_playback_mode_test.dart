@@ -129,24 +129,24 @@ void main() {
       expect(first.lockedSegmentIds, {first.mediaSegments.single.id});
     });
 
-    test(
-      'malformed optional publication fields safely use legacy defaults',
-      () {
-        final lesson = CourseLesson.fromMap({
-          'title': 'Malformed',
-          'duration': '30秒',
-          'mediaSegments': segments.map((segment) => segment.toMap()).toList(),
-          'playbackMode': 42,
-          'publishedSegmentIds': 'not-a-list',
-          'contentRevision': double.nan,
-          'unknownFutureField': Object(),
-        });
+    test('present malformed publication metadata fails closed', () {
+      final lesson = CourseLesson.fromMap({
+        'title': 'Malformed',
+        'duration': '30秒',
+        'mediaSegments': segments.map((segment) => segment.toMap()).toList(),
+        'playbackMode': 42,
+        'publishedSegmentIds': 'not-a-list',
+        'contentRevision': double.nan,
+        'unknownFutureField': Object(),
+      });
 
-        expect(lesson.playbackMode, LessonPlaybackMode.continuous);
-        expect(lesson.publishedSegmentIds, ['a', 'b']);
-        expect(lesson.contentRevision, 1);
-      },
-    );
+      expect(lesson.playbackMode, LessonPlaybackMode.continuous);
+      expect(lesson.hasValidPublishedSegmentIdsMetadata, isFalse);
+      expect(lesson.publishedSegmentIds, isEmpty);
+      expect(lesson.lockedSegmentIds, {'a', 'b'});
+      expect(lesson.effectivePublishedMediaSegments, isEmpty);
+      expect(lesson.contentRevision, 1);
+    });
 
     test(
       'repairs duplicate segment IDs without publishing ambiguous drafts',
@@ -170,11 +170,10 @@ void main() {
           lesson.mediaSegments.every((segment) => segment.id.trim().isNotEmpty),
           isTrue,
         );
-        expect(lesson.publishedSegmentIds, ['a']);
-        expect(
-          lesson.effectivePublishedMediaSegments.map((segment) => segment.id),
-          ['a'],
-        );
+        expect(lesson.hasValidPublishedSegmentIdsMetadata, isFalse);
+        expect(lesson.publishedSegmentIds, isEmpty);
+        expect(lesson.lockedSegmentIds, hasLength(3));
+        expect(lesson.effectivePublishedMediaSegments, isEmpty);
       },
     );
 
@@ -201,6 +200,22 @@ void main() {
         expect(first.effectivePublishedMediaSegments, hasLength(2));
       },
     );
+  });
+
+  test('Course preserves a valid top-level lesson content version', () {
+    final course = Course.fromMap({
+      'lessonContentVersion': 7,
+      'lessons': <Object>[],
+    });
+    final malformed = Course.fromMap({
+      'lessonContentVersion': 'bad',
+      'lessons': <Object>[],
+    });
+
+    expect(course.lessonContentVersion, 7);
+    expect(course.toFirestore()['lessonContentVersion'], 7);
+    expect(malformed.lessonContentVersion, 0);
+    expect(malformed.toFirestore(), isNot(contains('lessonContentVersion')));
   });
 
   group('LessonEvent migration', () {

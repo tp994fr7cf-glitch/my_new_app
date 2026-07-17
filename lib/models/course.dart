@@ -9,6 +9,16 @@ import 'lesson_timed_anchor.dart';
 import 'lesson_whiteboard.dart';
 import 'lesson_whiteboard_board_set.dart';
 
+int nextLessonContentVersion(Object? storedValue) {
+  if (storedValue == null) {
+    return 1;
+  }
+  if (storedValue is! int || storedValue < 1 || storedValue >= 2147483647) {
+    throw StateError('レッスン内容のバージョン情報が不正または上限に達したため保存できません。');
+  }
+  return storedValue + 1;
+}
+
 class Course {
   const Course({
     this.id,
@@ -25,6 +35,7 @@ class Course {
     required this.lessons,
     this.lessonEvents = const [],
     this.instructorId,
+    this.lessonContentVersion = 0,
   });
 
   final String? id;
@@ -41,6 +52,7 @@ class Course {
   final String description;
   final List<CourseLesson> lessons;
   final List<LessonEvent> lessonEvents;
+  final int lessonContentVersion;
 
   String get storageId => id ?? title.replaceAll('/', '_');
 
@@ -74,6 +86,9 @@ class Course {
       rating: parseDoubleField(data['rating']),
       priceLabel: parseStringField(data['priceLabel']),
       description: parseStringField(data['description']),
+      lessonContentVersion: _parseLessonContentVersion(
+        data['lessonContentVersion'],
+      ),
       lessons: lessonsData is List
           ? lessonsData
                 .whereType<Map>()
@@ -122,9 +137,16 @@ class Course {
       'rating': rating,
       'priceLabel': priceLabel,
       'description': description,
+      if (lessonContentVersion > 0)
+        'lessonContentVersion': lessonContentVersion,
       'lessons': lessons.map((lesson) => lesson.toMap()).toList(),
       'lessonEvents': lessonEvents.map((event) => event.toMap()).toList(),
     };
+  }
+
+  static int _parseLessonContentVersion(Object? value) {
+    final parsed = parseIntField(value);
+    return parsed >= 1 && parsed <= 2147483647 ? parsed : 0;
   }
 }
 
@@ -139,13 +161,19 @@ class CourseLesson {
     this.playbackMode = LessonPlaybackMode.continuous,
     List<String>? publishedSegmentIds,
     this.contentRevision = 1,
+    bool publishedSegmentIdsMetadataValid = true,
     BoardSet? publishedBoardSet,
     BoardSet? draftBoardSet,
   }) : _legacyPublishedLayers = whiteboardLayers,
        _legacyDraftLayers = whiteboardDraftLayers,
        _publishedSegmentIds = publishedSegmentIds ?? const [],
        _hasExplicitPublishedSegmentIds = publishedSegmentIds != null,
+       // Public compatibility parameters initialize private backing fields.
+       // ignore: prefer_initializing_formals
+       _publishedSegmentIdsMetadataValid = publishedSegmentIdsMetadataValid,
+       // ignore: prefer_initializing_formals
        _publishedBoardSet = publishedBoardSet,
+       // ignore: prefer_initializing_formals
        _draftBoardSet = draftBoardSet;
 
   final String title;
@@ -158,10 +186,14 @@ class CourseLesson {
   final List<LessonWhiteboardLayer> _legacyPublishedLayers;
   final List<LessonWhiteboardLayer> _legacyDraftLayers;
   final bool _hasExplicitPublishedSegmentIds;
+  final bool _publishedSegmentIdsMetadataValid;
   final BoardSet? _publishedBoardSet;
   final BoardSet? _draftBoardSet;
 
   List<String> get publishedSegmentIds {
+    if (!_publishedSegmentIdsMetadataValid) {
+      return const [];
+    }
     if (_hasExplicitPublishedSegmentIds) {
       return _publishedSegmentIds;
     }
@@ -171,13 +203,24 @@ class CourseLesson {
   }
 
   Set<String> get lockedSegmentIds {
+    if (!_publishedSegmentIdsMetadataValid) {
+      return mediaSegments.map((segment) => segment.id).toSet();
+    }
     return publishedSegmentIds.toSet();
   }
 
+  bool get hasValidPublishedSegmentIdsMetadata =>
+      _publishedSegmentIdsMetadataValid;
+
   List<LessonMediaSegment> get effectivePublishedMediaSegments {
-    final lockedIds = lockedSegmentIds;
+    if (!_publishedSegmentIdsMetadataValid) {
+      return const [];
+    }
+    final publishedIds = publishedSegmentIds.toSet();
     return LessonMediaSegment.normalizeOrders(
-      mediaSegments.where((segment) => lockedIds.contains(segment.id)).toList(),
+      mediaSegments
+          .where((segment) => publishedIds.contains(segment.id))
+          .toList(),
     );
   }
 
@@ -246,7 +289,6 @@ class CourseLesson {
 
   factory CourseLesson.fromMap(Map data) {
     final segmentsData = data['mediaSegments'];
-    final publishedSegmentIdsData = data['publishedSegmentIds'];
     final whiteboardLayersData = data['whiteboardLayers'];
     final whiteboardDraftLayersData = data['whiteboardDraftLayers'];
     final legacyWhiteboardData = data['whiteboard'];
@@ -299,6 +341,10 @@ class CourseLesson {
       fallback: 1,
     );
     final segmentIds = normalizedSegments.map((segment) => segment.id).toSet();
+    final publicationMetadata = _parsePublicationMetadata(
+      data,
+      validSegmentIds: segmentIds,
+    );
 
     return CourseLesson(
       title: data['title'] is String ? data['title'] as String : '',
@@ -310,12 +356,10 @@ class CourseLesson {
       playbackMode: LessonPlaybackMode.fromStorage(
         data['playbackMode'] is String ? data['playbackMode'] as String : null,
       ),
-      publishedSegmentIds: publishedSegmentIdsData is List
-          ? _parsePublishedSegmentIds(
-              publishedSegmentIdsData,
-              validSegmentIds: segmentIds,
-            )
+      publishedSegmentIds: publicationMetadata.isPresent
+          ? publicationMetadata.ids
           : null,
+      publishedSegmentIdsMetadataValid: publicationMetadata.isValid,
       contentRevision:
           parsedContentRevision < 1 || parsedContentRevision > 2147483647
           ? 1
@@ -410,18 +454,29 @@ class CourseLesson {
     return candidate;
   }
 
-  static List<String> _parsePublishedSegmentIds(
-    List data, {
-    required Set<String> validSegmentIds,
-  }) {
+  static ({bool isPresent, bool isValid, List<String> ids})
+  _parsePublicationMetadata(Map data, {required Set<String> validSegmentIds}) {
+    if (!data.containsKey('publishedSegmentIds')) {
+      return (isPresent: false, isValid: true, ids: const []);
+    }
+    final rawValue = data['publishedSegmentIds'];
+    if (rawValue is! List) {
+      return (isPresent: true, isValid: false, ids: const []);
+    }
     final seen = <String>{};
-    return [
-      for (final id in data.whereType<String>())
-        if (id.trim().isNotEmpty &&
-            validSegmentIds.contains(id) &&
-            seen.add(id))
-          id,
-    ];
+    final ids = <String>[];
+    var isValid = true;
+    for (final value in rawValue) {
+      if (value is! String ||
+          value.trim().isEmpty ||
+          !validSegmentIds.contains(value) ||
+          !seen.add(value)) {
+        isValid = false;
+        continue;
+      }
+      ids.add(value);
+    }
+    return (isPresent: true, isValid: isValid, ids: ids);
   }
 
   static List<LessonWhiteboardLayer> _tryParseLegacyWhiteboardLayers(Map data) {
@@ -439,7 +494,6 @@ class CourseLesson {
       mediaSegments,
     );
     final publishedLayerMaps = publishedWhiteboardBundle.toMapList();
-    final draftLayerMaps = draftWhiteboardBundle.toMapList();
 
     return {
       'title': title,
@@ -449,14 +503,14 @@ class CourseLesson {
           .toList(),
       'isPreview': isPreview,
       'playbackMode': playbackMode.toStorage(),
-      'publishedSegmentIds': _hasExplicitPublishedSegmentIds
+      'publishedSegmentIds': !_publishedSegmentIdsMetadataValid
+          ? const <String>[]
+          : _hasExplicitPublishedSegmentIds
           ? _publishedSegmentIds
           : normalizedSegments.map((segment) => segment.id).toList(),
       'contentRevision': contentRevision,
       'publishedBoardSet': publishedBoardSet.toMap(),
-      'draftBoardSet': draftBoardSet.toMap(),
       if (publishedLayerMaps.isNotEmpty) 'whiteboardLayers': publishedLayerMaps,
-      if (draftLayerMaps.isNotEmpty) 'whiteboardDraftLayers': draftLayerMaps,
     };
   }
 
@@ -470,6 +524,7 @@ class CourseLesson {
     LessonPlaybackMode? playbackMode,
     List<String>? publishedSegmentIds,
     int? contentRevision,
+    bool? publishedSegmentIdsMetadataValid,
     BoardSet? publishedBoardSet,
     BoardSet? draftBoardSet,
     bool clearWhiteboardLayers = false,
@@ -522,6 +577,10 @@ class CourseLesson {
               ? this.publishedSegmentIds
               : (mediaSegments == null ? null : lockedSegmentIds.toList())),
       contentRevision: contentRevision ?? this.contentRevision,
+      publishedSegmentIdsMetadataValid: publishedSegmentIds != null
+          ? true
+          : (publishedSegmentIdsMetadataValid ??
+                _publishedSegmentIdsMetadataValid),
       publishedBoardSet: nextPublishedBoardSet,
       draftBoardSet: nextDraftBoardSet,
     );

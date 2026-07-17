@@ -219,4 +219,103 @@ void main() {
       );
     },
   );
+
+  test(
+    'rejects malformed persisted publication metadata without unlocking',
+    () {
+      final malformed = CourseLesson.fromMap({
+        'title': 'Malformed',
+        'duration': '30秒',
+        'mediaSegments': [locked.toMap()],
+        'publishedSegmentIds': ['missing'],
+      });
+
+      expect(malformed.effectivePublishedMediaSegments, isEmpty);
+      expect(malformed.lockedSegmentIds, {'locked'});
+      expect(
+        LessonPublicationValidator.validate(
+          previous: malformed,
+          next: malformed,
+        ),
+        lessonMalformedPublicationMetadataError,
+      );
+    },
+  );
+
+  test('rejects a new 101st part', () {
+    final existingSegments = [
+      for (var index = 0; index < 100; index++)
+        LessonMediaSegment(
+          id: 'segment-$index',
+          order: index,
+          url: 'https://example.com/$index.mp4',
+        ),
+    ];
+    final previous = CourseLesson(
+      title: 'At cap',
+      duration: '30秒',
+      mediaSegments: existingSegments,
+      publishedSegmentIds: [for (final segment in existingSegments) segment.id],
+    );
+    final next = previous.copyWith(
+      mediaSegments: [
+        ...existingSegments,
+        const LessonMediaSegment(
+          id: 'segment-100',
+          order: 100,
+          url: 'https://example.com/100.mp4',
+        ),
+      ],
+    );
+
+    expect(
+      LessonPublicationValidator.validate(previous: previous, next: next),
+      lessonMediaSegmentLimitError,
+    );
+  });
+
+  test('legacy lessons already over the cap still allow title-only saves', () {
+    final segments = [
+      for (var index = 0; index < 101; index++)
+        LessonMediaSegment(
+          id: 'legacy-$index',
+          order: index,
+          url: 'https://example.com/$index.mp4',
+        ),
+    ];
+    final previous = CourseLesson(
+      title: 'Legacy',
+      duration: '30秒',
+      mediaSegments: segments,
+    );
+
+    expect(
+      () => LessonPublicationValidator.prepareForPublication(
+        previous: previous,
+        next: previous.copyWith(title: 'Renamed'),
+      ),
+      returnsNormally,
+    );
+  });
+
+  test('rejects content revision overflow before publishing', () {
+    final previous = previousLesson().copyWith(
+      contentRevision: maxLessonContentRevision,
+    );
+    final next = previous.copyWith(mediaSegments: const [locked, tail]);
+
+    expect(
+      () => LessonPublicationValidator.prepareForPublication(
+        previous: previous,
+        next: next,
+      ),
+      throwsA(
+        isA<LessonPublicationValidationException>().having(
+          (error) => error.message,
+          'message',
+          lessonContentRevisionLimitError,
+        ),
+      ),
+    );
+  });
 }

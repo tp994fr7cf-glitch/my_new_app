@@ -62,6 +62,7 @@ class _CourseListPageState extends State<CourseListPage> {
         final docRef = coursesRef.doc(course.id);
         batch.set(docRef, {
           ...course.toFirestore(),
+          'lessonContentVersion': FieldValue.increment(1),
           'status': 'published',
           'source': 'developmentSeed',
           'createdAt': FieldValue.serverTimestamp(),

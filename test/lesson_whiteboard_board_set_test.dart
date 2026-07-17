@@ -165,7 +165,7 @@ void main() {
     );
   });
 
-  test('CourseLesson round-trips published and draft board sets', () {
+  test('CourseLesson persists published boards but omits drafts', () {
     const lesson = CourseLesson(
       title: 'Boards',
       duration: '20秒',
@@ -185,7 +185,9 @@ void main() {
 
     expect(restored.publishedBoardSet.boards, hasLength(2));
     expect(restored.publishedBoardSet.switchEvents, hasLength(3));
-    expect(restored.draftBoardSet.defaultBoard?.title, 'Draft');
+    expect(lesson.toMap(), isNot(contains('draftBoardSet')));
+    expect(lesson.toMap(), isNot(contains('whiteboardDraftLayers')));
+    expect(restored.draftBoardSet, isEmpty);
     expect(restored.whiteboardLayers.single.id, 'default-layer');
     expect(restored.whiteboardDraftLayers, isEmpty);
   });

@@ -102,6 +102,25 @@ service cloud.firestore {
         || validCourseLessonCount(request.resource.data);
     }
 
+    function validLessonContentVersionUpdate() {
+      let changesLessons = request.resource.data.diff(resource.data)
+        .affectedKeys().hasAny(['lessons']);
+      let hadVersion = resource.data.keys()
+        .hasAny(['lessonContentVersion']);
+      return !changesLessons
+        || (request.resource.data.lessonContentVersion is int
+          && request.resource.data.lessonContentVersion >= 1
+          && request.resource.data.lessonContentVersion <= 2147483647
+          && ((!hadVersion
+              && request.resource.data.lessonContentVersion == 1)
+            || (hadVersion
+              && resource.data.lessonContentVersion is int
+              && resource.data.lessonContentVersion >= 1
+              && resource.data.lessonContentVersion < 2147483647
+              && request.resource.data.lessonContentVersion
+                == resource.data.lessonContentVersion + 1)));
+    }
+
     function canUpdateOwnTeacherCourse() {
       return isTeacher()
         && resource.data.instructorId == request.auth.uid
@@ -112,6 +131,7 @@ service cloud.firestore {
         && request.resource.data.lessons is list
         && request.resource.data.lessonCount is int
         && validCourseLessonUpdateInvariant()
+        && validLessonContentVersionUpdate()
         && validCoursePrivacyPolicyMap(request.resource.data);
     }
 
@@ -1388,10 +1408,17 @@ service cloud.firestore {
       allow read: if hasActiveTeacherRole()
         && resource.data.instructorId == request.auth.uid;
 
-      allow create, update: if signedIn()
+      allow create: if signedIn()
         && courseId.matches('sample-.*')
         && request.resource.data.status == 'published'
         && request.resource.data.source == 'developmentSeed';
+
+      allow update: if signedIn()
+        && courseId.matches('sample-.*')
+        && request.resource.data.status == 'published'
+        && request.resource.data.source == 'developmentSeed'
+        && validCourseLessonUpdateInvariant()
+        && validLessonContentVersionUpdate();
 
       allow create: if isTeacher()
         && request.resource.data.instructorId == request.auth.uid
@@ -1406,8 +1433,35 @@ service cloud.firestore {
       // arrays are append-only. The app validates per-item publication changes
       // transactionally for concurrency correctness, but that client check is
       // not a server security boundary. Rules enforce only document-level shape
-      // and lesson-count consistency without claiming stronger guarantees.
+      // plus lesson-count/version consistency without claiming stronger guarantees.
       allow update: if canUpdateOwnTeacherCourse();
+
+      match /lessonDrafts/{lessonNumber} {
+        function validLessonDraft() {
+          return request.resource.data.keys().hasOnly([
+              'lessonNumber',
+              'boardSet',
+              'updatedAt'
+            ])
+            && lessonNumber.matches('^[1-9][0-9]{0,3}$')
+            && request.resource.data.lessonNumber == lessonNumber
+            && request.resource.data.boardSet is map
+            && request.resource.data.boardSet.keys().hasOnly([
+              'boards',
+              'switchEvents'
+            ])
+            && request.resource.data.boardSet.boards is list
+            && request.resource.data.boardSet.boards.size() <= 20
+            && request.resource.data.boardSet.switchEvents is list
+            && request.resource.data.boardSet.switchEvents.size() <= 10000
+            && request.resource.data.updatedAt is timestamp;
+        }
+
+        allow read: if isCourseInstructor(courseId);
+        allow create, update: if isCourseInstructor(courseId)
+          && validLessonDraft();
+        allow delete: if isCourseInstructor(courseId);
+      }
 
       match /participantIdentities/{userId} {
         function validIdentityPayload() {

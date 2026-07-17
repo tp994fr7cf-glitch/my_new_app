@@ -67,6 +67,42 @@ Course _courseWithLesson(CourseLesson lesson) {
 }
 
 void main() {
+  test('external lesson drafts overlay legacy data and promote atomically', () {
+    const legacyDraft = BoardSet(
+      boards: [LessonWhiteboardBoard(id: 'legacy', order: 0)],
+    );
+    const externalDraft = BoardSet(
+      boards: [LessonWhiteboardBoard(id: 'external', order: 0)],
+    );
+    const lesson = CourseLesson(
+      title: 'Draft',
+      duration: '10秒',
+      draftBoardSet: legacyDraft,
+    );
+
+    final overlaid = overlayLessonDraftBoardSets(
+      const [lesson],
+      const {1: externalDraft},
+    );
+    expect(overlaid.single.draftBoardSet.boardById('external'), isNotNull);
+
+    final promoted = promoteLessonDraftBoardSets(overlaid, const {
+      1: externalDraft,
+    });
+    expect(promoted.single.publishedBoardSet.boardById('external'), isNotNull);
+    expect(promoted.single.draftBoardSet, isEmpty);
+    expect(promoted.single.toMap(), isNot(contains('draftBoardSet')));
+  });
+
+  test('lesson content versions initialize, increment, and stop at max', () {
+    expect(nextLessonContentVersion(null), 1);
+    expect(nextLessonContentVersion(7), 8);
+    expect(
+      () => nextLessonContentVersion(2147483647),
+      throwsA(isA<StateError>()),
+    );
+  });
+
   for (final testCase in [
     (buttonLabel: '音声', mediaType: 'audio', uploadLabel: '音声をアップロード'),
     (buttonLabel: '動画', mediaType: 'video', uploadLabel: '動画をアップロード'),
@@ -355,7 +391,6 @@ void main() {
         duration: '30秒',
         mediaSegments: [_lockedSegment],
         publishedSegmentIds: ['locked'],
-        draftBoardSet: draftBoardSet,
       ),
     );
     CourseLesson? saved;
@@ -366,6 +401,7 @@ void main() {
       MaterialApp(
         home: TeacherLessonManagePage(
           course: course,
+          initialLessonDrafts: const {1: draftBoardSet},
           onSaveOverride: (lessons) async {
             saved = lessons.single;
           },

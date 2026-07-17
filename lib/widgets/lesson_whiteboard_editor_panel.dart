@@ -9,7 +9,6 @@ import '../models/lesson_media_segment.dart';
 import '../models/lesson_media_timeline.dart';
 import '../models/lesson_payload_size_validator.dart';
 import '../models/lesson_player_view_state.dart';
-import '../models/lesson_publication_validator.dart';
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
 import '../services/lesson_media_playback.dart';
@@ -1097,12 +1096,9 @@ enum _WhiteboardEditChoice { published, draft, reset }
 
 /// Persists a whiteboard draft for a single lesson.
 ///
-/// [currentLesson] must reflect the lesson's up-to-date state as shown on
-/// screen (title, duration, media parts, preview flag, published whiteboard).
-/// It is written back together with valid local edits. The latest server
-/// lesson is read and append-only publication locks are validated in the same
-/// transaction, so a whiteboard draft cannot overwrite locked media fields.
-/// Other lessons in the course are left untouched.
+/// Drafts are stored outside the learner-readable course document. The
+/// [currentLesson] parameter remains for source compatibility with existing
+/// callers, but lesson/media fields are deliberately never persisted here.
 Future<void> saveLessonWhiteboardDraft({
   required String courseId,
   required int lessonIndex,
@@ -1123,48 +1119,14 @@ Future<void> saveLessonWhiteboardDraft({
               ).layers,
             ));
   validateBoardSetForPersistence(draftBoardSet);
-  final draftLayers =
-      draftBoardSet.defaultBoard?.layerBundle.layers ??
-      const <LessonWhiteboardLayer>[];
-  final updatedLesson = currentLesson.copyWith(
-    draftBoardSet: draftBoardSet,
-    whiteboardDraftLayers: draftLayers,
-    clearWhiteboardDraftLayers: draftLayers.isEmpty,
-  );
-  final firestore = FirebaseFirestore.instance;
-  final courseReference = firestore.collection('courses').doc(courseId);
-  await firestore.runTransaction<void>((transaction) async {
-    final snapshot = await transaction.get(courseReference);
-    if (!snapshot.exists) {
-      throw StateError('講座が見つかりません。');
-    }
-
-    final lessonsData = snapshot.data()?['lessons'];
-    if (lessonsData is! List ||
-        lessonIndex < 0 ||
-        lessonIndex >= lessonsData.length ||
-        lessonsData[lessonIndex] is! Map) {
-      throw StateError('レッスンが見つかりません。');
-    }
-
-    final previousLesson = CourseLesson.fromMap(
-      lessonsData[lessonIndex] as Map,
-    );
-    final validationError = LessonPublicationValidator.validate(
-      previous: previousLesson,
-      next: updatedLesson,
-    );
-    if (validationError != null) {
-      throw LessonPublicationValidationException(validationError);
-    }
-
-    final lessons = List<Object?>.from(lessonsData);
-    lessons[lessonIndex] = updatedLesson.toMap();
-    validateRawLessonsPayloadForPersistence(lessons);
-    transaction.update(courseReference, {
-      'lessons': lessons,
-      'lessonCount': lessons.length,
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
-  });
+  await FirebaseFirestore.instance
+      .collection('courses')
+      .doc(courseId)
+      .collection('lessonDrafts')
+      .doc('${lessonIndex + 1}')
+      .set({
+        'lessonNumber': '${lessonIndex + 1}',
+        'boardSet': draftBoardSet.toMap(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
 }

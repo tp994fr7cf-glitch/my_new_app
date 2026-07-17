@@ -52,4 +52,30 @@ void main() {
     expect(rules, contains('data.lessonCount == data.lessons.size()'));
     expect(rules, contains('validCourseLessonUpdateInvariant()'));
   });
+
+  test('lesson array writes require a monotonic content version', () {
+    expect(rules, contains('function validLessonContentVersionUpdate()'));
+    expect(rules, contains("hasAny(['lessonContentVersion'])"));
+    expect(
+      rules,
+      contains(
+        'request.resource.data.lessonContentVersion\n'
+        '                == resource.data.lessonContentVersion + 1',
+      ),
+    );
+    expect(
+      RegExp('validLessonContentVersionUpdate\\(\\)').allMatches(rules).length,
+      greaterThanOrEqualTo(3),
+    );
+  });
+
+  test('lesson drafts are instructor-only and structurally bounded', () {
+    expect(rules, contains('match /lessonDrafts/{lessonNumber}'));
+    expect(rules, contains('allow read: if isCourseInstructor(courseId);'));
+    expect(
+      rules,
+      contains('request.resource.data.boardSet.boards.size() <= 20'),
+    );
+    expect(rules, contains('allow delete: if isCourseInstructor(courseId);'));
+  });
 }
