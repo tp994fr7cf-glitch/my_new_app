@@ -321,4 +321,58 @@ void main() {
     expect(saved?.publishedBoardSet.boards, hasLength(2));
     expect(saved?.publishedBoardSet.switchEvents, hasLength(1));
   });
+
+  testWidgets('レッスン情報保存で複数ボード下書きを公開し下書きを消す', (tester) async {
+    const draftBoardSet = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+          title: '下書き1',
+        ),
+        LessonWhiteboardBoard(id: 'draft-second', order: 1, title: '下書き2'),
+      ],
+      switchEvents: [
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: 'draft-second',
+          globalTimestampSec: 4.25,
+          sequence: 0,
+        ),
+      ],
+    );
+    final course = _courseWithLesson(
+      const CourseLesson(
+        title: '下書きあり',
+        duration: '30秒',
+        mediaSegments: [_lockedSegment],
+        publishedSegmentIds: ['locked'],
+        draftBoardSet: draftBoardSet,
+      ),
+    );
+    CourseLesson? saved;
+    await tester.binding.setSurfaceSize(const Size(800, 1800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonManagePage(
+          course: course,
+          onSaveOverride: (lessons) async {
+            saved = lessons.single;
+          },
+        ),
+      ),
+    );
+    await tester.ensureVisible(find.text('レッスン情報を保存'));
+    await tester.tap(find.text('レッスン情報を保存'));
+    await tester.pumpAndSettle();
+
+    expect(saved?.mediaSegments.single.id, 'locked');
+    expect(saved?.publishedBoardSet.boards, hasLength(2));
+    expect(
+      saved?.publishedBoardSet.switchEvents.single.globalTimestampSec,
+      4.25,
+    );
+    expect(saved?.draftBoardSet, isEmpty);
+  });
 }

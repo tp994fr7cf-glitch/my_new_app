@@ -10,12 +10,15 @@ import '../models/lesson_media_timeline.dart';
 import '../models/lesson_player_view_state.dart';
 import '../models/lesson_publication_validator.dart';
 import '../models/lesson_whiteboard.dart';
+import '../models/lesson_whiteboard_board_set.dart';
 import '../services/lesson_media_playback.dart';
 import '../services/lesson_media_playlist_playback.dart';
 import 'lesson_whiteboard_canvas.dart';
 
 typedef WhiteboardDraftSaveCallback =
     Future<void> Function(LessonWhiteboard whiteboard);
+typedef WhiteboardBoardSetDraftSaveCallback =
+    Future<void> Function(BoardSet boardSet);
 
 class LessonWhiteboardEditorPanel extends StatefulWidget {
   const LessonWhiteboardEditorPanel({
@@ -24,12 +27,19 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
     required this.lessonNumber,
     required this.mediaSegments,
     required this.durationLabel,
-    required this.publishedWhiteboard,
-    required this.draftWhiteboard,
-    required this.onDraftSaved,
+    this.publishedWhiteboard,
+    this.draftWhiteboard,
+    this.publishedBoardSet,
+    this.draftBoardSet,
+    this.onDraftSaved,
+    this.onBoardSetDraftSaved,
     this.onWhiteboardChanged,
+    this.onBoardSetChanged,
     this.playlistPlaybackFactory = createLessonMediaPlaylistPlayback,
-  });
+  }) : assert(
+         onDraftSaved != null || onBoardSetDraftSaved != null,
+         'A whiteboard draft callback is required.',
+       );
 
   final String courseId;
   final int lessonNumber;
@@ -37,8 +47,12 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
   final String durationLabel;
   final LessonWhiteboard? publishedWhiteboard;
   final LessonWhiteboard? draftWhiteboard;
-  final WhiteboardDraftSaveCallback onDraftSaved;
+  final BoardSet? publishedBoardSet;
+  final BoardSet? draftBoardSet;
+  final WhiteboardDraftSaveCallback? onDraftSaved;
+  final WhiteboardBoardSetDraftSaveCallback? onBoardSetDraftSaved;
   final ValueChanged<LessonWhiteboard>? onWhiteboardChanged;
+  final ValueChanged<BoardSet>? onBoardSetChanged;
   final LessonMediaPlaylistPlaybackFactory playlistPlaybackFactory;
 
   @override
@@ -56,6 +70,8 @@ class _LessonWhiteboardEditorPanelState
   StreamSubscription<bool>? _playingSubscription;
 
   List<WhiteboardStroke> _strokes = [];
+  BoardSet _boardSet = const BoardSet();
+  String _selectedBoardId = LessonWhiteboardBoard.defaultBoardId;
   WhiteboardStroke? _inProgressStroke;
   List<WhiteboardPoint> _inProgressPoints = [];
 
@@ -95,22 +111,64 @@ class _LessonWhiteboardEditorPanelState
   }
 
   bool get _drawingEnabled => _isPlaying;
-  bool get _hasPublishedWhiteboard =>
-      widget.publishedWhiteboard != null &&
-      !widget.publishedWhiteboard!.isEmpty;
+  bool get _hasPublishedWhiteboard => _publishedBoardSet.isNotEmpty;
 
   bool get _hasUnpublishedDraft {
-    final draft = widget.draftWhiteboard;
-    return draft != null && !draft.isEmpty;
+    return _draftBoardSet.isNotEmpty;
   }
+
+  BoardSet get _publishedBoardSet {
+    final boardSet = widget.publishedBoardSet;
+    if (boardSet != null) {
+      return boardSet;
+    }
+    final legacy = widget.publishedWhiteboard;
+    return legacy == null || legacy.isEmpty
+        ? const BoardSet()
+        : BoardSet.fromLegacyLayers(
+            LessonWhiteboardLayerBundle.fromLegacyWhiteboard(legacy).layers,
+          );
+  }
+
+  BoardSet get _draftBoardSet {
+    final boardSet = widget.draftBoardSet;
+    if (boardSet != null) {
+      return boardSet;
+    }
+    final legacy = widget.draftWhiteboard;
+    return legacy == null || legacy.isEmpty
+        ? const BoardSet()
+        : BoardSet.fromLegacyLayers(
+            LessonWhiteboardLayerBundle.fromLegacyWhiteboard(legacy).layers,
+          );
+  }
+
+  LessonWhiteboardBoard get _selectedBoard =>
+      _boardSet.boardById(_selectedBoardId) ??
+      _boardSet.defaultBoard ??
+      _boardSet.ensureEditable().defaultBoard!;
 
   bool get _shouldShowEditingCanvas =>
       _editSessionKind != WhiteboardEditSessionKind.none;
 
-  List<WhiteboardStroke> get _visibleStrokes {
-    return visibleWhiteboardStrokes(
+  LessonWhiteboardLayerBundle get _selectedWorkingBundle {
+    final bundle = _selectedBoard.layerBundle;
+    return bundle.copyWithPrimaryStrokes(
       strokes: _strokes,
-      positionSec: _currentPositionSecExact,
+      updatedAtMs: bundle.primaryLayer?.updatedAtMs ?? 0,
+    );
+  }
+
+  List<WhiteboardStroke> get _visibleStrokes {
+    final resolvedPosition = _timeline.isEmpty
+        ? null
+        : _timeline.resolveGlobalSec(_currentPositionSecExact);
+    return visibleWhiteboardBundleStrokes(
+      bundle: _selectedWorkingBundle,
+      globalPositionSec: _currentPositionSecExact,
+      segmentLocalPositionSec:
+          resolvedPosition?.localSec ?? _currentPositionSecExact,
+      activeSegmentId: _playback?.currentSegment?.id,
     );
   }
 
@@ -130,7 +188,9 @@ class _LessonWhiteboardEditorPanelState
       unawaited(_reloadMediaPlayer());
     }
     if (oldWidget.draftWhiteboard != widget.draftWhiteboard ||
-        oldWidget.publishedWhiteboard != widget.publishedWhiteboard) {
+        oldWidget.publishedWhiteboard != widget.publishedWhiteboard ||
+        oldWidget.draftBoardSet != widget.draftBoardSet ||
+        oldWidget.publishedBoardSet != widget.publishedBoardSet) {
       if (_inProgressStroke == null && !_isPlaying) {
         _loadInitialStrokes(
           preserveActiveSession:
@@ -143,16 +203,13 @@ class _LessonWhiteboardEditorPanelState
 
   void _loadInitialStrokes({bool preserveActiveSession = false}) {
     if (!_hasPublishedWhiteboard) {
-      final draft = widget.draftWhiteboard;
-      _strokes = draft != null && !draft.isEmpty
-          ? List<WhiteboardStroke>.from(draft.strokes)
-          : [];
+      _loadBoardSet(_hasUnpublishedDraft ? _draftBoardSet : const BoardSet());
       _editSessionKind = WhiteboardEditSessionKind.fresh;
       return;
     }
 
     if (_hasUnpublishedDraft) {
-      _strokes = List<WhiteboardStroke>.from(widget.draftWhiteboard!.strokes);
+      _loadBoardSet(_draftBoardSet);
       if (!preserveActiveSession ||
           _editSessionKind == WhiteboardEditSessionKind.none) {
         _editSessionKind = WhiteboardEditSessionKind.draft;
@@ -161,9 +218,18 @@ class _LessonWhiteboardEditorPanelState
     }
 
     if (!preserveActiveSession) {
-      _strokes = [];
+      _loadBoardSet(_publishedBoardSet);
       _editSessionKind = WhiteboardEditSessionKind.none;
     }
+  }
+
+  void _loadBoardSet(BoardSet boardSet) {
+    _boardSet = boardSet.ensureEditable();
+    final selected = _boardSet.boardById(_selectedBoardId);
+    _selectedBoardId = selected?.id ?? _boardSet.defaultBoard!.id;
+    _strokes = List<WhiteboardStroke>.from(
+      _selectedBoard.layerBundle.primaryLayer?.strokes ?? const [],
+    );
   }
 
   bool _segmentsEqual(
@@ -473,14 +539,36 @@ class _LessonWhiteboardEditorPanelState
     );
   }
 
+  void _commitSelectedBoard() {
+    final board = _boardSet.boardById(_selectedBoardId);
+    if (board == null) {
+      return;
+    }
+    _boardSet = _boardSet.replaceBoard(
+      board.copyWith(
+        layerBundle: board.layerBundle.copyWithPrimaryStrokes(
+          strokes: List<WhiteboardStroke>.from(_strokes),
+          updatedAtMs: DateTime.now().millisecondsSinceEpoch,
+        ),
+      ),
+    );
+  }
+
+  BoardSet _buildCurrentBoardSet() {
+    _commitSelectedBoard();
+    return _boardSet;
+  }
+
   void _notifyWhiteboardChanged() {
     if (_editSessionKind == WhiteboardEditSessionKind.fresh) {
       widget.onWhiteboardChanged?.call(_buildCurrentWhiteboard());
+      widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
     }
   }
 
   void _syncWorkingWhiteboardAfterDraftSave() {
     widget.onWhiteboardChanged?.call(_buildCurrentWhiteboard());
+    widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
   }
 
   Future<void> _saveDraft() async {
@@ -490,18 +578,17 @@ class _LessonWhiteboardEditorPanelState
     });
 
     try {
-      await widget.onDraftSaved(_buildCurrentWhiteboard());
+      final boardSet = _buildCurrentBoardSet();
+      final boardSetCallback = widget.onBoardSetDraftSaved;
+      if (boardSetCallback != null) {
+        await boardSetCallback(boardSet);
+      } else {
+        await widget.onDraftSaved!(_buildCurrentWhiteboard());
+      }
       if (mounted) {
         setState(() {
-          final saved = _buildCurrentWhiteboard();
-          if (saved.isEmpty && _hasPublishedWhiteboard) {
-            _editSessionKind = WhiteboardEditSessionKind.none;
-            _strokes = [];
-            _message = '書き物を一時保存しました。';
-          } else {
-            _editSessionKind = WhiteboardEditSessionKind.draft;
-            _message = '書き物を一時保存しました。';
-          }
+          _editSessionKind = WhiteboardEditSessionKind.draft;
+          _message = '書き物を一時保存しました。';
         });
         _syncWorkingWhiteboardAfterDraftSave();
       }
@@ -518,6 +605,152 @@ class _LessonWhiteboardEditorPanelState
         });
       }
     }
+  }
+
+  void _switchBoard(String boardId) {
+    if (boardId == _selectedBoardId || _boardSet.boardById(boardId) == null) {
+      return;
+    }
+    _finishInProgressStroke();
+    _commitSelectedBoard();
+    final nextSequence = _boardSet.nextSwitchSequence;
+    setState(() {
+      _boardSet = _boardSet.copyWith(
+        switchEvents: [
+          ..._boardSet.switchEvents,
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: boardId,
+            globalTimestampSec: _recordingPositionSec,
+            sequence: nextSequence,
+          ),
+        ],
+      );
+      _selectedBoardId = boardId;
+      _strokes = List<WhiteboardStroke>.from(
+        _selectedBoard.layerBundle.primaryLayer?.strokes ?? const [],
+      );
+      _message = null;
+    });
+    widget.onBoardSetChanged?.call(_boardSet);
+  }
+
+  void _addBoard() {
+    if (!_boardSet.canAddBoard) {
+      return;
+    }
+    _finishInProgressStroke();
+    _commitSelectedBoard();
+    var id = LessonWhiteboardBoard.generateId();
+    while (_boardSet.boardById(id) != null) {
+      id = LessonWhiteboardBoard.generateId();
+    }
+    final board = LessonWhiteboardBoard(
+      id: id,
+      order: _boardSet.boards.length,
+      title: 'ボード${_boardSet.boards.length + 1}',
+    );
+    setState(() {
+      _boardSet = _boardSet.copyWith(
+        boards: [..._boardSet.orderedBoards, board],
+      );
+    });
+    _switchBoard(id);
+  }
+
+  Future<void> _renameSelectedBoard() async {
+    final board = _selectedBoard;
+    final controller = TextEditingController(text: board.title);
+    final title = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('ボード名を変更'),
+        content: TextField(
+          key: const ValueKey('whiteboard-board-title-field'),
+          controller: controller,
+          autofocus: true,
+          maxLength: 40,
+          decoration: const InputDecoration(labelText: 'ボード名'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(dialogContext).pop(controller.text.trim()),
+            child: const Text('変更'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (title == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _boardSet = _boardSet.replaceBoard(board.copyWith(title: title));
+    });
+    widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
+  }
+
+  Future<void> _deleteSelectedBoard() async {
+    if (_boardSet.boards.length <= 1) {
+      return;
+    }
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('ボードを削除'),
+        content: const Text('このボードと書き物を削除します。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('削除'),
+          ),
+        ],
+      ),
+    );
+    if (shouldDelete != true || !mounted) {
+      return;
+    }
+    _finishInProgressStroke();
+    final removedId = _selectedBoardId;
+    final remaining = _boardSet.orderedBoards
+        .where((board) => board.id != removedId)
+        .toList();
+    final nextId = remaining.first.id;
+    setState(() {
+      _boardSet = _boardSet.copyWith(
+        boards: [
+          for (final entry in remaining.indexed)
+            entry.$2.copyWith(order: entry.$1),
+        ],
+      );
+      _selectedBoardId = nextId;
+      _strokes = List<WhiteboardStroke>.from(
+        _selectedBoard.layerBundle.primaryLayer?.strokes ?? const [],
+      );
+    });
+    // Deleting the active board necessarily selects another board.
+    final sequence = _boardSet.nextSwitchSequence;
+    setState(() {
+      _boardSet = _boardSet.copyWith(
+        switchEvents: [
+          ..._boardSet.switchEvents,
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: nextId,
+            globalTimestampSec: _recordingPositionSec,
+            sequence: sequence,
+          ),
+        ],
+      );
+    });
+    widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
   }
 
   Future<void> _resetWhiteboard() async {
@@ -620,13 +853,13 @@ class _LessonWhiteboardEditorPanelState
   }
 
   Future<void> _beginEditingPublished() async {
-    final published = widget.publishedWhiteboard;
-    if (published == null || published.isEmpty) {
+    final published = _publishedBoardSet;
+    if (published.isEmpty) {
       return;
     }
 
     setState(() {
-      _strokes = List<WhiteboardStroke>.from(published.strokes);
+      _loadBoardSet(published);
       _editSessionKind = WhiteboardEditSessionKind.published;
       _message = '公開中の書き物を編集しています。一時保存で仮保存されます。';
     });
@@ -635,13 +868,13 @@ class _LessonWhiteboardEditorPanelState
   }
 
   Future<void> _beginEditingDraft() async {
-    final draft = widget.draftWhiteboard;
-    if (draft == null || draft.isEmpty) {
+    final draft = _draftBoardSet;
+    if (draft.isEmpty) {
       return;
     }
 
     setState(() {
-      _strokes = List<WhiteboardStroke>.from(draft.strokes);
+      _loadBoardSet(draft);
       _editSessionKind = WhiteboardEditSessionKind.draft;
       _message = '仮保存中の書き物を編集しています。';
     });
@@ -651,7 +884,7 @@ class _LessonWhiteboardEditorPanelState
 
   Future<void> _beginPendingReset() async {
     setState(() {
-      _strokes = [];
+      _loadBoardSet(const BoardSet());
       _editSessionKind = WhiteboardEditSessionKind.pendingReset;
       _message = '最初から描き直します。一時保存で確定してください。';
     });
@@ -669,7 +902,7 @@ class _LessonWhiteboardEditorPanelState
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('音声プレビュー', style: Theme.of(context).textTheme.titleSmall),
+        Text('メディアプレビュー', style: Theme.of(context).textTheme.titleSmall),
         const SizedBox(height: 8),
         if (_isLoadingMedia) ...[
           const LinearProgressIndicator(),
@@ -722,15 +955,66 @@ class _LessonWhiteboardEditorPanelState
         Text('ホワイトボード', style: Theme.of(context).textTheme.titleSmall),
         const SizedBox(height: 4),
         Text(
-          _isPlaying ? '再生中はペンで書けます。' : 'スタートを押すと音声が流れ、同時に書けるようになります。',
+          _isPlaying ? '再生中はペンで書けます。' : 'スタートを押すとメディアが流れ、同時に書けるようになります。',
           style: Theme.of(context).textTheme.bodySmall,
         ),
+        const SizedBox(height: 8),
+        Wrap(
+          key: const ValueKey('whiteboard-board-selector'),
+          spacing: 6,
+          runSpacing: 6,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            for (final entry in _boardSet.orderedBoards.indexed)
+              ChoiceChip(
+                key: ValueKey('whiteboard-board-${entry.$2.id}'),
+                selected: entry.$2.id == _selectedBoardId,
+                label: Text(
+                  entry.$2.title.isEmpty
+                      ? '${entry.$1 + 1}'
+                      : '${entry.$1 + 1}. ${entry.$2.title}',
+                ),
+                onSelected: (_) => _switchBoard(entry.$2.id),
+              ),
+            if (_shouldShowEditingCanvas)
+              OutlinedButton.icon(
+                key: const ValueKey('whiteboard-add-board'),
+                onPressed: _boardSet.canAddBoard ? _addBoard : null,
+                icon: const Icon(Icons.add),
+                label: const Text('ボードを追加'),
+              ),
+          ],
+        ),
+        if (_shouldShowEditingCanvas) ...[
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextButton.icon(
+                onPressed: () => unawaited(_renameSelectedBoard()),
+                icon: const Icon(Icons.drive_file_rename_outline),
+                label: const Text('名前を変更'),
+              ),
+              TextButton.icon(
+                key: const ValueKey('whiteboard-delete-board'),
+                onPressed: _boardSet.boards.length > 1
+                    ? () => unawaited(_deleteSelectedBoard())
+                    : null,
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('ボードを削除'),
+              ),
+              Text('${_boardSet.boards.length}/$maxLessonWhiteboardBoards'),
+            ],
+          ),
+        ],
         const SizedBox(height: 8),
         if (_hasPublishedWhiteboard && !_shouldShowEditingCanvas) ...[
           SizedBox(
             height: 220,
             child: LessonWhiteboardCanvas(
-              strokes: widget.publishedWhiteboard!.strokes,
+              strokes: [
+                for (final layer in _selectedBoard.layerBundle.orderedLayers)
+                  ...layer.strokes,
+              ],
               drawingEnabled: false,
             ),
           ),
@@ -774,11 +1058,7 @@ class _LessonWhiteboardEditorPanelState
                 label: const Text('一時停止'),
               ),
               OutlinedButton.icon(
-                onPressed:
-                    _isSavingDraft ||
-                        (_strokes.isEmpty &&
-                            _editSessionKind !=
-                                WhiteboardEditSessionKind.pendingReset)
+                onPressed: _isSavingDraft
                     ? null
                     : () => unawaited(_saveDraft()),
                 icon: const Icon(Icons.save_outlined),
@@ -821,12 +1101,26 @@ Future<void> saveLessonWhiteboardDraft({
   required String courseId,
   required int lessonIndex,
   required CourseLesson currentLesson,
-  required LessonWhiteboard whiteboard,
+  LessonWhiteboard? whiteboard,
+  BoardSet? boardSet,
 }) async {
-  final draftLayers = LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
-    whiteboard.isEmpty ? null : whiteboard,
-  ).layers;
+  if (whiteboard == null && boardSet == null) {
+    throw ArgumentError('whiteboard or boardSet is required.');
+  }
+  final draftBoardSet =
+      boardSet ??
+      (whiteboard == null || whiteboard.isEmpty
+          ? const BoardSet()
+          : BoardSet.fromLegacyLayers(
+              LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
+                whiteboard,
+              ).layers,
+            ));
+  final draftLayers =
+      draftBoardSet.defaultBoard?.layerBundle.layers ??
+      const <LessonWhiteboardLayer>[];
   final updatedLesson = currentLesson.copyWith(
+    draftBoardSet: draftBoardSet,
     whiteboardDraftLayers: draftLayers,
     clearWhiteboardDraftLayers: draftLayers.isEmpty,
   );

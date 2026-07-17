@@ -172,7 +172,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   bool get _currentSegmentIsAudio =>
       _playlistPlayback?.currentSegmentIsAudio ?? true;
 
-  bool get _hasWhiteboard => !lesson.publishedWhiteboardBundle.isEmpty;
+  bool get _hasWhiteboard => lesson.publishedBoardSet.isNotEmpty;
 
   bool get _isDraggingSlider => _sliderDragPositionSec != null;
 
@@ -2752,7 +2752,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
               Text('ホワイトボード', style: Theme.of(context).textTheme.titleSmall),
               const SizedBox(height: 8),
               LessonPlaybackSyncedWhiteboard(
-                bundle: lesson.publishedWhiteboardBundle,
+                boardSet: lesson.publishedBoardSet,
                 timeline: _mediaTimeline,
                 playback: _playlistPlayback,
                 isPlaying: _isPlaying,

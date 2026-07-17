@@ -572,7 +572,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
   Future<void> _saveWhiteboardDraft({
     required int lessonIndex,
     required _LessonEditorState editor,
-    required LessonWhiteboard whiteboard,
+    required BoardSet boardSet,
   }) async {
     final courseId = widget.course.id;
     if (courseId == null) {
@@ -590,18 +590,17 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         title: editor.titleController.text.trim(),
         durationLabel: durationLabel,
       ),
-      whiteboard: whiteboard,
+      boardSet: boardSet,
     );
 
     if (mounted) {
       setState(() {
-        final draftLayers = LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
-          whiteboard.isEmpty ? null : whiteboard,
-        ).layers;
+        final draftLayers =
+            boardSet.defaultBoard?.layerBundle.layers ??
+            const <LessonWhiteboardLayer>[];
         editor.draftWhiteboardLayers = draftLayers;
-        editor.draftBoardSet = editor.draftBoardSet.copyWithDefaultLayerBundle(
-          LessonWhiteboardLayerBundle(layers: draftLayers),
-        );
+        editor.draftBoardSet = boardSet;
+        editor.workingBoardSet = boardSet;
         editor.workingWhiteboardLayers = LessonWhiteboardLayerBundle(
           layers: draftLayers,
         );
@@ -668,10 +667,10 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                     editor: entry.$2,
                     segment: segment,
                   ),
-                  onDraftSaved: (whiteboard) => _saveWhiteboardDraft(
+                  onDraftSaved: (boardSet) => _saveWhiteboardDraft(
                     lessonIndex: entry.$1,
                     editor: entry.$2,
-                    whiteboard: whiteboard,
+                    boardSet: boardSet,
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -784,6 +783,7 @@ class _LessonEditorState {
     this.publishedWhiteboardLayers = const [],
     this.draftWhiteboardLayers = const [],
     LessonWhiteboardLayerBundle? workingWhiteboardLayers,
+    BoardSet? workingBoardSet,
   }) : workingWhiteboardLayers =
            workingWhiteboardLayers ??
            mergeWhiteboardDraftLayers(
@@ -791,7 +791,14 @@ class _LessonEditorState {
                layers: publishedWhiteboardLayers,
              ),
              draft: LessonWhiteboardLayerBundle(layers: draftWhiteboardLayers),
-           );
+           ),
+       workingBoardSet =
+           workingBoardSet ??
+           (draftBoardSet.isNotEmpty
+               ? draftBoardSet
+               : publishedBoardSet.isNotEmpty
+               ? publishedBoardSet
+               : const BoardSet());
 
   factory _LessonEditorState.fromLesson(CourseLesson lesson) {
     final segments = lesson.mediaSegments.isEmpty
@@ -821,6 +828,9 @@ class _LessonEditorState {
         published: lesson.publishedWhiteboardBundle,
         draft: lesson.draftWhiteboardBundle,
       ),
+      workingBoardSet: lesson.draftBoardSet.isNotEmpty
+          ? lesson.draftBoardSet
+          : lesson.publishedBoardSet,
     );
   }
 
@@ -836,6 +846,7 @@ class _LessonEditorState {
   List<LessonWhiteboardLayer> publishedWhiteboardLayers;
   List<LessonWhiteboardLayer> draftWhiteboardLayers;
   LessonWhiteboardLayerBundle workingWhiteboardLayers;
+  BoardSet workingBoardSet;
 
   bool get isAnySegmentUploading =>
       segments.any((segment) => segment.isUploading);
@@ -884,10 +895,12 @@ class _LessonEditorState {
     required String title,
     required String durationLabel,
   }) {
-    final nextPublishedBoardSet = !draftBoardSet.isEmpty
+    final nextPublishedBoardSet = draftBoardSet.isNotEmpty
         ? draftBoardSet
-        : !publishedBoardSet.isEmpty
+        : publishedBoardSet.isNotEmpty
         ? publishedBoardSet
+        : workingBoardSet.isNotEmpty
+        ? workingBoardSet
         : workingWhiteboardLayers.isEmpty
         ? const BoardSet()
         : publishedBoardSet.copyWithDefaultLayerBundle(workingWhiteboardLayers);
@@ -913,6 +926,7 @@ class _LessonEditorState {
     publishedWhiteboardLayers = lesson.whiteboardLayers;
     draftWhiteboardLayers = lesson.whiteboardDraftLayers;
     workingWhiteboardLayers = lesson.publishedWhiteboardBundle;
+    workingBoardSet = lesson.publishedBoardSet;
     final lockedIds = lesson.lockedSegmentIds;
     for (final segment in segments) {
       segment.isLocked = lockedIds.contains(segment.id);
@@ -1011,7 +1025,7 @@ class _LessonEditorCardHost extends StatefulWidget {
   final String? Function(String? value) requiredText;
   final ValueChanged<_MediaSegmentEditorState> onAddSegment;
   final ValueChanged<_MediaSegmentEditorState> onUploadSegment;
-  final WhiteboardDraftSaveCallback onDraftSaved;
+  final WhiteboardBoardSetDraftSaveCallback onDraftSaved;
 
   @override
   State<_LessonEditorCardHost> createState() => _LessonEditorCardHostState();
@@ -1064,7 +1078,7 @@ class _LessonEditorCard extends StatelessWidget {
   final VoidCallback onChanged;
   final ValueChanged<_MediaSegmentEditorState> onAddSegment;
   final ValueChanged<_MediaSegmentEditorState> onUploadSegment;
-  final WhiteboardDraftSaveCallback onDraftSaved;
+  final WhiteboardBoardSetDraftSaveCallback onDraftSaved;
 
   void _showAddSegmentDialog(BuildContext context) {
     unawaited(
@@ -1264,9 +1278,7 @@ class _LessonEditorCard extends StatelessWidget {
               icon: const Icon(Icons.quiz),
               label: const Text('クイズを管理'),
             ),
-            if (editor.hasAudioSegment &&
-                editor.hasPlayableMedia &&
-                courseId.isNotEmpty) ...[
+            if (editor.hasPlayableMedia && courseId.isNotEmpty) ...[
               const SizedBox(height: 16),
               const Divider(),
               const SizedBox(height: 16),
@@ -1278,16 +1290,14 @@ class _LessonEditorCard extends StatelessWidget {
                 lessonNumber: index,
                 mediaSegments: builtSegments,
                 durationLabel: durationLabel,
-                publishedWhiteboard: editor.publishedWhiteboardLayers
-                    .toLegacyWhiteboard(),
-                draftWhiteboard: editor.draftWhiteboardLayers
-                    .toLegacyWhiteboard(),
-                onDraftSaved: onDraftSaved,
-                onWhiteboardChanged: (whiteboard) {
+                publishedBoardSet: editor.publishedBoardSet,
+                draftBoardSet: editor.draftBoardSet,
+                onBoardSetDraftSaved: onDraftSaved,
+                onBoardSetChanged: (boardSet) {
+                  editor.workingBoardSet = boardSet;
                   editor.workingWhiteboardLayers =
-                      LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
-                        whiteboard,
-                      );
+                      boardSet.defaultBoard?.layerBundle ??
+                      const LessonWhiteboardLayerBundle();
                 },
               ),
             ],
@@ -1434,11 +1444,5 @@ class _SegmentEditorTile extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-extension on List<LessonWhiteboardLayer> {
-  LessonWhiteboard? toLegacyWhiteboard() {
-    return LessonWhiteboardLayerBundle(layers: this).toLegacyWhiteboard();
   }
 }

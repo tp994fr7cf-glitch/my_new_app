@@ -11,6 +11,13 @@ class LessonWhiteboardBoard {
   });
 
   static const String defaultBoardId = 'default';
+  static int _generatedIdSequence = 0;
+
+  /// Generates a process-unique ID suitable for a newly-created board.
+  static String generateId() {
+    final micros = DateTime.now().microsecondsSinceEpoch;
+    return 'board-$micros-${_generatedIdSequence++}';
+  }
 
   final String id;
   final int order;
@@ -87,11 +94,25 @@ class BoardSet {
   final List<LessonWhiteboardBoardSwitchEvent> switchEvents;
 
   bool get isEmpty => boards.isEmpty;
+  bool get isNotEmpty => boards.isNotEmpty;
+  bool get canAddBoard => boards.length < maxLessonWhiteboardBoards;
+
+  int get nextSwitchSequence {
+    var next = 0;
+    for (final event in switchEvents) {
+      if (event.sequence >= next) {
+        next = event.sequence + 1;
+      }
+    }
+    return next;
+  }
 
   List<LessonWhiteboardBoard> get orderedBoards {
     final sorted = List<LessonWhiteboardBoard>.from(boards)
       ..sort((a, b) => a.order.compareTo(b.order));
-    return sorted;
+    return sorted.length <= maxLessonWhiteboardBoards
+        ? sorted
+        : sorted.take(maxLessonWhiteboardBoards).toList();
   }
 
   List<LessonWhiteboardBoardSwitchEvent> get orderedSwitchEvents {
@@ -120,7 +141,7 @@ class BoardSet {
   }
 
   LessonWhiteboardBoard? boardById(String boardId) {
-    for (final board in boards) {
+    for (final board in orderedBoards) {
       if (board.id == boardId) {
         return board;
       }
@@ -145,17 +166,38 @@ class BoardSet {
     }
     final boardsData = data['boards'];
     final eventsData = data['switchEvents'];
-    final parsedBoards = boardsData is List
+    final rawBoards = boardsData is List
         ? boardsData
               .whereType<Map>()
               .map(LessonWhiteboardBoard.fromMap)
               .take(maxLessonWhiteboardBoards)
               .toList()
         : const <LessonWhiteboardBoard>[];
+    final usedIds = <String>{};
+    final parsedBoards = <LessonWhiteboardBoard>[];
+    for (var index = 0; index < rawBoards.length; index++) {
+      final board = rawBoards[index];
+      var id = board.id.trim();
+      if (id.isEmpty || usedIds.contains(id)) {
+        var suffix = index + 1;
+        do {
+          id = 'board-$suffix';
+          suffix++;
+        } while (usedIds.contains(id));
+      }
+      usedIds.add(id);
+      parsedBoards.add(board.copyWith(id: id, order: index));
+    }
     final parsedEvents = eventsData is List
         ? eventsData
               .whereType<Map>()
               .map(LessonWhiteboardBoardSwitchEvent.fromMap)
+              .where(
+                (event) =>
+                    usedIds.contains(event.boardId) &&
+                    event.globalTimestampSec.isFinite &&
+                    event.globalTimestampSec >= 0,
+              )
               .toList()
         : const <LessonWhiteboardBoardSwitchEvent>[];
     return BoardSet(boards: parsedBoards, switchEvents: parsedEvents);
@@ -206,6 +248,38 @@ class BoardSet {
             board.copyWith(layerBundle: layerBundle)
           else
             board,
+      ],
+    );
+  }
+
+  /// Returns a valid set for an editor, which must always have one board.
+  BoardSet ensureEditable() {
+    if (boards.isNotEmpty) {
+      return copyWith(
+        boards: [
+          for (final entry in orderedBoards.indexed)
+            entry.$2.copyWith(order: entry.$1),
+        ],
+      );
+    }
+    return const BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+        ),
+      ],
+    );
+  }
+
+  BoardSet replaceBoard(LessonWhiteboardBoard replacement) {
+    if (boardById(replacement.id) == null) {
+      return this;
+    }
+    return copyWith(
+      boards: [
+        for (final board in boards)
+          if (board.id == replacement.id) replacement else board,
       ],
     );
   }

@@ -51,26 +51,34 @@ void main() {
       LessonWhiteboardBoard.defaultBoardId,
       'second',
     ]);
-    expect(boardSet.resolveBoardAt(0)?.id, LessonWhiteboardBoard.defaultBoardId);
+    expect(
+      boardSet.resolveBoardAt(0)?.id,
+      LessonWhiteboardBoard.defaultBoardId,
+    );
     expect(boardSet.resolveBoardAt(5)?.id, 'second');
     expect(boardSet.resolveBoardAt(10)?.id, 'second');
-    expect(
-      boardSet.orderedSwitchEvents.map((event) => event.sequence),
-      [0, 1, 2],
-    );
+    expect(boardSet.orderedSwitchEvents.map((event) => event.sequence), [
+      0,
+      1,
+      2,
+    ]);
   });
 
-  test('round-trip retains every board switch event including same-time events', () {
-    final restored = BoardSet.fromMap(boardSet.toMap());
+  test(
+    'round-trip retains every board switch event including same-time events',
+    () {
+      final restored = BoardSet.fromMap(boardSet.toMap());
 
-    expect(restored.boards, hasLength(2));
-    expect(restored.switchEvents, hasLength(3));
-    expect(
-      restored.orderedSwitchEvents.map((event) => event.sequence),
-      [0, 1, 2],
-    );
-    expect(restored.resolveBoardAt(10)?.id, 'second');
-  });
+      expect(restored.boards, hasLength(2));
+      expect(restored.switchEvents, hasLength(3));
+      expect(restored.orderedSwitchEvents.map((event) => event.sequence), [
+        0,
+        1,
+        2,
+      ]);
+      expect(restored.resolveBoardAt(10)?.id, 'second');
+    },
+  );
 
   test('parsing enforces the maximum of 20 boards', () {
     final parsed = BoardSet.fromMap({
@@ -83,6 +91,24 @@ void main() {
 
     expect(parsed.boards, hasLength(maxLessonWhiteboardBoards));
     expect(parsed.boards.last.id, 'board-19');
+  });
+
+  test('parsing repairs blank and duplicate board IDs', () {
+    final parsed = BoardSet.fromMap({
+      'boards': [
+        {'id': '', 'order': 8, 'layers': <Object>[]},
+        {'id': 'same', 'order': 4, 'layers': <Object>[]},
+        {'id': 'same', 'order': 2, 'layers': <Object>[]},
+      ],
+      'switchEvents': <Object>[],
+    });
+
+    expect(parsed.boards.map((board) => board.id).toSet(), hasLength(3));
+    expect(parsed.boards.map((board) => board.order), [0, 1, 2]);
+    expect(
+      LessonWhiteboardBoard.generateId(),
+      isNot(equals(LessonWhiteboardBoard.generateId())),
+    );
   });
 
   test('legacy whiteboardLayers fall back to one default board', () {
