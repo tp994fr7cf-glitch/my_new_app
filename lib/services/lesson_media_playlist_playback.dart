@@ -111,13 +111,19 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   /// delaying or dropping that tap (see [play] / [pause]).
   int _playbackIntentGeneration = 0;
 
+  @override
   Stream<double> get globalPositionStream => _globalPositionController.stream;
+  @override
   Stream<int> get totalDurationStream => _totalDurationController.stream;
+  @override
   Stream<bool> get playingStream => _playingController.stream;
+  @override
   Stream<int> get segmentIndexStream => _segmentIndexController.stream;
 
+  @override
   double get globalPositionSec => _globalPositionSec;
 
+  @override
   double get liveGlobalPositionSec {
     if (_timeline.isEmpty || _activePlayer == null || _isSwitchingSegment) {
       return _globalPositionSec;
@@ -129,12 +135,18 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     );
   }
 
+  @override
   int get totalDurationSec => _totalDurationSec;
+  @override
   int get currentSegmentIndex => _currentSegmentIndex;
+  @override
   bool get isPlaying => _isPlaying;
+  @override
   bool get isReady => _isReady;
+  @override
   bool get hasSegments => _timeline.segmentCount > 0;
 
+  @override
   LessonMediaSegment? get currentSegment {
     final ordered = _timeline.orderedSegments;
     if (_currentSegmentIndex < 0 || _currentSegmentIndex >= ordered.length) {
@@ -143,10 +155,13 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     return ordered[_currentSegmentIndex];
   }
 
+  @override
   bool get currentSegmentIsAudio => currentSegment?.isAudio ?? true;
 
+  @override
   VideoPlayerController? get videoController => _activePlayer?.videoController;
 
+  @override
   Future<void> openSegments(List<LessonMediaSegment> segments) async {
     await disposePlayer();
     _timeline = LessonMediaTimeline(
@@ -535,12 +550,14 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   /// whichever player the switch ends up on, instead of trusting a
   /// "was it playing before the switch" snapshot that this call just made
   /// stale. See `_activateSegment`'s use of `resumeDecisionGeneration`.
+  @override
   Future<void> play() async {
     _playbackIntentGeneration++;
     await _playInternal();
   }
 
   /// Public entry point for user/UI-initiated pause requests. See [play].
+  @override
   Future<void> pause() async {
     _playbackIntentGeneration++;
     await _pauseInternal();
@@ -567,6 +584,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _playingController.add(false);
   }
 
+  @override
   Future<void> seekGlobal(double globalSec) async {
     if (_timeline.isEmpty) {
       return;
@@ -667,6 +685,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _globalPositionController.add(_globalPositionSec);
   }
 
+  @override
   Future<void> seekToSegmentIndex(
     int segmentIndex, {
     double localStartSec = 0,
@@ -681,6 +700,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     await seekGlobal(globalSec);
   }
 
+  @override
   Future<void> disposePlayer() async {
     _isReady = false;
     _isPlaying = false;
@@ -692,6 +712,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _totalDurationSec = 0;
   }
 
+  @override
   Future<void> close() async {
     await disposePlayer();
     await _globalPositionController.close();
@@ -736,6 +757,7 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
              ],
        );
 
+  @override
   final int totalDurationSec;
   final List<LessonMediaSegment> _segments;
   final StreamController<double> _globalPositionController =
@@ -753,19 +775,31 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   int _currentSegmentIndex = 0;
   Timer? _timer;
 
+  @override
   Stream<double> get globalPositionStream => _globalPositionController.stream;
+  @override
   Stream<int> get totalDurationStream => _totalDurationController.stream;
+  @override
   Stream<bool> get playingStream => _playingController.stream;
+  @override
   Stream<int> get segmentIndexStream => _segmentIndexController.stream;
 
+  @override
   double get globalPositionSec => _globalPositionSec;
+  @override
   double get liveGlobalPositionSec => _globalPositionSec;
+  @override
   int get currentSegmentIndex => _currentSegmentIndex;
+  @override
   bool get isPlaying => _isPlaying;
+  @override
   bool get isReady => _isReady;
+  @override
   bool get hasSegments => _segments.isNotEmpty;
+  @override
   bool get currentSegmentIsAudio => currentSegment?.isAudio ?? true;
 
+  @override
   LessonMediaSegment? get currentSegment {
     if (_currentSegmentIndex < 0 || _currentSegmentIndex >= _segments.length) {
       return null;
@@ -773,8 +807,10 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     return _segments[_currentSegmentIndex];
   }
 
+  @override
   VideoPlayerController? get videoController => null;
 
+  @override
   Future<void> openSegments(List<LessonMediaSegment> segments) async {
     _segments
       ..clear()
@@ -787,6 +823,7 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _segmentIndexController.add(_currentSegmentIndex);
   }
 
+  @override
   Future<void> play() async {
     if (_globalPositionSec >= totalDurationSec) {
       await seekGlobal(0);
@@ -816,6 +853,7 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     });
   }
 
+  @override
   Future<void> pause() async {
     _timer?.cancel();
     _timer = null;
@@ -823,6 +861,7 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _playingController.add(false);
   }
 
+  @override
   Future<void> seekGlobal(double globalSec) async {
     _globalPositionSec = globalSec.clamp(0, totalDurationSec.toDouble());
     _globalPositionController.add(_globalPositionSec);
@@ -836,6 +875,7 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     }
   }
 
+  @override
   Future<void> seekToSegmentIndex(
     int segmentIndex, {
     double localStartSec = 0,
@@ -854,12 +894,14 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _segmentIndexController.add(_currentSegmentIndex);
   }
 
+  @override
   Future<void> disposePlayer() async {
     _timer?.cancel();
     _isReady = false;
     _isPlaying = false;
   }
 
+  @override
   Future<void> close() async {
     await disposePlayer();
     await _globalPositionController.close();

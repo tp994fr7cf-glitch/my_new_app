@@ -742,7 +742,7 @@ const sampleCourses = [
       CourseLesson(
         title: '短い会話を聞き取るコツ',
         duration: '1分30秒',
-        mediaSegments: const [
+        mediaSegments: [
           LessonMediaSegment(
             id: 'sample-audio-1',
             order: 0,
@@ -754,7 +754,7 @@ const sampleCourses = [
       CourseLesson(
         title: '頻出表現の聞き分け',
         duration: '1分30秒',
-        mediaSegments: const [
+        mediaSegments: [
           LessonMediaSegment(
             id: 'sample-audio-2',
             order: 0,
@@ -765,7 +765,7 @@ const sampleCourses = [
       CourseLesson(
         title: 'ニュース音声に慣れる',
         duration: '1分30秒',
-        mediaSegments: const [
+        mediaSegments: [
           LessonMediaSegment(
             id: 'sample-audio-3',
             order: 0,
@@ -776,7 +776,7 @@ const sampleCourses = [
       CourseLesson(
         title: 'シャドーイング実践',
         duration: '1分30秒',
-        mediaSegments: const [
+        mediaSegments: [
           LessonMediaSegment(
             id: 'sample-audio-4',
             order: 0,
