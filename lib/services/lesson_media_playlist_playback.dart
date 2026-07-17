@@ -23,6 +23,7 @@ abstract class LessonMediaPlaylistController {
   Stream<int> get totalDurationStream;
   Stream<bool> get playingStream;
   Stream<int> get segmentIndexStream;
+  Stream<int> get segmentCompletedStream;
 
   double get globalPositionSec;
   double get liveGlobalPositionSec;
@@ -40,19 +41,13 @@ abstract class LessonMediaPlaylistController {
   Future<void> play();
   Future<void> pause();
   Future<void> seekGlobal(double globalSec);
-  Future<void> seekToSegmentIndex(
-    int segmentIndex, {
-    double localStartSec = 0,
-  });
+  Future<void> seekToSegmentIndex(int segmentIndex, {double localStartSec = 0});
   Future<void> disposePlayer();
   Future<void> close();
 }
 
 class _MediaPlayerSlot {
-  _MediaPlayerSlot({
-    required this.isAudio,
-    required this.createPlayer,
-  });
+  _MediaPlayerSlot({required this.isAudio, required this.createPlayer});
 
   final bool isAudio;
   final LessonMediaPlayback Function() createPlayer;
@@ -70,10 +65,21 @@ class _MediaPlayerSlot {
   }
 }
 
+class _PlaylistSeekTarget {
+  const _PlaylistSeekTarget({
+    required this.globalSec,
+    this.segmentIndex,
+    this.localSec,
+  });
+
+  final double globalSec;
+  final int? segmentIndex;
+  final double? localSec;
+}
+
 class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
-  LessonMediaPlaylistPlayback({
-    LessonMediaPlaybackFactory? playbackFactory,
-  }) : _playbackFactory = playbackFactory ?? createLessonMediaPlayback;
+  LessonMediaPlaylistPlayback({LessonMediaPlaybackFactory? playbackFactory})
+    : _playbackFactory = playbackFactory ?? createLessonMediaPlayback;
 
   final LessonMediaPlaybackFactory _playbackFactory;
   final StreamController<double> _globalPositionController =
@@ -84,6 +90,8 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       StreamController<bool>.broadcast();
   final StreamController<int> _segmentIndexController =
       StreamController<int>.broadcast();
+  final StreamController<int> _segmentCompletedController =
+      StreamController<int>.broadcast();
 
   LessonMediaTimeline _timeline = const LessonMediaTimeline(segments: []);
   LessonMediaPlayback? _activePlayer;
@@ -93,6 +101,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   StreamSubscription<Duration>? _positionSubscription;
   StreamSubscription<Duration?>? _durationSubscription;
   StreamSubscription<bool>? _playingSubscription;
+  StreamSubscription<void>? _completedSubscription;
 
   int _currentSegmentIndex = 0;
   double _globalPositionSec = 0;
@@ -102,8 +111,8 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   final bool _autoAdvanceEnabled = true;
   bool _isSwitchingSegment = false;
   bool _isAdvancing = false;
-  double? _pendingSeekGlobalSec;
-  bool _seekInProgress = false;
+  _PlaylistSeekTarget? _pendingSeekTarget;
+  Future<void>? _seekDrainFuture;
 
   /// Bumped every time a user/UI-initiated [play] or [pause] call actually
   /// runs. Used to detect "did the user tap play/pause again while a
@@ -119,6 +128,8 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   Stream<bool> get playingStream => _playingController.stream;
   @override
   Stream<int> get segmentIndexStream => _segmentIndexController.stream;
+  @override
+  Stream<int> get segmentCompletedStream => _segmentCompletedController.stream;
 
   @override
   double get globalPositionSec => _globalPositionSec;
@@ -164,8 +175,13 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   @override
   Future<void> openSegments(List<LessonMediaSegment> segments) async {
     await disposePlayer();
+    // Published metadata can outlive a failed/removed upload. Keep those
+    // entries visible to the UI, but never let an URL-less entry prevent a
+    // later valid part from opening.
     _timeline = LessonMediaTimeline(
-      segments: LessonMediaSegment.normalizeOrders(segments),
+      segments: LessonMediaSegment.normalizeOrders(
+        segments.where((segment) => segment.hasUrl).toList(),
+      ),
     );
     _totalDurationSec = _timeline.totalDurationSec;
     _totalDurationController.add(_totalDurationSec);
@@ -313,7 +329,9 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       );
     } catch (error) {
       // Preload failures should not interrupt active playback.
-      _logSwitch('_preloadNextSegment: FAILED segmentIndex=$segmentIndex error=$error');
+      _logSwitch(
+        '_preloadNextSegment: FAILED segmentIndex=$segmentIndex error=$error',
+      );
     }
   }
 
@@ -352,10 +370,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
         await _activePlayer!.pause();
       }
 
-      await _prepareSegmentInSlot(
-        segmentIndex,
-        localStartSec: localStartSec,
-      );
+      await _prepareSegmentInSlot(segmentIndex, localStartSec: localStartSec);
 
       final slot = _slotForSegment(segment);
       await _detachActiveSubscriptions();
@@ -403,10 +418,12 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       // fully settled. Re-apply the user's latest wish against it, instead
       // of blindly trusting the pre-switch snapshot, whenever a play/pause
       // tap is detected to have landed since this switch began.
-      final userActedDuringSwitch = resumeDecisionGeneration != null &&
+      final userActedDuringSwitch =
+          resumeDecisionGeneration != null &&
           _playbackIntentGeneration != resumeDecisionGeneration;
-      final effectiveResume =
-          userActedDuringSwitch ? _isPlaying : shouldResumePlaying;
+      final effectiveResume = userActedDuringSwitch
+          ? _isPlaying
+          : shouldResumePlaying;
       _logSwitch(
         '_activateSegment settling: segmentIndex=$segmentIndex '
         'shouldResumePlaying=$shouldResumePlaying '
@@ -431,15 +448,20 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       _emitTotalDuration();
     });
     _playingSubscription = player.playingStream.listen(_handlePlayingUpdate);
+    _completedSubscription = player.completedStream.listen((_) {
+      unawaited(_handleNaturalCompletion());
+    });
   }
 
   Future<void> _detachActiveSubscriptions() async {
     await _positionSubscription?.cancel();
     await _durationSubscription?.cancel();
     await _playingSubscription?.cancel();
+    await _completedSubscription?.cancel();
     _positionSubscription = null;
     _durationSubscription = null;
     _playingSubscription = null;
+    _completedSubscription = null;
   }
 
   void _syncActivePlaybackPosition({bool forceEmit = false}) {
@@ -480,14 +502,17 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       localSec: localSec,
     );
     _globalPositionController.add(_globalPositionSec);
+  }
 
-    final segmentDuration = segment.durationSec.toDouble();
-    if (_isPlaying &&
-        _autoAdvanceEnabled &&
-        segmentDuration > 0 &&
-        localSec >= segmentDuration - 0.05) {
-      unawaited(_advanceToNextSegmentOrStop());
+  Future<void> _handleNaturalCompletion() async {
+    if (_isSwitchingSegment ||
+        _seekDrainFuture != null ||
+        _isAdvancing ||
+        !_autoAdvanceEnabled) {
+      return;
     }
+    _segmentCompletedController.add(_currentSegmentIndex);
+    await _advanceToNextSegmentOrStop();
   }
 
   Future<void> _advanceToNextSegmentOrStop() async {
@@ -505,12 +530,13 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
         return;
       }
 
-      final wasPlaying = _isPlaying;
       final generationAtStart = _playbackIntentGeneration;
       await _activateSegment(
         nextIndex,
         localStartSec: 0,
-        resumePlaying: wasPlaying,
+        // Natural completion means the user's playback intent is still
+        // "play", even when the native player emits playing=false first.
+        resumePlaying: true,
         resumeDecisionGeneration: generationAtStart,
       );
     } finally {
@@ -520,6 +546,13 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
 
   void _handlePlayingUpdate(bool isPlaying) {
     if (_isSwitchingSegment) {
+      return;
+    }
+    _emitPlaying(isPlaying);
+  }
+
+  void _emitPlaying(bool isPlaying) {
+    if (_isPlaying == isPlaying) {
       return;
     }
     _isPlaying = isPlaying;
@@ -572,16 +605,14 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     }
     _logSwitch('_playInternal: currentSegmentIndex=$_currentSegmentIndex');
     await _activePlayer!.play();
-    _isPlaying = true;
-    _playingController.add(true);
+    _emitPlaying(true);
     _syncActivePlaybackPosition(forceEmit: true);
   }
 
   Future<void> _pauseInternal() async {
     _logSwitch('_pauseInternal: currentSegmentIndex=$_currentSegmentIndex');
     await _activePlayer?.pause();
-    _isPlaying = false;
-    _playingController.add(false);
+    _emitPlaying(false);
   }
 
   @override
@@ -589,49 +620,84 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     if (_timeline.isEmpty) {
       return;
     }
+    final clampedGlobalSec = globalSec.clamp(0.0, _totalDurationSec.toDouble());
+    await _enqueueSeek(_PlaylistSeekTarget(globalSec: clampedGlobalSec));
+  }
 
+  Future<void> _enqueueSeek(_PlaylistSeekTarget target) async {
     _logSwitch(
-      'seekGlobal called: globalSec=$globalSec '
-      'seekInProgress=$_seekInProgress '
+      'seek called: globalSec=${target.globalSec} '
+      'seekInProgress=${_seekDrainFuture != null} '
       'currentSegmentIndex=$_currentSegmentIndex',
     );
 
-    _pendingSeekGlobalSec = globalSec.clamp(
-      0.0,
-      _totalDurationSec.toDouble(),
-    );
-    if (_seekInProgress) {
+    _pendingSeekTarget = target;
+    final activeDrain = _seekDrainFuture;
+    if (activeDrain != null) {
       _logSwitch(
-        'seekGlobal: another seek already in progress, queued '
-        'target=$_pendingSeekGlobalSec',
+        'seek: another seek already in progress, queued '
+        'target=${target.globalSec}',
       );
-      return;
+      return activeDrain;
     }
 
-    _seekInProgress = true;
+    final completion = Completer<void>();
+    _seekDrainFuture = completion.future;
+    unawaited(_runSeekDrain(target.globalSec, completion));
+    return completion.future;
+  }
+
+  Future<void> _runSeekDrain(
+    double requestedGlobalSec,
+    Completer<void> completion,
+  ) async {
     try {
-      while (_pendingSeekGlobalSec != null) {
-        final target = _pendingSeekGlobalSec!;
-        _pendingSeekGlobalSec = null;
-        await _seekGlobalImmediate(target);
-      }
+      await _drainPendingSeeks(requestedGlobalSec);
+      // Clear the active drain before completing callers. A request made by
+      // one of their continuations must start a new drain rather than attach
+      // itself to an already-completed Future and remain unapplied.
+      _seekDrainFuture = null;
+      completion.complete();
     } catch (error, stackTrace) {
-      _logSwitch('seekGlobal: ERROR globalSec=$globalSec error=$error\n$stackTrace');
-      rethrow;
+      _seekDrainFuture = null;
+      completion.completeError(error, stackTrace);
     } finally {
-      // Always clear this even if a segment activation above throws (e.g.
-      // the new segment's media fails to load), so a single failed seek
-      // does not permanently block all future seeks.
-      _pendingSeekGlobalSec = null;
-      _seekInProgress = false;
-      _logSwitch('seekGlobal: finished globalSec=$globalSec');
+      _logSwitch('seek: finished globalSec=$requestedGlobalSec');
     }
   }
 
-  Future<void> _seekGlobalImmediate(double globalSec) async {
-    final position = _timeline.resolveGlobalSec(globalSec);
+  Future<void> _drainPendingSeeks(double requestedGlobalSec) async {
+    try {
+      while (_pendingSeekTarget != null) {
+        final target = _pendingSeekTarget!;
+        _pendingSeekTarget = null;
+        await _seekImmediate(target);
+      }
+    } catch (error, stackTrace) {
+      _logSwitch(
+        'seekGlobal: ERROR globalSec=$requestedGlobalSec '
+        'error=$error\n$stackTrace',
+      );
+      rethrow;
+    } finally {
+      // A failed activation must not permanently block later seek requests.
+      _pendingSeekTarget = null;
+    }
+  }
+
+  Future<void> _seekImmediate(_PlaylistSeekTarget target) async {
+    final forcedSegmentIndex = target.segmentIndex;
+    final position = forcedSegmentIndex == null
+        ? _timeline.resolveGlobalSec(target.globalSec)
+        : LessonMediaPosition(
+            segmentIndex: forcedSegmentIndex,
+            segmentId: _timeline.orderedSegments[forcedSegmentIndex].id,
+            localSec: target.localSec!,
+            globalSec: target.globalSec,
+            segment: _timeline.orderedSegments[forcedSegmentIndex],
+          );
     _logSwitch(
-      '_seekGlobalImmediate: globalSec=$globalSec -> '
+      '_seekImmediate: globalSec=${target.globalSec} -> '
       'segmentIndex=${position.segmentIndex} localSec=${position.localSec} '
       'currentSegmentIndex=$_currentSegmentIndex '
       'crossSegment=${position.segmentIndex != _currentSegmentIndex}',
@@ -697,14 +763,25 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       segmentIndex: segmentIndex,
       localSec: localStartSec,
     );
-    await seekGlobal(globalSec);
+    final segment = _timeline.orderedSegments[segmentIndex];
+    final clampedLocalSec = localStartSec.clamp(
+      0.0,
+      segment.durationSec.toDouble(),
+    );
+    await _enqueueSeek(
+      _PlaylistSeekTarget(
+        globalSec: globalSec,
+        segmentIndex: segmentIndex,
+        localSec: clampedLocalSec,
+      ),
+    );
   }
 
   @override
   Future<void> disposePlayer() async {
     _isReady = false;
     _isPlaying = false;
-    _pendingSeekGlobalSec = null;
+    _pendingSeekTarget = null;
     await _disposeAllSlots();
     _timeline = const LessonMediaTimeline(segments: []);
     _currentSegmentIndex = 0;
@@ -719,6 +796,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     await _totalDurationController.close();
     await _playingController.close();
     await _segmentIndexController.close();
+    await _segmentCompletedController.close();
   }
 
   Future<void> _disposeAllSlots() async {
@@ -768,6 +846,8 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       StreamController<bool>.broadcast();
   final StreamController<int> _segmentIndexController =
       StreamController<int>.broadcast();
+  final StreamController<int> _segmentCompletedController =
+      StreamController<int>.broadcast();
 
   double _globalPositionSec = 0;
   bool _isReady = false;
@@ -783,6 +863,8 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   Stream<bool> get playingStream => _playingController.stream;
   @override
   Stream<int> get segmentIndexStream => _segmentIndexController.stream;
+  @override
+  Stream<int> get segmentCompletedStream => _segmentCompletedController.stream;
 
   @override
   double get globalPositionSec => _globalPositionSec;
@@ -814,7 +896,7 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   Future<void> openSegments(List<LessonMediaSegment> segments) async {
     _segments
       ..clear()
-      ..addAll(segments);
+      ..addAll(segments.where((segment) => segment.hasUrl));
     _isReady = true;
     _globalPositionSec = 0;
     _currentSegmentIndex = 0;
@@ -841,13 +923,17 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       _globalPositionController.add(_globalPositionSec);
       if (_segments.isNotEmpty) {
         final timeline = LessonMediaTimeline(segments: _segments);
-        final nextIndex = timeline.resolveGlobalSec(_globalPositionSec).segmentIndex;
+        final nextIndex = timeline
+            .resolveGlobalSec(_globalPositionSec)
+            .segmentIndex;
         if (nextIndex != _currentSegmentIndex) {
+          _segmentCompletedController.add(_currentSegmentIndex);
           _currentSegmentIndex = nextIndex;
           _segmentIndexController.add(_currentSegmentIndex);
         }
       }
       if (next >= totalDurationSec) {
+        _segmentCompletedController.add(_currentSegmentIndex);
         unawaited(pause());
       }
     });
@@ -867,7 +953,9 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _globalPositionController.add(_globalPositionSec);
     if (_segments.isNotEmpty) {
       final timeline = LessonMediaTimeline(segments: _segments);
-      final nextIndex = timeline.resolveGlobalSec(_globalPositionSec).segmentIndex;
+      final nextIndex = timeline
+          .resolveGlobalSec(_globalPositionSec)
+          .segmentIndex;
       if (nextIndex != _currentSegmentIndex) {
         _currentSegmentIndex = nextIndex;
         _segmentIndexController.add(_currentSegmentIndex);
@@ -908,5 +996,6 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     await _totalDurationController.close();
     await _playingController.close();
     await _segmentIndexController.close();
+    await _segmentCompletedController.close();
   }
 }

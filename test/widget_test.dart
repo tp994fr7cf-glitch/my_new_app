@@ -15,7 +15,6 @@ import 'package:my_new_app/screens/home_page.dart';
 import 'package:my_new_app/screens/learning_records_page.dart';
 import 'package:my_new_app/screens/teacher_application_page.dart';
 import 'package:my_new_app/screens/teacher_course_list_page.dart';
-import 'package:my_new_app/screens/teacher_interaction_manage_page.dart';
 import 'package:my_new_app/screens/teacher_quiz_manage_page.dart';
 import 'package:my_new_app/screens/video_lesson_page.dart';
 import 'package:my_new_app/models/lesson_media_segment.dart';
@@ -3145,6 +3144,9 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('00:00 / 00:05'), findsOneWidget);
+      final secondPartSlider = tester.widget<Slider>(find.byType(Slider));
+      _completeSliderSeek(secondPartSlider, 2);
+      await tester.pump();
 
       await tester.tap(
         find.byKey(const ValueKey('lesson-part-button-published-a')),
@@ -3161,8 +3163,140 @@ void main() {
         findsOneWidget,
       );
       expect(find.widgetWithText(FilledButton, '一時停止'), findsOneWidget);
+      expect(find.text('00:02 / 00:05'), findsOneWidget);
       expect(find.textContaining('公開パートA\n完了'), findsOneWidget);
       expect(find.text('視聴時間: 5秒', skipOffstage: false), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'independent exact-end seek stays on the part without completing it',
+    (WidgetTester tester) async {
+      final course = _courseWithIndependentLesson(
+        sampleCourses.first,
+        playbackMode: LessonPlaybackMode.independentSingle,
+      );
+      final segments = course.lessons.first.effectivePublishedMediaSegments;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: VideoLessonPage(
+            course: course,
+            lesson: course.lessons.first,
+            lessonNumber: 1,
+            playlistPlaybackFactory: () => FakeLessonMediaPlaylistPlayback(
+              totalDurationSec: 10,
+              segments: segments,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, '再生'));
+      await tester.pump(const Duration(seconds: 1));
+
+      final slider = tester.widget<Slider>(find.byType(Slider));
+      _completeSliderSeek(slider, 5);
+      await tester.pump();
+
+      expect(
+        find.byKey(const ValueKey('lesson-part-player-published-a')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('公開パートA\n完了'), findsNothing);
+      expect(find.textContaining('すべてのパートを視聴しました'), findsNothing);
+      expect(find.text('視聴時間: 1秒', skipOffstage: false), findsOneWidget);
+
+      await tester.tap(
+        find.byKey(const ValueKey('lesson-part-button-published-b')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('公開パートA\n完了'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('lesson-part-player-published-b')),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('small seek while playing does not count skipped time', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(_playableVideoLessonPage(sampleCourses.first));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '再生'));
+    await tester.pump(const Duration(seconds: 1));
+
+    final slider = tester.widget<Slider>(find.byType(Slider));
+    _completeSliderSeek(slider, 2);
+    await tester.pump();
+
+    expect(find.text('視聴時間: 1秒', skipOffstage: false), findsOneWidget);
+    expect(find.textContaining('視聴終了地点に到達しました'), findsNothing);
+  });
+
+  testWidgets(
+    'URL-less published part is identified while a later valid part plays',
+    (WidgetTester tester) async {
+      final base = sampleCourses.first;
+      const missing = LessonMediaSegment(
+        id: 'missing-upload',
+        order: 0,
+        mediaType: 'audio',
+        title: '壊れた公開パート',
+        durationSec: 30,
+      );
+      const valid = LessonMediaSegment(
+        id: 'valid-upload',
+        order: 1,
+        mediaType: 'audio',
+        title: '再生可能パート',
+        url: 'https://example.com/valid.mp3',
+        durationSec: 10,
+      );
+      final lesson = CourseLesson(
+        title: '一部欠損',
+        duration: '10秒',
+        mediaSegments: const [missing, valid],
+        publishedSegmentIds: const ['missing-upload', 'valid-upload'],
+      );
+      final course = Course(
+        id: base.id,
+        courseCode: base.courseCode,
+        instructorId: base.instructorId,
+        title: base.title,
+        instructorName: base.instructorName,
+        category: base.category,
+        level: base.level,
+        duration: base.duration,
+        lessonCount: 1,
+        rating: base.rating,
+        priceLabel: base.priceLabel,
+        description: base.description,
+        lessons: [lesson],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: VideoLessonPage(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            playlistPlaybackFactory: () => FakeLessonMediaPlaylistPlayback(
+              totalDurationSec: 10,
+              segments: const [missing, valid],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('unplayable-published-parts-notice')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('壊れた公開パート（メディア未設定）'), findsOneWidget);
+      expect(find.text('再生可能パート'), findsWidgets);
+      expect(find.widgetWithText(FilledButton, '再生'), findsOneWidget);
     },
   );
 

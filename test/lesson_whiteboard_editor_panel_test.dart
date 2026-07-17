@@ -683,6 +683,8 @@ class _ControllableLivePositionPlaylistPlayback
       StreamController<bool>.broadcast();
   final StreamController<int> _segmentIndexController =
       StreamController<int>.broadcast();
+  final StreamController<int> _segmentCompletedController =
+      StreamController<int>.broadcast();
 
   double _globalPositionSec = 0;
   double liveOffsetSec = 0;
@@ -699,6 +701,9 @@ class _ControllableLivePositionPlaylistPlayback
 
   @override
   Stream<int> get segmentIndexStream => _segmentIndexController.stream;
+
+  @override
+  Stream<int> get segmentCompletedStream => _segmentCompletedController.stream;
 
   @override
   double get globalPositionSec => _globalPositionSec;
@@ -774,6 +779,7 @@ class _ControllableLivePositionPlaylistPlayback
     await _totalDurationController.close();
     await _playingController.close();
     await _segmentIndexController.close();
+    await _segmentCompletedController.close();
   }
 }
 

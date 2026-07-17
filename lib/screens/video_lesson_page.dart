@@ -116,11 +116,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   StreamSubscription<int>? _durationSubscription;
   StreamSubscription<bool>? _playingSubscription;
   StreamSubscription<int>? _segmentIndexSubscription;
+  StreamSubscription<int>? _segmentCompletedSubscription;
   int _currentMediaSegmentIndex = 0;
   int? _expandedPanelIndex = 0;
   int _lastWatchProgressSegmentIndex = 0;
   bool _isExplicitPartSwitch = false;
-  bool _pauseWasUserRequested = false;
+  bool _isExplicitPlaybackReposition = false;
+  double? _pendingExplicitRepositionGlobalSec;
+  int? _pendingAutoAdvancedSegmentIndex;
   final Map<String, double> _mediaSegmentResumePositionsSec = {};
   final Set<String> _completedMediaSegmentIds = {};
 
@@ -128,10 +131,17 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   CourseLesson get lesson => widget.lesson;
   int get lessonNumber => widget.lessonNumber;
 
-  LessonMediaTimeline get _mediaTimeline => lesson.mediaTimeline;
+  LessonMediaTimeline get _mediaTimeline =>
+      LessonMediaTimeline(segments: _publishedMediaSegments);
+
+  List<LessonMediaSegment> get _allPublishedMediaSegments =>
+      lesson.effectivePublishedMediaSegments;
 
   List<LessonMediaSegment> get _publishedMediaSegments =>
-      lesson.effectivePublishedMediaSegments;
+      _allPublishedMediaSegments.where((segment) => segment.hasUrl).toList();
+
+  List<LessonMediaSegment> get _unplayablePublishedMediaSegments =>
+      _allPublishedMediaSegments.where((segment) => !segment.hasUrl).toList();
 
   List<String> get _requiredMediaSegmentIds =>
       _publishedMediaSegments.map((segment) => segment.id).toList();
@@ -279,6 +289,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _durationSubscription?.cancel();
     _playingSubscription?.cancel();
     _segmentIndexSubscription?.cancel();
+    _segmentCompletedSubscription?.cancel();
     unawaited(_playlistPlayback?.close());
     WidgetsBinding.instance.removeObserver(this);
     if (!_isTeacherPreview) {
@@ -347,6 +358,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       _segmentIndexSubscription = playback.segmentIndexStream.listen(
         _handleMediaSegmentChanged,
       );
+      _segmentCompletedSubscription = playback.segmentCompletedStream.listen(
+        _handleMediaSegmentCompleted,
+      );
 
       if (!mounted) {
         await playback.close();
@@ -392,22 +406,25 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
-    final wasUserPause = !isPlaying && _pauseWasUserRequested;
-    if (isPlaying || wasUserPause) {
-      _pauseWasUserRequested = false;
-    }
     setState(() {
       _isPlaying = isPlaying;
     });
-    if (!isPlaying &&
-        !wasUserPause &&
-        _isIndependentPlayback &&
-        _partReachedCompletionThreshold(_currentMediaSegmentIndex)) {
-      final segmentId = _activeMediaSegment?.id;
-      if (segmentId != null) {
-        _markIndependentPartCompleted(segmentId);
-      }
+  }
+
+  void _handleMediaSegmentCompleted(int segmentIndex) {
+    if (!mounted ||
+        !_isIndependentPlayback ||
+        _isExplicitPlaybackReposition ||
+        _pendingExplicitRepositionGlobalSec != null ||
+        segmentIndex < 0 ||
+        segmentIndex >= _publishedMediaSegments.length) {
+      return;
     }
+    _markIndependentPartCompleted(_publishedMediaSegments[segmentIndex].id);
+    _pendingAutoAdvancedSegmentIndex =
+        segmentIndex + 1 < _publishedMediaSegments.length
+        ? segmentIndex + 1
+        : null;
   }
 
   void _handleMediaSegmentChanged(int segmentIndex) {
@@ -417,16 +434,11 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
-    final previousIndex = _currentMediaSegmentIndex;
-    final wasNaturalAdvance =
-        _isIndependentPlayback &&
+    final shouldRestoreNextPartResume =
+        _pendingAutoAdvancedSegmentIndex == segmentIndex &&
         !_isExplicitPartSwitch &&
-        segmentIndex == previousIndex + 1 &&
-        _partReachedCompletionThreshold(previousIndex);
-
-    if (wasNaturalAdvance) {
-      _markIndependentPartCompleted(_publishedMediaSegments[previousIndex].id);
-    }
+        !_isExplicitPlaybackReposition;
+    _pendingAutoAdvancedSegmentIndex = null;
 
     setState(() {
       _currentMediaSegmentIndex = segmentIndex;
@@ -434,20 +446,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       _lastWatchProgressSegmentIndex = segmentIndex;
       _sliderDragPositionSec = null;
     });
-
-    if (wasNaturalAdvance) {
+    if (shouldRestoreNextPartResume) {
       unawaited(_resumeAutoAdvancedPart(segmentIndex));
     }
-  }
-
-  bool _partReachedCompletionThreshold(int segmentIndex) {
-    if (segmentIndex < 0 || segmentIndex >= _publishedMediaSegments.length) {
-      return false;
-    }
-    final segment = _publishedMediaSegments[segmentIndex];
-    final localSec = _mediaSegmentResumePositionsSec[segment.id] ?? 0;
-    return segment.durationSec > 0 &&
-        localSec >= segment.durationSec * _completionRate;
   }
 
   Future<void> _resumeAutoAdvancedPart(int segmentIndex) async {
@@ -461,7 +462,23 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     final segment = _publishedMediaSegments[segmentIndex];
     final resumeSec = _partProgress.resumePositionSecForPart(segment.id);
     if (resumeSec > 0) {
-      await playback.seekToSegmentIndex(segmentIndex, localStartSec: resumeSec);
+      final targetGlobalSec = _mediaTimeline.globalSecForSegmentIndex(
+        segmentIndex: segmentIndex,
+        localSec: resumeSec,
+      );
+      _isExplicitPlaybackReposition = true;
+      _pendingExplicitRepositionGlobalSec = targetGlobalSec;
+      try {
+        await playback.seekToSegmentIndex(
+          segmentIndex,
+          localStartSec: resumeSec,
+        );
+      } catch (_) {
+        _pendingExplicitRepositionGlobalSec = null;
+        rethrow;
+      } finally {
+        _isExplicitPlaybackReposition = false;
+      }
     }
     await playback.play();
   }
@@ -478,6 +495,13 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     final clampedExact = positionSecExact
         .clamp(0.0, _totalDurationSec.toDouble())
         .toDouble();
+    final pendingRepositionTarget = _pendingExplicitRepositionGlobalSec;
+    final isExplicitRepositionUpdate =
+        _isExplicitPlaybackReposition || pendingRepositionTarget != null;
+    if (pendingRepositionTarget != null &&
+        (clampedExact - pendingRepositionTarget).abs() < 0.1) {
+      _pendingExplicitRepositionGlobalSec = null;
+    }
     final resolvedMediaPosition = _mediaTimeline.resolveGlobalSec(clampedExact);
     final progressSegmentIndex = _isIndependentPlayback
         ? _currentMediaSegmentIndex
@@ -492,11 +516,6 @@ class _VideoLessonPageState extends State<VideoLessonPage>
               .clamp(0.0, progressSegment.durationSec.toDouble())
               .toDouble()
         : resolvedMediaPosition.localSec;
-    final reachedIndependentNaturalEnd =
-        _isIndependentPlayback &&
-        _isPlaying &&
-        progressSegment.durationSec > 0 &&
-        localPositionSec >= progressSegment.durationSec - 0.05;
     if (_isIndependentPlayback &&
         !_completedMediaSegmentIds.contains(progressSegmentId)) {
       _mediaSegmentResumePositionsSec[progressSegmentId] = localPositionSec;
@@ -514,9 +533,6 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       // Still keep the exact position fresh for later comparisons (e.g.
       // end-of-lesson detection) without forcing a rebuild of the page.
       _currentPositionSecExact = clampedExact;
-      if (reachedIndependentNaturalEnd) {
-        _markIndependentPartCompleted(progressSegmentId);
-      }
       return;
     }
 
@@ -530,6 +546,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         final isContiguousPlaybackProgress =
             _isPlaying &&
             !_isExplicitPartSwitch &&
+            !isExplicitRepositionUpdate &&
             progressSegmentIndex == _lastWatchProgressSegmentIndex &&
             _currentPositionSec > previousPositionSec &&
             _currentPositionSec - previousPositionSec <= 2;
@@ -549,6 +566,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       }
       if (!_isTeacherPreview &&
           !_isIndependentPlayback &&
+          !isExplicitRepositionUpdate &&
           _currentPositionSec >= _completionThresholdSec &&
           !_pendingCompletion) {
         _setCompletionPendingState();
@@ -557,9 +575,6 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     });
     if (shouldPauseTeacherPreviewAtEnd) {
       unawaited(_playlistPlayback?.pause());
-    }
-    if (reachedIndependentNaturalEnd) {
-      _markIndependentPartCompleted(progressSegmentId);
     }
     if (shouldPersistPending && !_isTeacherPreview) {
       unawaited(_persistSessionProgress());
@@ -726,6 +741,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     );
 
     _isExplicitPartSwitch = true;
+    _isExplicitPlaybackReposition = true;
+    _pendingExplicitRepositionGlobalSec = targetGlobalSec;
     setState(() {
       _currentMediaSegmentIndex = segmentIndex;
       _expandedPanelIndex = segmentIndex;
@@ -740,8 +757,12 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         segmentIndex,
         localStartSec: localStartSec,
       );
+    } catch (_) {
+      _pendingExplicitRepositionGlobalSec = null;
+      rethrow;
     } finally {
       _isExplicitPartSwitch = false;
+      _isExplicitPlaybackReposition = false;
     }
     if (mounted) {
       _syncDisplayedPlaybackPositionFromPlayer();
@@ -829,7 +850,16 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
 
     final targetPosition = positionSec.clamp(0, _totalDurationSec);
-    await _playlistPlayback!.seekGlobal(targetPosition.toDouble());
+    _isExplicitPlaybackReposition = true;
+    _pendingExplicitRepositionGlobalSec = targetPosition.toDouble();
+    try {
+      await _playlistPlayback!.seekGlobal(targetPosition.toDouble());
+    } catch (_) {
+      _pendingExplicitRepositionGlobalSec = null;
+      rethrow;
+    } finally {
+      _isExplicitPlaybackReposition = false;
+    }
     if (!mounted) {
       return;
     }
@@ -922,7 +952,6 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   Future<void> _pausePlayback() async {
     _playbackTimer?.cancel();
-    _pauseWasUserRequested = true;
     await _playlistPlayback?.pause();
     if (mounted) {
       _syncDisplayedPlaybackPositionFromPlayer();
@@ -953,7 +982,30 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         !_completedMediaSegmentIds.contains(segment.id)) {
       _mediaSegmentResumePositionsSec[segment.id] = nextPosition.toDouble();
     }
-    await _seekMediaPlayback(targetGlobalPosition);
+    if (_isIndependentPlayback && segment != null) {
+      final playback = _playlistPlayback;
+      if (playback != null) {
+        _isExplicitPlaybackReposition = true;
+        _pendingExplicitRepositionGlobalSec = targetGlobalPosition.toDouble();
+        try {
+          await playback.seekToSegmentIndex(
+            _currentMediaSegmentIndex,
+            localStartSec: nextPosition.toDouble(),
+          );
+        } catch (_) {
+          _pendingExplicitRepositionGlobalSec = null;
+          rethrow;
+        } finally {
+          _isExplicitPlaybackReposition = false;
+        }
+        if (mounted) {
+          _syncDisplayedPlaybackPositionFromPlayer();
+          _startPostSeekDisplaySync();
+        }
+      }
+    } else {
+      await _seekMediaPlayback(targetGlobalPosition);
+    }
     if (!mounted) {
       return;
     }
@@ -968,6 +1020,32 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     });
     if (!_isTeacherPreview) {
       unawaited(_persistSessionProgress());
+    }
+  }
+
+  Future<void> _switchContinuousPart(int segmentIndex) async {
+    final playback = _playlistPlayback;
+    if (playback == null ||
+        segmentIndex < 0 ||
+        segmentIndex >= _publishedMediaSegments.length) {
+      return;
+    }
+    _isExplicitPartSwitch = true;
+    _isExplicitPlaybackReposition = true;
+    _pendingExplicitRepositionGlobalSec = _mediaTimeline
+        .startGlobalSecForSegmentIndex(segmentIndex);
+    try {
+      await playback.seekToSegmentIndex(segmentIndex);
+    } catch (_) {
+      _pendingExplicitRepositionGlobalSec = null;
+      rethrow;
+    } finally {
+      _isExplicitPartSwitch = false;
+      _isExplicitPlaybackReposition = false;
+    }
+    if (mounted) {
+      _syncDisplayedPlaybackPositionFromPlayer();
+      _startPostSeekDisplaySync();
     }
   }
 
@@ -2248,6 +2326,32 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     );
   }
 
+  Widget _buildUnplayablePartsNotice(BuildContext context) {
+    final invalidParts = _unplayablePublishedMediaSegments;
+    if (invalidParts.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final labels = [
+      for (final segment in invalidParts)
+        '${_partTitle(segment, _allPublishedMediaSegments.indexOf(segment))}'
+            '（メディア未設定）',
+    ];
+    return Card(
+      key: const ValueKey('unplayable-published-parts-notice'),
+      color: Theme.of(context).colorScheme.errorContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Text(
+          '再生できない公開パート: ${labels.join('、')}。'
+          '再生可能なパートのみ再生します。',
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onErrorContainer,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildPlayerSurface(
     BuildContext context, {
     required bool canControlPlayback,
@@ -2417,11 +2521,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                         OutlinedButton(
                           onPressed: !canControlPlayback
                               ? null
-                              : () => unawaited(
-                                  _playlistPlayback?.seekToSegmentIndex(
-                                    entry.$1,
-                                  ),
-                                ),
+                              : () =>
+                                    unawaited(_switchContinuousPart(entry.$1)),
                           child: Text(_partTitle(entry.$2, entry.$1)),
                         ),
                   ],
@@ -2527,12 +2628,15 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         : 1.0;
     final videoController = _playlistPlayback?.videoController;
     final orderedSegments = _mediaTimeline.orderedSegments;
+    final publishedSegmentsForDisplay = LessonMediaSegment.normalizeOrders(
+      _allPublishedMediaSegments,
+    );
     final currentSegment = _playlistPlayback?.currentSegment;
-    final pageTitle = orderedSegments.isEmpty
+    final pageTitle = publishedSegmentsForDisplay.isEmpty
         ? 'レッスン視聴'
-        : orderedSegments.every((segment) => segment.isAudio)
+        : publishedSegmentsForDisplay.every((segment) => segment.isAudio)
         ? '音声授業'
-        : orderedSegments.every((segment) => segment.isVideo)
+        : publishedSegmentsForDisplay.every((segment) => segment.isVideo)
         ? '動画視聴'
         : 'レッスン視聴';
 
@@ -2548,6 +2652,10 @@ class _VideoLessonPageState extends State<VideoLessonPage>
               style: Theme.of(context).textTheme.titleMedium,
             ),
             const SizedBox(height: 12),
+            if (_unplayablePublishedMediaSegments.isNotEmpty) ...[
+              _buildUnplayablePartsNotice(context),
+              const SizedBox(height: 12),
+            ],
             if (lesson.playbackMode == LessonPlaybackMode.independentPanels)
               _buildIndependentPanels(
                 context,
@@ -2714,8 +2822,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                                       ? null
                                       : () {
                                           unawaited(
-                                            _playlistPlayback
-                                                ?.seekToSegmentIndex(entry.$1),
+                                            _switchContinuousPart(entry.$1),
                                           );
                                         },
                                   child: Text(
