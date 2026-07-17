@@ -41,12 +41,52 @@ void main() {
 
   test('allows a title edit and append-only tail additions', () {
     final next = previousLesson().copyWith(
-      mediaSegments: [locked.copyWith(title: 'Edited title'), tail],
+      mediaSegments: [
+        locked.copyWith(title: 'Edited title'),
+        tail,
+      ],
       publishedSegmentIds: const ['locked', 'tail'],
       contentRevision: 2,
     );
 
     expect(validate(next), isNull);
+  });
+
+  test('publishes every URL-bearing tail and increments the revision once', () {
+    final next = previousLesson().copyWith(
+      mediaSegments: const [
+        locked,
+        tail,
+        LessonMediaSegment(id: 'empty-draft', order: 2),
+      ],
+      contentRevision: 7,
+    );
+
+    final published = LessonPublicationValidator.prepareForPublication(
+      previous: previousLesson().copyWith(contentRevision: 7),
+      next: next,
+    );
+
+    expect(published.mediaSegments.map((segment) => segment.id), [
+      'locked',
+      'tail',
+      'empty-draft',
+    ]);
+    expect(published.publishedSegmentIds, ['locked', 'tail']);
+    expect(published.contentRevision, 8);
+  });
+
+  test('preserves the revision when no new segment ID is published', () {
+    final previous = previousLesson().copyWith(contentRevision: 7);
+    final published = LessonPublicationValidator.prepareForPublication(
+      previous: previous,
+      next: previous.copyWith(
+        mediaSegments: [locked.copyWith(title: 'Renamed')],
+      ),
+    );
+
+    expect(published.publishedSegmentIds, ['locked']);
+    expect(published.contentRevision, 7);
   });
 
   test('allows changing mode before any part has been published', () {
@@ -95,9 +135,7 @@ void main() {
     ];
 
     for (final changedSegment in changes) {
-      final next = previousLesson().copyWith(
-        mediaSegments: [changedSegment],
-      );
+      final next = previousLesson().copyWith(mediaSegments: [changedSegment]);
       expect(
         validate(next),
         lessonPublishedSegmentsLockedError,
@@ -112,10 +150,7 @@ void main() {
       publishedSegmentIds: const ['locked', 'tail'],
     );
     final next = previous.copyWith(
-      mediaSegments: [
-        tail.copyWith(order: 0),
-        locked.copyWith(order: 1),
-      ],
+      mediaSegments: [tail.copyWith(order: 0), locked.copyWith(order: 1)],
     );
 
     expect(
@@ -138,9 +173,6 @@ void main() {
     );
 
     expect(validate(unpublished), lessonPublishedSegmentsLockedError);
-    expect(
-      validate(invalidGap),
-      lessonPublishedSegmentsLockedError,
-    );
+    expect(validate(invalidGap), lessonPublishedSegmentsLockedError);
   });
 }

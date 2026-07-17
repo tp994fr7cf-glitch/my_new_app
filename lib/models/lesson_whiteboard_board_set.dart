@@ -64,8 +64,7 @@ class LessonWhiteboardBoardSwitchEvent {
   factory LessonWhiteboardBoardSwitchEvent.fromMap(Map data) {
     return LessonWhiteboardBoardSwitchEvent(
       boardId: data['boardId'] as String? ?? '',
-      globalTimestampSec:
-          (data['globalTimestampSec'] as num?)?.toDouble() ?? 0,
+      globalTimestampSec: (data['globalTimestampSec'] as num?)?.toDouble() ?? 0,
       sequence: (data['sequence'] as num?)?.toInt() ?? 0,
     );
   }
@@ -80,10 +79,7 @@ class LessonWhiteboardBoardSwitchEvent {
 }
 
 class BoardSet {
-  const BoardSet({
-    this.boards = const [],
-    this.switchEvents = const [],
-  }) : assert(boards.length <= maxLessonWhiteboardBoards);
+  const BoardSet({this.boards = const [], this.switchEvents = const []});
 
   static const int maxBoards = maxLessonWhiteboardBoards;
 
@@ -196,14 +192,12 @@ class BoardSet {
     );
   }
 
-  BoardSet copyWithDefaultLayerBundle(
-    LessonWhiteboardLayerBundle layerBundle,
-  ) {
+  BoardSet copyWithDefaultLayerBundle(LessonWhiteboardLayerBundle layerBundle) {
     final currentDefault = defaultBoard;
     if (currentDefault == null) {
-      return BoardSet.fromLegacyLayers(layerBundle.layers).copyWith(
-        switchEvents: switchEvents,
-      );
+      return BoardSet.fromLegacyLayers(
+        layerBundle.layers,
+      ).copyWith(switchEvents: switchEvents);
     }
     return copyWith(
       boards: [

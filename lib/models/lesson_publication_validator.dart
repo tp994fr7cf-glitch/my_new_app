@@ -1,8 +1,7 @@
 import 'course.dart';
 import 'lesson_media_segment.dart';
 
-const String lessonPlaybackModeLockedError =
-    '公開済みのパートがあるため、再生モードは変更できません。';
+const String lessonPlaybackModeLockedError = '公開済みのパートがあるため、再生モードは変更できません。';
 const String lessonPublishedSegmentsLockedError =
     '公開済みのパートはタイトル以外の内容や順序を変更・削除できません。新しいパートは末尾に追加してください。';
 
@@ -15,6 +14,61 @@ class LessonPublicationValidator {
   }) {
     return validateAppendOnlyLessonPublication(previous: previous, next: next);
   }
+
+  /// Validates an edited lesson and publishes every URL-bearing segment.
+  ///
+  /// Publication is append-only: already-published segments keep their
+  /// immutable fields, while new tail segments become locked on this save.
+  /// The content revision changes only when at least one new segment ID is
+  /// published.
+  static CourseLesson prepareForPublication({
+    required CourseLesson previous,
+    required CourseLesson next,
+  }) {
+    final validationError = validate(previous: previous, next: next);
+    if (validationError != null) {
+      throw LessonPublicationValidationException(validationError);
+    }
+
+    final orderedSegments = LessonMediaSegment.normalizeOrders(
+      next.mediaSegments,
+    );
+    final publishedIds = orderedSegments
+        .where(
+          (segment) =>
+              previous.lockedSegmentIds.contains(segment.id) || segment.hasUrl,
+        )
+        .map((segment) => segment.id)
+        .toList();
+    final publishesNewIds = publishedIds.any(
+      (id) => !previous.lockedSegmentIds.contains(id),
+    );
+    final published = next.copyWith(
+      mediaSegments: orderedSegments,
+      publishedSegmentIds: publishedIds,
+      contentRevision: publishesNewIds
+          ? previous.contentRevision + 1
+          : previous.contentRevision,
+    );
+
+    final publishedValidationError = validate(
+      previous: previous,
+      next: published,
+    );
+    if (publishedValidationError != null) {
+      throw LessonPublicationValidationException(publishedValidationError);
+    }
+    return published;
+  }
+}
+
+class LessonPublicationValidationException implements Exception {
+  const LessonPublicationValidationException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }
 
 String? validateAppendOnlyLessonPublication({
@@ -50,8 +104,7 @@ String? validateAppendOnlyLessonPublication({
 
   final nextLockedIds = next.lockedSegmentIds;
   if (!nextLockedIds.containsAll(previousLockedIds) ||
-      nextLockedIds.length >
-          nextOrdered.length ||
+      nextLockedIds.length > nextOrdered.length ||
       !_isLockedPrefix(nextOrdered, nextLockedIds)) {
     return lessonPublishedSegmentsLockedError;
   }
@@ -73,10 +126,7 @@ List<LessonMediaSegment> _orderedWithoutNormalizing(
     ..sort((a, b) => a.order.compareTo(b.order));
 }
 
-bool _isLockedPrefix(
-  List<LessonMediaSegment> ordered,
-  Set<String> lockedIds,
-) {
+bool _isLockedPrefix(List<LessonMediaSegment> ordered, Set<String> lockedIds) {
   if (lockedIds.length > ordered.length) {
     return false;
   }
@@ -89,10 +139,7 @@ bool _isLockedPrefix(
   return true;
 }
 
-bool _lockedFieldsMatch(
-  LessonMediaSegment previous,
-  LessonMediaSegment next,
-) {
+bool _lockedFieldsMatch(LessonMediaSegment previous, LessonMediaSegment next) {
   return previous.id == next.id &&
       previous.mediaType == next.mediaType &&
       previous.url == next.url &&

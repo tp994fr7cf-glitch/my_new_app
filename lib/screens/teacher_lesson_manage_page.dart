@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
@@ -11,8 +10,10 @@ import '../models/course.dart';
 import '../models/lesson_duration_parser.dart';
 import '../models/lesson_media_config.dart';
 import '../models/lesson_media_segment.dart';
-import '../models/lesson_player_view_state.dart';
+import '../models/lesson_playback_mode.dart';
+import '../models/lesson_publication_validator.dart';
 import '../models/lesson_whiteboard.dart';
+import '../models/lesson_whiteboard_board_set.dart';
 import '../services/lesson_media_duration_service.dart';
 import '../services/lesson_media_storage_service.dart';
 import '../utils/firebase_error_message.dart';
@@ -20,6 +21,42 @@ import '../widgets/lesson_whiteboard_editor_panel.dart';
 import 'teacher_quiz_manage_page.dart';
 
 typedef LessonSaveOverride = Future<void> Function(List<CourseLesson> lessons);
+
+String _playbackModeExplanation(LessonPlaybackMode mode) {
+  return switch (mode) {
+    LessonPlaybackMode.continuous => 'すべてのパートを順番に一貫して再生します。',
+    LessonPlaybackMode.independentSingle => '選んだパートを同じ再生画面で個別に再生します。',
+    LessonPlaybackMode.independentPanels => '各パートをそれぞれ独立した画面で再生します。',
+  };
+}
+
+List<CourseLesson> _prepareLessonsForPublication({
+  required List<CourseLesson> previousLessons,
+  required List<CourseLesson> nextLessons,
+}) {
+  if (previousLessons.length != nextLessons.length) {
+    throw const LessonPublicationValidationException(
+      '保存済みレッスンの件数が変わりました。画面を読み込み直してから再度お試しください。',
+    );
+  }
+  return [
+    for (var index = 0; index < nextLessons.length; index++)
+      LessonPublicationValidator.prepareForPublication(
+        previous: previousLessons[index],
+        next: nextLessons[index],
+      ),
+  ];
+}
+
+class _LessonSaveResult {
+  const _LessonSaveResult({
+    required this.lessons,
+    required this.previousLessons,
+  });
+
+  final List<CourseLesson> lessons;
+  final List<CourseLesson> previousLessons;
+}
 
 class TeacherLessonManagePage extends StatefulWidget {
   const TeacherLessonManagePage({
@@ -137,21 +174,10 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       final durationLabel = editor.durationController.text.trim().isEmpty
           ? '1分30秒'
           : editor.durationController.text.trim();
-      final segments = editor.buildSegments(fallbackDurationLabel: durationLabel);
-      final publishedLayers = resolveWhiteboardLayersForLessonPublish(
-        publishedLayers: editor.publishedWhiteboardLayers,
-        draftLayers: editor.draftWhiteboardLayers,
-        workingLayers: editor.workingWhiteboardLayers,
-      );
-
       lessons.add(
-        CourseLesson(
+        editor.buildLessonForPublication(
           title: title,
-          duration: durationLabel,
-          mediaSegments: segments,
-          isPreview: editor.isPreview,
-          whiteboardLayers: publishedLayers,
-          whiteboardDraftLayers: const [],
+          durationLabel: durationLabel,
         ),
       );
     }
@@ -160,6 +186,12 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
   }
 
   Future<void> _saveLessons() async {
+    if (_lessonEditors.any((editor) => editor.isAnySegmentUploading)) {
+      setState(() {
+        _message = 'アップロードが完了してから保存してください。';
+      });
+      return;
+    }
     final lessons = _buildLessons();
     if (lessons == null) {
       return;
@@ -178,24 +210,24 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       _message = null;
     });
 
-    final removedSegments = _collectRemovedMediaSegments(lessons);
-
     try {
-      await _persistLessons(lessons, courseId: courseId);
+      final result = await _persistLessons(lessons, courseId: courseId);
+      final savedLessons = result.lessons;
+      final removedSegments = _collectRemovedMediaSegments(
+        previousLessons: result.previousLessons,
+        nextLessons: savedLessons,
+      );
 
-      _lastPersistedLessons = lessons;
+      _lastPersistedLessons = savedLessons;
 
       if (mounted) {
         setState(() {
           for (var index = 0; index < _lessonEditors.length; index++) {
-            if (index >= lessons.length) {
+            if (index >= savedLessons.length) {
               continue;
             }
             final editor = _lessonEditors[index];
-            final savedLesson = lessons[index];
-            editor.publishedWhiteboardLayers = savedLesson.whiteboardLayers;
-            editor.draftWhiteboardLayers = const [];
-            editor.workingWhiteboardLayers = savedLesson.publishedWhiteboardBundle;
+            editor.applySavedLesson(savedLessons[index]);
           }
           _message = 'レッスン情報を保存しました。';
         });
@@ -213,6 +245,12 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                 '権限の情報が最新でない可能性があります。アプリを再起動するか、'
                 '一度ログアウトして再度ログインしてから、もう一度お試しください。',
           );
+        });
+      }
+    } on LessonPublicationValidationException catch (error) {
+      if (mounted) {
+        setState(() {
+          _message = error.message;
         });
       }
     } catch (error) {
@@ -235,39 +273,63 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
   /// example, after switching roles or logging out from another device),
   /// this refreshes the auth token once and retries a single time before
   /// giving up.
-  Future<void> _persistLessons(
+  Future<_LessonSaveResult> _persistLessons(
     List<CourseLesson> lessons, {
     required String? courseId,
   }) async {
     try {
-      await _writeLessons(lessons, courseId: courseId);
+      return await _writeLessons(lessons, courseId: courseId);
     } on FirebaseException catch (error) {
       final isPermissionError =
           error.code == 'permission-denied' || error.code == 'unauthorized';
       if (!isPermissionError || !(await _tryRefreshAuthToken())) {
         rethrow;
       }
-      await _writeLessons(lessons, courseId: courseId);
+      return _writeLessons(lessons, courseId: courseId);
     }
   }
 
-  Future<void> _writeLessons(
+  Future<_LessonSaveResult> _writeLessons(
     List<CourseLesson> lessons, {
     required String? courseId,
   }) async {
     final saveOverride = widget.onSaveOverride;
     if (saveOverride != null) {
-      await saveOverride(lessons);
-      return;
+      final publishedLessons = _prepareLessonsForPublication(
+        previousLessons: _lastPersistedLessons,
+        nextLessons: lessons,
+      );
+      await saveOverride(publishedLessons);
+      return _LessonSaveResult(
+        lessons: publishedLessons,
+        previousLessons: _lastPersistedLessons,
+      );
     }
-    await FirebaseFirestore.instance
+    final courseReference = FirebaseFirestore.instance
         .collection('courses')
-        .doc(courseId)
-        .update({
-          'lessons': lessons.map((lesson) => lesson.toMap()).toList(),
-          'lessonCount': lessons.length,
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
+        .doc(courseId!);
+    return FirebaseFirestore.instance.runTransaction<_LessonSaveResult>((
+      transaction,
+    ) async {
+      final snapshot = await transaction.get(courseReference);
+      if (!snapshot.exists) {
+        throw StateError('講座が見つかりません。');
+      }
+      final latestLessons = Course.fromFirestore(snapshot).lessons;
+      final publishedLessons = _prepareLessonsForPublication(
+        previousLessons: latestLessons,
+        nextLessons: lessons,
+      );
+      transaction.update(courseReference, {
+        'lessons': publishedLessons.map((lesson) => lesson.toMap()).toList(),
+        'lessonCount': publishedLessons.length,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      return _LessonSaveResult(
+        lessons: publishedLessons,
+        previousLessons: latestLessons,
+      );
+    });
   }
 
   Future<bool> _tryRefreshAuthToken() async {
@@ -282,18 +344,24 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
   /// Finds media parts that existed in the last known saved state but are
   /// missing from [nextLessons], so their uploaded files can be cleaned up
   /// from Storage once the save that removes them actually succeeds.
-  List<String> _collectRemovedMediaSegments(List<CourseLesson> nextLessons) {
+  List<String> _collectRemovedMediaSegments({
+    required List<CourseLesson> previousLessons,
+    required List<CourseLesson> nextLessons,
+  }) {
     final removedUrls = <String>[];
-    final lessonCount = _lastPersistedLessons.length < nextLessons.length
-        ? _lastPersistedLessons.length
+    final lessonCount = previousLessons.length < nextLessons.length
+        ? previousLessons.length
         : nextLessons.length;
 
     for (var index = 0; index < lessonCount; index++) {
       final nextSegmentIds = nextLessons[index].mediaSegments
           .map((segment) => segment.id)
           .toSet();
-      for (final segment in _lastPersistedLessons[index].mediaSegments) {
-        if (segment.hasUrl && !nextSegmentIds.contains(segment.id)) {
+      final previousLesson = previousLessons[index];
+      for (final segment in previousLesson.mediaSegments) {
+        if (!previousLesson.lockedSegmentIds.contains(segment.id) &&
+            segment.hasUrl &&
+            !nextSegmentIds.contains(segment.id)) {
           removedUrls.add(segment.url);
         }
       }
@@ -320,6 +388,13 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     required _MediaSegmentEditorState segment,
     bool showGuide = true,
   }) async {
+    if (segment.isLocked) {
+      setState(() {
+        _message = lessonPublishedSegmentsLockedError;
+      });
+      return;
+    }
+
     final courseId = widget.course.id;
     if (courseId == null) {
       setState(() {
@@ -413,11 +488,13 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         _message =
             'レッスン$lessonNumber のパート${segment.displayOrder}に'
             '${widget.mediaStorageService.mediaTypeLabel(segment.mediaType)}をアップロードしました。'
-            '${detectedDurationSec != null ? '（再生時間: ${detectedDurationSec}秒）' : ''}'
+            '${detectedDurationSec != null ? '（再生時間: $detectedDurationSec秒）' : ''}'
             '「レッスン情報を保存」を押して反映してください。';
       });
 
-      if (previousUrl.isNotEmpty && previousUrl != result.downloadUrl) {
+      if (!segment.isLocked &&
+          previousUrl.isNotEmpty &&
+          previousUrl != result.downloadUrl) {
         // 同じパートにファイルを再アップロードした場合、古いファイルは
         // もう使われないため、Storage の容量を無駄にしないよう削除する。
         unawaited(
@@ -509,12 +586,9 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     await saveLessonWhiteboardDraft(
       courseId: courseId,
       lessonIndex: lessonIndex,
-      currentLesson: CourseLesson(
+      currentLesson: editor.buildCurrentLesson(
         title: editor.titleController.text.trim(),
-        duration: durationLabel,
-        mediaSegments: editor.buildSegments(fallbackDurationLabel: durationLabel),
-        isPreview: editor.isPreview,
-        whiteboardLayers: editor.publishedWhiteboardLayers,
+        durationLabel: durationLabel,
       ),
       whiteboard: whiteboard,
     );
@@ -525,8 +599,12 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
           whiteboard.isEmpty ? null : whiteboard,
         ).layers;
         editor.draftWhiteboardLayers = draftLayers;
-        editor.workingWhiteboardLayers =
-            LessonWhiteboardLayerBundle(layers: draftLayers);
+        editor.draftBoardSet = editor.draftBoardSet.copyWithDefaultLayerBundle(
+          LessonWhiteboardLayerBundle(layers: draftLayers),
+        );
+        editor.workingWhiteboardLayers = LessonWhiteboardLayerBundle(
+          layers: draftLayers,
+        );
       });
     }
   }
@@ -613,7 +691,14 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
               const SizedBox(height: 16),
             ],
             FilledButton.icon(
-              onPressed: _isSaving || _isLoadingLessons ? null : _saveLessons,
+              onPressed:
+                  _isSaving ||
+                      _isLoadingLessons ||
+                      _lessonEditors.any(
+                        (editor) => editor.isAnySegmentUploading,
+                      )
+                  ? null
+                  : _saveLessons,
               icon: const Icon(Icons.save),
               label: const Text('レッスン情報を保存'),
             ),
@@ -631,18 +716,22 @@ class _MediaSegmentEditorState {
     required this.titleController,
     required this.urlController,
     required this.mediaType,
+    this.isLocked = false,
     this.durationSec = 0,
-    this.isUploading = false,
-    this.uploadProgress,
-  });
+  }) : isUploading = false,
+       uploadProgress = null;
 
-  factory _MediaSegmentEditorState.fromSegment(LessonMediaSegment segment) {
+  factory _MediaSegmentEditorState.fromSegment(
+    LessonMediaSegment segment, {
+    required bool isLocked,
+  }) {
     return _MediaSegmentEditorState(
       id: segment.id,
       order: segment.order,
       titleController: TextEditingController(text: segment.title),
       urlController: TextEditingController(text: segment.url),
       mediaType: segment.isAudio ? 'audio' : 'video',
+      isLocked: isLocked,
       durationSec: segment.durationSec,
     );
   }
@@ -652,6 +741,7 @@ class _MediaSegmentEditorState {
   final TextEditingController titleController;
   final TextEditingController urlController;
   String mediaType;
+  bool isLocked;
   int durationSec;
   bool isUploading;
   double? uploadProgress;
@@ -661,7 +751,9 @@ class _MediaSegmentEditorState {
   bool get hasUrl => urlController.text.trim().isNotEmpty;
 
   LessonMediaSegment toSegment({required int fallbackDurationSec}) {
-    final duration = durationSec > 0 ? durationSec : fallbackDurationSec;
+    final duration = isLocked
+        ? durationSec
+        : (durationSec > 0 ? durationSec : fallbackDurationSec);
     return LessonMediaSegment(
       id: id,
       order: order,
@@ -684,6 +776,11 @@ class _LessonEditorState {
     required this.durationController,
     required this.segments,
     required this.isPreview,
+    required this.playbackMode,
+    required this.publishedSegmentIds,
+    required this.contentRevision,
+    required this.publishedBoardSet,
+    required this.draftBoardSet,
     this.publishedWhiteboardLayers = const [],
     this.draftWhiteboardLayers = const [],
     LessonWhiteboardLayerBundle? workingWhiteboardLayers,
@@ -700,7 +797,12 @@ class _LessonEditorState {
     final segments = lesson.mediaSegments.isEmpty
         ? <_MediaSegmentEditorState>[]
         : lesson.mediaSegments
-              .map(_MediaSegmentEditorState.fromSegment)
+              .map(
+                (segment) => _MediaSegmentEditorState.fromSegment(
+                  segment,
+                  isLocked: lesson.lockedSegmentIds.contains(segment.id),
+                ),
+              )
               .toList();
 
     return _LessonEditorState(
@@ -708,6 +810,11 @@ class _LessonEditorState {
       durationController: TextEditingController(text: lesson.duration),
       segments: segments,
       isPreview: lesson.isPreview,
+      playbackMode: lesson.playbackMode,
+      publishedSegmentIds: lesson.publishedSegmentIds,
+      contentRevision: lesson.contentRevision,
+      publishedBoardSet: lesson.publishedBoardSet,
+      draftBoardSet: lesson.draftBoardSet,
       publishedWhiteboardLayers: lesson.whiteboardLayers,
       draftWhiteboardLayers: lesson.whiteboardDraftLayers,
       workingWhiteboardLayers: mergeWhiteboardDraftLayers(
@@ -721,27 +828,95 @@ class _LessonEditorState {
   final TextEditingController durationController;
   final List<_MediaSegmentEditorState> segments;
   bool isPreview;
+  LessonPlaybackMode playbackMode;
+  List<String> publishedSegmentIds;
+  int contentRevision;
+  BoardSet publishedBoardSet;
+  BoardSet draftBoardSet;
   List<LessonWhiteboardLayer> publishedWhiteboardLayers;
   List<LessonWhiteboardLayer> draftWhiteboardLayers;
   LessonWhiteboardLayerBundle workingWhiteboardLayers;
 
-  bool get isAnySegmentUploading => segments.any((segment) => segment.isUploading);
+  bool get isAnySegmentUploading =>
+      segments.any((segment) => segment.isUploading);
+
+  bool get hasLockedSegments => publishedSegmentIds.isNotEmpty;
 
   bool get hasPlayableMedia => segments.any((segment) => segment.hasUrl);
 
   bool get hasAudioSegment =>
       segments.any((segment) => segment.mediaType == 'audio' && segment.hasUrl);
 
-  List<LessonMediaSegment> buildSegments({required String fallbackDurationLabel}) {
-    final fallbackDurationSec = parseLessonDurationLabel(fallbackDurationLabel) ?? 0;
+  List<LessonMediaSegment> buildSegments({
+    required String fallbackDurationLabel,
+  }) {
+    final fallbackDurationSec =
+        parseLessonDurationLabel(fallbackDurationLabel) ?? 0;
     return LessonMediaSegment.normalizeOrders(
       segments
+          .where((segment) => segment.isLocked || segment.hasUrl)
           .map(
-            (segment) => segment.toSegment(fallbackDurationSec: fallbackDurationSec),
+            (segment) =>
+                segment.toSegment(fallbackDurationSec: fallbackDurationSec),
           )
-          .where((segment) => segment.hasUrl)
           .toList(),
     );
+  }
+
+  CourseLesson buildCurrentLesson({
+    required String title,
+    required String durationLabel,
+  }) {
+    return CourseLesson(
+      title: title,
+      duration: durationLabel,
+      mediaSegments: buildSegments(fallbackDurationLabel: durationLabel),
+      isPreview: isPreview,
+      playbackMode: playbackMode,
+      publishedSegmentIds: publishedSegmentIds,
+      contentRevision: contentRevision,
+      publishedBoardSet: publishedBoardSet,
+      draftBoardSet: draftBoardSet,
+    );
+  }
+
+  CourseLesson buildLessonForPublication({
+    required String title,
+    required String durationLabel,
+  }) {
+    final nextPublishedBoardSet = !draftBoardSet.isEmpty
+        ? draftBoardSet
+        : !publishedBoardSet.isEmpty
+        ? publishedBoardSet
+        : workingWhiteboardLayers.isEmpty
+        ? const BoardSet()
+        : publishedBoardSet.copyWithDefaultLayerBundle(workingWhiteboardLayers);
+    return CourseLesson(
+      title: title,
+      duration: durationLabel,
+      mediaSegments: buildSegments(fallbackDurationLabel: durationLabel),
+      isPreview: isPreview,
+      playbackMode: playbackMode,
+      publishedSegmentIds: publishedSegmentIds,
+      contentRevision: contentRevision,
+      publishedBoardSet: nextPublishedBoardSet,
+      draftBoardSet: const BoardSet(),
+    );
+  }
+
+  void applySavedLesson(CourseLesson lesson) {
+    playbackMode = lesson.playbackMode;
+    publishedSegmentIds = lesson.publishedSegmentIds;
+    contentRevision = lesson.contentRevision;
+    publishedBoardSet = lesson.publishedBoardSet;
+    draftBoardSet = lesson.draftBoardSet;
+    publishedWhiteboardLayers = lesson.whiteboardLayers;
+    draftWhiteboardLayers = lesson.whiteboardDraftLayers;
+    workingWhiteboardLayers = lesson.publishedWhiteboardBundle;
+    final lockedIds = lesson.lockedSegmentIds;
+    for (final segment in segments) {
+      segment.isLocked = lockedIds.contains(segment.id);
+    }
   }
 
   _MediaSegmentEditorState addSegment({String mediaType = 'audio'}) {
@@ -757,7 +932,10 @@ class _LessonEditorState {
   }
 
   void moveSegmentUp(int index) {
-    if (index <= 0 || index >= segments.length) {
+    if (index <= 0 ||
+        index >= segments.length ||
+        segments[index].isLocked ||
+        segments[index - 1].isLocked) {
       return;
     }
     final item = segments.removeAt(index);
@@ -766,7 +944,10 @@ class _LessonEditorState {
   }
 
   void moveSegmentDown(int index) {
-    if (index < 0 || index >= segments.length - 1) {
+    if (index < 0 ||
+        index >= segments.length - 1 ||
+        segments[index].isLocked ||
+        segments[index + 1].isLocked) {
       return;
     }
     final item = segments.removeAt(index);
@@ -775,7 +956,7 @@ class _LessonEditorState {
   }
 
   void removeSegmentAt(int index) {
-    if (index < 0 || index >= segments.length) {
+    if (index < 0 || index >= segments.length || segments[index].isLocked) {
       return;
     }
     segments.removeAt(index).dispose();
@@ -926,7 +1107,9 @@ class _LessonEditorCard extends StatelessWidget {
     final durationLabel = editor.durationController.text.trim().isEmpty
         ? '1分30秒'
         : editor.durationController.text.trim();
-    final builtSegments = editor.buildSegments(fallbackDurationLabel: durationLabel);
+    final builtSegments = editor.buildSegments(
+      fallbackDurationLabel: durationLabel,
+    );
     final canAddSegment = mediaConfig.canAddSegment(
       currentSegmentCount: editor.segments.length,
     );
@@ -959,11 +1142,42 @@ class _LessonEditorCard extends StatelessWidget {
                 hintText: '例: 1分30秒',
               ),
             ),
-            const SizedBox(height: 16),
-            Text(
-              'メディアパート',
-              style: Theme.of(context).textTheme.titleSmall,
+            const SizedBox(height: 12),
+            DropdownButtonFormField<LessonPlaybackMode>(
+              key: ValueKey('lesson-$lessonIndex-playback-mode'),
+              initialValue: editor.playbackMode,
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                labelText: '再生モード',
+              ),
+              items: [
+                for (final mode in LessonPlaybackMode.values)
+                  DropdownMenuItem(value: mode, child: Text(mode.displayLabel)),
+              ],
+              onChanged: editor.hasLockedSegments
+                  ? null
+                  : (value) {
+                      if (value == null) {
+                        return;
+                      }
+                      editor.playbackMode = value;
+                      onChanged();
+                    },
             ),
+            const SizedBox(height: 4),
+            Text(
+              _playbackModeExplanation(editor.playbackMode),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            if (editor.hasLockedSegments)
+              Text(
+                lessonPlaybackModeLockedError,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.error,
+                ),
+              ),
+            const SizedBox(height: 16),
+            Text('メディアパート', style: Theme.of(context).textTheme.titleSmall),
             const SizedBox(height: 8),
             if (editor.segments.isEmpty)
               const Text('パートはまだありません。必要なときだけ追加できます。'),
@@ -972,26 +1186,37 @@ class _LessonEditorCard extends StatelessWidget {
                 segment: entry.$2,
                 segmentIndex: entry.$1,
                 segmentCount: editor.segments.length,
-                canUploadMedia: canUploadMedia && !editor.isAnySegmentUploading,
+                canUploadMedia:
+                    canUploadMedia &&
+                    !editor.isAnySegmentUploading &&
+                    !entry.$2.isLocked,
                 mediaStorageService: mediaStorageService,
                 onChanged: onChanged,
                 onUpload: () => onUploadSegment(entry.$2),
-                onMoveUp: entry.$1 > 0
+                onMoveUp:
+                    !entry.$2.isLocked &&
+                        entry.$1 > 0 &&
+                        !editor.segments[entry.$1 - 1].isLocked
                     ? () {
                         editor.moveSegmentUp(entry.$1);
                         onChanged();
                       }
                     : null,
-                onMoveDown: entry.$1 < editor.segments.length - 1
+                onMoveDown:
+                    !entry.$2.isLocked &&
+                        entry.$1 < editor.segments.length - 1 &&
+                        !editor.segments[entry.$1 + 1].isLocked
                     ? () {
                         editor.moveSegmentDown(entry.$1);
                         onChanged();
                       }
                     : null,
-                onRemove: () {
-                  editor.removeSegmentAt(entry.$1);
-                  onChanged();
-                },
+                onRemove: entry.$2.isLocked
+                    ? null
+                    : () {
+                        editor.removeSegmentAt(entry.$1);
+                        onChanged();
+                      },
               ),
               const SizedBox(height: 12),
             ],
@@ -1007,7 +1232,9 @@ class _LessonEditorCard extends StatelessWidget {
                   label: const Text('パートを追加'),
                 ),
                 if (builtSegments.isNotEmpty)
-                  Text('合計 ${builtSegments.fold<int>(0, (sum, s) => sum + s.durationSec)} 秒'),
+                  Text(
+                    '合計 ${builtSegments.fold<int>(0, (total, segment) => total + segment.durationSec)} 秒',
+                  ),
               ],
             ),
             SwitchListTile(
@@ -1037,7 +1264,9 @@ class _LessonEditorCard extends StatelessWidget {
               icon: const Icon(Icons.quiz),
               label: const Text('クイズを管理'),
             ),
-            if (editor.hasAudioSegment && editor.hasPlayableMedia && courseId.isNotEmpty) ...[
+            if (editor.hasAudioSegment &&
+                editor.hasPlayableMedia &&
+                courseId.isNotEmpty) ...[
               const SizedBox(height: 16),
               const Divider(),
               const SizedBox(height: 16),
@@ -1049,12 +1278,16 @@ class _LessonEditorCard extends StatelessWidget {
                 lessonNumber: index,
                 mediaSegments: builtSegments,
                 durationLabel: durationLabel,
-                publishedWhiteboard: editor.publishedWhiteboardLayers.toLegacyWhiteboard(),
-                draftWhiteboard: editor.draftWhiteboardLayers.toLegacyWhiteboard(),
+                publishedWhiteboard: editor.publishedWhiteboardLayers
+                    .toLegacyWhiteboard(),
+                draftWhiteboard: editor.draftWhiteboardLayers
+                    .toLegacyWhiteboard(),
                 onDraftSaved: onDraftSaved,
                 onWhiteboardChanged: (whiteboard) {
                   editor.workingWhiteboardLayers =
-                      LessonWhiteboardLayerBundle.fromLegacyWhiteboard(whiteboard);
+                      LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
+                        whiteboard,
+                      );
                 },
               ),
             ],
@@ -1088,7 +1321,7 @@ class _SegmentEditorTile extends StatelessWidget {
   final VoidCallback onUpload;
   final VoidCallback? onMoveUp;
   final VoidCallback? onMoveDown;
-  final VoidCallback onRemove;
+  final VoidCallback? onRemove;
 
   @override
   Widget build(BuildContext context) {
@@ -1109,6 +1342,11 @@ class _SegmentEditorTile extends StatelessWidget {
               'パート${segment.displayOrder}',
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
+            if (segment.isLocked)
+              Text(
+                '公開済み（タイトルのみ変更できます）',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             const SizedBox(height: 8),
             TextFormField(
               controller: segment.titleController,
@@ -1130,7 +1368,7 @@ class _SegmentEditorTile extends StatelessWidget {
                 DropdownMenuItem(value: 'audio', child: Text('音声')),
                 DropdownMenuItem(value: 'video', child: Text('動画')),
               ],
-              onChanged: segment.isUploading
+              onChanged: segment.isUploading || segment.isLocked
                   ? null
                   : (value) {
                       if (value == null) {
@@ -1142,7 +1380,9 @@ class _SegmentEditorTile extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             OutlinedButton.icon(
-              onPressed: !canUploadMedia || segment.isUploading ? null : onUpload,
+              onPressed: !canUploadMedia || segment.isUploading
+                  ? null
+                  : onUpload,
               icon: Icon(
                 segment.mediaType == 'audio'
                     ? Icons.upload_file
@@ -1167,8 +1407,7 @@ class _SegmentEditorTile extends StatelessWidget {
                 'URL: ${segment.urlController.text}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
-              if (segment.durationSec > 0)
-                Text('長さ: ${segment.durationSec}秒'),
+              if (segment.durationSec > 0) Text('長さ: ${segment.durationSec}秒'),
             ],
             const SizedBox(height: 8),
             Wrap(

@@ -8,6 +8,7 @@ import '../models/lesson_duration_parser.dart';
 import '../models/lesson_media_segment.dart';
 import '../models/lesson_media_timeline.dart';
 import '../models/lesson_player_view_state.dart';
+import '../models/lesson_publication_validator.dart';
 import '../models/lesson_whiteboard.dart';
 import '../services/lesson_media_playback.dart';
 import '../services/lesson_media_playlist_playback.dart';
@@ -95,7 +96,8 @@ class _LessonWhiteboardEditorPanelState
 
   bool get _drawingEnabled => _isPlaying;
   bool get _hasPublishedWhiteboard =>
-      widget.publishedWhiteboard != null && !widget.publishedWhiteboard!.isEmpty;
+      widget.publishedWhiteboard != null &&
+      !widget.publishedWhiteboard!.isEmpty;
 
   bool get _hasUnpublishedDraft {
     final draft = widget.draftWhiteboard;
@@ -272,7 +274,8 @@ class _LessonWhiteboardEditorPanelState
 
     final nextTotalDurationSec = resolveTimelineDurationSec(
       timeline: _timeline,
-      playerDuration: playerDuration ?? Duration(seconds: _playback!.totalDurationSec),
+      playerDuration:
+          playerDuration ?? Duration(seconds: _playback!.totalDurationSec),
       durationLabel: widget.durationLabel,
     );
     if (nextTotalDurationSec <= _totalDurationSec) {
@@ -659,15 +662,14 @@ class _LessonWhiteboardEditorPanelState
 
   @override
   Widget build(BuildContext context) {
-    final sliderMax = _totalDurationSec > 0 ? _totalDurationSec.toDouble() : 1.0;
+    final sliderMax = _totalDurationSec > 0
+        ? _totalDurationSec.toDouble()
+        : 1.0;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          '音声プレビュー',
-          style: Theme.of(context).textTheme.titleSmall,
-        ),
+        Text('音声プレビュー', style: Theme.of(context).textTheme.titleSmall),
         const SizedBox(height: 8),
         if (_isLoadingMedia) ...[
           const LinearProgressIndicator(),
@@ -717,15 +719,10 @@ class _LessonWhiteboardEditorPanelState
           ),
         ],
         const SizedBox(height: 16),
-        Text(
-          'ホワイトボード',
-          style: Theme.of(context).textTheme.titleSmall,
-        ),
+        Text('ホワイトボード', style: Theme.of(context).textTheme.titleSmall),
         const SizedBox(height: 4),
         Text(
-          _isPlaying
-              ? '再生中はペンで書けます。'
-              : 'スタートを押すと音声が流れ、同時に書けるようになります。',
+          _isPlaying ? '再生中はペンで書けます。' : 'スタートを押すと音声が流れ、同時に書けるようになります。',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 8),
@@ -739,7 +736,9 @@ class _LessonWhiteboardEditorPanelState
           ),
           const SizedBox(height: 8),
           OutlinedButton.icon(
-            onPressed: _isSavingDraft ? null : () => unawaited(_showEditOptions()),
+            onPressed: _isSavingDraft
+                ? null
+                : () => unawaited(_showEditOptions()),
             icon: const Icon(Icons.edit_outlined),
             label: const Text('書き物を描き直す'),
           ),
@@ -768,7 +767,9 @@ class _LessonWhiteboardEditorPanelState
                 label: const Text('スタート'),
               ),
               OutlinedButton.icon(
-                onPressed: !_isPlaying ? null : () => unawaited(_pauseRecording()),
+                onPressed: !_isPlaying
+                    ? null
+                    : () => unawaited(_pauseRecording()),
                 icon: const Icon(Icons.pause),
                 label: const Text('一時停止'),
               ),
@@ -791,61 +792,37 @@ class _LessonWhiteboardEditorPanelState
                 label: const Text('リセット'),
               ),
               OutlinedButton.icon(
-                onPressed: _isSavingDraft ? null : () => unawaited(_showEditOptions()),
+                onPressed: _isSavingDraft
+                    ? null
+                    : () => unawaited(_showEditOptions()),
                 icon: const Icon(Icons.edit_outlined),
                 label: const Text('編集の選び直し'),
               ),
             ],
           ),
         ],
-        if (_message != null) ...[
-          const SizedBox(height: 8),
-          Text(_message!),
-        ],
+        if (_message != null) ...[const SizedBox(height: 8), Text(_message!)],
       ],
     );
   }
 }
 
-enum _WhiteboardEditChoice {
-  published,
-  draft,
-  reset,
-}
+enum _WhiteboardEditChoice { published, draft, reset }
 
 /// Persists a whiteboard draft for a single lesson.
 ///
 /// [currentLesson] must reflect the lesson's up-to-date state as shown on
 /// screen (title, duration, media parts, preview flag, published whiteboard).
-/// It is written back together with the new draft so that any local edits
-/// the teacher has not pressed "レッスン情報を保存" for yet (for example,
-/// removing a media part) are not silently reverted by this temporary save.
-/// Other lessons in the course are left untouched, using the latest data
-/// already stored on the server.
+/// It is written back together with valid local edits. The latest server
+/// lesson is read and append-only publication locks are validated in the same
+/// transaction, so a whiteboard draft cannot overwrite locked media fields.
+/// Other lessons in the course are left untouched.
 Future<void> saveLessonWhiteboardDraft({
   required String courseId,
   required int lessonIndex,
   required CourseLesson currentLesson,
   required LessonWhiteboard whiteboard,
 }) async {
-  final snapshot = await FirebaseFirestore.instance
-      .collection('courses')
-      .doc(courseId)
-      .get();
-  if (!snapshot.exists) {
-    throw StateError('講座が見つかりません。');
-  }
-
-  final course = snapshot.data() ?? {};
-  final lessonsData = course['lessons'];
-  if (lessonsData is! List || lessonIndex < 0 || lessonIndex >= lessonsData.length) {
-    throw StateError('レッスンが見つかりません。');
-  }
-
-  final lessons = lessonsData
-      .whereType<Map>()
-      .map((lesson) => Map<String, dynamic>.from(lesson))
-      .toList();
   final draftLayers = LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
     whiteboard.isEmpty ? null : whiteboard,
   ).layers;
@@ -853,10 +830,38 @@ Future<void> saveLessonWhiteboardDraft({
     whiteboardDraftLayers: draftLayers,
     clearWhiteboardDraftLayers: draftLayers.isEmpty,
   );
-  lessons[lessonIndex] = updatedLesson.toMap();
+  final firestore = FirebaseFirestore.instance;
+  final courseReference = firestore.collection('courses').doc(courseId);
+  await firestore.runTransaction<void>((transaction) async {
+    final snapshot = await transaction.get(courseReference);
+    if (!snapshot.exists) {
+      throw StateError('講座が見つかりません。');
+    }
 
-  await FirebaseFirestore.instance.collection('courses').doc(courseId).update({
-    'lessons': lessons,
-    'updatedAt': FieldValue.serverTimestamp(),
+    final lessonsData = snapshot.data()?['lessons'];
+    if (lessonsData is! List ||
+        lessonIndex < 0 ||
+        lessonIndex >= lessonsData.length ||
+        lessonsData[lessonIndex] is! Map) {
+      throw StateError('レッスンが見つかりません。');
+    }
+
+    final previousLesson = CourseLesson.fromMap(
+      lessonsData[lessonIndex] as Map,
+    );
+    final validationError = LessonPublicationValidator.validate(
+      previous: previousLesson,
+      next: updatedLesson,
+    );
+    if (validationError != null) {
+      throw LessonPublicationValidationException(validationError);
+    }
+
+    final lessons = List<Object?>.from(lessonsData);
+    lessons[lessonIndex] = updatedLesson.toMap();
+    transaction.update(courseReference, {
+      'lessons': lessons,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
   });
 }

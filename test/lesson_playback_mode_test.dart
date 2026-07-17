@@ -10,7 +10,9 @@ void main() {
         expect(LessonPlaybackMode.fromStorage(mode.toStorage()), mode);
         expect(mode.displayLabel, isNotEmpty);
       }
-      expect(LessonPlaybackMode.continuous.displayLabel, '連続再生');
+      expect(LessonPlaybackMode.continuous.displayLabel, '一貫再生');
+      expect(LessonPlaybackMode.independentSingle.displayLabel, '独立再生（単一画面）');
+      expect(LessonPlaybackMode.independentPanels.displayLabel, '独立再生（独立画面）');
     });
 
     test('missing and unknown storage values fall back to continuous', () {
