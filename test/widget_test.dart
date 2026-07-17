@@ -3591,6 +3591,7 @@ void main() {
         ),
       ),
     );
+    await tester.pumpAndSettle();
 
     await tester.tap(find.widgetWithText(FilledButton, '再生'));
     await tester.pumpAndSettle();
@@ -3602,7 +3603,10 @@ void main() {
     expect(find.text('授業中クイズ'), findsOneWidget);
     expect(find.text('Flutterで画面を作るときの基本単位はどれですか？'), findsOneWidget);
 
-    await tester.tap(find.text('Widget'));
+    final widgetChoice = find.widgetWithText(ListTile, 'Widget');
+    await tester.ensureVisible(widgetChoice);
+    await tester.pumpAndSettle();
+    await tester.tap(widgetChoice);
     final answerButton = find.widgetWithText(FilledButton, '回答する');
     await tester.scrollUntilVisible(
       answerButton,

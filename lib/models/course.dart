@@ -465,6 +465,7 @@ class LessonEvent {
     this.anchorType = LessonTimedAnchorType.global,
     this.segmentId,
     this.globalTimestampSec,
+    this.quizVersion = 1,
   });
 
   final String id;
@@ -475,8 +476,10 @@ class LessonEvent {
   final LessonTimedAnchorType anchorType;
   final String? segmentId;
   final int? globalTimestampSec;
+  final int quizVersion;
 
   bool get isQuiz => type == 'quiz' && quiz != null;
+  String get quizAnswerKey => quizVersion > 1 ? '$id:v$quizVersion' : id;
 
   LessonTimedAnchor get timedAnchor => LessonTimedAnchor(
     anchorType: anchorType,
@@ -498,11 +501,14 @@ class LessonEvent {
       timestampSec: parseIntField(data['timestampSec']),
       type: data['type'] as String? ?? 'quiz',
       quiz: quizData is Map ? LessonQuiz.fromMap(quizData) : null,
-      anchorType: LessonTimedAnchorType.fromStorage(data['anchorType'] as String?),
+      anchorType: LessonTimedAnchorType.fromStorage(
+        data['anchorType'] as String?,
+      ),
       segmentId: data['segmentId'] as String?,
       globalTimestampSec: data['globalTimestampSec'] == null
           ? null
           : parseIntField(data['globalTimestampSec']),
+      quizVersion: _parseQuizVersion(data['quizVersion']),
     );
   }
 
@@ -517,6 +523,7 @@ class LessonEvent {
         'anchorType': anchorType.toStorage(),
       if (segmentId != null && segmentId!.isNotEmpty) 'segmentId': segmentId,
       if (globalTimestampSec != null) 'globalTimestampSec': globalTimestampSec,
+      'quizVersion': quizVersion,
     };
   }
 
@@ -530,7 +537,13 @@ class LessonEvent {
       anchorType: anchorType,
       segmentId: segmentId,
       globalTimestampSec: resolveGlobalTimestampSec(timeline),
+      quizVersion: quizVersion,
     );
+  }
+
+  static int _parseQuizVersion(Object? value) {
+    final parsed = parseIntField(value, fallback: 1);
+    return parsed < 1 ? 1 : parsed;
   }
 }
 

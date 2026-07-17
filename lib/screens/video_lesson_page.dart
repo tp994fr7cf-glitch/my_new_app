@@ -16,8 +16,8 @@ import '../models/lesson_media_timeline.dart';
 import '../models/lesson_part_progress.dart';
 import '../models/lesson_playback_mode.dart';
 import '../models/lesson_player_view_state.dart';
+import '../models/lesson_quiz_placement.dart';
 import '../models/lesson_segment_boundary.dart';
-import '../models/lesson_timed_anchor.dart';
 import '../models/course_privacy_consent.dart';
 import '../models/quiz_answer_key.dart';
 import '../models/watched_range.dart';
@@ -234,21 +234,16 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     return course.lessonEvents
         .where((event) => event.lessonNumber == lessonNumber)
         .where((event) => event.isQuiz)
-        .where((event) {
-          if (!_isIndependentPlayback ||
-              event.anchorType == LessonTimedAnchorType.global) {
-            return true;
-          }
-          return event.segmentId == _activeMediaSegment?.id;
-        })
-        .where((event) {
-          if (_isIndependentPlayback &&
-              event.anchorType == LessonTimedAnchorType.segment) {
-            return event.timestampSec <= _currentLocalPositionSecExact;
-          }
-          return event.resolveGlobalTimestampSec(_mediaTimeline) <=
-              _currentPositionSec;
-        })
+        .where(
+          (event) => isLessonQuizDue(
+            event: event,
+            lesson: lesson,
+            independentPlayback: _isIndependentPlayback,
+            activeSegmentId: _activeMediaSegment?.id,
+            currentLocalPositionSec: _currentLocalPositionSecExact,
+            currentGlobalPositionSec: _currentPositionSec,
+          ),
+        )
         .toList()
       ..sort(
         (a, b) => a
@@ -2105,7 +2100,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       });
       return;
     }
-    if (_answeredQuizEventIds.contains(event.id)) {
+    final answerKey = event.quizAnswerKey;
+    if (_answeredQuizEventIds.contains(answerKey)) {
       setState(() {
         _message = 'この周では回答済みです。';
       });
@@ -2117,7 +2113,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
-    final selectedChoiceIndex = _selectedChoices[event.id];
+    final selectedChoiceIndex = _selectedChoices[answerKey];
     final quiz = event.quiz;
     if (selectedChoiceIndex == null || quiz == null) {
       setState(() {
@@ -2146,8 +2142,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
       if (mounted) {
         setState(() {
-          _answerResults[event.id] = isCorrect;
-          _answeredQuizEventIds.add(event.id);
+          _answerResults[answerKey] = isCorrect;
+          _answeredQuizEventIds.add(answerKey);
           _message = isCorrect ? '正解です。' : '不正解です。解説を確認しましょう。';
         });
       }
@@ -2186,6 +2182,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       cycleNumber: _cycleNumber,
       eventId: event.id,
       sessionId: sessionId,
+      quizVersion: event.quizVersion > 1 ? event.quizVersion : null,
     );
     final firestore = FirebaseFirestore.instance;
     await firestore
@@ -2202,6 +2199,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           'cycleNumber': _cycleNumber,
           'cycleQuizKey': cycleQuizKey,
           'eventId': event.id,
+          'quizVersion': event.quizVersion,
           'question': quiz.question,
           'selectedChoiceIndex': selectedChoiceIndex,
           'correctChoiceIndex': quiz.correctChoiceIndex,
@@ -2216,7 +2214,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           .collection('lessonViewSessions')
           .doc(sessionId)
           .set({
-            'answeredQuizEventIds': FieldValue.arrayUnion([event.id]),
+            'answeredQuizEventIds': FieldValue.arrayUnion([
+              event.quizAnswerKey,
+            ]),
           }, SetOptions(merge: true));
     }
   }
@@ -2892,12 +2892,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
               for (final event in _dueQuizEvents) ...[
                 _QuizCard(
                   event: event,
-                  selectedChoiceIndex: _selectedChoices[event.id],
-                  answerResult: _answerResults[event.id],
-                  alreadyAnswered: _answeredQuizEventIds.contains(event.id),
+                  selectedChoiceIndex: _selectedChoices[event.quizAnswerKey],
+                  answerResult: _answerResults[event.quizAnswerKey],
+                  alreadyAnswered: _answeredQuizEventIds.contains(
+                    event.quizAnswerKey,
+                  ),
                   onChoiceChanged: (choiceIndex) {
                     setState(() {
-                      _selectedChoices[event.id] = choiceIndex;
+                      _selectedChoices[event.quizAnswerKey] = choiceIndex;
                       _message = null;
                     });
                   },
