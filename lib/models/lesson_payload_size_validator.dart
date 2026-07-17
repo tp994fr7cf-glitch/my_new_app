@@ -8,6 +8,8 @@ const String lessonPayloadTooLargeMessage =
     '書き物のデータ量が大きすぎるため保存できません。内容を減らしてください。';
 const String lessonBoardLimitMessage = '書き物は20枚まで保存できます。';
 const String lessonBoardDataInvalidMessage = '書き物のIDまたは順序が不正なため保存できません。';
+const String lessonBoardSwitchDataInvalidMessage =
+    '書き物の切替履歴に、存在しないボードが含まれているため保存できません。';
 
 class LessonPayloadValidationException implements Exception {
   const LessonPayloadValidationException(this.message);
@@ -35,6 +37,11 @@ void validateBoardSetForPersistence(BoardSet boardSet) {
         !orders.add(board.order),
   )) {
     throw const LessonPayloadValidationException(lessonBoardDataInvalidMessage);
+  }
+  if (boardSet.switchEvents.any((event) => !ids.contains(event.boardId))) {
+    throw const LessonPayloadValidationException(
+      lessonBoardSwitchDataInvalidMessage,
+    );
   }
   _validateEncodedPayload(boardSet.toMap());
 }

@@ -77,6 +77,35 @@ void main() {
     }
   });
 
+  test('rejects switch events that reference a missing board', () {
+    const boardSet = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+        ),
+      ],
+      switchEvents: [
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: 'deleted-board',
+          globalTimestampSec: 3,
+          sequence: 0,
+        ),
+      ],
+    );
+
+    expect(
+      () => validateBoardSetForPersistence(boardSet),
+      throwsA(
+        isA<LessonPayloadValidationException>().having(
+          (error) => error.message,
+          'message',
+          lessonBoardSwitchDataInvalidMessage,
+        ),
+      ),
+    );
+  });
+
   test('rejects a board payload near the Firestore document limit', () {
     final largeJapaneseTitle = List.filled(300000, 'あ').join();
     final boardSet = BoardSet(

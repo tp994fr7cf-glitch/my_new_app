@@ -92,7 +92,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('パート2：演習').last);
     await tester.pumpAndSettle();
-    await tester.enterText(find.bySemanticsLabel('表示タイミング（秒）'), '20');
+    await tester.enterText(find.bySemanticsLabel('表示タイミング（秒）'), '19');
     await enterQuizContent(tester);
 
     await tester.ensureVisible(find.text('クイズを保存'));
@@ -102,13 +102,11 @@ void main() {
     expect(saved, hasLength(1));
     expect(saved.single.anchorType, LessonTimedAnchorType.segment);
     expect(saved.single.segmentId, 'b');
-    expect(saved.single.timestampSec, 20);
-    expect(saved.single.globalTimestampSec, 30);
+    expect(saved.single.timestampSec, 19);
+    expect(saved.single.globalTimestampSec, 29);
   });
 
-  testWidgets('local seconds outside selected part disable save', (
-    tester,
-  ) async {
+  testWidgets('exact local segment end disables save', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherQuizManagePage(
@@ -121,7 +119,7 @@ void main() {
     await tester.tap(find.text('クイズを追加'));
     await tester.pumpAndSettle();
     await enterQuizContent(tester);
-    await tester.enterText(find.bySemanticsLabel('表示タイミング（秒）'), '11');
+    await tester.enterText(find.bySemanticsLabel('表示タイミング（秒）'), '10');
     await tester.pump();
 
     final saveButton = tester.widget<FilledButton>(

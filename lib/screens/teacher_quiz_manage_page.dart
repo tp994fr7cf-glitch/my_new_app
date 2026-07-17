@@ -210,8 +210,8 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
     if (segment == null) {
       return '公開済みのパートを選択してください。';
     }
-    if (timestamp > segment.durationSec) {
-      return '表示タイミングは選択したパートの0〜${segment.durationSec}秒で入力してください。';
+    if (timestamp >= segment.durationSec) {
+      return '表示タイミングは選択したパートの0秒以上、${segment.durationSec}秒未満で入力してください。';
     }
     return null;
   }
@@ -260,10 +260,6 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
             editor.originalEvent?.anchorType == LessonTimedAnchorType.global ||
             lesson.effectivePublishedMediaSegments.isEmpty,
       );
-      final version = quizVersionForEdit(
-        original: editor.originalEvent,
-        edited: draft,
-      );
       newEvents.add(
         LessonEvent(
           id: draft.id,
@@ -273,7 +269,7 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
           quiz: draft.quiz,
           anchorType: draft.anchorType,
           segmentId: draft.segmentId,
-          quizVersion: version,
+          quizVersion: draft.quizVersion,
         ).withResolvedGlobalTimestamp(lesson.mediaTimeline),
       );
     }
@@ -302,6 +298,7 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
         final replacementEvents = _buildReplacementQuizEvents(latestCourse);
         events = mergeLessonQuizEvents(
           latestEvents: _baseLessonEvents,
+          baseEvents: _baseLessonEvents,
           lessonNumber: widget.lessonNumber,
           replacementQuizEvents: replacementEvents,
           lesson: latestCourse.lessons[widget.lessonNumber - 1],
@@ -329,6 +326,7 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
           );
           final mergedEvents = mergeLessonQuizEvents(
             latestEvents: transactionCourse.lessonEvents,
+            baseEvents: _baseLessonEvents,
             lessonNumber: widget.lessonNumber,
             replacementQuizEvents: replacementEvents,
             lesson: transactionCourse.lessons[lessonIndex],

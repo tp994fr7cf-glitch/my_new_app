@@ -732,6 +732,10 @@ class _LessonWhiteboardEditorPanelState
           for (final entry in remaining.indexed)
             entry.$2.copyWith(order: entry.$1),
         ],
+        switchEvents: [
+          for (final event in _boardSet.switchEvents)
+            if (event.boardId != removedId) event,
+        ],
       );
       _selectedBoardId = nextId;
       _strokes = List<WhiteboardStroke>.from(

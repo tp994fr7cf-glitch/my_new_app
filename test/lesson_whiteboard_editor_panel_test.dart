@@ -615,6 +615,74 @@ void main() {
     },
   );
 
+  testWidgets('deleting a board removes every switch event targeting it', (
+    tester,
+  ) async {
+    BoardSet? saved;
+    const draft = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+          title: '一枚目',
+        ),
+        LessonWhiteboardBoard(id: 'second', order: 1, title: '二枚目'),
+        LessonWhiteboardBoard(id: 'third', order: 2, title: '三枚目'),
+      ],
+      switchEvents: [
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: 'second',
+          globalTimestampSec: 1,
+          sequence: 0,
+        ),
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: 'third',
+          globalTimestampSec: 2,
+          sequence: 1,
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonWhiteboardEditorPanel(
+            courseId: 'course-1',
+            lessonNumber: 1,
+            mediaSegments: testMediaSegments(),
+            durationLabel: '1分30秒',
+            draftBoardSet: draft,
+            onBoardSetDraftSaved: (boardSet) async {
+              saved = boardSet;
+            },
+            playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('2. 二枚目'));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('whiteboard-delete-board')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '削除'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(OutlinedButton, '書き物を一時保存'));
+    await tester.pumpAndSettle();
+
+    expect(saved, isNotNull);
+    expect(saved!.boardById('second'), isNull);
+    expect(
+      saved!.switchEvents.where((event) => event.boardId == 'second'),
+      isEmpty,
+    );
+    expect(
+      saved!.switchEvents.any((event) => event.boardId == 'third'),
+      isTrue,
+    );
+  });
+
   testWidgets('twenty boards are allowed but the twenty-first is disabled', (
     tester,
   ) async {

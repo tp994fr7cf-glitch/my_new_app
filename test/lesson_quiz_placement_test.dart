@@ -43,13 +43,14 @@ void main() {
     int timestampSec = 0,
     LessonTimedAnchorType anchorType = LessonTimedAnchorType.segment,
     int quizVersion = 1,
+    LessonQuiz? lessonQuiz,
   }) {
     return LessonEvent(
       id: id,
       lessonNumber: 1,
       timestampSec: timestampSec,
       type: 'quiz',
-      quiz: quiz,
+      quiz: lessonQuiz ?? quiz,
       anchorType: anchorType,
       segmentId: anchorType == LessonTimedAnchorType.segment ? segmentId : null,
       quizVersion: quizVersion,
@@ -67,7 +68,7 @@ void main() {
   test('validates local bounds and rejects draft segment ids', () {
     expect(
       () => validateQuizPlacement(
-        event: event(segmentId: 'b', timestampSec: 20),
+        event: event(segmentId: 'b', timestampSec: 19),
         lesson: lesson,
         allowLegacyGlobal: false,
       ),
@@ -75,11 +76,17 @@ void main() {
     );
     expect(
       () => validateQuizPlacement(
-        event: event(segmentId: 'b', timestampSec: 21),
+        event: event(segmentId: 'b', timestampSec: 20),
         lesson: lesson,
         allowLegacyGlobal: false,
       ),
-      throwsA(isA<QuizPlacementException>()),
+      throwsA(
+        isA<QuizPlacementException>().having(
+          (error) => error.message,
+          'message',
+          '表示タイミングは選択したパートの0秒以上、20秒未満で入力してください。',
+        ),
+      ),
     );
     expect(
       () => validateQuizPlacement(
@@ -138,6 +145,76 @@ void main() {
       'rule-like-event',
       'replacement',
     ]);
+  });
+
+  test('three-way merge increments exactly once from the latest version', () {
+    final base = event(quizVersion: 7);
+    final local = event(timestampSec: 1, quizVersion: 99);
+
+    final merged = mergeLessonQuizEvents(
+      latestEvents: [base],
+      baseEvents: [base],
+      lessonNumber: 1,
+      replacementQuizEvents: [local],
+      lesson: lesson,
+    );
+
+    expect(merged.single.timestampSec, 1);
+    expect(merged.single.quizVersion, 8);
+  });
+
+  test('three-way merge rejects concurrent edits to the same quiz', () {
+    final base = event(quizVersion: 2);
+    final latest = event(
+      quizVersion: 3,
+      lessonQuiz: const LessonQuiz(
+        question: '別画面の変更',
+        choices: ['A', 'B'],
+        correctChoiceIndex: 0,
+      ),
+    );
+    final local = event(
+      timestampSec: 1,
+      lessonQuiz: const LessonQuiz(
+        question: 'この画面の変更',
+        choices: ['A', 'B'],
+        correctChoiceIndex: 0,
+      ),
+    );
+
+    expect(
+      () => mergeLessonQuizEvents(
+        latestEvents: [latest],
+        baseEvents: [base],
+        lessonNumber: 1,
+        replacementQuizEvents: [local],
+        lesson: lesson,
+      ),
+      throwsA(
+        isA<QuizPlacementException>().having(
+          (error) => error.message,
+          'message',
+          quizConcurrentConflictMessage,
+        ),
+      ),
+    );
+  });
+
+  test('three-way merge preserves concurrent additions and deletions', () {
+    final retained = event(id: 'retained');
+    final concurrentlyDeleted = event(id: 'deleted');
+    final deletedByBoth = event(id: 'deleted-by-both');
+    final concurrentlyAdded = event(id: 'added', segmentId: 'b');
+
+    final merged = mergeLessonQuizEvents(
+      latestEvents: [retained, concurrentlyAdded],
+      baseEvents: [retained, concurrentlyDeleted, deletedByBoth],
+      lessonNumber: 1,
+      replacementQuizEvents: [retained, concurrentlyDeleted],
+      lesson: lesson,
+    );
+
+    expect(merged.map((item) => item.id).toSet(), {'retained', 'added'});
   });
 
   test('independent due time is local to active part A or B', () {
