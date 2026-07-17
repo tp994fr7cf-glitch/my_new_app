@@ -5,6 +5,9 @@ int parseIntField(Object? value, {int fallback = 0}) {
     return value;
   }
   if (value is num) {
+    if (!value.toDouble().isFinite) {
+      return fallback;
+    }
     return value.toInt();
   }
   if (value is String) {

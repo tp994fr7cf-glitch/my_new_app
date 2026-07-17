@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:my_new_app/models/course.dart';
 import 'package:my_new_app/models/lesson_media_segment.dart';
 import 'package:my_new_app/models/lesson_playback_mode.dart';
+import 'package:my_new_app/models/lesson_timed_anchor.dart';
 
 void main() {
   group('LessonPlaybackMode', () {
@@ -75,6 +76,7 @@ void main() {
       expect(lesson.effectivePublishedMediaSegments, isEmpty);
       expect(lesson.hasMedia, isFalse);
       expect(lesson.totalMediaDurationSec, 0);
+      expect(CourseLesson.fromMap(lesson.toMap()).publishedSegmentIds, isEmpty);
     });
 
     test('serialization persists explicit publication values', () {
@@ -125,6 +127,107 @@ void main() {
       expect(first.mediaSegments.single.id, second.mediaSegments.single.id);
       expect(first.mediaSegments.single.id, startsWith('legacy_'));
       expect(first.lockedSegmentIds, {first.mediaSegments.single.id});
+    });
+
+    test(
+      'malformed optional publication fields safely use legacy defaults',
+      () {
+        final lesson = CourseLesson.fromMap({
+          'title': 'Malformed',
+          'duration': '30秒',
+          'mediaSegments': segments.map((segment) => segment.toMap()).toList(),
+          'playbackMode': 42,
+          'publishedSegmentIds': 'not-a-list',
+          'contentRevision': double.nan,
+          'unknownFutureField': Object(),
+        });
+
+        expect(lesson.playbackMode, LessonPlaybackMode.continuous);
+        expect(lesson.publishedSegmentIds, ['a', 'b']);
+        expect(lesson.contentRevision, 1);
+      },
+    );
+
+    test(
+      'repairs duplicate segment IDs without publishing ambiguous drafts',
+      () {
+        final lesson = CourseLesson.fromMap({
+          'title': 'Duplicate IDs',
+          'duration': '30秒',
+          'mediaSegments': [
+            segments.first.toMap(),
+            segments.last.toMap()..['id'] = 'a',
+            segments.last.toMap()..['id'] = '   ',
+          ],
+          'publishedSegmentIds': ['a', 'a', '', 'stale'],
+        });
+
+        expect(
+          lesson.mediaSegments.map((segment) => segment.id).toSet(),
+          hasLength(3),
+        );
+        expect(
+          lesson.mediaSegments.every((segment) => segment.id.trim().isNotEmpty),
+          isTrue,
+        );
+        expect(lesson.publishedSegmentIds, ['a']);
+        expect(
+          lesson.effectivePublishedMediaSegments.map((segment) => segment.id),
+          ['a'],
+        );
+      },
+    );
+
+    test(
+      'legacy duplicate segment IDs remain visible with stable repaired IDs',
+      () {
+        final data = {
+          'title': 'Legacy duplicates',
+          'duration': '30秒',
+          'mediaSegments': [
+            segments.first.toMap(),
+            segments.last.toMap()..['id'] = 'a',
+          ],
+        };
+
+        final first = CourseLesson.fromMap(data);
+        final second = CourseLesson.fromMap(data);
+
+        expect(first.mediaSegments.map((segment) => segment.id), hasLength(2));
+        expect(
+          first.mediaSegments.map((segment) => segment.id),
+          second.mediaSegments.map((segment) => segment.id),
+        );
+        expect(first.effectivePublishedMediaSegments, hasLength(2));
+      },
+    );
+  });
+
+  group('LessonEvent migration', () {
+    test('malformed optional anchor fields and quiz version are safe', () {
+      final event = LessonEvent.fromMap({
+        'id': 'legacy-quiz',
+        'lessonNumber': 1,
+        'timestampSec': 3,
+        'type': 'quiz',
+        'anchorType': 7,
+        'segmentId': false,
+        'globalTimestampSec': double.infinity,
+        'quizVersion': double.nan,
+        'unknownFutureField': true,
+      });
+
+      expect(event.anchorType, LessonTimedAnchorType.global);
+      expect(event.segmentId, isNull);
+      expect(event.globalTimestampSec, isNull);
+      expect(event.quizVersion, 1);
+      expect(LessonEvent.fromMap(event.toMap()).quizVersion, 1);
+    });
+
+    test('non-positive quiz versions fall back to the legacy version', () {
+      expect(LessonEvent.fromMap({'quizVersion': 0}).quizVersion, 1);
+      expect(LessonEvent.fromMap({'quizVersion': -8}).quizVersion, 1);
+      expect(LessonEvent.fromMap({'quizVersion': 2147483648}).quizVersion, 1);
     });
   });
 }

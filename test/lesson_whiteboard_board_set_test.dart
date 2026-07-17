@@ -111,6 +111,41 @@ void main() {
     );
   });
 
+  test(
+    'malformed board-set entries are skipped without losing valid boards',
+    () {
+      final parsed = BoardSet.fromMap({
+        'boards': [
+          {
+            'id': 'broken',
+            'order': 0,
+            'layers': [
+              {'id': 99, 'strokes': <Object>[]},
+            ],
+          },
+          {
+            'id': 'valid',
+            'order': 'unexpected',
+            'title': 12,
+            'layers': <Object>[],
+            'unknownFutureField': true,
+          },
+        ],
+        'switchEvents': [
+          {'boardId': 'valid', 'globalTimestampSec': double.nan, 'sequence': 0},
+          {'boardId': 7, 'globalTimestampSec': 2},
+        ],
+        'unknownFutureField': true,
+      });
+
+      expect(parsed.boards.map((board) => board.id), ['valid']);
+      expect(parsed.boards.single.order, 0);
+      expect(parsed.boards.single.title, isEmpty);
+      expect(parsed.switchEvents, isEmpty);
+      expect(BoardSet.fromMap(parsed.toMap()).boards.single.id, 'valid');
+    },
+  );
+
   test('legacy whiteboardLayers fall back to one default board', () {
     final lesson = CourseLesson.fromMap({
       'title': 'Legacy board',

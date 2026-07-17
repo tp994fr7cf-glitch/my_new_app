@@ -87,6 +87,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   bool _isPlaying = false;
   bool _isPreparingSession = false;
   bool _sessionCompleted = false;
+  bool _hasFirstCompletionHistory = false;
   bool _hasPlaybackStarted = false;
   bool _pendingCompletion = false;
   bool _isLoadingLearningState = true;
@@ -1359,42 +1360,12 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _startStudyTimer();
   }
 
-  Set<String> _stringSetFromSessionField(Object? value) {
-    return value is List ? value.whereType<String>().toSet() : <String>{};
-  }
-
-  Map<String, double> _resumePositionsFromSessionField(Object? value) {
-    if (value is! Map) {
-      return {};
-    }
-    return {
-      for (final entry in value.entries)
-        if (entry.key is String && entry.value is num)
-          entry.key as String: (entry.value as num).toDouble().clamp(
-            0,
-            double.infinity,
-          ),
-    };
-  }
-
   bool _sessionDataRepresentsCompletedLesson(Map<String, dynamic> data) {
-    final legacyCompleted =
-        data['status'] == 'completed' || data['cycleCompleted'] == true;
-    if (!_isIndependentPlayback) {
-      return legacyCompleted;
-    }
-
-    final hasPartCompletionMetadata =
-        data.containsKey('completedMediaSegmentIds') ||
-        data.containsKey('requiredMediaSegmentIds');
-    if (!hasPartCompletionMetadata) {
-      return legacyCompleted;
-    }
-    final completedIds = _stringSetFromSessionField(
-      data['completedMediaSegmentIds'],
+    return lessonSessionRepresentsCompleted(
+      data: data,
+      playbackMode: lesson.playbackMode,
+      requiredCurrentSegmentIds: _requiredMediaSegmentIds,
     );
-    return _requiredMediaSegmentIds.isNotEmpty &&
-        _requiredMediaSegmentIds.every(completedIds.contains);
   }
 
   void _loadSession(
@@ -1405,17 +1376,18 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _sessionId = sessionId;
     _cycleNumber = (data['cycleNumber'] as num?)?.toInt() ?? 1;
     _displayCycleNumber ??= _cycleNumber;
+    final loadedPartProgress = LessonPartProgress.fromSessionData(
+      data: data,
+      requiredCurrentSegmentIds: _requiredMediaSegmentIds,
+    );
     _completedMediaSegmentIds
       ..clear()
-      ..addAll(_stringSetFromSessionField(data['completedMediaSegmentIds']));
+      ..addAll(loadedPartProgress.completedSegmentIds);
     _mediaSegmentResumePositionsSec
       ..clear()
-      ..addAll(
-        _resumePositionsFromSessionField(
-          data['mediaSegmentResumePositionsSec'],
-        ),
-      );
+      ..addAll(loadedPartProgress.resumePositionsSec);
     _sessionCompleted = _sessionDataRepresentsCompletedLesson(data);
+    _hasFirstCompletionHistory = firstLessonCompletionTimestamp(data) != null;
     _cycleMaxWatchedPositionSec =
         (data['maxWatchedPositionSec'] as num?)?.toInt() ??
         (data['maxPositionSec'] as num?)?.toInt() ??
@@ -1507,6 +1479,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           'status': 'inProgress',
           'cycleCompleted': false,
           'pendingCompletion': false,
+          if (data['firstCompletedAt'] == null &&
+              firstLessonCompletionTimestamp(data) != null)
+            'firstCompletedAt': firstLessonCompletionTimestamp(data),
           'lastActivityAt': FieldValue.serverTimestamp(),
           ..._partProgressSessionFields(),
         }, SetOptions(merge: true));
@@ -1626,6 +1601,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           'cycleCompleted': false,
           'pendingCompletion': _pendingCompletion,
           'hasPlaybackStarted': true,
+          if (latestData['firstCompletedAt'] == null &&
+              firstLessonCompletionTimestamp(latestData) != null)
+            'firstCompletedAt': firstLessonCompletionTimestamp(latestData),
           'lastActivityAt': FieldValue.serverTimestamp(),
           ..._partProgressSessionFields(),
         }, SetOptions(merge: true));
@@ -1910,13 +1888,12 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   }
 
   Map<String, dynamic> _partProgressSessionFields() {
+    final progress = _partProgress;
     return {
       'requiredMediaSegmentIds': _requiredMediaSegmentIds,
-      'completedMediaSegmentIds': _completedMediaSegmentIds.toList(),
-      'mediaSegmentResumePositionsSec': {
-        for (final entry in _mediaSegmentResumePositionsSec.entries)
-          entry.key: entry.value,
-      },
+      'completedMediaSegmentIds': progress.completedSegmentIdsForPersistence,
+      'mediaSegmentResumePositionsSec':
+          progress.resumePositionsSecForPersistence,
       'contentRevision': lesson.contentRevision,
       'playbackMode': lesson.playbackMode.toStorage(),
     };
@@ -2027,6 +2004,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           'cycleCompleted': true,
           'pendingCompletion': false,
           'completedAt': now,
+          if (!_hasFirstCompletionHistory) 'firstCompletedAt': now,
           'lastActivityAt': now,
           'maxWatchedPositionSec': _cycleMaxWatchedPositionSec,
           'answeredQuizEventIds': _answeredQuizEventIds.toList(),
@@ -2067,6 +2045,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     );
 
     await batch.commit();
+    _hasFirstCompletionHistory = true;
     await _releaseActiveLearningLock();
   }
 
@@ -2200,6 +2179,12 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           'cycleQuizKey': cycleQuizKey,
           'eventId': event.id,
           'quizVersion': event.quizVersion,
+          'anchorType': event.anchorType.toStorage(),
+          if (event.segmentId != null && event.segmentId!.isNotEmpty)
+            'segmentId': event.segmentId,
+          'timestampSec': event.timestampSec,
+          if (event.globalTimestampSec != null)
+            'globalTimestampSec': event.globalTimestampSec,
           'question': quiz.question,
           'selectedChoiceIndex': selectedChoiceIndex,
           'correctChoiceIndex': quiz.correctChoiceIndex,

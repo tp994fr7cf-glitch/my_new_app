@@ -26,9 +26,9 @@ class LessonWhiteboardBoard {
 
   factory LessonWhiteboardBoard.fromMap(Map data) {
     return LessonWhiteboardBoard(
-      id: data['id'] as String? ?? defaultBoardId,
-      order: (data['order'] as num?)?.toInt() ?? 0,
-      title: data['title'] as String? ?? '',
+      id: data['id'] is String ? data['id'] as String : defaultBoardId,
+      order: data['order'] is num ? (data['order'] as num).toInt() : 0,
+      title: data['title'] is String ? data['title'] as String : '',
       layerBundle: LessonWhiteboardLayerBundle.fromMap(data['layers']),
     );
   }
@@ -70,9 +70,11 @@ class LessonWhiteboardBoardSwitchEvent {
 
   factory LessonWhiteboardBoardSwitchEvent.fromMap(Map data) {
     return LessonWhiteboardBoardSwitchEvent(
-      boardId: data['boardId'] as String? ?? '',
-      globalTimestampSec: (data['globalTimestampSec'] as num?)?.toDouble() ?? 0,
-      sequence: (data['sequence'] as num?)?.toInt() ?? 0,
+      boardId: data['boardId'] is String ? data['boardId'] as String : '',
+      globalTimestampSec: data['globalTimestampSec'] is num
+          ? (data['globalTimestampSec'] as num).toDouble()
+          : 0,
+      sequence: data['sequence'] is num ? (data['sequence'] as num).toInt() : 0,
     );
   }
 
@@ -166,13 +168,18 @@ class BoardSet {
     }
     final boardsData = data['boards'];
     final eventsData = data['switchEvents'];
-    final rawBoards = boardsData is List
-        ? boardsData
-              .whereType<Map>()
-              .map(LessonWhiteboardBoard.fromMap)
-              .take(maxLessonWhiteboardBoards)
-              .toList()
-        : const <LessonWhiteboardBoard>[];
+    final rawBoards = <LessonWhiteboardBoard>[];
+    if (boardsData is List) {
+      for (final boardData in boardsData.whereType<Map>()) {
+        if (rawBoards.length >= maxLessonWhiteboardBoards) {
+          break;
+        }
+        final board = _tryParseBoard(boardData);
+        if (board != null) {
+          rawBoards.add(board);
+        }
+      }
+    }
     final usedIds = <String>{};
     final parsedBoards = <LessonWhiteboardBoard>[];
     for (var index = 0; index < rawBoards.length; index++) {
@@ -188,19 +195,35 @@ class BoardSet {
       usedIds.add(id);
       parsedBoards.add(board.copyWith(id: id, order: index));
     }
-    final parsedEvents = eventsData is List
-        ? eventsData
-              .whereType<Map>()
-              .map(LessonWhiteboardBoardSwitchEvent.fromMap)
-              .where(
-                (event) =>
-                    usedIds.contains(event.boardId) &&
-                    event.globalTimestampSec.isFinite &&
-                    event.globalTimestampSec >= 0,
-              )
-              .toList()
-        : const <LessonWhiteboardBoardSwitchEvent>[];
+    final parsedEvents = <LessonWhiteboardBoardSwitchEvent>[];
+    if (eventsData is List) {
+      for (final eventData in eventsData.whereType<Map>()) {
+        final event = _tryParseSwitchEvent(eventData);
+        if (event != null &&
+            usedIds.contains(event.boardId) &&
+            event.globalTimestampSec.isFinite &&
+            event.globalTimestampSec >= 0) {
+          parsedEvents.add(event);
+        }
+      }
+    }
     return BoardSet(boards: parsedBoards, switchEvents: parsedEvents);
+  }
+
+  static LessonWhiteboardBoard? _tryParseBoard(Map data) {
+    try {
+      return LessonWhiteboardBoard.fromMap(data);
+    } on Object {
+      return null;
+    }
+  }
+
+  static LessonWhiteboardBoardSwitchEvent? _tryParseSwitchEvent(Map data) {
+    try {
+      return LessonWhiteboardBoardSwitchEvent.fromMap(data);
+    } on Object {
+      return null;
+    }
   }
 
   factory BoardSet.fromLegacyLayers(List<LessonWhiteboardLayer> layers) {

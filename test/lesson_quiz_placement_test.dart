@@ -229,4 +229,23 @@ void main() {
     expect(LessonEvent.fromMap(legacyMap).quizVersion, 1);
     expect(event(quizVersion: 4).toMap()['quizVersion'], 4);
   });
+
+  test('part anchor and quiz version survive serialization round-trip', () {
+    final original = event(
+      id: 'round-trip',
+      segmentId: 'b',
+      timestampSec: 7,
+      quizVersion: 3,
+    ).withResolvedGlobalTimestamp(lesson.mediaTimeline);
+
+    final restored = LessonEvent.fromMap(original.toMap());
+
+    expect(restored.id, original.id);
+    expect(restored.anchorType, LessonTimedAnchorType.segment);
+    expect(restored.segmentId, 'b');
+    expect(restored.timestampSec, 7);
+    expect(restored.globalTimestampSec, 17);
+    expect(restored.quizVersion, 3);
+    expect(restored.quiz?.question, quiz.question);
+  });
 }

@@ -48,9 +48,7 @@ class Course {
     return Course.fromMap(doc.data() ?? {}, id: doc.id);
   }
 
-  static Course? tryFromFirestore(
-    DocumentSnapshot<Map<String, dynamic>> doc,
-  ) {
+  static Course? tryFromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     try {
       return Course.fromFirestore(doc);
     } catch (error, stackTrace) {
@@ -234,12 +232,13 @@ class CourseLesson {
         const LessonWhiteboardLayerBundle();
   }
 
-  LessonWhiteboard? get whiteboard => publishedWhiteboardBundle.toLegacyWhiteboard();
+  LessonWhiteboard? get whiteboard =>
+      publishedWhiteboardBundle.toLegacyWhiteboard();
 
-  LessonWhiteboard? get whiteboardDraft => draftWhiteboardBundle.toLegacyWhiteboard();
+  LessonWhiteboard? get whiteboardDraft =>
+      draftWhiteboardBundle.toLegacyWhiteboard();
 
-  bool get hasPublishedWhiteboard =>
-      whiteboard != null && !whiteboard!.isEmpty;
+  bool get hasPublishedWhiteboard => whiteboard != null && !whiteboard!.isEmpty;
 
   bool get hasAudioSegment => effectivePublishedMediaSegments.any(
     (segment) => segment.isAudio && segment.hasUrl,
@@ -247,6 +246,7 @@ class CourseLesson {
 
   factory CourseLesson.fromMap(Map data) {
     final segmentsData = data['mediaSegments'];
+    final publishedSegmentIdsData = data['publishedSegmentIds'];
     final whiteboardLayersData = data['whiteboardLayers'];
     final whiteboardDraftLayersData = data['whiteboardDraftLayers'];
     final legacyWhiteboardData = data['whiteboard'];
@@ -263,7 +263,9 @@ class CourseLesson {
         : const <LessonMediaSegment>[];
 
     final normalizedSegments = parsedSegments.isNotEmpty
-        ? LessonMediaSegment.normalizeOrders(parsedSegments)
+        ? LessonMediaSegment.normalizeOrders(
+            _repairBlankAndDuplicateSegmentIds(parsedSegments),
+          )
         : _legacySegmentsFromMap(data);
 
     var parsedPublishedLayers = whiteboardLayersData is List
@@ -274,10 +276,9 @@ class CourseLesson {
               .toList()
         : const <LessonWhiteboardLayer>[];
     if (parsedPublishedLayers.isEmpty && legacyWhiteboardData is Map) {
-      parsedPublishedLayers =
-          LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
-            LessonWhiteboard.fromMap(legacyWhiteboardData),
-          ).layers;
+      parsedPublishedLayers = _tryParseLegacyWhiteboardLayers(
+        legacyWhiteboardData,
+      );
     }
 
     var parsedDraftLayers = whiteboardDraftLayersData is List
@@ -288,30 +289,37 @@ class CourseLesson {
               .toList()
         : const <LessonWhiteboardLayer>[];
     if (parsedDraftLayers.isEmpty && legacyWhiteboardDraftData is Map) {
-      parsedDraftLayers = LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
-        LessonWhiteboard.fromMap(legacyWhiteboardDraftData),
-      ).layers;
+      parsedDraftLayers = _tryParseLegacyWhiteboardLayers(
+        legacyWhiteboardDraftData,
+      );
     }
 
     final parsedContentRevision = parseIntField(
       data['contentRevision'],
       fallback: 1,
     );
+    final segmentIds = normalizedSegments.map((segment) => segment.id).toSet();
 
     return CourseLesson(
-      title: data['title'] as String? ?? '',
-      duration: data['duration'] as String? ?? '',
+      title: data['title'] is String ? data['title'] as String : '',
+      duration: data['duration'] is String ? data['duration'] as String : '',
       mediaSegments: normalizedSegments,
-      isPreview: data['isPreview'] as bool? ?? false,
+      isPreview: data['isPreview'] is bool ? data['isPreview'] as bool : false,
       whiteboardLayers: parsedPublishedLayers,
       whiteboardDraftLayers: parsedDraftLayers,
       playbackMode: LessonPlaybackMode.fromStorage(
-        data['playbackMode'] as String?,
+        data['playbackMode'] is String ? data['playbackMode'] as String : null,
       ),
-      publishedSegmentIds: data.containsKey('publishedSegmentIds')
-          ? _parseStringList(data['publishedSegmentIds'])
+      publishedSegmentIds: publishedSegmentIdsData is List
+          ? _parsePublishedSegmentIds(
+              publishedSegmentIdsData,
+              validSegmentIds: segmentIds,
+            )
           : null,
-      contentRevision: parsedContentRevision < 1 ? 1 : parsedContentRevision,
+      contentRevision:
+          parsedContentRevision < 1 || parsedContentRevision > 2147483647
+          ? 1
+          : parsedContentRevision,
       publishedBoardSet: publishedBoardSetData is Map
           ? BoardSet.fromMap(publishedBoardSetData)
           : null,
@@ -322,7 +330,9 @@ class CourseLesson {
   }
 
   static List<LessonMediaSegment> _legacySegmentsFromMap(Map data) {
-    final legacyUrl = data['mediaUrl'] as String? ?? '';
+    final legacyUrl = data['mediaUrl'] is String
+        ? data['mediaUrl'] as String
+        : '';
     if (legacyUrl.trim().isEmpty) {
       return const [];
     }
@@ -330,10 +340,14 @@ class CourseLesson {
       LessonMediaSegment(
         id: LessonMediaSegment.deterministicLegacyId(
           url: legacyUrl,
-          mediaType: data['mediaType'] as String? ?? 'video',
+          mediaType: data['mediaType'] is String
+              ? data['mediaType'] as String
+              : 'video',
         ),
         order: 0,
-        mediaType: data['mediaType'] as String? ?? 'video',
+        mediaType: data['mediaType'] is String
+            ? data['mediaType'] as String
+            : 'video',
         url: legacyUrl,
         durationSec: parseIntField(data['mediaDurationSec']),
       ),
@@ -358,22 +372,81 @@ class CourseLesson {
     }
   }
 
-  static List<String> _parseStringList(Object? data) {
-    if (data is! List) {
+  static List<LessonMediaSegment> _repairBlankAndDuplicateSegmentIds(
+    List<LessonMediaSegment> segments,
+  ) {
+    final usedIds = <String>{};
+    return [
+      for (final entry in segments.indexed)
+        entry.$2.copyWith(
+          id: _usableUniqueSegmentId(
+            segment: entry.$2,
+            index: entry.$1,
+            usedIds: usedIds,
+          ),
+        ),
+    ];
+  }
+
+  static String _usableUniqueSegmentId({
+    required LessonMediaSegment segment,
+    required int index,
+    required Set<String> usedIds,
+  }) {
+    var candidate = segment.id;
+    if (candidate.trim().isEmpty || usedIds.contains(candidate)) {
+      final stableSuffix = LessonMediaSegment.deterministicLegacyId(
+        url: '${segment.id}\u0000${segment.url}\u0000$index',
+        mediaType: segment.mediaType,
+      ).substring('legacy_'.length);
+      candidate = 'recovered_${stableSuffix}_$index';
+      var collision = 1;
+      while (usedIds.contains(candidate)) {
+        candidate = 'recovered_${stableSuffix}_${index}_$collision';
+        collision++;
+      }
+    }
+    usedIds.add(candidate);
+    return candidate;
+  }
+
+  static List<String> _parsePublishedSegmentIds(
+    List data, {
+    required Set<String> validSegmentIds,
+  }) {
+    final seen = <String>{};
+    return [
+      for (final id in data.whereType<String>())
+        if (id.trim().isNotEmpty &&
+            validSegmentIds.contains(id) &&
+            seen.add(id))
+          id,
+    ];
+  }
+
+  static List<LessonWhiteboardLayer> _tryParseLegacyWhiteboardLayers(Map data) {
+    try {
+      return LessonWhiteboardLayerBundle.fromLegacyWhiteboard(
+        LessonWhiteboard.fromMap(data),
+      ).layers;
+    } on Object {
       return const [];
     }
-    return data.whereType<String>().toList();
   }
 
   Map<String, dynamic> toMap() {
-    final normalizedSegments = LessonMediaSegment.normalizeOrders(mediaSegments);
+    final normalizedSegments = LessonMediaSegment.normalizeOrders(
+      mediaSegments,
+    );
     final publishedLayerMaps = publishedWhiteboardBundle.toMapList();
     final draftLayerMaps = draftWhiteboardBundle.toMapList();
 
     return {
       'title': title,
       'duration': duration,
-      'mediaSegments': normalizedSegments.map((segment) => segment.toMap()).toList(),
+      'mediaSegments': normalizedSegments
+          .map((segment) => segment.toMap())
+          .toList(),
       'isPreview': isPreview,
       'playbackMode': playbackMode.toStorage(),
       'publishedSegmentIds': _hasExplicitPublishedSegmentIds
@@ -502,12 +575,12 @@ class LessonEvent {
       type: data['type'] as String? ?? 'quiz',
       quiz: quizData is Map ? LessonQuiz.fromMap(quizData) : null,
       anchorType: LessonTimedAnchorType.fromStorage(
-        data['anchorType'] as String?,
+        data['anchorType'] is String ? data['anchorType'] as String : null,
       ),
-      segmentId: data['segmentId'] as String?,
-      globalTimestampSec: data['globalTimestampSec'] == null
-          ? null
-          : parseIntField(data['globalTimestampSec']),
+      segmentId: data['segmentId'] is String
+          ? data['segmentId'] as String
+          : null,
+      globalTimestampSec: _parseNullableInt(data['globalTimestampSec']),
       quizVersion: _parseQuizVersion(data['quizVersion']),
     );
   }
@@ -543,7 +616,23 @@ class LessonEvent {
 
   static int _parseQuizVersion(Object? value) {
     final parsed = parseIntField(value, fallback: 1);
-    return parsed < 1 ? 1 : parsed;
+    return parsed < 1 || parsed > 2147483647 ? 1 : parsed;
+  }
+
+  static int? _parseNullableInt(Object? value) {
+    if (value is int) {
+      return value;
+    }
+    if (value is num) {
+      if (!value.toDouble().isFinite) {
+        return null;
+      }
+      return value.toInt();
+    }
+    if (value is String) {
+      return int.tryParse(value.trim());
+    }
+    return null;
   }
 }
 

@@ -175,4 +175,48 @@ void main() {
     expect(validate(unpublished), lessonPublishedSegmentsLockedError);
     expect(validate(invalidGap), lessonPublishedSegmentsLockedError);
   });
+
+  test('rejects blank and duplicate segment IDs', () {
+    final blank = previousLesson().copyWith(
+      mediaSegments: [locked.copyWith(id: ' ')],
+      publishedSegmentIds: const [],
+    );
+    final duplicate = previousLesson().copyWith(
+      mediaSegments: const [locked, locked],
+      publishedSegmentIds: const ['locked'],
+    );
+
+    expect(validate(blank), lessonInvalidSegmentIdError);
+    expect(validate(duplicate), lessonInvalidSegmentIdError);
+  });
+
+  test('rejects stale and duplicate published IDs', () {
+    final stale = previousLesson().copyWith(
+      publishedSegmentIds: const ['locked', 'missing'],
+    );
+    final duplicate = previousLesson().copyWith(
+      publishedSegmentIds: const ['locked', 'locked'],
+    );
+
+    expect(validate(stale), lessonInvalidPublishedSegmentIdsError);
+    expect(validate(duplicate), lessonInvalidPublishedSegmentIdsError);
+  });
+
+  test(
+    'rejects duplicate order ambiguity and insertion before locked prefix',
+    () {
+      final duplicateOrder = previousLesson().copyWith(
+        mediaSegments: [locked, tail.copyWith(order: 0)],
+      );
+      final insertedBeforePrefix = previousLesson().copyWith(
+        mediaSegments: [tail.copyWith(order: 0), locked.copyWith(order: 1)],
+      );
+
+      expect(validate(duplicateOrder), lessonDuplicateSegmentOrderError);
+      expect(
+        validate(insertedBeforePrefix),
+        lessonPublishedSegmentsLockedError,
+      );
+    },
+  );
 }

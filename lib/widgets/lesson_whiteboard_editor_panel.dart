@@ -7,6 +7,7 @@ import '../models/course.dart';
 import '../models/lesson_duration_parser.dart';
 import '../models/lesson_media_segment.dart';
 import '../models/lesson_media_timeline.dart';
+import '../models/lesson_payload_size_validator.dart';
 import '../models/lesson_player_view_state.dart';
 import '../models/lesson_publication_validator.dart';
 import '../models/lesson_whiteboard.dart';
@@ -579,6 +580,7 @@ class _LessonWhiteboardEditorPanelState
 
     try {
       final boardSet = _buildCurrentBoardSet();
+      validateBoardSetForPersistence(boardSet);
       final boardSetCallback = widget.onBoardSetDraftSaved;
       if (boardSetCallback != null) {
         await boardSetCallback(boardSet);
@@ -1116,6 +1118,7 @@ Future<void> saveLessonWhiteboardDraft({
                 whiteboard,
               ).layers,
             ));
+  validateBoardSetForPersistence(draftBoardSet);
   final draftLayers =
       draftBoardSet.defaultBoard?.layerBundle.layers ??
       const <LessonWhiteboardLayer>[];
@@ -1153,8 +1156,10 @@ Future<void> saveLessonWhiteboardDraft({
 
     final lessons = List<Object?>.from(lessonsData);
     lessons[lessonIndex] = updatedLesson.toMap();
+    validateRawLessonsPayloadForPersistence(lessons);
     transaction.update(courseReference, {
       'lessons': lessons,
+      'lessonCount': lessons.length,
       'updatedAt': FieldValue.serverTimestamp(),
     });
   });

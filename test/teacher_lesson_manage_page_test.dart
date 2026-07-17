@@ -251,7 +251,11 @@ void main() {
       ),
     );
 
-    await tester.ensureVisible(find.text('レッスン情報を保存'));
+    await tester.scrollUntilVisible(
+      find.text('レッスン情報を保存'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.tap(find.text('レッスン情報を保存'));
     await tester.pumpAndSettle();
 
@@ -261,6 +265,11 @@ void main() {
     final deleteButtons = find.widgetWithIcon(IconButton, Icons.delete_outline);
     expect(tester.widget<IconButton>(deleteButtons.at(1)).onPressed, isNull);
 
+    await tester.scrollUntilVisible(
+      find.text('レッスン情報を保存'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.tap(find.text('レッスン情報を保存'));
     await tester.pumpAndSettle();
     expect(saves, hasLength(2));

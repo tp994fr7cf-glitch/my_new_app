@@ -10,6 +10,7 @@ import '../models/course.dart';
 import '../models/lesson_duration_parser.dart';
 import '../models/lesson_media_config.dart';
 import '../models/lesson_media_segment.dart';
+import '../models/lesson_payload_size_validator.dart';
 import '../models/lesson_playback_mode.dart';
 import '../models/lesson_publication_validator.dart';
 import '../models/lesson_whiteboard.dart';
@@ -39,13 +40,15 @@ List<CourseLesson> _prepareLessonsForPublication({
       '保存済みレッスンの件数が変わりました。画面を読み込み直してから再度お試しください。',
     );
   }
-  return [
+  final publishedLessons = [
     for (var index = 0; index < nextLessons.length; index++)
       LessonPublicationValidator.prepareForPublication(
         previous: previousLessons[index],
         next: nextLessons[index],
       ),
   ];
+  validateLessonsForPersistence(publishedLessons);
+  return publishedLessons;
 }
 
 class _LessonSaveResult {
@@ -248,6 +251,12 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         });
       }
     } on LessonPublicationValidationException catch (error) {
+      if (mounted) {
+        setState(() {
+          _message = error.message;
+        });
+      }
+    } on LessonPayloadValidationException catch (error) {
       if (mounted) {
         setState(() {
           _message = error.message;

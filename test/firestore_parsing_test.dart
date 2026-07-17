@@ -6,6 +6,8 @@ void main() {
   test('parseIntField accepts numeric strings', () {
     expect(parseIntField('12'), 12);
     expect(parseIntField(3.0), 3);
+    expect(parseIntField(double.nan, fallback: 7), 7);
+    expect(parseIntField(double.infinity, fallback: 7), 7);
     expect(parseIntField(null), 0);
   });
 

@@ -89,6 +89,19 @@ service cloud.firestore {
             || data.privacyPolicy.updatedAt is timestamp));
     }
 
+    function validCourseLessonCount(data) {
+      return data.lessons is list
+        && data.lessonCount is int
+        && data.lessonCount >= 0
+        && data.lessonCount == data.lessons.size();
+    }
+
+    function validCourseLessonUpdateInvariant() {
+      return !request.resource.data.diff(resource.data).affectedKeys()
+          .hasAny(['lessons', 'lessonCount'])
+        || validCourseLessonCount(request.resource.data);
+    }
+
     function canUpdateOwnTeacherCourse() {
       return isTeacher()
         && resource.data.instructorId == request.auth.uid
@@ -98,7 +111,52 @@ service cloud.firestore {
         && request.resource.data.status == resource.data.status
         && request.resource.data.lessons is list
         && request.resource.data.lessonCount is int
+        && validCourseLessonUpdateInvariant()
         && validCoursePrivacyPolicyMap(request.resource.data);
+    }
+
+    // Rules can bound these collections, but cannot iterate dynamic segment IDs
+    // or validate every value in the resume-position map. The reader filters
+    // malformed entries and the writer emits only finite, non-negative values.
+    function validOptionalLessonSessionProgress(data) {
+      return (!data.keys().hasAny(['playbackMode'])
+          || data.playbackMode in [
+            'continuous',
+            'independentSingle',
+            'independentPanels'
+          ])
+        && (!data.keys().hasAny(['contentRevision'])
+          || (data.contentRevision is int
+            && data.contentRevision >= 1
+            && data.contentRevision <= 2147483647))
+        && (!data.keys().hasAny(['requiredMediaSegmentIds'])
+          || (data.requiredMediaSegmentIds is list
+            && data.requiredMediaSegmentIds.size() <= 500))
+        && (!data.keys().hasAny(['completedMediaSegmentIds'])
+          || (data.completedMediaSegmentIds is list
+            && data.completedMediaSegmentIds.size() <= 500))
+        && (!data.keys().hasAny(['mediaSegmentResumePositionsSec'])
+          || (data.mediaSegmentResumePositionsSec is map
+            && data.mediaSegmentResumePositionsSec.size() <= 500));
+    }
+
+    function validOptionalQuizVersion(data) {
+      return !data.keys().hasAny(['quizVersion'])
+        || (data.quizVersion is int
+          && data.quizVersion >= 1
+          && data.quizVersion <= 2147483647);
+    }
+
+    function validOptionalQuizSegmentMetadata(data) {
+      return (!data.keys().hasAny(['anchorType'])
+          || data.anchorType in ['global', 'segment'])
+        && (!data.keys().hasAny(['segmentId'])
+          || (data.segmentId is string && data.segmentId.size() > 0))
+        && (!data.keys().hasAny(['timestampSec'])
+          || (data.timestampSec is int && data.timestampSec >= 0))
+        && (!data.keys().hasAny(['globalTimestampSec'])
+          || (data.globalTimestampSec is int
+            && data.globalTimestampSec >= 0));
     }
 
     function isCourseInstructor(courseId) {
@@ -499,7 +557,8 @@ service cloud.firestore {
           && request.resource.data.totalDurationSec is int
           && request.resource.data.completionThresholdSec is int
           && (!request.resource.data.keys().hasAny(['watchedRanges'])
-            || request.resource.data.watchedRanges is list);
+            || request.resource.data.watchedRanges is list)
+          && validOptionalLessonSessionProgress(request.resource.data);
       }
 
       match /lessonViewSegments/{segmentId} {
@@ -588,7 +647,9 @@ service cloud.firestore {
           && request.resource.data.question is string
           && request.resource.data.selectedChoiceIndex is int
           && request.resource.data.correctChoiceIndex is int
-          && request.resource.data.isCorrect is bool;
+          && request.resource.data.isCorrect is bool
+          && validOptionalQuizVersion(request.resource.data)
+          && validOptionalQuizSegmentMetadata(request.resource.data);
       }
 
       match /courseSearchHistory/{historyId} {
@@ -1340,6 +1401,12 @@ service cloud.firestore {
         && request.resource.data.title is string
         && request.resource.data.lessons is list;
 
+      // CourseLesson, LessonEvent, and board-set data live inside arrays/maps.
+      // Rules cannot iterate those nested values or prove that published media
+      // arrays are append-only. The app validates per-item publication changes
+      // transactionally for concurrency correctness, but that client check is
+      // not a server security boundary. Rules enforce only document-level shape
+      // and lesson-count consistency without claiming stronger guarantees.
       allow update: if canUpdateOwnTeacherCourse();
 
       match /participantIdentities/{userId} {

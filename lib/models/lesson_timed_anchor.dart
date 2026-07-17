@@ -5,7 +5,9 @@ enum LessonTimedAnchorType {
   segment;
 
   static LessonTimedAnchorType fromStorage(String? value) {
-    return value == 'segment' ? LessonTimedAnchorType.segment : LessonTimedAnchorType.global;
+    return value == 'segment'
+        ? LessonTimedAnchorType.segment
+        : LessonTimedAnchorType.global;
   }
 
   String toStorage() {
@@ -53,11 +55,17 @@ class LessonTimedAnchor {
   factory LessonTimedAnchor.fromMap(Map data) {
     return LessonTimedAnchor(
       anchorType: LessonTimedAnchorType.fromStorage(
-        data['anchorType'] as String?,
+        data['anchorType'] is String ? data['anchorType'] as String : null,
       ),
-      timestampSec: (data['timestampSec'] as num?)?.toInt() ?? 0,
-      segmentId: data['segmentId'] as String?,
-      globalTimestampSec: (data['globalTimestampSec'] as num?)?.toInt(),
+      timestampSec: data['timestampSec'] is num
+          ? (data['timestampSec'] as num).toInt()
+          : 0,
+      segmentId: data['segmentId'] is String
+          ? data['segmentId'] as String
+          : null,
+      globalTimestampSec: data['globalTimestampSec'] is num
+          ? (data['globalTimestampSec'] as num).toInt()
+          : null,
     );
   }
 

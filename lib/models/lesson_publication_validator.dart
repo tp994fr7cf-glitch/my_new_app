@@ -4,6 +4,10 @@ import 'lesson_media_segment.dart';
 const String lessonPlaybackModeLockedError = '公開済みのパートがあるため、再生モードは変更できません。';
 const String lessonPublishedSegmentsLockedError =
     '公開済みのパートはタイトル以外の内容や順序を変更・削除できません。新しいパートは末尾に追加してください。';
+const String lessonInvalidSegmentIdError = 'パートIDが空欄または重複しているため保存できません。';
+const String lessonInvalidPublishedSegmentIdsError =
+    '公開対象のパートIDが空欄、重複、または存在しないため保存できません。';
+const String lessonDuplicateSegmentOrderError = 'パートの順序が重複しているため保存できません。';
 
 class LessonPublicationValidator {
   const LessonPublicationValidator._();
@@ -75,6 +79,19 @@ String? validateAppendOnlyLessonPublication({
   required CourseLesson previous,
   required CourseLesson next,
 }) {
+  if (!_hasValidUniqueSegmentIds(previous.mediaSegments) ||
+      !_hasValidUniqueSegmentIds(next.mediaSegments)) {
+    return lessonInvalidSegmentIdError;
+  }
+  if (!_hasValidUniquePublishedIds(previous) ||
+      !_hasValidUniquePublishedIds(next)) {
+    return lessonInvalidPublishedSegmentIdsError;
+  }
+  if (!_hasUniqueOrders(previous.mediaSegments) ||
+      !_hasUniqueOrders(next.mediaSegments)) {
+    return lessonDuplicateSegmentOrderError;
+  }
+
   final previousLockedIds = previous.lockedSegmentIds;
   if (previousLockedIds.isNotEmpty &&
       previous.playbackMode != next.playbackMode) {
@@ -145,4 +162,25 @@ bool _lockedFieldsMatch(LessonMediaSegment previous, LessonMediaSegment next) {
       previous.url == next.url &&
       previous.durationSec == next.durationSec &&
       previous.order == next.order;
+}
+
+bool _hasValidUniqueSegmentIds(List<LessonMediaSegment> segments) {
+  final ids = <String>{};
+  return segments.every(
+    (segment) => segment.id.trim().isNotEmpty && ids.add(segment.id),
+  );
+}
+
+bool _hasValidUniquePublishedIds(CourseLesson lesson) {
+  final segmentIds = lesson.mediaSegments.map((segment) => segment.id).toSet();
+  final publishedIds = <String>{};
+  return lesson.publishedSegmentIds.every(
+    (id) =>
+        id.trim().isNotEmpty && segmentIds.contains(id) && publishedIds.add(id),
+  );
+}
+
+bool _hasUniqueOrders(List<LessonMediaSegment> segments) {
+  final orders = <int>{};
+  return segments.every((segment) => orders.add(segment.order));
 }
