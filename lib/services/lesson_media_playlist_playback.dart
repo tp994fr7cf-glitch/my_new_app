@@ -40,7 +40,10 @@ abstract class LessonMediaPlaylistController {
   Future<void> play();
   Future<void> pause();
   Future<void> seekGlobal(double globalSec);
-  Future<void> seekToSegmentIndex(int segmentIndex);
+  Future<void> seekToSegmentIndex(
+    int segmentIndex, {
+    double localStartSec = 0,
+  });
   Future<void> disposePlayer();
   Future<void> close();
 }
@@ -84,6 +87,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
 
   LessonMediaTimeline _timeline = const LessonMediaTimeline(segments: []);
   LessonMediaPlayback? _activePlayer;
+  _MediaPlayerSlot? _activeSlot;
   _MediaPlayerSlot? _audioSlot;
   _MediaPlayerSlot? _videoSlot;
   StreamSubscription<Duration>? _positionSubscription;
@@ -95,7 +99,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   int _totalDurationSec = 0;
   bool _isReady = false;
   bool _isPlaying = false;
-  bool _autoAdvanceEnabled = true;
+  final bool _autoAdvanceEnabled = true;
   bool _isSwitchingSegment = false;
   bool _isAdvancing = false;
   double? _pendingSeekGlobalSec;
@@ -275,6 +279,14 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     }
     _logSwitch('_preloadNextSegment: segmentIndex=$segmentIndex');
     try {
+      final segment = _timeline.orderedSegments[segmentIndex];
+      final targetSlot = _slotForSegment(segment);
+      if (identical(targetSlot, _activeSlot)) {
+        // There is one player slot per media type. Opening an adjacent
+        // same-type segment in that slot would replace the media that is
+        // currently playing, so it cannot be safely preloaded.
+        return;
+      }
       // Only ensure the segment is open/buffered; don't reposition it. It
       // may already be prepared at a meaningful position (e.g. we just
       // switched away from it moments ago), and resetting it to 0 here
@@ -334,6 +346,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       await _detachActiveSubscriptions();
 
       _activePlayer = slot.player;
+      _activeSlot = slot;
       _currentSegmentIndex = segmentIndex;
 
       final targetLocalSec = localStartSec.clamp(
@@ -654,11 +667,17 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _globalPositionController.add(_globalPositionSec);
   }
 
-  Future<void> seekToSegmentIndex(int segmentIndex) async {
+  Future<void> seekToSegmentIndex(
+    int segmentIndex, {
+    double localStartSec = 0,
+  }) async {
     if (segmentIndex < 0 || segmentIndex >= _timeline.segmentCount) {
       return;
     }
-    final globalSec = _timeline.startGlobalSecForSegmentIndex(segmentIndex);
+    final globalSec = _timeline.globalSecForSegmentIndex(
+      segmentIndex: segmentIndex,
+      localSec: localStartSec,
+    );
     await seekGlobal(globalSec);
   }
 
@@ -692,6 +711,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       _videoSlot = null;
     }
     _activePlayer = null;
+    _activeSlot = null;
   }
 }
 
@@ -761,6 +781,7 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       ..addAll(segments);
     _isReady = true;
     _globalPositionSec = 0;
+    _currentSegmentIndex = 0;
     _globalPositionController.add(_globalPositionSec);
     _totalDurationController.add(totalDurationSec);
     _segmentIndexController.add(_currentSegmentIndex);
@@ -781,6 +802,17 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       }
       _globalPositionSec = next;
       _globalPositionController.add(_globalPositionSec);
+      if (_segments.isNotEmpty) {
+        final timeline = LessonMediaTimeline(segments: _segments);
+        final nextIndex = timeline.resolveGlobalSec(_globalPositionSec).segmentIndex;
+        if (nextIndex != _currentSegmentIndex) {
+          _currentSegmentIndex = nextIndex;
+          _segmentIndexController.add(_currentSegmentIndex);
+        }
+      }
+      if (next >= totalDurationSec) {
+        unawaited(pause());
+      }
     });
   }
 
@@ -794,10 +826,31 @@ class FakeLessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   Future<void> seekGlobal(double globalSec) async {
     _globalPositionSec = globalSec.clamp(0, totalDurationSec.toDouble());
     _globalPositionController.add(_globalPositionSec);
+    if (_segments.isNotEmpty) {
+      final timeline = LessonMediaTimeline(segments: _segments);
+      final nextIndex = timeline.resolveGlobalSec(_globalPositionSec).segmentIndex;
+      if (nextIndex != _currentSegmentIndex) {
+        _currentSegmentIndex = nextIndex;
+        _segmentIndexController.add(_currentSegmentIndex);
+      }
+    }
   }
 
-  Future<void> seekToSegmentIndex(int segmentIndex) async {
-    _currentSegmentIndex = segmentIndex.clamp(0, _segments.length - 1);
+  Future<void> seekToSegmentIndex(
+    int segmentIndex, {
+    double localStartSec = 0,
+  }) async {
+    if (_segments.isEmpty) {
+      return;
+    }
+    final timeline = LessonMediaTimeline(segments: _segments);
+    final targetIndex = segmentIndex.clamp(0, _segments.length - 1);
+    _currentSegmentIndex = targetIndex;
+    _globalPositionSec = timeline.globalSecForSegmentIndex(
+      segmentIndex: targetIndex,
+      localSec: localStartSec,
+    );
+    _globalPositionController.add(_globalPositionSec);
     _segmentIndexController.add(_currentSegmentIndex);
   }
 

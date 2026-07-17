@@ -639,7 +639,10 @@ class _ControllableLivePositionPlaylistPlayback
   }
 
   @override
-  Future<void> seekToSegmentIndex(int segmentIndex) async {
+  Future<void> seekToSegmentIndex(
+    int segmentIndex, {
+    double localStartSec = 0,
+  }) async {
     _segmentIndexController.add(0);
   }
 

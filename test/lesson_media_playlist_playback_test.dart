@@ -46,6 +46,45 @@ LessonMediaPlaylistPlayback createTrackingPlaylistPlayback({
 }
 
 void main() {
+  test('does not preload an adjacent segment into the active same-type slot',
+      () async {
+    final videoPlayer = FakeLessonMediaPlayback();
+    final playback = createTrackingPlaylistPlayback(
+      videoPlayers: [videoPlayer],
+    );
+    final segments = [
+      LessonMediaSegment(
+        id: 'video-a',
+        order: 0,
+        url: 'https://example.com/a.mp4',
+        durationSec: 30,
+      ),
+      LessonMediaSegment(
+        id: 'video-b',
+        order: 1,
+        url: 'https://example.com/b.mp4',
+        durationSec: 30,
+      ),
+    ];
+
+    await playback.openSegments(segments);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(videoPlayer.openedUrls.map((url) => url.toString()), [
+      'https://example.com/a.mp4',
+    ]);
+
+    await playback.seekToSegmentIndex(1, localStartSec: 7);
+
+    expect(videoPlayer.openedUrls.map((url) => url.toString()), [
+      'https://example.com/a.mp4',
+      'https://example.com/b.mp4',
+    ]);
+    expect(playback.currentSegmentIndex, 1);
+    expect(playback.globalPositionSec, closeTo(37, 0.01));
+    expect(videoPlayer.position, const Duration(seconds: 7));
+  });
+
   test('openSegments preloads the next segment into the pooled player', () async {
     final audioPlayer = FakeLessonMediaPlayback();
     final videoPlayer = FakeLessonMediaPlayback();

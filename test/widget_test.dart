@@ -6,7 +6,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:my_new_app/main.dart';
 import 'package:my_new_app/models/course.dart';
 import 'package:my_new_app/models/lesson_note.dart';
+import 'package:my_new_app/models/lesson_playback_mode.dart';
 import 'package:my_new_app/models/lesson_question.dart';
+import 'package:my_new_app/models/lesson_timed_anchor.dart';
 import 'package:my_new_app/screens/course_detail_page.dart';
 import 'package:my_new_app/screens/course_list_page.dart';
 import 'package:my_new_app/screens/home_page.dart';
@@ -77,6 +79,63 @@ Widget _playableVideoLessonPage(
           playlistPlaybackFactory ??
           (() => FakeLessonMediaPlaylistPlayback(totalDurationSec: 90)),
     ),
+  );
+}
+
+Course _courseWithIndependentLesson(
+  Course base, {
+  required LessonPlaybackMode playbackMode,
+  List<LessonEvent> lessonEvents = const [],
+}) {
+  const segments = [
+    LessonMediaSegment(
+      id: 'published-a',
+      order: 0,
+      mediaType: 'audio',
+      title: '公開パートA',
+      url: 'https://example.com/a.mp3',
+      durationSec: 5,
+    ),
+    LessonMediaSegment(
+      id: 'published-b',
+      order: 1,
+      mediaType: 'audio',
+      title: '公開パートB',
+      url: 'https://example.com/b.mp3',
+      durationSec: 5,
+    ),
+    LessonMediaSegment(
+      id: 'draft-c',
+      order: 2,
+      mediaType: 'audio',
+      title: '下書きパートC',
+      url: 'https://example.com/c.mp3',
+      durationSec: 5,
+    ),
+  ];
+  final lesson = CourseLesson(
+    title: '独立再生レッスン',
+    duration: '10秒',
+    mediaSegments: segments,
+    publishedSegmentIds: const ['published-a', 'published-b'],
+    playbackMode: playbackMode,
+    contentRevision: 2,
+  );
+  return Course(
+    id: base.id,
+    courseCode: base.courseCode,
+    instructorId: base.instructorId,
+    title: base.title,
+    instructorName: base.instructorName,
+    category: base.category,
+    level: base.level,
+    duration: base.duration,
+    lessonCount: 1,
+    rating: base.rating,
+    priceLabel: base.priceLabel,
+    description: base.description,
+    lessons: [lesson],
+    lessonEvents: lessonEvents,
   );
 }
 
@@ -2987,6 +3046,7 @@ void main() {
     await tester.pumpWidget(_playableVideoLessonPage(course));
     await tester.pumpAndSettle();
 
+    expect(find.text('一貫再生'), findsOneWidget);
     expect(find.text('00:00 / 01:30'), findsOneWidget);
     expect(find.text('現在位置: 00:00', skipOffstage: false), findsOneWidget);
 
@@ -3039,6 +3099,249 @@ void main() {
     expect(find.text('現在位置: 00:31', skipOffstage: false), findsOneWidget);
     expect(find.text('視聴時間: 2秒', skipOffstage: false), findsOneWidget);
   });
+
+  testWidgets(
+    'independent single keeps local resumes and auto-plays the next published part',
+    (WidgetTester tester) async {
+      final course = _courseWithIndependentLesson(
+        sampleCourses.first,
+        playbackMode: LessonPlaybackMode.independentSingle,
+      );
+      final segments = course.lessons.first.effectivePublishedMediaSegments;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: VideoLessonPage(
+            course: course,
+            lesson: course.lessons.first,
+            lessonNumber: 1,
+            playlistPlaybackFactory: () => FakeLessonMediaPlaylistPlayback(
+              totalDurationSec: 10,
+              segments: segments,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('独立再生（単一画面）'), findsOneWidget);
+      expect(find.text('下書きパートC'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('lesson-part-button-published-a')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('lesson-part-button-published-b')),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.widgetWithText(FilledButton, '再生'));
+      await tester.pump(const Duration(seconds: 2));
+      await tester.tap(find.widgetWithText(FilledButton, '一時停止'));
+      await tester.pump();
+
+      await tester.tap(
+        find.byKey(const ValueKey('lesson-part-button-published-b')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('00:00 / 00:05'), findsOneWidget);
+
+      await tester.tap(
+        find.byKey(const ValueKey('lesson-part-button-published-a')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('00:02 / 00:05'), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(FilledButton, '再生'));
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pump();
+
+      expect(
+        find.byKey(const ValueKey('lesson-part-player-published-b')),
+        findsOneWidget,
+      );
+      expect(find.widgetWithText(FilledButton, '一時停止'), findsOneWidget);
+      expect(find.textContaining('公開パートA\n完了'), findsOneWidget);
+      expect(find.text('視聴時間: 5秒', skipOffstage: false), findsOneWidget);
+    },
+  );
+
+  testWidgets('independent panels render one collapsible shared player', (
+    WidgetTester tester,
+  ) async {
+    final course = _courseWithIndependentLesson(
+      sampleCourses.first,
+      playbackMode: LessonPlaybackMode.independentPanels,
+    );
+    final segments = course.lessons.first.effectivePublishedMediaSegments;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: VideoLessonPage(
+          course: course,
+          lesson: course.lessons.first,
+          lessonNumber: 1,
+          playlistPlaybackFactory: () => FakeLessonMediaPlaylistPlayback(
+            totalDurationSec: 10,
+            segments: segments,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('独立再生（独立画面）'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('lesson-part-panel-published-a')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('lesson-part-panel-published-b')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('lesson-part-player-published-a')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('lesson-part-player-published-b')),
+      findsNothing,
+    );
+
+    await tester.tap(find.widgetWithText(FilledButton, '再生'));
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('lesson-part-player-published-a')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey('lesson-part-player-published-b')),
+      findsOneWidget,
+    );
+    expect(find.widgetWithText(FilledButton, '一時停止'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, '一時停止'));
+    await tester.pump();
+
+    await tester.tap(
+      find.byKey(const ValueKey('lesson-part-panel-header-published-a')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('lesson-part-player-published-a')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('lesson-part-player-published-b')),
+      findsNothing,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('lesson-part-panel-header-published-a')),
+    );
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('lesson-part-player-published-a')),
+      findsNothing,
+    );
+  });
+
+  testWidgets(
+    'independent playback filters segment quizzes while retaining global quizzes',
+    (WidgetTester tester) async {
+      const quiz = LessonQuiz(
+        question: 'placeholder',
+        choices: ['A', 'B'],
+        correctChoiceIndex: 0,
+      );
+      const events = [
+        LessonEvent(
+          id: 'segment-a-quiz',
+          lessonNumber: 1,
+          timestampSec: 0,
+          type: 'quiz',
+          quiz: LessonQuiz(
+            question: 'パートAの問題',
+            choices: ['A', 'B'],
+            correctChoiceIndex: 0,
+          ),
+          anchorType: LessonTimedAnchorType.segment,
+          segmentId: 'published-a',
+        ),
+        LessonEvent(
+          id: 'segment-b-quiz',
+          lessonNumber: 1,
+          timestampSec: 0,
+          type: 'quiz',
+          quiz: LessonQuiz(
+            question: 'パートBの問題',
+            choices: ['A', 'B'],
+            correctChoiceIndex: 0,
+          ),
+          anchorType: LessonTimedAnchorType.segment,
+          segmentId: 'published-b',
+        ),
+        LessonEvent(
+          id: 'global-quiz',
+          lessonNumber: 1,
+          timestampSec: 0,
+          type: 'quiz',
+          quiz: quiz,
+        ),
+      ];
+      final course = _courseWithIndependentLesson(
+        sampleCourses.first,
+        playbackMode: LessonPlaybackMode.independentSingle,
+        lessonEvents: events,
+      );
+      final segments = course.lessons.first.effectivePublishedMediaSegments;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: VideoLessonPage(
+            course: course,
+            lesson: course.lessons.first,
+            lessonNumber: 1,
+            playlistPlaybackFactory: () => FakeLessonMediaPlaylistPlayback(
+              totalDurationSec: 10,
+              segments: segments,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, '再生'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('授業中クイズ'),
+        500,
+        scrollable: find.byType(Scrollable).first,
+      );
+
+      expect(find.text('パートAの問題'), findsOneWidget);
+      expect(find.text('パートBの問題'), findsNothing);
+      expect(find.text('placeholder'), findsOneWidget);
+
+      await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('lesson-part-button-published-b')),
+        -500,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(
+        find.byKey(const ValueKey('lesson-part-button-published-b')),
+      );
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('授業中クイズ'),
+        500,
+        scrollable: find.byType(Scrollable).first,
+      );
+
+      expect(find.text('パートAの問題'), findsNothing);
+      expect(find.text('パートBの問題'), findsOneWidget);
+      expect(find.text('placeholder'), findsOneWidget);
+    },
+  );
 
   testWidgets('Video lesson starts from preselected first playback position', (
     WidgetTester tester,
@@ -3157,9 +3460,8 @@ void main() {
       _playableVideoLessonPage(
         course,
         isTeacherPreview: true,
-        playlistPlaybackFactory: () => FakeLessonMediaPlaylistPlayback(
-          totalDurationSec: 90,
-        ),
+        playlistPlaybackFactory: () =>
+            FakeLessonMediaPlaylistPlayback(totalDurationSec: 90),
       ),
     );
     await tester.pumpAndSettle();
