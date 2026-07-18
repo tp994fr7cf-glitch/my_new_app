@@ -75,6 +75,7 @@ class LessonMediaCompletionState {
   bool _playRequested = false;
   bool _completionArmed = false;
   bool _completionReported = false;
+  bool _seekInProgress = false;
 
   bool get playRequested => _playRequested;
   bool get completionArmed => _completionArmed;
@@ -83,6 +84,7 @@ class LessonMediaCompletionState {
     _playRequested = false;
     _completionArmed = false;
     _completionReported = false;
+    _seekInProgress = false;
   }
 
   void markPlayRequested() {
@@ -97,10 +99,12 @@ class LessonMediaCompletionState {
   }
 
   void beginSeek() {
+    _seekInProgress = true;
     _completionArmed = false;
   }
 
   void finishSeek({required Duration position, required Duration? duration}) {
+    _seekInProgress = false;
     _completionReported = false;
     _completionArmed =
         _playRequested &&
@@ -113,7 +117,10 @@ class LessonMediaCompletionState {
     required Duration position,
     required Duration? duration,
   }) {
-    if (_completionArmed || _completionReported || !_playRequested) {
+    if (_seekInProgress ||
+        _completionArmed ||
+        _completionReported ||
+        !_playRequested) {
       return;
     }
     _completionArmed =

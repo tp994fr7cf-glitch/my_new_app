@@ -697,18 +697,28 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     Completer<void> completion,
   ) async {
     try {
-      await _drainPendingSeeks(requestedGlobalSec);
-      // Clear the active drain before completing callers. A request made by
-      // one of their continuations must start a new drain rather than attach
-      // itself to an already-completed Future and remain unapplied.
-      _seekDrainFuture = null;
-      await _flushDeferredCompletion();
-      if (_replayAfterSeekDrain && _playRequested) {
-        _replayAfterSeekDrain = false;
-        await _playInternal();
-      } else {
-        _replayAfterSeekDrain = false;
+      while (true) {
+        await _drainPendingSeeks(requestedGlobalSec);
+        await _flushDeferredCompletion();
+        if (_replayAfterSeekDrain && _playRequested) {
+          _replayAfterSeekDrain = false;
+          await _seekImmediate(const _PlaylistSeekTarget(globalSec: 0));
+          if (_playRequested && !_isPlaying) {
+            await _playInternal();
+          }
+        } else {
+          _replayAfterSeekDrain = false;
+        }
+        if (_pendingSeekTarget == null &&
+            _deferredCompletionSegmentIndex == null &&
+            !_replayAfterSeekDrain) {
+          break;
+        }
       }
+      // No await may occur between releasing this drain and completing its
+      // callers. Their continuations must start a new drain rather than attach
+      // to an already-settled Future.
+      _seekDrainFuture = null;
       completion.complete();
     } catch (error, stackTrace) {
       _seekDrainFuture = null;

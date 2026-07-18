@@ -547,6 +547,35 @@ void main() {
     },
   );
 
+  test('a seek queued during endpoint replay is applied last', () async {
+    final audioPlayer = FakeLessonMediaPlayback(
+      seekDelay: const Duration(milliseconds: 50),
+    );
+    final videoPlayer = FakeLessonMediaPlayback(
+      seekDelay: const Duration(milliseconds: 50),
+    );
+    final playback = createTrackingPlaylistPlayback(
+      audioPlayers: [audioPlayer],
+      videoPlayers: [videoPlayer],
+    );
+
+    await playback.openSegments(twoPartLessonSegments());
+    final endpointSeek = playback.seekGlobal(180);
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    await playback.play();
+    await Future<void>.delayed(const Duration(milliseconds: 70));
+    final latestSeek = playback.seekGlobal(30);
+
+    await Future.wait([
+      endpointSeek,
+      latestSeek,
+    ]).timeout(const Duration(seconds: 2));
+
+    expect(playback.currentSegmentIndex, 0);
+    expect(playback.globalPositionSec, closeTo(30, 0.01));
+    expect(playback.isPlaying, isTrue);
+  });
+
   test(
     'natural completion received during seek drain advances after settling',
     () async {

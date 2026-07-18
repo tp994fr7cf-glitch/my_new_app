@@ -159,6 +159,16 @@ void main() {
       final state = LessonMediaCompletionState()..markPlayRequested();
 
       state.beginSeek();
+      state.updateKnownDuration(
+        position: const Duration(seconds: 20),
+        duration: const Duration(seconds: 90),
+      );
+      expect(
+        state.completionArmed,
+        isFalse,
+        reason: 'native duration callbacks during seek must not re-arm early',
+      );
+
       state.finishSeek(position: const Duration(seconds: 30), duration: null);
       expect(state.completionArmed, isFalse);
 
