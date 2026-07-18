@@ -418,7 +418,6 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     if (!mounted ||
         !_isIndependentPlayback ||
         _isExplicitPlaybackReposition ||
-        _pendingExplicitRepositionGlobalSec != null ||
         segmentIndex < 0 ||
         segmentIndex >= _publishedMediaSegments.length) {
       return;

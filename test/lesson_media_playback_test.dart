@@ -18,7 +18,7 @@ void main() {
         onStarted: () {
           started = true;
         },
-        onError: (_, __) {},
+        onError: (_, _) {},
       ).timeout(const Duration(milliseconds: 100));
 
       expect(started, isTrue);
@@ -53,18 +53,21 @@ void main() {
     }
   });
 
-  test('wall clock fake reports sub-second position between stream ticks', () async {
-    final player = WallClockFakeLessonMediaPlayback();
-    await player.open(Uri.parse('https://example.com/audio.mp3'));
-    await player.play();
+  test(
+    'wall clock fake reports sub-second position between stream ticks',
+    () async {
+      final player = WallClockFakeLessonMediaPlayback();
+      await player.open(Uri.parse('https://example.com/audio.mp3'));
+      await player.play();
 
-    final startMs = player.position.inMilliseconds;
-    await Future<void>.delayed(const Duration(milliseconds: 200));
-    final midMs = player.position.inMilliseconds;
+      final startMs = player.position.inMilliseconds;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      final midMs = player.position.inMilliseconds;
 
-    expect(midMs - startMs, greaterThan(150));
-    await player.pause();
-  });
+      expect(midMs - startMs, greaterThan(150));
+      await player.pause();
+    },
+  );
 
   group('shouldSuppressVideoPlayingUpdate', () {
     test('suppresses isPlaying=false caused by buffering', () {
@@ -81,7 +84,8 @@ void main() {
       expect(
         shouldSuppressVideoPlayingUpdate(isPlaying: false, isBuffering: false),
         isFalse,
-        reason: 'A real pause (or natural end-of-video) must still be reported.',
+        reason:
+            'A real pause (or natural end-of-video) must still be reported.',
       );
     });
 
@@ -94,6 +98,86 @@ void main() {
         shouldSuppressVideoPlayingUpdate(isPlaying: true, isBuffering: false),
         isFalse,
       );
+    });
+  });
+
+  group('LessonMediaCompletionState', () {
+    test(
+      'keeps natural completion armed after a seek while play is requested',
+      () {
+        final state = LessonMediaCompletionState()..markPlayRequested();
+
+        state.beginSeek();
+        state.finishSeek(
+          position: const Duration(seconds: 30),
+          duration: const Duration(seconds: 90),
+        );
+
+        expect(state.playRequested, isTrue);
+        expect(state.completionArmed, isTrue);
+        expect(state.consumeNaturalCompletion(), isTrue);
+        expect(state.playRequested, isFalse);
+        expect(state.consumeNaturalCompletion(), isFalse);
+      },
+    );
+
+    test(
+      'a pause requested during seek prevents completion from re-arming',
+      () {
+        final state = LessonMediaCompletionState()..markPlayRequested();
+
+        state.beginSeek();
+        state.markPauseRequested();
+        state.finishSeek(
+          position: const Duration(seconds: 30),
+          duration: const Duration(seconds: 90),
+        );
+
+        expect(state.playRequested, isFalse);
+        expect(state.completionArmed, isFalse);
+        expect(state.consumeNaturalCompletion(), isFalse);
+      },
+    );
+
+    test(
+      'an explicit seek to the endpoint does not report natural completion',
+      () {
+        final state = LessonMediaCompletionState()..markPlayRequested();
+
+        state.beginSeek();
+        state.finishSeek(
+          position: const Duration(seconds: 90),
+          duration: const Duration(seconds: 90),
+        );
+
+        expect(state.completionArmed, isFalse);
+        expect(state.consumeNaturalCompletion(), isFalse);
+      },
+    );
+
+    test('a duration arriving after seek can re-arm completion', () {
+      final state = LessonMediaCompletionState()..markPlayRequested();
+
+      state.beginSeek();
+      state.updateKnownDuration(
+        position: const Duration(seconds: 20),
+        duration: const Duration(seconds: 90),
+      );
+      expect(
+        state.completionArmed,
+        isFalse,
+        reason: 'native duration callbacks during seek must not re-arm early',
+      );
+
+      state.finishSeek(position: const Duration(seconds: 30), duration: null);
+      expect(state.completionArmed, isFalse);
+
+      state.updateKnownDuration(
+        position: const Duration(seconds: 30),
+        duration: const Duration(seconds: 90),
+      );
+
+      expect(state.completionArmed, isTrue);
     });
   });
 }
