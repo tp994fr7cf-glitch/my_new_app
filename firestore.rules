@@ -89,6 +89,55 @@ service cloud.firestore {
             || data.privacyPolicy.updatedAt is timestamp));
     }
 
+    function validCourseLessonCount(data) {
+      return data.lessons is list
+        && data.lessonCount is int
+        && data.lessonCount >= 0
+        && data.lessonCount == data.lessons.size();
+    }
+
+    function validCourseLessonUpdateInvariant() {
+      return !request.resource.data.diff(resource.data).affectedKeys()
+          .hasAny(['lessons', 'lessonCount'])
+        || validCourseLessonCount(request.resource.data);
+    }
+
+    function validLessonContentVersionUpdate() {
+      let changesLessons = request.resource.data.diff(resource.data)
+        .affectedKeys().hasAny(['lessons']);
+      let hadVersion = resource.data.keys()
+        .hasAny(['lessonContentVersion']);
+      let hasVersion = request.resource.data.keys()
+        .hasAny(['lessonContentVersion']);
+      return (!changesLessons
+          && hadVersion == hasVersion
+          && (!hadVersion
+            || (resource.data.lessonContentVersion is int
+              && resource.data.lessonContentVersion >= 1
+              && resource.data.lessonContentVersion <= 2147483647
+              && request.resource.data.lessonContentVersion
+                == resource.data.lessonContentVersion)))
+        || (changesLessons
+          && request.resource.data.lessonContentVersion is int
+          && request.resource.data.lessonContentVersion >= 1
+          && request.resource.data.lessonContentVersion <= 2147483647
+          && ((!hadVersion
+              && request.resource.data.lessonContentVersion == 1)
+            || (hadVersion
+              && resource.data.lessonContentVersion is int
+              && resource.data.lessonContentVersion >= 1
+              && resource.data.lessonContentVersion < 2147483647
+              && request.resource.data.lessonContentVersion
+                == resource.data.lessonContentVersion + 1)));
+    }
+
+    function validLessonContentVersionCreate() {
+      return !request.resource.data.keys()
+          .hasAny(['lessonContentVersion'])
+        || (request.resource.data.lessonContentVersion is int
+          && request.resource.data.lessonContentVersion == 1);
+    }
+
     function canUpdateOwnTeacherCourse() {
       return isTeacher()
         && resource.data.instructorId == request.auth.uid
@@ -98,7 +147,53 @@ service cloud.firestore {
         && request.resource.data.status == resource.data.status
         && request.resource.data.lessons is list
         && request.resource.data.lessonCount is int
+        && validCourseLessonUpdateInvariant()
+        && validLessonContentVersionUpdate()
         && validCoursePrivacyPolicyMap(request.resource.data);
+    }
+
+    // Rules can bound these collections, but cannot iterate dynamic segment IDs
+    // or validate every value in the resume-position map. The reader filters
+    // malformed entries and the writer emits only finite, non-negative values.
+    function validOptionalLessonSessionProgress(data) {
+      return (!data.keys().hasAny(['playbackMode'])
+          || data.playbackMode in [
+            'continuous',
+            'independentSingle',
+            'independentPanels'
+          ])
+        && (!data.keys().hasAny(['contentRevision'])
+          || (data.contentRevision is int
+            && data.contentRevision >= 1
+            && data.contentRevision <= 2147483647))
+        && (!data.keys().hasAny(['requiredMediaSegmentIds'])
+          || (data.requiredMediaSegmentIds is list
+            && data.requiredMediaSegmentIds.size() <= 500))
+        && (!data.keys().hasAny(['completedMediaSegmentIds'])
+          || (data.completedMediaSegmentIds is list
+            && data.completedMediaSegmentIds.size() <= 500))
+        && (!data.keys().hasAny(['mediaSegmentResumePositionsSec'])
+          || (data.mediaSegmentResumePositionsSec is map
+            && data.mediaSegmentResumePositionsSec.size() <= 500));
+    }
+
+    function validOptionalQuizVersion(data) {
+      return !data.keys().hasAny(['quizVersion'])
+        || (data.quizVersion is int
+          && data.quizVersion >= 1
+          && data.quizVersion <= 2147483647);
+    }
+
+    function validOptionalQuizSegmentMetadata(data) {
+      return (!data.keys().hasAny(['anchorType'])
+          || data.anchorType in ['global', 'segment'])
+        && (!data.keys().hasAny(['segmentId'])
+          || (data.segmentId is string && data.segmentId.size() > 0))
+        && (!data.keys().hasAny(['timestampSec'])
+          || (data.timestampSec is int && data.timestampSec >= 0))
+        && (!data.keys().hasAny(['globalTimestampSec'])
+          || (data.globalTimestampSec is int
+            && data.globalTimestampSec >= 0));
     }
 
     function isCourseInstructor(courseId) {
@@ -499,7 +594,8 @@ service cloud.firestore {
           && request.resource.data.totalDurationSec is int
           && request.resource.data.completionThresholdSec is int
           && (!request.resource.data.keys().hasAny(['watchedRanges'])
-            || request.resource.data.watchedRanges is list);
+            || request.resource.data.watchedRanges is list)
+          && validOptionalLessonSessionProgress(request.resource.data);
       }
 
       match /lessonViewSegments/{segmentId} {
@@ -588,7 +684,9 @@ service cloud.firestore {
           && request.resource.data.question is string
           && request.resource.data.selectedChoiceIndex is int
           && request.resource.data.correctChoiceIndex is int
-          && request.resource.data.isCorrect is bool;
+          && request.resource.data.isCorrect is bool
+          && validOptionalQuizVersion(request.resource.data)
+          && validOptionalQuizSegmentMetadata(request.resource.data);
       }
 
       match /courseSearchHistory/{historyId} {
@@ -1327,10 +1425,18 @@ service cloud.firestore {
       allow read: if hasActiveTeacherRole()
         && resource.data.instructorId == request.auth.uid;
 
-      allow create, update: if signedIn()
+      allow create: if signedIn()
         && courseId.matches('sample-.*')
         && request.resource.data.status == 'published'
-        && request.resource.data.source == 'developmentSeed';
+        && request.resource.data.source == 'developmentSeed'
+        && validLessonContentVersionCreate();
+
+      allow update: if signedIn()
+        && courseId.matches('sample-.*')
+        && request.resource.data.status == 'published'
+        && request.resource.data.source == 'developmentSeed'
+        && validCourseLessonUpdateInvariant()
+        && validLessonContentVersionUpdate();
 
       allow create: if isTeacher()
         && request.resource.data.instructorId == request.auth.uid
@@ -1338,9 +1444,72 @@ service cloud.firestore {
         && request.resource.data.source == 'teacherCreated'
         && request.resource.data.courseCode is string
         && request.resource.data.title is string
-        && request.resource.data.lessons is list;
+        && request.resource.data.lessons is list
+        && validLessonContentVersionCreate();
 
+      // CourseLesson, LessonEvent, and board-set data live inside arrays/maps.
+      // Rules cannot iterate those nested values or prove that published media
+      // arrays are append-only. The app validates per-item publication changes
+      // transactionally for concurrency correctness, but that client check is
+      // not a server security boundary. Rules enforce only document-level shape
+      // plus lesson-count/version consistency without claiming stronger guarantees.
       allow update: if canUpdateOwnTeacherCourse();
+
+      match /lessonDrafts/{lessonNumber} {
+        function currentLessonContentVersion() {
+          let courseData = get(
+            /databases/$(database)/documents/courses/$(courseId)
+          ).data;
+          return courseData.keys().hasAny(['lessonContentVersion'])
+            ? courseData.lessonContentVersion
+            : 0;
+        }
+
+        function validLessonDraft() {
+          return request.resource.data.keys().hasOnly([
+              'lessonNumber',
+              'boardSet',
+              'baseLessonContentVersion',
+              'draftRevision',
+              'updatedAt'
+            ])
+            && lessonNumber.matches('^[1-9][0-9]{0,3}$')
+            && request.resource.data.lessonNumber == lessonNumber
+            && request.resource.data.boardSet is map
+            && request.resource.data.boardSet.keys().hasOnly([
+              'boards',
+              'switchEvents'
+            ])
+            && request.resource.data.boardSet.boards is list
+            && request.resource.data.boardSet.boards.size() <= 20
+            && request.resource.data.boardSet.switchEvents is list
+            && request.resource.data.boardSet.switchEvents.size() <= 10000
+            && request.resource.data.baseLessonContentVersion is int
+            && request.resource.data.baseLessonContentVersion
+              == currentLessonContentVersion()
+            && request.resource.data.draftRevision is int
+            && request.resource.data.draftRevision >= 1
+            && request.resource.data.draftRevision <= 2147483647
+            && request.resource.data.updatedAt is timestamp;
+        }
+
+        allow read: if isCourseInstructor(courseId);
+        allow create: if isCourseInstructor(courseId)
+          && validLessonDraft()
+          && request.resource.data.draftRevision == 1;
+        allow update: if isCourseInstructor(courseId)
+          && validLessonDraft()
+          && (
+            (!resource.data.keys().hasAny(['draftRevision'])
+              && request.resource.data.draftRevision == 1)
+            || (resource.data.draftRevision is int
+              && resource.data.draftRevision >= 1
+              && resource.data.draftRevision < 2147483647
+              && request.resource.data.draftRevision
+                == resource.data.draftRevision + 1)
+          );
+        allow delete: if isCourseInstructor(courseId);
+      }
 
       match /participantIdentities/{userId} {
         function validIdentityPayload() {

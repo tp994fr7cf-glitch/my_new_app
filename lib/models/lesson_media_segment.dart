@@ -68,6 +68,17 @@ class LessonMediaSegment {
     return 'seg_${DateTime.now().microsecondsSinceEpoch}_$randomSuffix';
   }
 
+  static String deterministicLegacyId({
+    required String url,
+    required String mediaType,
+  }) {
+    var hash = 0;
+    for (final codeUnit in '$mediaType\u0000$url'.codeUnits) {
+      hash = ((hash << 5) - hash + codeUnit) & 0xffffffff;
+    }
+    return 'legacy_${hash.toRadixString(16).padLeft(8, '0')}';
+  }
+
   static List<LessonMediaSegment> normalizeOrders(
     List<LessonMediaSegment> segments,
   ) {

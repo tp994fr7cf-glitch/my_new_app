@@ -1,8 +1,12 @@
 /// Limits for lesson media segments. [maxSegmentsPerLesson] null means unlimited.
+const int maxLessonMediaSegments = 100;
+
 class LessonMediaConfig {
   const LessonMediaConfig({this.maxSegmentsPerLesson});
 
-  static const LessonMediaConfig current = LessonMediaConfig();
+  static const LessonMediaConfig current = LessonMediaConfig(
+    maxSegmentsPerLesson: maxLessonMediaSegments,
+  );
 
   final int? maxSegmentsPerLesson;
 

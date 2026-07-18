@@ -3,9 +3,15 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
 import '../models/course.dart';
-import '../models/lesson_media_timeline.dart';
+import '../models/lesson_media_segment.dart';
+import '../models/lesson_payload_size_validator.dart';
+import '../models/lesson_quiz_placement.dart';
+import '../models/lesson_timed_anchor.dart';
 
 typedef QuizSaveOverride = Future<void> Function(List<LessonEvent> events);
+typedef QuizCourseLoadOverride = Future<Course?> Function();
+
+const _legacyGlobalAnchorValue = '__legacy_global_anchor__';
 
 class TeacherQuizManagePage extends StatefulWidget {
   const TeacherQuizManagePage({
@@ -13,11 +19,13 @@ class TeacherQuizManagePage extends StatefulWidget {
     required this.course,
     required this.lessonNumber,
     this.onSaveOverride,
+    this.onLoadCourseOverride,
   });
 
   final Course course;
   final int lessonNumber;
   final QuizSaveOverride? onSaveOverride;
+  final QuizCourseLoadOverride? onLoadCourseOverride;
 
   @override
   State<TeacherQuizManagePage> createState() => _TeacherQuizManagePageState();
@@ -26,6 +34,7 @@ class TeacherQuizManagePage extends StatefulWidget {
 class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
   final List<_QuizEditorState> _quizEditors = [];
   late List<LessonEvent> _baseLessonEvents;
+  late Course _latestCourse;
   bool _isLoading = true;
   bool _isSaving = false;
   String? _message;
@@ -33,6 +42,7 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
   @override
   void initState() {
     super.initState();
+    _latestCourse = widget.course;
     _baseLessonEvents = widget.course.lessonEvents;
     _setQuizEditors(_lessonQuizEvents(_baseLessonEvents));
     _loadLatestQuizzes();
@@ -55,7 +65,12 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
   }
 
   _QuizEditorState _createEmptyEditor() {
-    final editor = _QuizEditorState.empty(_quizEditors.length + 1);
+    final editor = _QuizEditorState.empty(
+      _quizEditors.length + 1,
+      defaultSegmentId: _currentLesson == null
+          ? null
+          : defaultQuizSegmentId(_currentLesson!),
+    );
     _attachEditorListeners(editor);
     return editor;
   }
@@ -64,6 +79,14 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
     final editor = _QuizEditorState.fromEvent(event);
     _attachEditorListeners(editor);
     return editor;
+  }
+
+  CourseLesson? get _currentLesson {
+    final lessonIndex = widget.lessonNumber - 1;
+    if (lessonIndex < 0 || lessonIndex >= _latestCourse.lessons.length) {
+      return null;
+    }
+    return _latestCourse.lessons[lessonIndex];
   }
 
   void _attachEditorListeners(_QuizEditorState editor) {
@@ -83,26 +106,35 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
 
   Future<void> _loadLatestQuizzes() async {
     final courseId = widget.course.id;
-    if (courseId == null ||
-        widget.onSaveOverride != null ||
-        Firebase.apps.isEmpty) {
+    final loadOverride = widget.onLoadCourseOverride;
+    if (loadOverride == null &&
+        (courseId == null ||
+            widget.onSaveOverride != null ||
+            Firebase.apps.isEmpty)) {
       _isLoading = false;
       return;
     }
 
     try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('courses')
-          .doc(courseId)
-          .get();
+      final Course? latestCourse;
+      if (loadOverride != null) {
+        latestCourse = await loadOverride();
+      } else {
+        final snapshot = await FirebaseFirestore.instance
+            .collection('courses')
+            .doc(courseId)
+            .get();
+        latestCourse = snapshot.exists ? Course.fromFirestore(snapshot) : null;
+      }
       if (!mounted) {
         return;
       }
 
-      if (snapshot.exists) {
-        final latestCourse = Course.fromFirestore(snapshot);
+      final loadedCourse = latestCourse;
+      if (loadedCourse != null) {
         setState(() {
-          _baseLessonEvents = latestCourse.lessonEvents;
+          _latestCourse = loadedCourse;
+          _baseLessonEvents = loadedCourse.lessonEvents;
           _setQuizEditors(_lessonQuizEvents(_baseLessonEvents));
           _isLoading = false;
         });
@@ -137,97 +169,115 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
   }
 
   bool get _canSave {
-    if (_quizEditors.isEmpty) {
+    final lesson = _currentLesson;
+    if (_quizEditors.isEmpty || lesson == null) {
       return false;
     }
 
-    return _quizEditors.every((editor) {
-      final timestamp = int.tryParse(editor.timestampController.text.trim());
-      final question = editor.questionController.text.trim();
-      final choices = editor.choiceControllers
-          .map((controller) => controller.text.trim())
-          .where((choice) => choice.isNotEmpty)
-          .toList();
-
-      return timestamp != null &&
-          timestamp >= 0 &&
-          question.isNotEmpty &&
-          choices.length >= 2 &&
-          editor.correctChoiceIndex < choices.length;
-    });
+    return _quizEditors.every(
+      (editor) => _editorValidationMessage(editor, lesson) == null,
+    );
   }
 
-  List<LessonEvent>? _buildLessonEvents() {
+  String? _editorValidationMessage(
+    _QuizEditorState editor,
+    CourseLesson lesson,
+  ) {
+    final timestamp = int.tryParse(editor.timestampController.text.trim());
+    final question = editor.questionController.text.trim();
+    final choices = editor.choiceControllers
+        .map((controller) => controller.text.trim())
+        .where((choice) => choice.isNotEmpty)
+        .toList();
+    if (timestamp == null || timestamp < 0) {
+      return '表示タイミングは0秒以上で入力してください。';
+    }
+    if (question.isEmpty || choices.length < 2) {
+      return '問題文と選択肢を2つ以上入力してください。';
+    }
+    if (editor.correctChoiceIndex >= choices.length) {
+      return '正解の選択肢を確認してください。';
+    }
+
+    if (editor.selectedSegmentId == _legacyGlobalAnchorValue) {
+      final wasLegacy =
+          editor.originalEvent?.anchorType == LessonTimedAnchorType.global;
+      if (!wasLegacy && lesson.effectivePublishedMediaSegments.isNotEmpty) {
+        return '公開済みのパートを選択してください。';
+      }
+      return null;
+    }
+    final segment = lesson.mediaTimeline.segmentById(editor.selectedSegmentId);
+    if (segment == null) {
+      return '公開済みのパートを選択してください。';
+    }
+    if (timestamp >= segment.durationSec) {
+      return '表示タイミングは選択したパートの0秒以上、${segment.durationSec}秒未満で入力してください。';
+    }
+    return null;
+  }
+
+  List<LessonEvent> _buildReplacementQuizEvents(Course latestCourse) {
+    final lessonIndex = widget.lessonNumber - 1;
+    if (lessonIndex < 0 || lessonIndex >= latestCourse.lessons.length) {
+      throw const QuizPlacementException('対象のレッスンが見つかりません。');
+    }
+    final lesson = latestCourse.lessons[lessonIndex];
     final newEvents = <LessonEvent>[];
 
     for (final editor in _quizEditors) {
+      final validationMessage = _editorValidationMessage(editor, lesson);
+      if (validationMessage != null) {
+        throw QuizPlacementException(validationMessage);
+      }
       final question = editor.questionController.text.trim();
       final choices = editor.choiceControllers
           .map((controller) => controller.text.trim())
           .where((choice) => choice.isNotEmpty)
           .toList();
-
-      if (question.isEmpty || choices.length < 2) {
-        setState(() {
-          _message = '問題文と選択肢を2つ以上入力してください。';
-        });
-        return null;
-      }
-
-      if (editor.correctChoiceIndex >= choices.length) {
-        setState(() {
-          _message = '正解の選択肢を確認してください。';
-        });
-        return null;
-      }
-
+      final isLegacyGlobal =
+          editor.selectedSegmentId == _legacyGlobalAnchorValue;
+      final draft = LessonEvent(
+        id: editor.eventId,
+        lessonNumber: widget.lessonNumber,
+        timestampSec: int.parse(editor.timestampController.text.trim()),
+        type: 'quiz',
+        quiz: LessonQuiz(
+          question: question,
+          choices: choices,
+          correctChoiceIndex: editor.correctChoiceIndex,
+          explanation: editor.explanationController.text.trim(),
+        ),
+        anchorType: isLegacyGlobal
+            ? LessonTimedAnchorType.global
+            : LessonTimedAnchorType.segment,
+        segmentId: isLegacyGlobal ? null : editor.selectedSegmentId,
+        quizVersion: editor.originalEvent?.quizVersion ?? 1,
+      );
+      validateQuizPlacement(
+        event: draft,
+        lesson: lesson,
+        allowLegacyGlobal:
+            editor.originalEvent?.anchorType == LessonTimedAnchorType.global ||
+            lesson.effectivePublishedMediaSegments.isEmpty,
+      );
       newEvents.add(
         LessonEvent(
-          id: editor.eventId,
-          lessonNumber: widget.lessonNumber,
-          timestampSec:
-              int.tryParse(editor.timestampController.text.trim()) ?? 0,
-          type: 'quiz',
-          quiz: LessonQuiz(
-            question: question,
-            choices: choices,
-            correctChoiceIndex: editor.correctChoiceIndex,
-            explanation: editor.explanationController.text.trim(),
-          ),
-        ).withResolvedGlobalTimestamp(_lessonTimeline()),
+          id: draft.id,
+          lessonNumber: draft.lessonNumber,
+          timestampSec: draft.timestampSec,
+          type: draft.type,
+          quiz: draft.quiz,
+          anchorType: draft.anchorType,
+          segmentId: draft.segmentId,
+          quizVersion: draft.quizVersion,
+        ).withResolvedGlobalTimestamp(lesson.mediaTimeline),
       );
     }
-
-    final otherEvents = _baseLessonEvents.where((event) {
-      return event.lessonNumber != widget.lessonNumber || event.type != 'quiz';
-    });
-
-    return [...otherEvents, ...newEvents]..sort((a, b) {
-      final lessonCompare = a.lessonNumber.compareTo(b.lessonNumber);
-      if (lessonCompare != 0) {
-        return lessonCompare;
-      }
-      final timeline = _lessonTimeline();
-      return a
-          .resolveGlobalTimestampSec(timeline)
-          .compareTo(b.resolveGlobalTimestampSec(timeline));
-    });
-  }
-
-  LessonMediaTimeline _lessonTimeline() {
-    final lessonIndex = widget.lessonNumber - 1;
-    if (lessonIndex < 0 || lessonIndex >= widget.course.lessons.length) {
-      return const LessonMediaTimeline(segments: []);
-    }
-    return widget.course.lessons[lessonIndex].mediaTimeline;
+    return newEvents;
   }
 
   Future<void> _saveQuizzes() async {
-    final events = _buildLessonEvents();
-    if (events == null) {
-      return;
-    }
-
     final courseId = widget.course.id;
     if (courseId == null && widget.onSaveOverride == null) {
       setState(() {
@@ -243,22 +293,84 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
 
     try {
       final saveOverride = widget.onSaveOverride;
+      late List<LessonEvent> events;
+      Course latestCourse = _latestCourse;
       if (saveOverride != null) {
+        final replacementEvents = _buildReplacementQuizEvents(latestCourse);
+        events = mergeLessonQuizEvents(
+          latestEvents: _baseLessonEvents,
+          baseEvents: _baseLessonEvents,
+          lessonNumber: widget.lessonNumber,
+          replacementQuizEvents: replacementEvents,
+          lesson: latestCourse.lessons[widget.lessonNumber - 1],
+        );
+        validateCourseDocumentForPersistence({
+          ...latestCourse.toFirestore(),
+          'lessonEvents': events.map((event) => event.toMap()).toList(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
         await saveOverride(events);
       } else {
-        await FirebaseFirestore.instance
+        final courseRef = FirebaseFirestore.instance
             .collection('courses')
-            .doc(courseId)
-            .update({
-              'lessonEvents': events.map((event) => event.toMap()).toList(),
-              'updatedAt': FieldValue.serverTimestamp(),
-            });
+            .doc(courseId);
+        final result = await FirebaseFirestore.instance.runTransaction((
+          transaction,
+        ) async {
+          final snapshot = await transaction.get(courseRef);
+          if (!snapshot.exists) {
+            throw const QuizPlacementException('講座が見つかりません。');
+          }
+          final transactionCourse = Course.fromFirestore(snapshot);
+          final lessonIndex = widget.lessonNumber - 1;
+          if (lessonIndex < 0 ||
+              lessonIndex >= transactionCourse.lessons.length) {
+            throw const QuizPlacementException('対象のレッスンが見つかりません。');
+          }
+          final replacementEvents = _buildReplacementQuizEvents(
+            transactionCourse,
+          );
+          final mergedEvents = mergeLessonQuizEvents(
+            latestEvents: transactionCourse.lessonEvents,
+            baseEvents: _baseLessonEvents,
+            lessonNumber: widget.lessonNumber,
+            replacementQuizEvents: replacementEvents,
+            lesson: transactionCourse.lessons[lessonIndex],
+          );
+          final eventMaps = mergedEvents.map((event) => event.toMap()).toList();
+          validateCourseDocumentForPersistence({
+            ...(snapshot.data() ?? const <String, dynamic>{}),
+            'lessonEvents': eventMaps,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+          transaction.update(courseRef, {
+            'lessonEvents': eventMaps,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+          return (course: transactionCourse, events: mergedEvents);
+        });
+        latestCourse = result.course;
+        events = result.events;
       }
 
       if (mounted) {
         setState(() {
+          _latestCourse = latestCourse;
           _baseLessonEvents = events;
+          _setQuizEditors(_lessonQuizEvents(events));
           _message = 'クイズを保存しました。';
+        });
+      }
+    } on QuizPlacementException catch (error) {
+      if (mounted) {
+        setState(() {
+          _message = error.message;
+        });
+      }
+    } on LessonPayloadValidationException catch (error) {
+      if (mounted) {
+        setState(() {
+          _message = error.message;
         });
       }
     } on FirebaseException catch (error) {
@@ -284,9 +396,14 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
 
   @override
   Widget build(BuildContext context) {
-    final lessonTitle = widget.course.lessons.length >= widget.lessonNumber
-        ? widget.course.lessons[widget.lessonNumber - 1].title
+    final lesson = _currentLesson;
+    final lessonTitle = lesson != null
+        ? lesson.title
         : 'レッスン${widget.lessonNumber}';
+    final publishedSegments =
+        lesson?.effectivePublishedMediaSegments ?? const <LessonMediaSegment>[];
+    final independentWithoutParts =
+        lesson?.playbackMode.isIndependent == true && publishedSegments.isEmpty;
 
     return Scaffold(
       appBar: AppBar(title: const Text('クイズ管理')),
@@ -299,10 +416,19 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
               style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
-            const Text('授業の何秒地点でクイズを表示するかを設定できます。'),
+            const Text('公開済みパートと、そのパート内でクイズを表示する秒数を設定できます。'),
+            if (independentWithoutParts) ...[
+              const SizedBox(height: 8),
+              Text(
+                '独立再生では、クイズを追加する前にメディアパートを公開してください。',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
             const SizedBox(height: 16),
             OutlinedButton.icon(
-              onPressed: _isLoading ? null : _addQuiz,
+              onPressed: _isLoading || independentWithoutParts
+                  ? null
+                  : _addQuiz,
               icon: const Icon(Icons.add),
               label: const Text('クイズを追加'),
             ),
@@ -330,6 +456,12 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
                 _QuizEditorCard(
                   index: entry.$1 + 1,
                   editor: entry.$2,
+                  publishedSegments: publishedSegments,
+                  allowLegacyGlobal:
+                      entry.$2.originalEvent?.anchorType ==
+                          LessonTimedAnchorType.global ||
+                      (publishedSegments.isEmpty &&
+                          lesson?.playbackMode.isIndependent != true),
                   onChanged: () => setState(() {}),
                 ),
                 const SizedBox(height: 16),
@@ -358,6 +490,8 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
 class _QuizEditorState {
   _QuizEditorState({
     required this.eventId,
+    required this.originalEvent,
+    required this.selectedSegmentId,
     required this.timestampController,
     required this.questionController,
     required this.choiceControllers,
@@ -365,9 +499,14 @@ class _QuizEditorState {
     required this.explanationController,
   });
 
-  factory _QuizEditorState.empty(int index) {
+  factory _QuizEditorState.empty(
+    int index, {
+    required String? defaultSegmentId,
+  }) {
     return _QuizEditorState(
       eventId: 'quiz-${DateTime.now().millisecondsSinceEpoch}-$index',
+      originalEvent: null,
+      selectedSegmentId: defaultSegmentId ?? _legacyGlobalAnchorValue,
       timestampController: TextEditingController(text: '0'),
       questionController: TextEditingController(),
       choiceControllers: [
@@ -390,6 +529,10 @@ class _QuizEditorState {
 
     return _QuizEditorState(
       eventId: event.id,
+      originalEvent: event,
+      selectedSegmentId: event.anchorType == LessonTimedAnchorType.global
+          ? _legacyGlobalAnchorValue
+          : (event.segmentId ?? ''),
       timestampController: TextEditingController(text: '${event.timestampSec}'),
       questionController: TextEditingController(text: quiz.question),
       choiceControllers: choices
@@ -402,6 +545,8 @@ class _QuizEditorState {
   }
 
   final String eventId;
+  final LessonEvent? originalEvent;
+  String selectedSegmentId;
   final TextEditingController timestampController;
   final TextEditingController questionController;
   final List<TextEditingController> choiceControllers;
@@ -422,11 +567,15 @@ class _QuizEditorCard extends StatelessWidget {
   const _QuizEditorCard({
     required this.index,
     required this.editor,
+    required this.publishedSegments,
+    required this.allowLegacyGlobal,
     required this.onChanged,
   });
 
   final int index;
   final _QuizEditorState editor;
+  final List<LessonMediaSegment> publishedSegments;
+  final bool allowLegacyGlobal;
   final VoidCallback onChanged;
 
   @override
@@ -442,12 +591,50 @@ class _QuizEditorCard extends StatelessWidget {
               style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue:
+                  publishedSegments.any(
+                        (segment) => segment.id == editor.selectedSegmentId,
+                      ) ||
+                      (allowLegacyGlobal &&
+                          editor.selectedSegmentId == _legacyGlobalAnchorValue)
+                  ? editor.selectedSegmentId
+                  : null,
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                labelText: '表示するパート',
+              ),
+              items: [
+                if (allowLegacyGlobal)
+                  const DropdownMenuItem(
+                    value: _legacyGlobalAnchorValue,
+                    child: Text('レッスン全体（以前の形式）'),
+                  ),
+                for (final entry in publishedSegments.indexed)
+                  DropdownMenuItem(
+                    value: entry.$2.id,
+                    child: Text(
+                      'パート${entry.$1 + 1}'
+                      '${entry.$2.title.trim().isEmpty ? '' : '：${entry.$2.title.trim()}'}',
+                    ),
+                  ),
+              ],
+              onChanged: (value) {
+                if (value == null) {
+                  return;
+                }
+                editor.selectedSegmentId = value;
+                onChanged();
+              },
+            ),
+            const SizedBox(height: 12),
             TextFormField(
               controller: editor.timestampController,
               keyboardType: TextInputType.number,
               decoration: const InputDecoration(
                 border: OutlineInputBorder(),
                 labelText: '表示タイミング（秒）',
+                helperText: '選択したパートの開始位置から数えた秒数です。',
               ),
             ),
             const SizedBox(height: 12),

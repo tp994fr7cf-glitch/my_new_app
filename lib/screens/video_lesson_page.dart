@@ -13,9 +13,11 @@ import '../models/lesson_cycle_display.dart';
 import '../models/lesson_duration_parser.dart';
 import '../models/lesson_media_segment.dart';
 import '../models/lesson_media_timeline.dart';
+import '../models/lesson_part_progress.dart';
+import '../models/lesson_playback_mode.dart';
 import '../models/lesson_player_view_state.dart';
+import '../models/lesson_quiz_placement.dart';
 import '../models/lesson_segment_boundary.dart';
-import '../models/lesson_whiteboard.dart';
 import '../models/course_privacy_consent.dart';
 import '../models/quiz_answer_key.dart';
 import '../models/watched_range.dart';
@@ -60,8 +62,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     with WidgetsBindingObserver {
   static const double _completionRate = 0.92;
   static const double _resumeSeekDriftToleranceSec = 1.0;
-  static const Duration _postSeekDisplaySyncInterval =
-      Duration(milliseconds: 250);
+  static const Duration _postSeekDisplaySyncInterval = Duration(
+    milliseconds: 250,
+  );
   static const int _postSeekDisplaySyncTickCount = 6;
   static const Duration _resumeWindow = Duration(hours: 24);
   static const Duration _activeLearningHeartbeatInterval = Duration(
@@ -84,6 +87,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   bool _isPlaying = false;
   bool _isPreparingSession = false;
   bool _sessionCompleted = false;
+  bool _hasFirstCompletionHistory = false;
   bool _hasPlaybackStarted = false;
   bool _pendingCompletion = false;
   bool _isLoadingLearningState = true;
@@ -111,33 +115,107 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   StreamSubscription<double>? _positionSubscription;
   StreamSubscription<int>? _durationSubscription;
   StreamSubscription<bool>? _playingSubscription;
+  StreamSubscription<int>? _segmentIndexSubscription;
+  StreamSubscription<int>? _segmentCompletedSubscription;
+  int _currentMediaSegmentIndex = 0;
+  int? _expandedPanelIndex = 0;
+  int _lastWatchProgressSegmentIndex = 0;
+  bool _isExplicitPartSwitch = false;
+  bool _isExplicitPlaybackReposition = false;
+  double? _pendingExplicitRepositionGlobalSec;
+  int? _pendingAutoAdvancedSegmentIndex;
+  int? _pendingAutoAdvanceIntentGeneration;
+  int _userPlaybackIntentGeneration = 0;
+  bool _userWantsPlayback = false;
+  final Map<String, double> _mediaSegmentResumePositionsSec = {};
+  final Set<String> _completedMediaSegmentIds = {};
 
   Course get course => widget.course;
   CourseLesson get lesson => widget.lesson;
   int get lessonNumber => widget.lessonNumber;
 
-  LessonMediaTimeline get _mediaTimeline => lesson.mediaTimeline;
+  LessonMediaTimeline get _mediaTimeline =>
+      LessonMediaTimeline(segments: _publishedMediaSegments);
 
-  bool get _currentSegmentIsAudio => _playlistPlayback?.currentSegmentIsAudio ?? true;
+  List<LessonMediaSegment> get _allPublishedMediaSegments =>
+      lesson.effectivePublishedMediaSegments;
 
-  bool get _hasWhiteboard => !lesson.publishedWhiteboardBundle.isEmpty;
+  List<LessonMediaSegment> get _publishedMediaSegments =>
+      _allPublishedMediaSegments.where((segment) => segment.hasUrl).toList();
+
+  List<LessonMediaSegment> get _unplayablePublishedMediaSegments =>
+      _allPublishedMediaSegments.where((segment) => !segment.hasUrl).toList();
+
+  List<String> get _requiredMediaSegmentIds =>
+      _publishedMediaSegments.map((segment) => segment.id).toList();
+
+  bool get _isIndependentPlayback => lesson.playbackMode.isIndependent;
+
+  LessonMediaSegment? get _activeMediaSegment {
+    if (_currentMediaSegmentIndex < 0 ||
+        _currentMediaSegmentIndex >= _publishedMediaSegments.length) {
+      return null;
+    }
+    return _publishedMediaSegments[_currentMediaSegmentIndex];
+  }
+
+  double get _currentLocalPositionSecExact {
+    final segment = _activeMediaSegment;
+    if (segment == null) {
+      return 0;
+    }
+    return (_currentPositionSecExact -
+            _mediaTimeline.startGlobalSecForSegmentIndex(
+              _currentMediaSegmentIndex,
+            ))
+        .clamp(0.0, segment.durationSec.toDouble())
+        .toDouble();
+  }
+
+  int get _displayedLocalPositionSec {
+    final dragPosition = _sliderDragPositionSec;
+    return (dragPosition ?? _currentLocalPositionSecExact).round();
+  }
+
+  LessonPartProgress get _partProgress => LessonPartProgress.reconcile(
+    requiredCurrentSegmentIds: _requiredMediaSegmentIds,
+    completedSegmentIds: _completedMediaSegmentIds,
+    retainedResumePositionsSec: _mediaSegmentResumePositionsSec,
+  );
+
+  bool get _currentSegmentIsAudio =>
+      _playlistPlayback?.currentSegmentIsAudio ?? true;
+
+  bool get _hasWhiteboard => lesson.publishedBoardSet.isNotEmpty;
 
   bool get _isDraggingSlider => _sliderDragPositionSec != null;
 
-  int get _displayedPositionSec =>
-      (_sliderDragPositionSec ?? _currentPositionSec.toDouble()).round();
+  int get _displayedPositionSec => _isIndependentPlayback
+      ? _displayedLocalPositionSec
+      : (_sliderDragPositionSec ?? _currentPositionSec.toDouble()).round();
 
   bool get _isTeacherPreview => widget.isTeacherPreview;
   bool get _hasMediaSource =>
-      lessonHasPlayableMedia(mediaSegments: lesson.mediaSegments);
+      lessonHasPlayableMedia(mediaSegments: _publishedMediaSegments);
   int get _completionThresholdSec => calculateCompletionThresholdSec(
     totalDurationSec: _totalDurationSec,
     completionRate: _completionRate,
   );
-  bool get _isAtEnd => isLessonPlaybackAtEnd(
-    totalDurationSec: _totalDurationSec,
-    positionSecExact: _currentPositionSecExact,
-  );
+  bool get _isAtEnd {
+    if (_isIndependentPlayback) {
+      final segment = _activeMediaSegment;
+      return segment != null &&
+          isLessonPlaybackAtEnd(
+            totalDurationSec: segment.durationSec,
+            positionSecExact: _currentLocalPositionSecExact,
+          );
+    }
+    return isLessonPlaybackAtEnd(
+      totalDurationSec: _totalDurationSec,
+      positionSecExact: _currentPositionSecExact,
+    );
+  }
+
   bool get _hasActiveSession => _sessionId != null && !_sessionCompleted;
   String get _taskKey => '${_courseId()}-$lessonNumber-$_cycleNumber';
   int get _visibleCycleNumber => _displayCycleNumber ?? _cycleNumber;
@@ -171,8 +249,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         .where((event) => event.lessonNumber == lessonNumber)
         .where((event) => event.isQuiz)
         .where(
-          (event) =>
-              event.resolveGlobalTimestampSec(_mediaTimeline) <= _currentPositionSec,
+          (event) => isLessonQuizDue(
+            event: event,
+            lesson: lesson,
+            independentPlayback: _isIndependentPlayback,
+            activeSegmentId: _activeMediaSegment?.id,
+            currentLocalPositionSec: _currentLocalPositionSecExact,
+            currentGlobalPositionSec: _currentPositionSec,
+          ),
         )
         .toList()
       ..sort(
@@ -207,6 +291,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _positionSubscription?.cancel();
     _durationSubscription?.cancel();
     _playingSubscription?.cancel();
+    _segmentIndexSubscription?.cancel();
+    _segmentCompletedSubscription?.cancel();
     unawaited(_playlistPlayback?.close());
     WidgetsBinding.instance.removeObserver(this);
     if (!_isTeacherPreview) {
@@ -262,12 +348,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       final factory =
           widget.playlistPlaybackFactory ?? createLessonMediaPlaylistPlayback;
       final playback = factory();
-      await playback.openSegments(lesson.mediaSegments);
+      await playback.openSegments(_publishedMediaSegments);
       _positionSubscription = playback.globalPositionStream.listen((position) {
-        _handlePlaybackPosition(
-          position.floor(),
-          positionSecExact: position,
-        );
+        _handlePlaybackPosition(position.floor(), positionSecExact: position);
       });
       _durationSubscription = playback.totalDurationStream.listen((duration) {
         _updateResolvedDuration(playerDuration: Duration(seconds: duration));
@@ -275,6 +358,12 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       _playingSubscription = playback.playingStream.listen((isPlaying) {
         _handlePlayingStreamUpdate(isPlaying);
       });
+      _segmentIndexSubscription = playback.segmentIndexStream.listen(
+        _handleMediaSegmentChanged,
+      );
+      _segmentCompletedSubscription = playback.segmentCompletedStream.listen(
+        _handleMediaSegmentCompleted,
+      );
 
       if (!mounted) {
         await playback.close();
@@ -325,6 +414,112 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     });
   }
 
+  void _handleMediaSegmentCompleted(int segmentIndex) {
+    if (!mounted ||
+        !_isIndependentPlayback ||
+        _isExplicitPlaybackReposition ||
+        _pendingExplicitRepositionGlobalSec != null ||
+        segmentIndex < 0 ||
+        segmentIndex >= _publishedMediaSegments.length) {
+      return;
+    }
+    _markIndependentPartCompleted(_publishedMediaSegments[segmentIndex].id);
+    _pendingAutoAdvancedSegmentIndex =
+        segmentIndex + 1 < _publishedMediaSegments.length
+        ? segmentIndex + 1
+        : null;
+    _pendingAutoAdvanceIntentGeneration = _userPlaybackIntentGeneration;
+  }
+
+  void _handleMediaSegmentChanged(int segmentIndex) {
+    if (!mounted ||
+        segmentIndex < 0 ||
+        segmentIndex >= _publishedMediaSegments.length) {
+      return;
+    }
+
+    final shouldRestoreNextPartResume =
+        _pendingAutoAdvancedSegmentIndex == segmentIndex &&
+        !_isExplicitPartSwitch &&
+        !_isExplicitPlaybackReposition;
+    final autoAdvanceIntentGeneration = _pendingAutoAdvanceIntentGeneration;
+    _pendingAutoAdvancedSegmentIndex = null;
+    _pendingAutoAdvanceIntentGeneration = null;
+
+    setState(() {
+      _currentMediaSegmentIndex = segmentIndex;
+      _expandedPanelIndex = segmentIndex;
+      _lastWatchProgressSegmentIndex = segmentIndex;
+      _sliderDragPositionSec = null;
+    });
+    if (shouldRestoreNextPartResume && autoAdvanceIntentGeneration != null) {
+      unawaited(
+        _resumeAutoAdvancedPart(segmentIndex, autoAdvanceIntentGeneration),
+      );
+    }
+  }
+
+  Future<void> _resumeAutoAdvancedPart(
+    int segmentIndex,
+    int resumeDecisionGeneration,
+  ) async {
+    await Future<void>.delayed(Duration.zero);
+    final playback = _playlistPlayback;
+    if (!mounted ||
+        playback == null ||
+        playback.currentSegmentIndex != segmentIndex) {
+      return;
+    }
+    final segment = _publishedMediaSegments[segmentIndex];
+    final resumeSec = _partProgress.resumePositionSecForPart(segment.id);
+    if (resumeSec > 0) {
+      final targetGlobalSec = _mediaTimeline.globalSecForSegmentIndex(
+        segmentIndex: segmentIndex,
+        localSec: resumeSec,
+      );
+      _isExplicitPlaybackReposition = true;
+      _pendingExplicitRepositionGlobalSec = targetGlobalSec;
+      try {
+        await playback.seekToSegmentIndex(
+          segmentIndex,
+          localStartSec: resumeSec,
+        );
+      } catch (_) {
+        _pendingExplicitRepositionGlobalSec = null;
+        rethrow;
+      } finally {
+        _isExplicitPlaybackReposition = false;
+      }
+    }
+    await _settleAutoAdvancePlaybackIntent(
+      playback,
+      resumeDecisionGeneration: resumeDecisionGeneration,
+    );
+  }
+
+  Future<void> _settleAutoAdvancePlaybackIntent(
+    LessonMediaPlaylistController playback, {
+    required int resumeDecisionGeneration,
+  }) async {
+    var observedGeneration = _userPlaybackIntentGeneration;
+    var shouldPlay = observedGeneration == resumeDecisionGeneration
+        ? true
+        : _userWantsPlayback;
+    while (mounted &&
+        playback.currentSegmentIndex == _currentMediaSegmentIndex) {
+      if (shouldPlay) {
+        await playback.play();
+      } else {
+        await playback.pause();
+      }
+      if (observedGeneration == _userPlaybackIntentGeneration) {
+        return;
+      }
+      observedGeneration = _userPlaybackIntentGeneration;
+      shouldPlay = _userWantsPlayback;
+    }
+  }
+
   void _handlePlaybackPosition(
     int nextPositionSec, {
     required double positionSecExact,
@@ -337,6 +532,31 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     final clampedExact = positionSecExact
         .clamp(0.0, _totalDurationSec.toDouble())
         .toDouble();
+    final pendingRepositionTarget = _pendingExplicitRepositionGlobalSec;
+    final isExplicitRepositionUpdate =
+        _isExplicitPlaybackReposition || pendingRepositionTarget != null;
+    if (pendingRepositionTarget != null &&
+        (clampedExact - pendingRepositionTarget).abs() < 0.1) {
+      _pendingExplicitRepositionGlobalSec = null;
+    }
+    final resolvedMediaPosition = _mediaTimeline.resolveGlobalSec(clampedExact);
+    final progressSegmentIndex = _isIndependentPlayback
+        ? _currentMediaSegmentIndex
+        : resolvedMediaPosition.segmentIndex;
+    final progressSegment = _publishedMediaSegments[progressSegmentIndex];
+    final progressSegmentId = progressSegment.id;
+    final localPositionSec = _isIndependentPlayback
+        ? (clampedExact -
+                  _mediaTimeline.startGlobalSecForSegmentIndex(
+                    progressSegmentIndex,
+                  ))
+              .clamp(0.0, progressSegment.durationSec.toDouble())
+              .toDouble()
+        : resolvedMediaPosition.localSec;
+    if (_isIndependentPlayback &&
+        !_completedMediaSegmentIds.contains(progressSegmentId)) {
+      _mediaSegmentResumePositionsSec[progressSegmentId] = localPositionSec;
+    }
     if (_isDraggingSlider) {
       _currentPositionSecExact = clampedExact;
       return;
@@ -360,7 +580,17 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       final previousPositionSec = _currentPositionSec;
       if (clampedPosition != _currentPositionSec) {
         _currentPositionSec = clampedPosition;
-        _addWatchProgress(previousPositionSec, _currentPositionSec);
+        final isContiguousPlaybackProgress =
+            _isPlaying &&
+            !_isExplicitPartSwitch &&
+            !isExplicitRepositionUpdate &&
+            progressSegmentIndex == _lastWatchProgressSegmentIndex &&
+            _currentPositionSec > previousPositionSec &&
+            _currentPositionSec - previousPositionSec <= 2;
+        if (isContiguousPlaybackProgress) {
+          _addWatchProgress(previousPositionSec, _currentPositionSec);
+        }
+        _lastWatchProgressSegmentIndex = progressSegmentIndex;
       }
       if (_isTeacherPreview &&
           isLessonPlaybackAtEnd(
@@ -372,6 +602,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         shouldPauseTeacherPreviewAtEnd = true;
       }
       if (!_isTeacherPreview &&
+          !_isIndependentPlayback &&
+          !isExplicitRepositionUpdate &&
           _currentPositionSec >= _completionThresholdSec &&
           !_pendingCompletion) {
         _setCompletionPendingState();
@@ -398,7 +630,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
     final nextTotalDurationSec = resolveTimelineDurationSec(
       timeline: _mediaTimeline,
-      playerDuration: playerDuration ?? Duration(seconds: _playlistPlayback!.totalDurationSec),
+      playerDuration:
+          playerDuration ??
+          Duration(seconds: _playlistPlayback!.totalDurationSec),
       durationLabel: lesson.duration,
     );
     if (nextTotalDurationSec <= _totalDurationSec) {
@@ -446,8 +680,22 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
     _hasReconciledOpenPlaybackPosition = true;
 
+    if (_isIndependentPlayback) {
+      final initialSegment = _activeMediaSegment;
+      if (initialSegment != null) {
+        await _switchToPart(
+          _currentMediaSegmentIndex,
+          forceLocalStartSec: _partProgress.resumePositionSecForPart(
+            initialSegment.id,
+          ),
+        );
+      }
+      return;
+    }
+
     final savedPositionSec = _currentPositionSec;
-    final finishedPriorAttempt = _pendingCompletion ||
+    final finishedPriorAttempt =
+        _pendingCompletion ||
         savedPositionSec >= _completionThresholdSec ||
         savedPositionSec >= _totalDurationSec - 1;
 
@@ -471,6 +719,96 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
   }
 
+  void _markIndependentPartCompleted(String segmentId) {
+    if (!_isIndependentPlayback ||
+        segmentId.isEmpty ||
+        _completedMediaSegmentIds.contains(segmentId)) {
+      return;
+    }
+
+    final allCompletedAfterUpdate = _requiredMediaSegmentIds.every(
+      (requiredId) =>
+          requiredId == segmentId ||
+          _completedMediaSegmentIds.contains(requiredId),
+    );
+    setState(() {
+      _completedMediaSegmentIds.add(segmentId);
+      if (!_isTeacherPreview && allCompletedAfterUpdate) {
+        _pendingCompletion = true;
+        _message = 'すべてのパートを視聴しました。画面を離れた時刻を終了日時として記録します。';
+      } else {
+        _message = 'このパートを視聴済みにしました。';
+      }
+    });
+    if (!_isTeacherPreview) {
+      unawaited(_persistSessionProgress());
+    }
+  }
+
+  Future<void> _switchToPart(
+    int segmentIndex, {
+    double? forceLocalStartSec,
+  }) async {
+    final playback = _playlistPlayback;
+    if (playback == null ||
+        segmentIndex < 0 ||
+        segmentIndex >= _publishedMediaSegments.length) {
+      return;
+    }
+
+    final currentSegment = _activeMediaSegment;
+    if (currentSegment != null &&
+        !_completedMediaSegmentIds.contains(currentSegment.id)) {
+      final livePosition = _mediaTimeline.resolveGlobalSec(
+        playback.liveGlobalPositionSec,
+      );
+      if (livePosition.segmentId == currentSegment.id) {
+        _mediaSegmentResumePositionsSec[currentSegment.id] =
+            livePosition.localSec;
+      }
+    }
+
+    final targetSegment = _publishedMediaSegments[segmentIndex];
+    final localStartSec =
+        forceLocalStartSec ??
+        _partProgress.resumePositionSecForPart(targetSegment.id);
+    final targetGlobalSec = _mediaTimeline.globalSecForSegmentIndex(
+      segmentIndex: segmentIndex,
+      localSec: localStartSec,
+    );
+
+    _isExplicitPartSwitch = true;
+    _isExplicitPlaybackReposition = true;
+    _pendingExplicitRepositionGlobalSec = targetGlobalSec;
+    setState(() {
+      _currentMediaSegmentIndex = segmentIndex;
+      _expandedPanelIndex = segmentIndex;
+      _lastWatchProgressSegmentIndex = segmentIndex;
+      _currentPositionSecExact = targetGlobalSec;
+      _currentPositionSec = targetGlobalSec.floor();
+      _sliderDragPositionSec = null;
+      _message = null;
+    });
+    try {
+      await playback.seekToSegmentIndex(
+        segmentIndex,
+        localStartSec: localStartSec,
+      );
+    } catch (_) {
+      _pendingExplicitRepositionGlobalSec = null;
+      rethrow;
+    } finally {
+      _isExplicitPartSwitch = false;
+      _isExplicitPlaybackReposition = false;
+    }
+    if (mounted) {
+      _syncDisplayedPlaybackPositionFromPlayer();
+    }
+    if (!_isTeacherPreview) {
+      unawaited(_persistSessionProgress());
+    }
+  }
+
   Future<void> _togglePlayback() async {
     if (!_hasMediaSource || _mediaLoadError != null || _totalDurationSec <= 0) {
       setState(() {
@@ -486,7 +824,20 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
-    if (_sessionCompleted || _isAtEnd) {
+    _userPlaybackIntentGeneration++;
+    _userWantsPlayback = true;
+    if (_isIndependentPlayback) {
+      if (_sessionCompleted) {
+        final segmentIndex = _currentMediaSegmentIndex;
+        final segmentStart = _mediaTimeline
+            .startGlobalSecForSegmentIndex(segmentIndex)
+            .floor();
+        _resetPlaybackCycleState(positionSec: segmentStart);
+        await _switchToPart(segmentIndex, forceLocalStartSec: 0);
+      } else if (_isAtEnd) {
+        await _switchToPart(_currentMediaSegmentIndex, forceLocalStartSec: 0);
+      }
+    } else if (_sessionCompleted || _isAtEnd) {
       _resetPlaybackCycleState(positionSec: 0);
       await _seekMediaPlayback(0);
     }
@@ -524,6 +875,10 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       _answerResults.clear();
       _answeredQuizEventIds.clear();
       _cycleWatchedRanges.clear();
+      if (_isIndependentPlayback) {
+        _completedMediaSegmentIds.clear();
+        _mediaSegmentResumePositionsSec.clear();
+      }
       _message = null;
     });
   }
@@ -534,7 +889,16 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
 
     final targetPosition = positionSec.clamp(0, _totalDurationSec);
-    await _playlistPlayback!.seekGlobal(targetPosition.toDouble());
+    _isExplicitPlaybackReposition = true;
+    _pendingExplicitRepositionGlobalSec = targetPosition.toDouble();
+    try {
+      await _playlistPlayback!.seekGlobal(targetPosition.toDouble());
+    } catch (_) {
+      _pendingExplicitRepositionGlobalSec = null;
+      rethrow;
+    } finally {
+      _isExplicitPlaybackReposition = false;
+    }
     if (!mounted) {
       return;
     }
@@ -565,10 +929,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   }
 
   void _applyDisplayPositionFromGlobalSec(double globalSec) {
-    final clampedGlobal = globalSec.clamp(
-      0.0,
-      _totalDurationSec.toDouble(),
-    );
+    final clampedGlobal = globalSec.clamp(0.0, _totalDurationSec.toDouble());
     setState(() {
       _currentPositionSec = _flooredDisplaySecForGlobal(clampedGlobal);
       _currentPositionSecExact = clampedGlobal;
@@ -578,40 +939,41 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   void _startPostSeekDisplaySync() {
     _postSeekDisplaySyncTimer?.cancel();
     var ticks = 0;
-    _postSeekDisplaySyncTimer = Timer.periodic(
-      _postSeekDisplaySyncInterval,
-      (timer) {
-        if (!mounted) {
-          timer.cancel();
-          _postSeekDisplaySyncTimer = null;
-          return;
-        }
+    _postSeekDisplaySyncTimer = Timer.periodic(_postSeekDisplaySyncInterval, (
+      timer,
+    ) {
+      if (!mounted) {
+        timer.cancel();
+        _postSeekDisplaySyncTimer = null;
+        return;
+      }
 
-        ticks += 1;
-        if (ticks > _postSeekDisplaySyncTickCount) {
-          timer.cancel();
-          _postSeekDisplaySyncTimer = null;
-          return;
-        }
+      ticks += 1;
+      if (ticks > _postSeekDisplaySyncTickCount) {
+        timer.cancel();
+        _postSeekDisplaySyncTimer = null;
+        return;
+      }
 
-        final playback = _playlistPlayback;
-        if (playback == null || _totalDurationSec <= 0 || _isDraggingSlider) {
-          return;
-        }
+      final playback = _playlistPlayback;
+      if (playback == null || _totalDurationSec <= 0 || _isDraggingSlider) {
+        return;
+      }
 
-        final globalSec = playback.liveGlobalPositionSec
-            .clamp(0.0, _totalDurationSec.toDouble());
-        final nextSec = _flooredDisplaySecForGlobal(globalSec);
-        if (nextSec == _currentPositionSec) {
-          return;
-        }
+      final globalSec = playback.liveGlobalPositionSec.clamp(
+        0.0,
+        _totalDurationSec.toDouble(),
+      );
+      final nextSec = _flooredDisplaySecForGlobal(globalSec);
+      if (nextSec == _currentPositionSec) {
+        return;
+      }
 
-        setState(() {
-          _currentPositionSec = nextSec;
-          _currentPositionSecExact = globalSec;
-        });
-      },
-    );
+      setState(() {
+        _currentPositionSec = nextSec;
+        _currentPositionSecExact = globalSec;
+      });
+    });
   }
 
   Future<void> _startMediaPlayback() async {
@@ -629,6 +991,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   Future<void> _pausePlayback() async {
     _playbackTimer?.cancel();
+    _userPlaybackIntentGeneration++;
+    _userWantsPlayback = false;
     await _playlistPlayback?.pause();
     if (mounted) {
       _syncDisplayedPlaybackPositionFromPlayer();
@@ -642,20 +1006,87 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     if (_totalDurationSec <= 0) {
       return;
     }
-    final nextPosition = positionSec.clamp(0, _totalDurationSec);
-    await _seekMediaPlayback(nextPosition);
+    final segment = _activeMediaSegment;
+    final nextPosition = _isIndependentPlayback && segment != null
+        ? positionSec.clamp(0, segment.durationSec)
+        : positionSec.clamp(0, _totalDurationSec);
+    final targetGlobalPosition = _isIndependentPlayback && segment != null
+        ? _mediaTimeline
+              .globalSecForSegmentIndex(
+                segmentIndex: _currentMediaSegmentIndex,
+                localSec: nextPosition.toDouble(),
+              )
+              .round()
+        : nextPosition;
+    if (_isIndependentPlayback &&
+        segment != null &&
+        !_completedMediaSegmentIds.contains(segment.id)) {
+      _mediaSegmentResumePositionsSec[segment.id] = nextPosition.toDouble();
+    }
+    if (_isIndependentPlayback && segment != null) {
+      final playback = _playlistPlayback;
+      if (playback != null) {
+        _isExplicitPlaybackReposition = true;
+        _pendingExplicitRepositionGlobalSec = targetGlobalPosition.toDouble();
+        try {
+          await playback.seekToSegmentIndex(
+            _currentMediaSegmentIndex,
+            localStartSec: nextPosition.toDouble(),
+          );
+        } catch (_) {
+          _pendingExplicitRepositionGlobalSec = null;
+          rethrow;
+        } finally {
+          _isExplicitPlaybackReposition = false;
+        }
+        if (mounted) {
+          _syncDisplayedPlaybackPositionFromPlayer();
+          _startPostSeekDisplaySync();
+        }
+      }
+    } else {
+      await _seekMediaPlayback(targetGlobalPosition);
+    }
     if (!mounted) {
       return;
     }
 
     setState(() {
       _message = null;
-      if (_pendingCompletion && nextPosition < _completionThresholdSec) {
+      if (!_isIndependentPlayback &&
+          _pendingCompletion &&
+          nextPosition < _completionThresholdSec) {
         _pendingCompletion = false;
       }
     });
     if (!_isTeacherPreview) {
       unawaited(_persistSessionProgress());
+    }
+  }
+
+  Future<void> _switchContinuousPart(int segmentIndex) async {
+    final playback = _playlistPlayback;
+    if (playback == null ||
+        segmentIndex < 0 ||
+        segmentIndex >= _publishedMediaSegments.length) {
+      return;
+    }
+    _isExplicitPartSwitch = true;
+    _isExplicitPlaybackReposition = true;
+    _pendingExplicitRepositionGlobalSec = _mediaTimeline
+        .startGlobalSecForSegmentIndex(segmentIndex);
+    try {
+      await playback.seekToSegmentIndex(segmentIndex);
+    } catch (_) {
+      _pendingExplicitRepositionGlobalSec = null;
+      rethrow;
+    } finally {
+      _isExplicitPartSwitch = false;
+      _isExplicitPlaybackReposition = false;
+    }
+    if (mounted) {
+      _syncDisplayedPlaybackPositionFromPlayer();
+      _startPostSeekDisplaySync();
     }
   }
 
@@ -668,7 +1099,13 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
-    _seekPlaybackPosition(_currentPositionSec + deltaSeconds);
+    _seekPlaybackPosition(
+      (_isIndependentPlayback
+                  ? _currentLocalPositionSecExact
+                  : _currentPositionSecExact)
+              .round() +
+          deltaSeconds,
+    );
   }
 
   String _courseId() {
@@ -1042,6 +1479,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _startStudyTimer();
   }
 
+  bool _sessionDataRepresentsCompletedLesson(Map<String, dynamic> data) {
+    return lessonSessionRepresentsCompleted(
+      data: data,
+      playbackMode: lesson.playbackMode,
+      requiredCurrentSegmentIds: _requiredMediaSegmentIds,
+    );
+  }
+
   void _loadSession(
     String sessionId,
     Map<String, dynamic> data, {
@@ -1050,18 +1495,45 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _sessionId = sessionId;
     _cycleNumber = (data['cycleNumber'] as num?)?.toInt() ?? 1;
     _displayCycleNumber ??= _cycleNumber;
-    _sessionCompleted =
-        data['status'] == 'completed' || data['cycleCompleted'] == true;
+    final loadedPartProgress = LessonPartProgress.fromSessionData(
+      data: data,
+      requiredCurrentSegmentIds: _requiredMediaSegmentIds,
+    );
+    _completedMediaSegmentIds
+      ..clear()
+      ..addAll(loadedPartProgress.completedSegmentIds);
+    _mediaSegmentResumePositionsSec
+      ..clear()
+      ..addAll(loadedPartProgress.resumePositionsSec);
+    _sessionCompleted = _sessionDataRepresentsCompletedLesson(data);
+    _hasFirstCompletionHistory = firstLessonCompletionTimestamp(data) != null;
     _cycleMaxWatchedPositionSec =
         (data['maxWatchedPositionSec'] as num?)?.toInt() ??
         (data['maxPositionSec'] as num?)?.toInt() ??
         0;
     if (!preserveCurrentPosition) {
-      _currentPositionSec = _cycleMaxWatchedPositionSec;
-      _currentPositionSecExact = _cycleMaxWatchedPositionSec.toDouble();
+      if (_isIndependentPlayback && _publishedMediaSegments.isNotEmpty) {
+        final initialSegment = _publishedMediaSegments.first;
+        final initialLocalSec = _partProgress.resumePositionSecForPart(
+          initialSegment.id,
+        );
+        _currentMediaSegmentIndex = 0;
+        _expandedPanelIndex = 0;
+        _lastWatchProgressSegmentIndex = 0;
+        _currentPositionSecExact = _mediaTimeline.globalSecForSegmentIndex(
+          segmentIndex: 0,
+          localSec: initialLocalSec,
+        );
+        _currentPositionSec = _currentPositionSecExact.floor();
+      } else {
+        _currentPositionSec = _cycleMaxWatchedPositionSec;
+        _currentPositionSecExact = _cycleMaxWatchedPositionSec.toDouble();
+      }
     }
     _hasPlaybackStarted = data['hasPlaybackStarted'] == true;
-    _pendingCompletion = data['pendingCompletion'] == true;
+    _pendingCompletion = _isIndependentPlayback
+        ? _partProgress.allCurrentPartsCompleted && !_sessionCompleted
+        : data['pendingCompletion'] == true;
     final answered = data['answeredQuizEventIds'];
     _answeredQuizEventIds
       ..clear()
@@ -1103,8 +1575,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       }
 
       final data = session.data();
-      final isCompleted =
-          data['status'] == 'completed' || data['cycleCompleted'] == true;
+      final isCompleted = _sessionDataRepresentsCompletedLesson(data);
       final hasPlaybackStarted = data['hasPlaybackStarted'] == true;
       if (isCompleted) {
         _cycleNumber = ((data['cycleNumber'] as num?)?.toInt() ?? 0) + 1;
@@ -1118,6 +1589,22 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       }
 
       _loadSession(session.id, data);
+      final storedAsCompleted =
+          data['status'] == 'completed' || data['cycleCompleted'] == true;
+      if (_isIndependentPlayback && storedAsCompleted) {
+        // A newly published part reopens the same cycle: keep historical
+        // part completions, but the lesson itself is no longer complete.
+        await session.reference.set({
+          'status': 'inProgress',
+          'cycleCompleted': false,
+          'pendingCompletion': false,
+          if (data['firstCompletedAt'] == null &&
+              firstLessonCompletionTimestamp(data) != null)
+            'firstCompletedAt': firstLessonCompletionTimestamp(data),
+          'lastActivityAt': FieldValue.serverTimestamp(),
+          ..._partProgressSessionFields(),
+        }, SetOptions(merge: true));
+      }
       final acquired = await _acquireActiveLearningLock(user, session.id);
       if (!acquired) {
         if (mounted) {
@@ -1221,9 +1708,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
     if (latest != null) {
       final latestData = latest.data();
-      final isCompleted =
-          latestData['status'] == 'completed' ||
-          latestData['cycleCompleted'] == true;
+      final isCompleted = _sessionDataRepresentsCompletedLesson(latestData);
       if (!isCompleted) {
         _loadSession(
           latest.id,
@@ -1231,14 +1716,25 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           preserveCurrentPosition: preservePlaybackPosition,
         );
         await latest.reference.set({
+          'status': 'inProgress',
+          'cycleCompleted': false,
+          'pendingCompletion': _pendingCompletion,
           'hasPlaybackStarted': true,
+          if (latestData['firstCompletedAt'] == null &&
+              firstLessonCompletionTimestamp(latestData) != null)
+            'firstCompletedAt': firstLessonCompletionTimestamp(latestData),
           'lastActivityAt': FieldValue.serverTimestamp(),
+          ..._partProgressSessionFields(),
         }, SetOptions(merge: true));
         _hasPlaybackStarted = true;
         return latest;
       }
 
       _cycleNumber = ((latestData['cycleNumber'] as num?)?.toInt() ?? 0) + 1;
+      if (_isIndependentPlayback) {
+        _completedMediaSegmentIds.clear();
+        _mediaSegmentResumePositionsSec.clear();
+      }
     }
 
     final newSessionRef = sessionsRef.doc();
@@ -1261,6 +1757,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       'completionThresholdSec': _completionThresholdSec,
       'answeredQuizEventIds': [],
       'watchedRanges': [],
+      ..._partProgressSessionFields(),
     });
 
     final created = await newSessionRef.get();
@@ -1509,6 +2006,18 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _cycleMaxWatchedPositionSec = maxWatchedPositionSec(_cycleWatchedRanges);
   }
 
+  Map<String, dynamic> _partProgressSessionFields() {
+    final progress = _partProgress;
+    return {
+      'requiredMediaSegmentIds': _requiredMediaSegmentIds,
+      'completedMediaSegmentIds': progress.completedSegmentIdsForPersistence,
+      'mediaSegmentResumePositionsSec':
+          progress.resumePositionsSecForPersistence,
+      'contentRevision': lesson.contentRevision,
+      'playbackMode': lesson.playbackMode.toStorage(),
+    };
+  }
+
   Future<void> _persistSessionProgress() async {
     final sessionId = _sessionId;
     final segmentId = _segmentId;
@@ -1534,6 +2043,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           'hasPlaybackStarted': _hasPlaybackStarted,
           'answeredQuizEventIds': _answeredQuizEventIds.toList(),
           'watchedRanges': watchedRangesToFirestore(_cycleWatchedRanges),
+          ..._partProgressSessionFields(),
         },
         SetOptions(merge: true),
       )
@@ -1613,10 +2123,12 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           'cycleCompleted': true,
           'pendingCompletion': false,
           'completedAt': now,
+          if (!_hasFirstCompletionHistory) 'firstCompletedAt': now,
           'lastActivityAt': now,
           'maxWatchedPositionSec': _cycleMaxWatchedPositionSec,
           'answeredQuizEventIds': _answeredQuizEventIds.toList(),
           'watchedRanges': watchedRangesToFirestore(_cycleWatchedRanges),
+          ..._partProgressSessionFields(),
         },
         SetOptions(merge: true),
       )
@@ -1652,6 +2164,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     );
 
     await batch.commit();
+    _hasFirstCompletionHistory = true;
     await _releaseActiveLearningLock();
   }
 
@@ -1666,6 +2179,15 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     if (!prepared || !mounted) {
       return;
     }
+    if (_isIndependentPlayback) {
+      final segmentId = _activeMediaSegment?.id;
+      if (segmentId != null) {
+        _markIndependentPartCompleted(segmentId);
+      }
+      if (!_partProgress.allCurrentPartsCompleted) {
+        return;
+      }
+    }
     await _completeCurrentSegment();
   }
 
@@ -1676,7 +2198,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       });
       return;
     }
-    if (_answeredQuizEventIds.contains(event.id)) {
+    final answerKey = event.quizAnswerKey;
+    if (_answeredQuizEventIds.contains(answerKey)) {
       setState(() {
         _message = 'この周では回答済みです。';
       });
@@ -1688,7 +2211,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
-    final selectedChoiceIndex = _selectedChoices[event.id];
+    final selectedChoiceIndex = _selectedChoices[answerKey];
     final quiz = event.quiz;
     if (selectedChoiceIndex == null || quiz == null) {
       setState(() {
@@ -1717,8 +2240,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
       if (mounted) {
         setState(() {
-          _answerResults[event.id] = isCorrect;
-          _answeredQuizEventIds.add(event.id);
+          _answerResults[answerKey] = isCorrect;
+          _answeredQuizEventIds.add(answerKey);
           _message = isCorrect ? '正解です。' : '不正解です。解説を確認しましょう。';
         });
       }
@@ -1757,6 +2280,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       cycleNumber: _cycleNumber,
       eventId: event.id,
       sessionId: sessionId,
+      quizVersion: event.quizVersion > 1 ? event.quizVersion : null,
     );
     final firestore = FirebaseFirestore.instance;
     await firestore
@@ -1773,6 +2297,13 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           'cycleNumber': _cycleNumber,
           'cycleQuizKey': cycleQuizKey,
           'eventId': event.id,
+          'quizVersion': event.quizVersion,
+          'anchorType': event.anchorType.toStorage(),
+          if (event.segmentId != null && event.segmentId!.isNotEmpty)
+            'segmentId': event.segmentId,
+          'timestampSec': event.timestampSec,
+          if (event.globalTimestampSec != null)
+            'globalTimestampSec': event.globalTimestampSec,
           'question': quiz.question,
           'selectedChoiceIndex': selectedChoiceIndex,
           'correctChoiceIndex': quiz.correctChoiceIndex,
@@ -1787,33 +2318,365 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           .collection('lessonViewSessions')
           .doc(sessionId)
           .set({
-            'answeredQuizEventIds': FieldValue.arrayUnion([event.id]),
+            'answeredQuizEventIds': FieldValue.arrayUnion([
+              event.quizAnswerKey,
+            ]),
           }, SetOptions(merge: true));
     }
+  }
+
+  String _partTitle(LessonMediaSegment segment, int index) {
+    return segment.title.isNotEmpty ? segment.title : 'パート${index + 1}';
+  }
+
+  Widget _buildPartButton(
+    BuildContext context, {
+    required int index,
+    required LessonMediaSegment segment,
+    required bool canControlPlayback,
+  }) {
+    final title = _partTitle(segment, index);
+    final completed = _completedMediaSegmentIds.contains(segment.id);
+    final isCurrent = index == _currentMediaSegmentIndex;
+    final localSec = isCurrent
+        ? _currentLocalPositionSecExact
+        : _partProgress.resumePositionSecForPart(segment.id);
+    final accessibilityLabel =
+        '$title、${completed ? '完了' : '未完了'}、現在位置${formatLessonTime(localSec.round())}';
+    return Tooltip(
+      message: '$accessibilityLabelを開く',
+      child: Semantics(
+        label: accessibilityLabel,
+        button: true,
+        selected: isCurrent,
+        child: OutlinedButton.icon(
+          key: ValueKey('lesson-part-button-${segment.id}'),
+          onPressed: !canControlPlayback
+              ? null
+              : () => unawaited(_switchToPart(index)),
+          icon: Icon(
+            completed ? Icons.check_circle : Icons.radio_button_unchecked,
+            size: 18,
+          ),
+          label: Text(
+            '$title\n${completed ? '完了' : '未完了'}・${formatLessonTime(localSec.round())}',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildUnplayablePartsNotice(BuildContext context) {
+    final publishedParts = _allPublishedMediaSegments;
+    if (!publishedParts.any((segment) => !segment.hasUrl)) {
+      return const SizedBox.shrink();
+    }
+    final labels = [
+      for (final entry in publishedParts.indexed)
+        if (!entry.$2.hasUrl) '${_partTitle(entry.$2, entry.$1)}（メディア未設定）',
+    ];
+    return Card(
+      key: const ValueKey('unplayable-published-parts-notice'),
+      color: Theme.of(context).colorScheme.errorContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Text(
+          '再生できない公開パート: ${labels.join('、')}。'
+          '再生可能なパートのみ再生します。',
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onErrorContainer,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPlayerSurface(
+    BuildContext context, {
+    required bool canControlPlayback,
+    required List<LessonMediaSegment> orderedSegments,
+    required bool showPartNavigation,
+  }) {
+    final videoController = _playlistPlayback?.videoController;
+    final currentSegment = _playlistPlayback?.currentSegment;
+    final controlDurationSec = _isIndependentPlayback
+        ? (_activeMediaSegment?.durationSec ?? 0)
+        : _totalDurationSec;
+    final controlPositionSec = _isIndependentPlayback
+        ? _currentLocalPositionSecExact
+        : _currentPositionSecExact;
+    final sliderMax = controlDurationSec > 0
+        ? controlDurationSec.toDouble()
+        : 1.0;
+
+    return Container(
+      key: _isIndependentPlayback
+          ? ValueKey('lesson-part-player-${_activeMediaSegment?.id ?? 'none'}')
+          : null,
+      constraints: const BoxConstraints(minHeight: 260),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (!_hasMediaSource) ...[
+              Icon(
+                Icons.perm_media_outlined,
+                size: 72,
+                color: Theme.of(context).colorScheme.error,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'メディアファイルが未設定です',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                '先生がレッスン管理画面から音声・動画をアップロードすると、ここで再生できます。',
+                textAlign: TextAlign.center,
+              ),
+            ] else if (_isLoadingMedia) ...[
+              const CircularProgressIndicator(),
+              const SizedBox(height: 12),
+              const Text('メディアを読み込み中…'),
+            ] else if (_mediaLoadError != null) ...[
+              Icon(
+                Icons.error_outline,
+                size: 72,
+                color: Theme.of(context).colorScheme.error,
+              ),
+              const SizedBox(height: 8),
+              Text(_mediaLoadError!, textAlign: TextAlign.center),
+            ] else ...[
+              if (!_currentSegmentIsAudio &&
+                  videoController != null &&
+                  videoController.value.isInitialized) ...[
+                AspectRatio(
+                  aspectRatio: videoController.value.aspectRatio,
+                  child: VideoPlayer(videoController),
+                ),
+                const SizedBox(height: 16),
+              ] else ...[
+                Icon(
+                  _currentSegmentIsAudio
+                      ? Icons.headphones
+                      : Icons.smart_display,
+                  size: 72,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(height: 8),
+                Text(_currentSegmentIsAudio ? '音声プレイヤー' : '動画プレイヤー'),
+                if (currentSegment != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    currentSegment.title.isNotEmpty
+                        ? currentSegment.title
+                        : 'パート${(_playlistPlayback?.currentSegmentIndex ?? 0) + 1}',
+                  ),
+                ],
+                const SizedBox(height: 4),
+                const Text('アップロード済みのファイルを再生します。'),
+                const SizedBox(height: 16),
+              ],
+              Text(
+                '${formatLessonTime(_displayedPositionSec)} / ${formatLessonTime(controlDurationSec)}',
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Slider(
+                  value: (_sliderDragPositionSec ?? controlPositionSec)
+                      .clamp(0, controlDurationSec)
+                      .toDouble(),
+                  min: 0,
+                  max: sliderMax,
+                  divisions: controlDurationSec > 0 ? controlDurationSec : null,
+                  label: formatLessonTime(_displayedPositionSec),
+                  onChangeStart: canControlPlayback
+                      ? (_) {
+                          setState(() {
+                            _sliderDragPositionSec = controlPositionSec;
+                          });
+                        }
+                      : null,
+                  onChanged: canControlPlayback
+                      ? (value) {
+                          setState(() {
+                            _sliderDragPositionSec = value;
+                          });
+                        }
+                      : null,
+                  onChangeEnd: canControlPlayback
+                      ? (value) {
+                          final targetSec = value.round().clamp(
+                            0,
+                            controlDurationSec,
+                          );
+                          setState(() {
+                            _sliderDragPositionSec = null;
+                            if (!_isIndependentPlayback) {
+                              _currentPositionSec = targetSec;
+                              _currentPositionSecExact = targetSec.toDouble();
+                            }
+                          });
+                          unawaited(_seekPlaybackPosition(targetSec));
+                        }
+                      : null,
+                ),
+              ),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: !canControlPlayback || _isPreparingSession
+                    ? null
+                    : () => unawaited(_togglePlayback()),
+                icon: Icon(_playButtonIcon),
+                label: Text(_playButtonLabel),
+              ),
+              if (showPartNavigation && orderedSegments.length > 1) ...[
+                const SizedBox(height: 16),
+                Text('パート移動', style: Theme.of(context).textTheme.titleSmall),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final entry in orderedSegments.indexed)
+                      if (_isIndependentPlayback)
+                        _buildPartButton(
+                          context,
+                          index: entry.$1,
+                          segment: entry.$2,
+                          canControlPlayback: canControlPlayback,
+                        )
+                      else
+                        OutlinedButton(
+                          onPressed: !canControlPlayback
+                              ? null
+                              : () =>
+                                    unawaited(_switchContinuousPart(entry.$1)),
+                          child: Text(_partTitle(entry.$2, entry.$1)),
+                        ),
+                  ],
+                ),
+              ],
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildIndependentPanels(
+    BuildContext context, {
+    required bool canControlPlayback,
+    required List<LessonMediaSegment> orderedSegments,
+  }) {
+    return Column(
+      children: [
+        for (final entry in orderedSegments.indexed)
+          Card(
+            key: ValueKey('lesson-part-panel-${entry.$2.id}'),
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              children: [
+                Tooltip(
+                  message:
+                      '${_partTitle(entry.$2, entry.$1)}を${entry.$1 == _expandedPanelIndex ? '閉じる' : '開く'}',
+                  child: Semantics(
+                    label:
+                        '${_partTitle(entry.$2, entry.$1)}、${_completedMediaSegmentIds.contains(entry.$2.id) ? '完了' : '未完了'}',
+                    button: true,
+                    expanded: entry.$1 == _expandedPanelIndex,
+                    child: ListTile(
+                      key: ValueKey('lesson-part-panel-header-${entry.$2.id}'),
+                      dense: true,
+                      leading: Icon(
+                        _completedMediaSegmentIds.contains(entry.$2.id)
+                            ? Icons.check_circle
+                            : Icons.radio_button_unchecked,
+                      ),
+                      title: Text(_partTitle(entry.$2, entry.$1)),
+                      subtitle: Text(
+                        '${_completedMediaSegmentIds.contains(entry.$2.id) ? '完了' : '未完了'}・'
+                        '${formatLessonTime(entry.$1 == _currentMediaSegmentIndex ? _currentLocalPositionSecExact.round() : _partProgress.resumePositionSecForPart(entry.$2.id).round())}',
+                      ),
+                      trailing: Icon(
+                        entry.$1 == _expandedPanelIndex
+                            ? Icons.expand_less
+                            : Icons.expand_more,
+                      ),
+                      onTap: !canControlPlayback
+                          ? null
+                          : () {
+                              if (entry.$1 == _expandedPanelIndex) {
+                                setState(() {
+                                  _expandedPanelIndex = null;
+                                });
+                                return;
+                              }
+                              unawaited(_switchToPart(entry.$1));
+                            },
+                    ),
+                  ),
+                ),
+                if (entry.$1 == _expandedPanelIndex)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                    child: _buildPlayerSurface(
+                      context,
+                      canControlPlayback: canControlPlayback,
+                      orderedSegments: orderedSegments,
+                      showPartNavigation: false,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final statusMessage =
         _message ??
-        (_pendingCompletion ? '視聴終了地点に到達しました。画面を離れた時刻を終了日時として記録します。' : null);
+        (_pendingCompletion
+            ? (_isIndependentPlayback
+                  ? 'すべてのパートを視聴しました。画面を離れた時刻を終了日時として記録します。'
+                  : '視聴終了地点に到達しました。画面を離れた時刻を終了日時として記録します。')
+            : null);
     final cycleLabel = _isLoadingLearningState ? 'ー' : '$_visibleCycleNumber周目';
     final studySecondsLabel = _isLoadingLearningState ? 'ー' : '$_studySeconds秒';
     final watchSecondsLabel = _isLoadingLearningState ? 'ー' : '$_watchSeconds秒';
 
-    final canControlPlayback = _hasMediaSource &&
+    final canControlPlayback =
+        _hasMediaSource &&
         _mediaLoadError == null &&
         _totalDurationSec > 0 &&
         (_playlistPlayback?.isReady ?? false);
-    final sliderMax = _totalDurationSec > 0 ? _totalDurationSec.toDouble() : 1.0;
+    final sliderMax = _totalDurationSec > 0
+        ? _totalDurationSec.toDouble()
+        : 1.0;
     final videoController = _playlistPlayback?.videoController;
     final orderedSegments = _mediaTimeline.orderedSegments;
+    final publishedSegmentsForDisplay = LessonMediaSegment.normalizeOrders(
+      _allPublishedMediaSegments,
+    );
     final currentSegment = _playlistPlayback?.currentSegment;
-    final pageTitle = orderedSegments.isEmpty
+    final pageTitle = publishedSegmentsForDisplay.isEmpty
         ? 'レッスン視聴'
-        : orderedSegments.every((segment) => segment.isAudio)
+        : publishedSegmentsForDisplay.every((segment) => segment.isAudio)
         ? '音声授業'
-        : orderedSegments.every((segment) => segment.isVideo)
+        : publishedSegmentsForDisplay.every((segment) => segment.isVideo)
         ? '動画視聴'
         : 'レッスン視聴';
 
@@ -1823,186 +2686,205 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         child: ListView(
           padding: const EdgeInsets.all(24),
           children: [
-            Container(
-              constraints: const BoxConstraints(minHeight: 260),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    if (!_hasMediaSource) ...[
-                      Icon(
-                        Icons.perm_media_outlined,
-                        size: 72,
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                      const SizedBox(height: 8),
-                      const Text(
-                        'メディアファイルが未設定です',
-                        style: TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 4),
-                      const Text(
-                        '先生がレッスン管理画面から音声・動画をアップロードすると、ここで再生できます。',
-                        textAlign: TextAlign.center,
-                      ),
-                    ] else if (_isLoadingMedia) ...[
-                      const CircularProgressIndicator(),
-                      const SizedBox(height: 12),
-                      const Text('メディアを読み込み中…'),
-                    ] else if (_mediaLoadError != null) ...[
-                      Icon(
-                        Icons.error_outline,
-                        size: 72,
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        _mediaLoadError!,
-                        textAlign: TextAlign.center,
-                      ),
-                    ] else ...[
-                      if (!_currentSegmentIsAudio &&
-                          videoController != null &&
-                          videoController.value.isInitialized) ...[
-                        AspectRatio(
-                          aspectRatio: videoController.value.aspectRatio,
-                          child: VideoPlayer(videoController),
-                        ),
-                        const SizedBox(height: 16),
-                      ] else ...[
+            Text(
+              lesson.playbackMode.displayLabel,
+              key: const ValueKey('lesson-playback-mode-label'),
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 12),
+            if (_unplayablePublishedMediaSegments.isNotEmpty) ...[
+              _buildUnplayablePartsNotice(context),
+              const SizedBox(height: 12),
+            ],
+            if (lesson.playbackMode == LessonPlaybackMode.independentPanels)
+              _buildIndependentPanels(
+                context,
+                canControlPlayback: canControlPlayback,
+                orderedSegments: orderedSegments,
+              )
+            else if (lesson.playbackMode ==
+                LessonPlaybackMode.independentSingle)
+              _buildPlayerSurface(
+                context,
+                canControlPlayback: canControlPlayback,
+                orderedSegments: orderedSegments,
+                showPartNavigation: true,
+              )
+            else
+              Container(
+                constraints: const BoxConstraints(minHeight: 260),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (!_hasMediaSource) ...[
                         Icon(
-                          _currentSegmentIsAudio
-                              ? Icons.headphones
-                              : Icons.smart_display,
+                          Icons.perm_media_outlined,
                           size: 72,
-                          color: Theme.of(context).colorScheme.primary,
+                          color: Theme.of(context).colorScheme.error,
                         ),
                         const SizedBox(height: 8),
-                        Text(
-                          _currentSegmentIsAudio ? '音声プレイヤー' : '動画プレイヤー',
+                        const Text(
+                          'メディアファイルが未設定です',
+                          style: TextStyle(fontWeight: FontWeight.bold),
                         ),
-                        if (currentSegment != null) ...[
+                        const SizedBox(height: 4),
+                        const Text(
+                          '先生がレッスン管理画面から音声・動画をアップロードすると、ここで再生できます。',
+                          textAlign: TextAlign.center,
+                        ),
+                      ] else if (_isLoadingMedia) ...[
+                        const CircularProgressIndicator(),
+                        const SizedBox(height: 12),
+                        const Text('メディアを読み込み中…'),
+                      ] else if (_mediaLoadError != null) ...[
+                        Icon(
+                          Icons.error_outline,
+                          size: 72,
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(_mediaLoadError!, textAlign: TextAlign.center),
+                      ] else ...[
+                        if (!_currentSegmentIsAudio &&
+                            videoController != null &&
+                            videoController.value.isInitialized) ...[
+                          AspectRatio(
+                            aspectRatio: videoController.value.aspectRatio,
+                            child: VideoPlayer(videoController),
+                          ),
+                          const SizedBox(height: 16),
+                        ] else ...[
+                          Icon(
+                            _currentSegmentIsAudio
+                                ? Icons.headphones
+                                : Icons.smart_display,
+                            size: 72,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(_currentSegmentIsAudio ? '音声プレイヤー' : '動画プレイヤー'),
+                          if (currentSegment != null) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              currentSegment.title.isNotEmpty
+                                  ? currentSegment.title
+                                  : 'パート${(_playlistPlayback?.currentSegmentIndex ?? 0) + 1}',
+                            ),
+                          ],
                           const SizedBox(height: 4),
+                          const Text('アップロード済みのファイルを再生します。'),
+                          const SizedBox(height: 16),
+                        ],
+                        Text(
+                          '${formatLessonTime(_displayedPositionSec)} / ${formatLessonTime(_totalDurationSec)}',
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 32),
+                          child: Slider(
+                            value:
+                                (_sliderDragPositionSec ??
+                                        _currentPositionSec.toDouble())
+                                    .clamp(0, _totalDurationSec)
+                                    .toDouble(),
+                            min: 0,
+                            max: sliderMax,
+                            divisions: _totalDurationSec > 0
+                                ? _totalDurationSec
+                                : null,
+                            label: formatLessonTime(_displayedPositionSec),
+                            onChangeStart: canControlPlayback
+                                ? (_) {
+                                    setState(() {
+                                      _sliderDragPositionSec =
+                                          _currentPositionSec.toDouble();
+                                    });
+                                  }
+                                : null,
+                            onChanged: canControlPlayback
+                                ? (value) {
+                                    setState(() {
+                                      _sliderDragPositionSec = value;
+                                    });
+                                  }
+                                : null,
+                            onChangeEnd: canControlPlayback
+                                ? (value) {
+                                    final targetSec = value.round().clamp(
+                                      0,
+                                      _totalDurationSec,
+                                    );
+                                    setState(() {
+                                      _sliderDragPositionSec = null;
+                                      _currentPositionSec = targetSec;
+                                      _currentPositionSecExact = targetSec
+                                          .toDouble();
+                                    });
+                                    unawaited(_seekPlaybackPosition(targetSec));
+                                  }
+                                : null,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        FilledButton.icon(
+                          onPressed: !canControlPlayback || _isPreparingSession
+                              ? null
+                              : () {
+                                  unawaited(_togglePlayback());
+                                },
+                          icon: Icon(_playButtonIcon),
+                          label: Text(_playButtonLabel),
+                        ),
+                        if (orderedSegments.length > 1) ...[
+                          const SizedBox(height: 16),
                           Text(
-                            currentSegment.title.isNotEmpty
-                                ? currentSegment.title
-                                : 'パート${(_playlistPlayback?.currentSegmentIndex ?? 0) + 1}',
+                            'パート移動',
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              for (final entry in orderedSegments.indexed)
+                                OutlinedButton(
+                                  onPressed: !canControlPlayback
+                                      ? null
+                                      : () {
+                                          unawaited(
+                                            _switchContinuousPart(entry.$1),
+                                          );
+                                        },
+                                  child: Text(
+                                    entry.$2.title.isNotEmpty
+                                        ? entry.$2.title
+                                        : 'パート${entry.$1 + 1}',
+                                  ),
+                                ),
+                            ],
                           ),
                         ],
-                        const SizedBox(height: 4),
-                        const Text('アップロード済みのファイルを再生します。'),
-                        const SizedBox(height: 16),
-                      ],
-                      Text(
-                        '${formatLessonTime(_displayedPositionSec)} / ${formatLessonTime(_totalDurationSec)}',
-                        style: const TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 32),
-                        child: Slider(
-                          value: (_sliderDragPositionSec ??
-                                  _currentPositionSec.toDouble())
-                              .clamp(0, _totalDurationSec)
-                              .toDouble(),
-                          min: 0,
-                          max: sliderMax,
-                          divisions: _totalDurationSec > 0 ? _totalDurationSec : null,
-                          label: formatLessonTime(_displayedPositionSec),
-                          onChangeStart: canControlPlayback
-                              ? (_) {
-                                  setState(() {
-                                    _sliderDragPositionSec =
-                                        _currentPositionSec.toDouble();
-                                  });
-                                }
-                              : null,
-                          onChanged: canControlPlayback
-                              ? (value) {
-                                  setState(() {
-                                    _sliderDragPositionSec = value;
-                                  });
-                                }
-                              : null,
-                          onChangeEnd: canControlPlayback
-                              ? (value) {
-                                  final targetSec = value
-                                      .round()
-                                      .clamp(0, _totalDurationSec);
-                                  setState(() {
-                                    _sliderDragPositionSec = null;
-                                    _currentPositionSec = targetSec;
-                                    _currentPositionSecExact =
-                                        targetSec.toDouble();
-                                  });
-                                  unawaited(_seekPlaybackPosition(targetSec));
-                                }
-                              : null,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      FilledButton.icon(
-                        onPressed: !canControlPlayback || _isPreparingSession
-                            ? null
-                            : () {
-                                unawaited(_togglePlayback());
-                              },
-                        icon: Icon(_playButtonIcon),
-                        label: Text(_playButtonLabel),
-                      ),
-                      if (orderedSegments.length > 1) ...[
-                        const SizedBox(height: 16),
-                        Text(
-                          'パート移動',
-                          style: Theme.of(context).textTheme.titleSmall,
-                        ),
-                        const SizedBox(height: 8),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            for (final entry in orderedSegments.indexed)
-                              OutlinedButton(
-                                onPressed: !canControlPlayback
-                                    ? null
-                                    : () {
-                                        unawaited(
-                                          _playlistPlayback?.seekToSegmentIndex(
-                                            entry.$1,
-                                          ),
-                                        );
-                                      },
-                                child: Text(
-                                  entry.$2.title.isNotEmpty
-                                      ? entry.$2.title
-                                      : 'パート${entry.$1 + 1}',
-                                ),
-                              ),
-                          ],
-                        ),
                       ],
                     ],
-                  ],
+                  ),
                 ),
               ),
-            ),
             if (_hasWhiteboard) ...[
               const SizedBox(height: 16),
-              Text(
-                'ホワイトボード',
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
+              Text('ホワイトボード', style: Theme.of(context).textTheme.titleSmall),
               const SizedBox(height: 8),
               LessonPlaybackSyncedWhiteboard(
-                bundle: lesson.publishedWhiteboardBundle,
+                boardSet: lesson.publishedBoardSet,
                 timeline: _mediaTimeline,
                 playback: _playlistPlayback,
                 isPlaying: _isPlaying,
@@ -2044,7 +2926,11 @@ class _VideoLessonPageState extends State<VideoLessonPage>
               Text('再生時間（ファイル）: ${formatLessonTime(_totalDurationSec)}'),
             ],
             const SizedBox(height: 8),
-            Text('現在位置: ${formatLessonTime(_currentPositionSec)}'),
+            Text(
+              _isIndependentPlayback
+                  ? '現在位置（パート）: ${formatLessonTime(_currentLocalPositionSecExact.round())}'
+                  : '現在位置: ${formatLessonTime(_currentPositionSec)}',
+            ),
             if (!_isTeacherPreview && canControlPlayback) ...[
               const SizedBox(height: 8),
               Text('現在の周回: $cycleLabel'),
@@ -2053,7 +2939,12 @@ class _VideoLessonPageState extends State<VideoLessonPage>
               const SizedBox(height: 8),
               Text('視聴時間: $watchSecondsLabel'),
               const SizedBox(height: 8),
-              Text('視聴終了判定: $_completionThresholdSec秒到達'),
+              Text(
+                _isIndependentPlayback
+                    ? 'パート完了: ${_requiredMediaSegmentIds.where(_completedMediaSegmentIds.contains).length}'
+                          ' / ${_requiredMediaSegmentIds.length}'
+                    : '視聴終了判定: $_completionThresholdSec秒到達',
+              ),
             ],
             if (canControlPlayback && kDebugMode) ...[
               const SizedBox(height: 8),
@@ -2115,7 +3006,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                         unawaited(_completeManually());
                       },
                 icon: const Icon(Icons.check_circle_outline),
-                label: const Text('視聴終了として記録'),
+                label: Text(
+                  _isIndependentPlayback ? '現在のパートを視聴済みにする' : '視聴終了として記録',
+                ),
               ),
             ],
             if (kDebugMode && orderedSegments.isNotEmpty) ...[
@@ -2131,12 +3024,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
               for (final event in _dueQuizEvents) ...[
                 _QuizCard(
                   event: event,
-                  selectedChoiceIndex: _selectedChoices[event.id],
-                  answerResult: _answerResults[event.id],
-                  alreadyAnswered: _answeredQuizEventIds.contains(event.id),
+                  selectedChoiceIndex: _selectedChoices[event.quizAnswerKey],
+                  answerResult: _answerResults[event.quizAnswerKey],
+                  alreadyAnswered: _answeredQuizEventIds.contains(
+                    event.quizAnswerKey,
+                  ),
                   onChoiceChanged: (choiceIndex) {
                     setState(() {
-                      _selectedChoices[event.id] = choiceIndex;
+                      _selectedChoices[event.quizAnswerKey] = choiceIndex;
                       _message = null;
                     });
                   },

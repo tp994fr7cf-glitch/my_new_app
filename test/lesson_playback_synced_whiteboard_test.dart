@@ -3,89 +3,227 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:my_new_app/models/lesson_media_segment.dart';
 import 'package:my_new_app/models/lesson_media_timeline.dart';
 import 'package:my_new_app/models/lesson_whiteboard.dart';
+import 'package:my_new_app/models/lesson_whiteboard_board_set.dart';
 import 'package:my_new_app/services/lesson_media_playlist_playback.dart';
 import 'package:my_new_app/widgets/lesson_playback_synced_whiteboard.dart';
 import 'package:my_new_app/widgets/lesson_whiteboard_canvas.dart';
 
 void main() {
-  testWidgets('synced whiteboard updates sub-second while audio position ticks once per second', (
-    tester,
-  ) async {
-    const stroke = WhiteboardStroke(
-      id: 'progressive',
-      timestampSec: 0,
-      endTimestampSec: 0.6,
-      points: [
-        WhiteboardPoint(x: 0.0, y: 0.5, timestampSec: 0.0),
-        WhiteboardPoint(x: 0.25, y: 0.5, timestampSec: 0.15),
-        WhiteboardPoint(x: 0.5, y: 0.5, timestampSec: 0.3),
-        WhiteboardPoint(x: 0.75, y: 0.5, timestampSec: 0.45),
-      ],
-    );
-    const bundle = LessonWhiteboardLayerBundle(
-      layers: [
-        LessonWhiteboardLayer(
-          id: 'layer-1',
-          order: 0,
-          strokes: [stroke],
-        ),
-      ],
-    );
-    final timeline = LessonMediaTimeline(
-      segments: [
-        LessonMediaSegment(
-          id: 'audio',
-          order: 0,
-          mediaType: 'audio',
-          url: 'https://example.com/audio.mp3',
-          durationSec: 90,
-        ),
-      ],
-    );
-    final playback = _ControllableLivePositionFakePlayback(
-      totalDurationSec: 90,
-      segments: timeline.orderedSegments,
-    );
+  testWidgets(
+    'synced whiteboard updates sub-second while audio position ticks once per second',
+    (tester) async {
+      const stroke = WhiteboardStroke(
+        id: 'progressive',
+        timestampSec: 0,
+        endTimestampSec: 0.6,
+        points: [
+          WhiteboardPoint(x: 0.0, y: 0.5, timestampSec: 0.0),
+          WhiteboardPoint(x: 0.25, y: 0.5, timestampSec: 0.15),
+          WhiteboardPoint(x: 0.5, y: 0.5, timestampSec: 0.3),
+          WhiteboardPoint(x: 0.75, y: 0.5, timestampSec: 0.45),
+        ],
+      );
+      const bundle = LessonWhiteboardLayerBundle(
+        layers: [
+          LessonWhiteboardLayer(id: 'layer-1', order: 0, strokes: [stroke]),
+        ],
+      );
+      final timeline = LessonMediaTimeline(
+        segments: [
+          LessonMediaSegment(
+            id: 'audio',
+            order: 0,
+            mediaType: 'audio',
+            url: 'https://example.com/audio.mp3',
+            durationSec: 90,
+          ),
+        ],
+      );
+      final playback = _ControllableLivePositionFakePlayback(
+        totalDurationSec: 90,
+        segments: timeline.orderedSegments,
+      );
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: LessonPlaybackSyncedWhiteboard(
-            bundle: bundle,
-            timeline: timeline,
-            playback: playback,
-            isPlaying: true,
-            positionSecExact: 0,
-            totalDurationSec: 90,
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonPlaybackSyncedWhiteboard(
+              bundle: bundle,
+              timeline: timeline,
+              playback: playback,
+              isPlaying: true,
+              positionSecExact: 0,
+              totalDurationSec: 90,
+            ),
           ),
         ),
-      ),
-    );
+      );
 
+      var canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      expect(canvas.strokes, isEmpty);
+
+      playback.liveOffsetSec = 0.2;
+      await tester.pump(const Duration(milliseconds: 50));
+      canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      expect(canvas.strokes, hasLength(1));
+      expect(canvas.strokes.single.points, hasLength(2));
+
+      playback.liveOffsetSec = 0.35;
+      await tester.pump(const Duration(milliseconds: 50));
+      canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      expect(canvas.strokes.single.points, hasLength(3));
+      expect(playback.globalPositionSec, 0);
+    },
+  );
+
+  testWidgets('follow, manual selection, and backward seeks select one board', (
+    tester,
+  ) async {
+    const defaultStroke = WhiteboardStroke(
+      id: 'default-now',
+      timestampSec: 0,
+      points: [
+        WhiteboardPoint(x: 0.1, y: 0.1, timestampSec: 0),
+        WhiteboardPoint(x: 0.9, y: 0.1, timestampSec: 0),
+      ],
+    );
+    const secondStroke = WhiteboardStroke(
+      id: 'second-now',
+      timestampSec: 0,
+      points: [
+        WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
+        WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 0),
+      ],
+    );
+    const futureStroke = WhiteboardStroke(
+      id: 'second-future',
+      timestampSec: 20,
+      points: [
+        WhiteboardPoint(x: 0.1, y: 0.8, timestampSec: 20),
+        WhiteboardPoint(x: 0.9, y: 0.8, timestampSec: 20),
+      ],
+    );
+    const boardSet = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+          title: '基本',
+          layerBundle: LessonWhiteboardLayerBundle(
+            layers: [
+              LessonWhiteboardLayer(
+                id: LessonWhiteboardLayer.primaryLayerId,
+                order: 0,
+                strokes: [defaultStroke],
+              ),
+            ],
+          ),
+        ),
+        LessonWhiteboardBoard(
+          id: 'second',
+          order: 1,
+          title: '補足',
+          layerBundle: LessonWhiteboardLayerBundle(
+            layers: [
+              LessonWhiteboardLayer(
+                id: LessonWhiteboardLayer.primaryLayerId,
+                order: 0,
+                strokes: [secondStroke, futureStroke],
+              ),
+            ],
+          ),
+        ),
+      ],
+      switchEvents: [
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: 'second',
+          globalTimestampSec: 5,
+          sequence: 0,
+        ),
+      ],
+    );
+    final timeline = LessonMediaTimeline(segments: const []);
+
+    Future<void> pumpAt(double positionSec) {
+      return tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonPlaybackSyncedWhiteboard(
+              boardSet: boardSet,
+              timeline: timeline,
+              playback: null,
+              isPlaying: false,
+              positionSecExact: positionSec,
+              totalDurationSec: 30,
+            ),
+          ),
+        ),
+      );
+    }
+
+    await pumpAt(0);
+    expect(find.byType(LessonWhiteboardCanvas), findsOneWidget);
     var canvas = tester.widget<LessonWhiteboardCanvas>(
       find.byType(LessonWhiteboardCanvas),
     );
-    expect(canvas.strokes, isEmpty);
+    expect(canvas.strokes.single.id, 'default-now');
 
-    playback.liveOffsetSec = 0.2;
-    await tester.pump(const Duration(milliseconds: 50));
-    canvas = tester.widget<LessonWhiteboardCanvas>(
-      find.byType(LessonWhiteboardCanvas),
+    await pumpAt(6);
+    canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+    expect(canvas.strokes.map((stroke) => stroke.id), ['second-now']);
+    expect(
+      tester
+          .widget<Switch>(
+            find.byKey(const ValueKey('learner-whiteboard-follow-switch')),
+          )
+          .value,
+      isTrue,
     );
-    expect(canvas.strokes, hasLength(1));
-    expect(canvas.strokes.single.points, hasLength(2));
 
-    playback.liveOffsetSec = 0.35;
-    await tester.pump(const Duration(milliseconds: 50));
-    canvas = tester.widget<LessonWhiteboardCanvas>(
-      find.byType(LessonWhiteboardCanvas),
-    );
-    expect(canvas.strokes.single.points, hasLength(3));
-    expect(playback.globalPositionSec, 0);
+    tester
+        .widget<Switch>(
+          find.byKey(const ValueKey('learner-whiteboard-follow-switch')),
+        )
+        .onChanged!(false);
+    await tester.pump();
+    await pumpAt(0);
+    canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+    expect(canvas.strokes.single.id, 'second-now');
+
+    tester
+        .widget<DropdownButton<String>>(
+          find.byKey(const ValueKey('learner-whiteboard-board-selector')),
+        )
+        .onChanged!(LessonWhiteboardBoard.defaultBoardId);
+    await tester.pump();
+    canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+    expect(canvas.strokes.single.id, 'default-now');
+
+    await pumpAt(6);
+    tester
+        .widget<Switch>(
+          find.byKey(const ValueKey('learner-whiteboard-follow-switch')),
+        )
+        .onChanged!(true);
+    await tester.pump();
+    canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+    expect(canvas.strokes.map((stroke) => stroke.id), ['second-now']);
+
+    await pumpAt(0);
+    canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+    expect(canvas.strokes.single.id, 'default-now');
+    expect(find.byType(LessonWhiteboardCanvas), findsOneWidget);
   });
 }
 
-class _ControllableLivePositionFakePlayback implements LessonMediaPlaylistController {
+class _ControllableLivePositionFakePlayback
+    implements LessonMediaPlaylistController {
   _ControllableLivePositionFakePlayback({
     required this.totalDurationSec,
     required List<LessonMediaSegment> segments,

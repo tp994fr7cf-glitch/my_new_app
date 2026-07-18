@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:video_player/video_player.dart';
 import 'package:my_new_app/models/lesson_media_segment.dart';
 import 'package:my_new_app/models/lesson_whiteboard.dart';
+import 'package:my_new_app/models/lesson_whiteboard_board_set.dart';
 import 'package:my_new_app/services/lesson_media_playlist_playback.dart';
 import 'package:my_new_app/widgets/lesson_whiteboard_canvas.dart';
 import 'package:my_new_app/widgets/lesson_whiteboard_editor_panel.dart';
@@ -34,403 +35,413 @@ void _completeSliderSeek(Slider slider, double value) {
 }
 
 void main() {
-  testWidgets('Teacher whiteboard editor shows strokes up to the seek position', (
-    WidgetTester tester,
-  ) async {
-    const leftStroke = WhiteboardStroke(
-      id: 'left',
-      timestampSec: 0,
-      endTimestampSec: 30,
-      points: [
-        WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
-        WhiteboardPoint(x: 0.2, y: 0.5, timestampSec: 15),
-        WhiteboardPoint(x: 0.3, y: 0.5, timestampSec: 30),
-      ],
-    );
-    const rightStroke = WhiteboardStroke(
-      id: 'right',
-      timestampSec: 30,
-      endTimestampSec: 60,
-      points: [
-        WhiteboardPoint(x: 0.7, y: 0.5, timestampSec: 30),
-        WhiteboardPoint(x: 0.8, y: 0.5, timestampSec: 45),
-        WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 60),
-      ],
-    );
-    const draft = LessonWhiteboard(
-      strokes: [leftStroke, rightStroke],
-    );
+  testWidgets(
+    'Teacher whiteboard editor shows strokes up to the seek position',
+    (WidgetTester tester) async {
+      const leftStroke = WhiteboardStroke(
+        id: 'left',
+        timestampSec: 0,
+        endTimestampSec: 30,
+        points: [
+          WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
+          WhiteboardPoint(x: 0.2, y: 0.5, timestampSec: 15),
+          WhiteboardPoint(x: 0.3, y: 0.5, timestampSec: 30),
+        ],
+      );
+      const rightStroke = WhiteboardStroke(
+        id: 'right',
+        timestampSec: 30,
+        endTimestampSec: 60,
+        points: [
+          WhiteboardPoint(x: 0.7, y: 0.5, timestampSec: 30),
+          WhiteboardPoint(x: 0.8, y: 0.5, timestampSec: 45),
+          WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 60),
+        ],
+      );
+      const draft = LessonWhiteboard(strokes: [leftStroke, rightStroke]);
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: LessonWhiteboardEditorPanel(
-            courseId: 'course-1',
-            lessonNumber: 1,
-            mediaSegments: testMediaSegments(),
-            durationLabel: '1分30秒',
-            publishedWhiteboard: null,
-            draftWhiteboard: draft,
-            onDraftSaved: (_) async {},
-            playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: testMediaSegments(),
+              durationLabel: '1分30秒',
+              publishedWhiteboard: null,
+              draftWhiteboard: draft,
+              onDraftSaved: (_) async {},
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+            ),
           ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
+      await tester.pumpAndSettle();
 
-    expect(find.byType(LessonWhiteboardCanvas), findsOneWidget);
-    var canvas = tester.widget<LessonWhiteboardCanvas>(
-      find.byType(LessonWhiteboardCanvas),
-    );
-    expect(canvas.strokes, isEmpty);
+      expect(find.byType(LessonWhiteboardCanvas), findsOneWidget);
+      var canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      expect(canvas.strokes, isEmpty);
 
-    final slider = tester.widget<Slider>(find.byType(Slider));
-    _completeSliderSeek(slider, 60);
-    await tester.pumpAndSettle();
+      final slider = tester.widget<Slider>(find.byType(Slider));
+      _completeSliderSeek(slider, 60);
+      await tester.pumpAndSettle();
 
-    canvas = tester.widget<LessonWhiteboardCanvas>(
-      find.byType(LessonWhiteboardCanvas),
-    );
-    expect(canvas.strokes, hasLength(2));
+      canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      expect(canvas.strokes, hasLength(2));
 
-    _completeSliderSeek(slider, 25);
-    await tester.pumpAndSettle();
+      _completeSliderSeek(slider, 25);
+      await tester.pumpAndSettle();
 
-    canvas = tester.widget<LessonWhiteboardCanvas>(
-      find.byType(LessonWhiteboardCanvas),
-    );
-    expect(canvas.strokes, hasLength(1));
-    expect(canvas.strokes.single.id, 'left');
-    expect(canvas.strokes.single.points, hasLength(2));
-    expect(canvas.strokes.single.points.last.timestampSec, 15);
+      canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      expect(canvas.strokes, hasLength(1));
+      expect(canvas.strokes.single.id, 'left');
+      expect(canvas.strokes.single.points, hasLength(2));
+      expect(canvas.strokes.single.points.last.timestampSec, 15);
 
-    _completeSliderSeek(slider, 60);
-    await tester.pumpAndSettle();
+      _completeSliderSeek(slider, 60);
+      await tester.pumpAndSettle();
 
-    canvas = tester.widget<LessonWhiteboardCanvas>(
-      find.byType(LessonWhiteboardCanvas),
-    );
-    expect(canvas.strokes, hasLength(2));
-    expect(canvas.strokes.last.id, 'right');
-  });
+      canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      expect(canvas.strokes, hasLength(2));
+      expect(canvas.strokes.last.id, 'right');
+    },
+  );
 
-  testWidgets('Teacher whiteboard editor keeps full strokes when saving draft', (
-    WidgetTester tester,
-  ) async {
-    const leftStroke = WhiteboardStroke(
-      id: 'left',
-      timestampSec: 0,
-      endTimestampSec: 30,
-      points: [
-        WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
-        WhiteboardPoint(x: 0.3, y: 0.5, timestampSec: 30),
-      ],
-    );
-    const rightStroke = WhiteboardStroke(
-      id: 'right',
-      timestampSec: 30,
-      endTimestampSec: 60,
-      points: [
-        WhiteboardPoint(x: 0.7, y: 0.5, timestampSec: 30),
-        WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 60),
-      ],
-    );
-    const draft = LessonWhiteboard(
-      strokes: [leftStroke, rightStroke],
-    );
-    LessonWhiteboard? savedWhiteboard;
+  testWidgets(
+    'Teacher whiteboard editor keeps full strokes when saving draft',
+    (WidgetTester tester) async {
+      const leftStroke = WhiteboardStroke(
+        id: 'left',
+        timestampSec: 0,
+        endTimestampSec: 30,
+        points: [
+          WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
+          WhiteboardPoint(x: 0.3, y: 0.5, timestampSec: 30),
+        ],
+      );
+      const rightStroke = WhiteboardStroke(
+        id: 'right',
+        timestampSec: 30,
+        endTimestampSec: 60,
+        points: [
+          WhiteboardPoint(x: 0.7, y: 0.5, timestampSec: 30),
+          WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 60),
+        ],
+      );
+      const draft = LessonWhiteboard(strokes: [leftStroke, rightStroke]);
+      LessonWhiteboard? savedWhiteboard;
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: LessonWhiteboardEditorPanel(
-            courseId: 'course-1',
-            lessonNumber: 1,
-            mediaSegments: testMediaSegments(),
-            durationLabel: '1分30秒',
-            publishedWhiteboard: null,
-            draftWhiteboard: draft,
-            onDraftSaved: (whiteboard) async {
-              savedWhiteboard = whiteboard;
-            },
-            playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: testMediaSegments(),
+              durationLabel: '1分30秒',
+              publishedWhiteboard: null,
+              draftWhiteboard: draft,
+              onDraftSaved: (whiteboard) async {
+                savedWhiteboard = whiteboard;
+              },
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+            ),
           ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
+      await tester.pumpAndSettle();
 
-    final slider = tester.widget<Slider>(find.byType(Slider));
-    _completeSliderSeek(slider, 25);
-    await tester.pumpAndSettle();
+      final slider = tester.widget<Slider>(find.byType(Slider));
+      _completeSliderSeek(slider, 25);
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.widgetWithText(OutlinedButton, '書き物を一時保存'));
-    await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(OutlinedButton, '書き物を一時保存'));
+      await tester.pumpAndSettle();
 
-    expect(savedWhiteboard, isNotNull);
-    expect(savedWhiteboard!.strokes, hasLength(2));
-    expect(savedWhiteboard!.strokes.map((stroke) => stroke.id), ['left', 'right']);
-  });
+      expect(savedWhiteboard, isNotNull);
+      expect(savedWhiteboard!.strokes, hasLength(2));
+      expect(savedWhiteboard!.strokes.map((stroke) => stroke.id), [
+        'left',
+        'right',
+      ]);
+    },
+  );
 
-  testWidgets('Teacher whiteboard editor shows published preview without draft', (
-    WidgetTester tester,
-  ) async {
-    const published = LessonWhiteboard(
-      strokes: [
-        WhiteboardStroke(
-          id: 'published',
-          timestampSec: 0,
-          points: [
-            WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
-            WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
-          ],
-        ),
-      ],
-    );
+  testWidgets(
+    'Teacher whiteboard editor shows published preview without draft',
+    (WidgetTester tester) async {
+      const published = LessonWhiteboard(
+        strokes: [
+          WhiteboardStroke(
+            id: 'published',
+            timestampSec: 0,
+            points: [
+              WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
+              WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
+            ],
+          ),
+        ],
+      );
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: LessonWhiteboardEditorPanel(
-            courseId: 'course-1',
-            lessonNumber: 1,
-            mediaSegments: testMediaSegments(),
-            durationLabel: '1分30秒',
-            publishedWhiteboard: published,
-            draftWhiteboard: null,
-            onDraftSaved: (_) async {},
-            playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: testMediaSegments(),
+              durationLabel: '1分30秒',
+              publishedWhiteboard: published,
+              draftWhiteboard: null,
+              onDraftSaved: (_) async {},
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+            ),
           ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
+      await tester.pumpAndSettle();
 
-    expect(find.widgetWithText(OutlinedButton, '書き物を描き直す'), findsOneWidget);
-    expect(find.widgetWithText(OutlinedButton, '書き物を一時保存'), findsNothing);
+      expect(find.widgetWithText(OutlinedButton, '書き物を描き直す'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, '書き物を一時保存'), findsNothing);
 
-    final canvas = tester.widget<LessonWhiteboardCanvas>(
-      find.byType(LessonWhiteboardCanvas),
-    );
-    expect(canvas.strokes.single.id, 'published');
-    expect(canvas.drawingEnabled, isFalse);
-  });
+      final canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      expect(canvas.strokes.single.id, 'published');
+      expect(canvas.drawingEnabled, isFalse);
+    },
+  );
 
-  testWidgets('Teacher whiteboard editor keeps draft canvas after temporary save', (
-    WidgetTester tester,
-  ) async {
-    const published = LessonWhiteboard(
-      strokes: [
-        WhiteboardStroke(
-          id: 'published-old',
-          timestampSec: 0,
-          points: [
-            WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
-            WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
-          ],
-        ),
-      ],
-    );
-    const redrawnDraft = LessonWhiteboard(
-      strokes: [
-        WhiteboardStroke(
-          id: 'draft-new',
-          timestampSec: 0,
-          points: [
-            WhiteboardPoint(x: 0.2, y: 0.2, timestampSec: 0),
-            WhiteboardPoint(x: 0.8, y: 0.8, timestampSec: 10),
-          ],
-        ),
-      ],
-    );
+  testWidgets(
+    'Teacher whiteboard editor keeps draft canvas after temporary save',
+    (WidgetTester tester) async {
+      const published = LessonWhiteboard(
+        strokes: [
+          WhiteboardStroke(
+            id: 'published-old',
+            timestampSec: 0,
+            points: [
+              WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
+              WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
+            ],
+          ),
+        ],
+      );
+      const redrawnDraft = LessonWhiteboard(
+        strokes: [
+          WhiteboardStroke(
+            id: 'draft-new',
+            timestampSec: 0,
+            points: [
+              WhiteboardPoint(x: 0.2, y: 0.2, timestampSec: 0),
+              WhiteboardPoint(x: 0.8, y: 0.8, timestampSec: 10),
+            ],
+          ),
+        ],
+      );
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: LessonWhiteboardEditorPanel(
-            courseId: 'course-1',
-            lessonNumber: 1,
-            mediaSegments: testMediaSegments(),
-            durationLabel: '1分30秒',
-            publishedWhiteboard: published,
-            draftWhiteboard: redrawnDraft,
-            onDraftSaved: (_) async {},
-            playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: testMediaSegments(),
+              durationLabel: '1分30秒',
+              publishedWhiteboard: published,
+              draftWhiteboard: redrawnDraft,
+              onDraftSaved: (_) async {},
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+            ),
           ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
+      await tester.pumpAndSettle();
 
-    expect(find.widgetWithText(OutlinedButton, '書き物を一時保存'), findsOneWidget);
-    expect(find.widgetWithText(OutlinedButton, '書き物を描き直す'), findsNothing);
+      expect(find.widgetWithText(OutlinedButton, '書き物を一時保存'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, '書き物を描き直す'), findsNothing);
 
-    final slider = tester.widget<Slider>(find.byType(Slider));
-    _completeSliderSeek(slider, 10);
-    await tester.pumpAndSettle();
+      final slider = tester.widget<Slider>(find.byType(Slider));
+      _completeSliderSeek(slider, 10);
+      await tester.pumpAndSettle();
 
-    final canvas = tester.widget<LessonWhiteboardCanvas>(
-      find.byType(LessonWhiteboardCanvas),
-    );
-    expect(canvas.strokes.single.id, 'draft-new');
-    expect(canvas.drawingEnabled, isFalse);
-  });
+      final canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      expect(canvas.strokes.single.id, 'draft-new');
+      expect(canvas.drawingEnabled, isFalse);
+    },
+  );
 
-  testWidgets('Teacher whiteboard editor updates to draft canvas after redraw save', (
-    WidgetTester tester,
-  ) async {
-    const published = LessonWhiteboard(
-      strokes: [
-        WhiteboardStroke(
-          id: 'published-old',
-          timestampSec: 0,
-          points: [
-            WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
-            WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
-          ],
-        ),
-      ],
-    );
+  testWidgets(
+    'Teacher whiteboard editor updates to draft canvas after redraw save',
+    (WidgetTester tester) async {
+      const published = LessonWhiteboard(
+        strokes: [
+          WhiteboardStroke(
+            id: 'published-old',
+            timestampSec: 0,
+            points: [
+              WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
+              WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
+            ],
+          ),
+        ],
+      );
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: _DraftSaveHost(publishedWhiteboard: published),
-      ),
-    );
-    await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        MaterialApp(home: _DraftSaveHost(publishedWhiteboard: published)),
+      );
+      await tester.pumpAndSettle();
 
-    expect(find.widgetWithText(OutlinedButton, '書き物を描き直す'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, '書き物を描き直す'), findsOneWidget);
 
-    await tester.tap(find.widgetWithText(OutlinedButton, '書き物を描き直す'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(OutlinedButton, 'リセットして描き直す'));
-    await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(OutlinedButton, '書き物を描き直す'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(OutlinedButton, 'リセットして描き直す'));
+      await tester.pumpAndSettle();
 
-    expect(find.widgetWithText(OutlinedButton, '書き物を一時保存'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, '書き物を一時保存'), findsOneWidget);
 
-    final hostState = tester.state<_DraftSaveHostState>(find.byType(_DraftSaveHost));
-    hostState.simulateRedrawnDraftSave();
-    await tester.pumpAndSettle();
+      final hostState = tester.state<_DraftSaveHostState>(
+        find.byType(_DraftSaveHost),
+      );
+      hostState.simulateRedrawnDraftSave();
+      await tester.pumpAndSettle();
 
-    expect(find.widgetWithText(OutlinedButton, '書き物を一時保存'), findsOneWidget);
-    expect(find.widgetWithText(OutlinedButton, '書き物を描き直す'), findsNothing);
+      expect(find.widgetWithText(OutlinedButton, '書き物を一時保存'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, '書き物を描き直す'), findsNothing);
 
-    final slider = tester.widget<Slider>(find.byType(Slider));
-    _completeSliderSeek(slider, 10);
-    await tester.pumpAndSettle();
+      final slider = tester.widget<Slider>(find.byType(Slider));
+      _completeSliderSeek(slider, 10);
+      await tester.pumpAndSettle();
 
-    final canvas = tester.widget<LessonWhiteboardCanvas>(
-      find.byType(LessonWhiteboardCanvas),
-    );
-    expect(canvas.strokes.single.id, 'draft-new');
-  });
+      final canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      expect(canvas.strokes.single.id, 'draft-new');
+    },
+  );
 
-  testWidgets('Teacher whiteboard editor can edit published content from options', (
-    WidgetTester tester,
-  ) async {
-    const published = LessonWhiteboard(
-      strokes: [
-        WhiteboardStroke(
-          id: 'published',
-          timestampSec: 0,
-          points: [
-            WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
-            WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
-          ],
-        ),
-      ],
-    );
+  testWidgets(
+    'Teacher whiteboard editor can edit published content from options',
+    (WidgetTester tester) async {
+      const published = LessonWhiteboard(
+        strokes: [
+          WhiteboardStroke(
+            id: 'published',
+            timestampSec: 0,
+            points: [
+              WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
+              WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
+            ],
+          ),
+        ],
+      );
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: LessonWhiteboardEditorPanel(
-            courseId: 'course-1',
-            lessonNumber: 1,
-            mediaSegments: testMediaSegments(),
-            durationLabel: '1分30秒',
-            publishedWhiteboard: published,
-            draftWhiteboard: null,
-            onDraftSaved: (_) async {},
-            playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: testMediaSegments(),
+              durationLabel: '1分30秒',
+              publishedWhiteboard: published,
+              draftWhiteboard: null,
+              onDraftSaved: (_) async {},
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+            ),
           ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.widgetWithText(OutlinedButton, '書き物を描き直す'));
-    await tester.pumpAndSettle();
-    await tester.tap(
-      find.widgetWithText(OutlinedButton, '公開しているものを編集する'),
-    );
-    await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(OutlinedButton, '書き物を描き直す'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(OutlinedButton, '公開しているものを編集する'));
+      await tester.pumpAndSettle();
 
-    final slider = tester.widget<Slider>(find.byType(Slider));
-    _completeSliderSeek(slider, 10);
-    await tester.pumpAndSettle();
+      final slider = tester.widget<Slider>(find.byType(Slider));
+      _completeSliderSeek(slider, 10);
+      await tester.pumpAndSettle();
 
-    final canvas = tester.widget<LessonWhiteboardCanvas>(
-      find.byType(LessonWhiteboardCanvas),
-    );
-    expect(canvas.strokes.single.id, 'published');
-    expect(find.widgetWithText(OutlinedButton, '書き物を一時保存'), findsOneWidget);
-  });
+      final canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      expect(canvas.strokes.single.id, 'published');
+      expect(find.widgetWithText(OutlinedButton, '書き物を一時保存'), findsOneWidget);
+    },
+  );
 
-  testWidgets('Teacher whiteboard editor shows three edit options when draft exists', (
-    WidgetTester tester,
-  ) async {
-    const published = LessonWhiteboard(
-      strokes: [
-        WhiteboardStroke(
-          id: 'published',
-          timestampSec: 0,
-          points: [
-            WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
-            WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
-          ],
-        ),
-      ],
-    );
-    const draft = LessonWhiteboard(
-      strokes: [
-        WhiteboardStroke(
-          id: 'draft',
-          timestampSec: 0,
-          points: [
-            WhiteboardPoint(x: 0.2, y: 0.2, timestampSec: 0),
-            WhiteboardPoint(x: 0.8, y: 0.8, timestampSec: 10),
-          ],
-        ),
-      ],
-    );
+  testWidgets(
+    'Teacher whiteboard editor shows three edit options when draft exists',
+    (WidgetTester tester) async {
+      const published = LessonWhiteboard(
+        strokes: [
+          WhiteboardStroke(
+            id: 'published',
+            timestampSec: 0,
+            points: [
+              WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
+              WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
+            ],
+          ),
+        ],
+      );
+      const draft = LessonWhiteboard(
+        strokes: [
+          WhiteboardStroke(
+            id: 'draft',
+            timestampSec: 0,
+            points: [
+              WhiteboardPoint(x: 0.2, y: 0.2, timestampSec: 0),
+              WhiteboardPoint(x: 0.8, y: 0.8, timestampSec: 10),
+            ],
+          ),
+        ],
+      );
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: LessonWhiteboardEditorPanel(
-            courseId: 'course-1',
-            lessonNumber: 1,
-            mediaSegments: testMediaSegments(),
-            durationLabel: '1分30秒',
-            publishedWhiteboard: published,
-            draftWhiteboard: draft,
-            onDraftSaved: (_) async {},
-            playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: testMediaSegments(),
+              durationLabel: '1分30秒',
+              publishedWhiteboard: published,
+              draftWhiteboard: draft,
+              onDraftSaved: (_) async {},
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+            ),
           ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.widgetWithText(OutlinedButton, '編集の選び直し'));
-    await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(OutlinedButton, '編集の選び直し'));
+      await tester.pumpAndSettle();
 
-    expect(find.widgetWithText(OutlinedButton, '公開しているものを編集する'), findsOneWidget);
-    expect(find.widgetWithText(OutlinedButton, '仮保存中のものを編集する'), findsOneWidget);
-    expect(find.widgetWithText(OutlinedButton, 'リセットして描き直す'), findsOneWidget);
-  });
+      expect(
+        find.widgetWithText(OutlinedButton, '公開しているものを編集する'),
+        findsOneWidget,
+      );
+      expect(
+        find.widgetWithText(OutlinedButton, '仮保存中のものを編集する'),
+        findsOneWidget,
+      );
+      expect(find.widgetWithText(OutlinedButton, 'リセットして描き直す'), findsOneWidget);
+    },
+  );
 
   testWidgets(
     'Teacher whiteboard editor timestamps points with sub-second live position while recording',
@@ -498,22 +509,139 @@ void main() {
     },
   );
 
-  testWidgets('Teacher whiteboard deferred reset does not save until draft save', (
-    WidgetTester tester,
+  testWidgets(
+    'Teacher whiteboard deferred reset does not save until draft save',
+    (WidgetTester tester) async {
+      const published = LessonWhiteboard(
+        strokes: [
+          WhiteboardStroke(
+            id: 'published',
+            timestampSec: 0,
+            points: [
+              WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
+              WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
+            ],
+          ),
+        ],
+      );
+      var draftSaveCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: testMediaSegments(),
+              durationLabel: '1分30秒',
+              publishedWhiteboard: published,
+              draftWhiteboard: null,
+              onDraftSaved: (_) async {
+                draftSaveCount++;
+              },
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(OutlinedButton, '書き物を描き直す'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(OutlinedButton, 'リセットして描き直す'));
+      await tester.pumpAndSettle();
+
+      expect(draftSaveCount, 0);
+      expect(find.widgetWithText(OutlinedButton, '書き物を一時保存'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'board switches without drawing retain equal-time events in sequence',
+    (tester) async {
+      final playback = _ControllableLivePositionPlaylistPlayback(
+        totalDurationSec: 90,
+      );
+      BoardSet? saved;
+      const draft = BoardSet(
+        boards: [
+          LessonWhiteboardBoard(
+            id: LessonWhiteboardBoard.defaultBoardId,
+            order: 0,
+            title: '一枚目',
+          ),
+          LessonWhiteboardBoard(id: 'second', order: 1, title: '二枚目'),
+        ],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: testMediaSegments(),
+              durationLabel: '1分30秒',
+              draftBoardSet: draft,
+              onBoardSetDraftSaved: (boardSet) async {
+                saved = boardSet;
+              },
+              playlistPlaybackFactory: () => playback,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'スタート'));
+      await tester.pumpAndSettle();
+
+      playback.liveOffsetSec = 0.375;
+      await tester.tap(find.text('2. 二枚目'));
+      await tester.pump();
+      await tester.tap(find.text('2. 二枚目'));
+      await tester.pump();
+      await tester.tap(find.text('1. 一枚目'));
+      await tester.pump();
+      await tester.tap(find.widgetWithText(OutlinedButton, '書き物を一時保存'));
+      await tester.pumpAndSettle();
+
+      expect(saved, isNotNull);
+      expect(saved!.switchEvents, hasLength(2));
+      expect(saved!.orderedSwitchEvents.map((event) => event.sequence), [0, 1]);
+      expect(
+        saved!.orderedSwitchEvents.map((event) => event.globalTimestampSec),
+        [0.375, 0.375],
+      );
+    },
+  );
+
+  testWidgets('deleting a board removes every switch event targeting it', (
+    tester,
   ) async {
-    const published = LessonWhiteboard(
-      strokes: [
-        WhiteboardStroke(
-          id: 'published',
-          timestampSec: 0,
-          points: [
-            WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
-            WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
-          ],
+    BoardSet? saved;
+    const draft = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+          title: '一枚目',
+        ),
+        LessonWhiteboardBoard(id: 'second', order: 1, title: '二枚目'),
+        LessonWhiteboardBoard(id: 'third', order: 2, title: '三枚目'),
+      ],
+      switchEvents: [
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: 'second',
+          globalTimestampSec: 1,
+          sequence: 0,
+        ),
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: 'third',
+          globalTimestampSec: 2,
+          sequence: 1,
         ),
       ],
     );
-    var draftSaveCount = 0;
 
     await tester.pumpWidget(
       MaterialApp(
@@ -523,10 +651,9 @@ void main() {
             lessonNumber: 1,
             mediaSegments: testMediaSegments(),
             durationLabel: '1分30秒',
-            publishedWhiteboard: published,
-            draftWhiteboard: null,
-            onDraftSaved: (_) async {
-              draftSaveCount++;
+            draftBoardSet: draft,
+            onBoardSetDraftSaved: (boardSet) async {
+              saved = boardSet;
             },
             playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
           ),
@@ -535,13 +662,74 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.widgetWithText(OutlinedButton, '書き物を描き直す'));
+    await tester.tap(find.text('2. 二枚目'));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('whiteboard-delete-board')));
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(OutlinedButton, 'リセットして描き直す'));
+    await tester.tap(find.widgetWithText(FilledButton, '削除'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(OutlinedButton, '書き物を一時保存'));
     await tester.pumpAndSettle();
 
-    expect(draftSaveCount, 0);
-    expect(find.widgetWithText(OutlinedButton, '書き物を一時保存'), findsOneWidget);
+    expect(saved, isNotNull);
+    expect(saved!.boardById('second'), isNull);
+    expect(
+      saved!.switchEvents.where((event) => event.boardId == 'second'),
+      isEmpty,
+    );
+    expect(
+      saved!.switchEvents.any((event) => event.boardId == 'third'),
+      isTrue,
+    );
+  });
+
+  testWidgets('twenty boards are allowed but the twenty-first is disabled', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final boards = [
+      for (var index = 0; index < 19; index++)
+        LessonWhiteboardBoard(
+          id: index == 0
+              ? LessonWhiteboardBoard.defaultBoardId
+              : 'board-$index',
+          order: index,
+          title: '板${index + 1}',
+        ),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: testMediaSegments(),
+              durationLabel: '1分30秒',
+              draftBoardSet: BoardSet(boards: boards),
+              onBoardSetDraftSaved: (_) async {},
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(LessonWhiteboardCanvas), findsOneWidget);
+    var addButton = tester.widget<OutlinedButton>(
+      find.byKey(const ValueKey('whiteboard-add-board')),
+    );
+    expect(addButton.onPressed, isNotNull);
+    await tester.tap(find.byKey(const ValueKey('whiteboard-add-board')));
+    await tester.pump();
+    addButton = tester.widget<OutlinedButton>(
+      find.byKey(const ValueKey('whiteboard-add-board')),
+    );
+    expect(addButton.onPressed, isNull);
+    expect(find.text('20/20'), findsOneWidget);
   });
 }
 
@@ -563,6 +751,8 @@ class _ControllableLivePositionPlaylistPlayback
       StreamController<bool>.broadcast();
   final StreamController<int> _segmentIndexController =
       StreamController<int>.broadcast();
+  final StreamController<int> _segmentCompletedController =
+      StreamController<int>.broadcast();
 
   double _globalPositionSec = 0;
   double liveOffsetSec = 0;
@@ -581,11 +771,14 @@ class _ControllableLivePositionPlaylistPlayback
   Stream<int> get segmentIndexStream => _segmentIndexController.stream;
 
   @override
+  Stream<int> get segmentCompletedStream => _segmentCompletedController.stream;
+
+  @override
   double get globalPositionSec => _globalPositionSec;
 
   @override
-  double get liveGlobalPositionSec =>
-      (_globalPositionSec + liveOffsetSec).clamp(0.0, totalDurationSec.toDouble());
+  double get liveGlobalPositionSec => (_globalPositionSec + liveOffsetSec)
+      .clamp(0.0, totalDurationSec.toDouble());
 
   @override
   int get currentSegmentIndex => 0;
@@ -603,9 +796,8 @@ class _ControllableLivePositionPlaylistPlayback
   bool get currentSegmentIsAudio => true;
 
   @override
-  LessonMediaSegment? get currentSegment => testMediaSegments(
-    durationSec: totalDurationSec,
-  ).first;
+  LessonMediaSegment? get currentSegment =>
+      testMediaSegments(durationSec: totalDurationSec).first;
 
   @override
   VideoPlayerController? get videoController => null;
@@ -639,7 +831,10 @@ class _ControllableLivePositionPlaylistPlayback
   }
 
   @override
-  Future<void> seekToSegmentIndex(int segmentIndex) async {
+  Future<void> seekToSegmentIndex(
+    int segmentIndex, {
+    double localStartSec = 0,
+  }) async {
     _segmentIndexController.add(0);
   }
 
@@ -652,6 +847,7 @@ class _ControllableLivePositionPlaylistPlayback
     await _totalDurationController.close();
     await _playingController.close();
     await _segmentIndexController.close();
+    await _segmentCompletedController.close();
   }
 }
 
