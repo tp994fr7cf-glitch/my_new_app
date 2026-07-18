@@ -116,6 +116,7 @@ void main() {
         expect(state.playRequested, isTrue);
         expect(state.completionArmed, isTrue);
         expect(state.consumeNaturalCompletion(), isTrue);
+        expect(state.playRequested, isFalse);
         expect(state.consumeNaturalCompletion(), isFalse);
       },
     );
@@ -153,5 +154,20 @@ void main() {
         expect(state.consumeNaturalCompletion(), isFalse);
       },
     );
+
+    test('a duration arriving after seek can re-arm completion', () {
+      final state = LessonMediaCompletionState()..markPlayRequested();
+
+      state.beginSeek();
+      state.finishSeek(position: const Duration(seconds: 30), duration: null);
+      expect(state.completionArmed, isFalse);
+
+      state.updateKnownDuration(
+        position: const Duration(seconds: 30),
+        duration: const Duration(seconds: 90),
+      );
+
+      expect(state.completionArmed, isTrue);
+    });
   });
 }

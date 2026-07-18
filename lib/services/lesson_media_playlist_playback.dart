@@ -115,12 +115,16 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   bool _isResetting = false;
   _PlaylistSeekTarget? _pendingSeekTarget;
   Future<void>? _seekDrainFuture;
+  int? _deferredCompletionSegmentIndex;
+  int? _deferredCompletionIntentGeneration;
+  bool _replayAfterSeekDrain = false;
 
   /// Bumped every time a user/UI-initiated [play] or [pause] call actually
   /// runs. Used to detect "did the user tap play/pause again while a
   /// segment switch I started earlier was still in flight" without ever
   /// delaying or dropping that tap (see [play] / [pause]).
   int _playbackIntentGeneration = 0;
+  bool _playRequested = false;
 
   @override
   Stream<double> get globalPositionStream => _globalPositionController.stream;
@@ -177,6 +181,10 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   @override
   Future<void> openSegments(List<LessonMediaSegment> segments) async {
     _isResetting = true;
+    _playRequested = false;
+    _replayAfterSeekDrain = false;
+    _deferredCompletionSegmentIndex = null;
+    _deferredCompletionIntentGeneration = null;
     try {
       await _disposePlayerInternal();
       // Published metadata can outlive a failed/removed upload. Keep those
@@ -429,7 +437,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
           resumeDecisionGeneration != null &&
           _playbackIntentGeneration != resumeDecisionGeneration;
       final effectiveResume = userActedDuringSwitch
-          ? _isPlaying
+          ? _playRequested
           : shouldResumePlaying;
       _logSwitch(
         '_activateSegment settling: segmentIndex=$segmentIndex '
@@ -512,13 +520,21 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   }
 
   Future<void> _handleNaturalCompletion() async {
-    if (_isResetting ||
-        _isSwitchingSegment ||
-        _seekDrainFuture != null ||
-        _isAdvancing ||
-        !_autoAdvanceEnabled) {
+    if (_isResetting || _isAdvancing || !_autoAdvanceEnabled) {
       return;
     }
+    if (_seekDrainFuture != null) {
+      _deferredCompletionSegmentIndex = _currentSegmentIndex;
+      _deferredCompletionIntentGeneration = _playbackIntentGeneration;
+      return;
+    }
+    if (_isSwitchingSegment) {
+      return;
+    }
+    await _completeCurrentSegment();
+  }
+
+  Future<void> _completeCurrentSegment() async {
     _segmentCompletedController.add(_currentSegmentIndex);
     await _advanceToNextSegmentOrStop();
   }
@@ -532,6 +548,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       final nextIndex = _currentSegmentIndex + 1;
       final ordered = _timeline.orderedSegments;
       if (nextIndex >= ordered.length) {
+        _playRequested = false;
         _globalPositionSec = _totalDurationSec.toDouble();
         _globalPositionController.add(_globalPositionSec);
         await _pauseInternal();
@@ -597,6 +614,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       return;
     }
     _playbackIntentGeneration++;
+    _playRequested = true;
     await _playInternal();
   }
 
@@ -607,6 +625,8 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       return;
     }
     _playbackIntentGeneration++;
+    _playRequested = false;
+    _replayAfterSeekDrain = false;
     await _pauseInternal();
   }
 
@@ -617,8 +637,16 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     if (isLessonPlaybackAtEnd(
       totalDurationSec: _totalDurationSec,
       positionSecExact: _globalPositionSec,
+      endToleranceSec: 0.001,
     )) {
+      if (_seekDrainFuture != null) {
+        _replayAfterSeekDrain = true;
+        return;
+      }
       await seekGlobal(0);
+      if (_isPlaying) {
+        return;
+      }
     }
     _logSwitch('_playInternal: currentSegmentIndex=$_currentSegmentIndex');
     await _activePlayer!.play();
@@ -674,13 +702,49 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       // one of their continuations must start a new drain rather than attach
       // itself to an already-completed Future and remain unapplied.
       _seekDrainFuture = null;
+      await _flushDeferredCompletion();
+      if (_replayAfterSeekDrain && _playRequested) {
+        _replayAfterSeekDrain = false;
+        await _playInternal();
+      } else {
+        _replayAfterSeekDrain = false;
+      }
       completion.complete();
     } catch (error, stackTrace) {
       _seekDrainFuture = null;
+      _deferredCompletionSegmentIndex = null;
+      _deferredCompletionIntentGeneration = null;
+      _replayAfterSeekDrain = false;
       completion.completeError(error, stackTrace);
     } finally {
       _logSwitch('seek: finished globalSec=$requestedGlobalSec');
     }
+  }
+
+  Future<void> _flushDeferredCompletion() async {
+    final segmentIndex = _deferredCompletionSegmentIndex;
+    final intentGeneration = _deferredCompletionIntentGeneration;
+    _deferredCompletionSegmentIndex = null;
+    _deferredCompletionIntentGeneration = null;
+    if (segmentIndex == null ||
+        intentGeneration == null ||
+        segmentIndex != _currentSegmentIndex ||
+        intentGeneration != _playbackIntentGeneration ||
+        !_playRequested ||
+        _activePlayer == null ||
+        _isResetting ||
+        _isAdvancing) {
+      return;
+    }
+    final segment = currentSegment;
+    if (segment == null ||
+        !isLessonPlaybackAtEnd(
+          totalDurationSec: segment.durationSec,
+          positionSecExact: _activePlayer!.position.inMilliseconds / 1000,
+        )) {
+      return;
+    }
+    await _completeCurrentSegment();
   }
 
   Future<void> _drainPendingSeeks(double requestedGlobalSec) async {
@@ -725,7 +789,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       'crossSegment=${position.segmentIndex != _currentSegmentIndex}',
     );
     if (position.segmentIndex != _currentSegmentIndex) {
-      final wasPlaying = _isPlaying;
+      final shouldResumePlaying = _playRequested;
       final generationAtStart = _playbackIntentGeneration;
       // Mark the switch as starting immediately, before pausing the
       // about-to-be-abandoned player. Pausing a real audio player can
@@ -735,7 +799,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       // requested segment's position on screen.
       _isSwitchingSegment = true;
       try {
-        if (wasPlaying) {
+        if (shouldResumePlaying) {
           await _pauseInternal();
         }
         // Let `_activateSegment` itself decide, in its own finally block,
@@ -747,12 +811,15 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
         await _activateSegment(
           position.segmentIndex,
           localStartSec: position.localSec,
-          resumePlaying: stopsAtSegmentEnd ? false : wasPlaying,
+          resumePlaying: stopsAtSegmentEnd ? false : shouldResumePlaying,
           resumeDecisionGeneration: generationAtStart,
         );
         if (stopsAtSegmentEnd &&
             _playbackIntentGeneration == generationAtStart) {
+          _playRequested = false;
           await _pauseInternal();
+        } else if (stopsAtSegmentEnd && _playRequested) {
+          _replayAfterSeekDrain = true;
         }
       } catch (error, stackTrace) {
         debugPrint(
@@ -777,7 +844,10 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _globalPositionSec = position.globalSec;
     _globalPositionController.add(_globalPositionSec);
     if (stopsAtSegmentEnd && _playbackIntentGeneration == generationAtStart) {
+      _playRequested = false;
       await _pauseInternal();
+    } else if (stopsAtSegmentEnd && _playRequested) {
+      _replayAfterSeekDrain = true;
     }
   }
 
@@ -831,6 +901,10 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     }
     _isReady = false;
     _isPlaying = false;
+    _playRequested = false;
+    _replayAfterSeekDrain = false;
+    _deferredCompletionSegmentIndex = null;
+    _deferredCompletionIntentGeneration = null;
     _pendingSeekTarget = null;
     await _disposeAllSlots();
     _timeline = const LessonMediaTimeline(segments: []);

@@ -503,6 +503,93 @@ void main() {
   );
 
   test(
+    'near-end seek while playing completes without a recursive seek lock',
+    () async {
+      final audioPlayer = FakeLessonMediaPlayback();
+      final videoPlayer = FakeLessonMediaPlayback();
+      final playback = createTrackingPlaylistPlayback(
+        audioPlayers: [audioPlayer],
+        videoPlayers: [videoPlayer],
+      );
+
+      await playback.openSegments(twoPartLessonSegments());
+      await playback.play();
+
+      await playback.seekGlobal(179.75).timeout(const Duration(seconds: 1));
+
+      expect(playback.currentSegmentIndex, 1);
+      expect(playback.globalPositionSec, closeTo(179.75, 0.01));
+      expect(playback.isPlaying, isTrue);
+    },
+  );
+
+  test(
+    'play requested during an endpoint seek restarts after seek settles',
+    () async {
+      final audioPlayer = FakeLessonMediaPlayback();
+      final videoPlayer = FakeLessonMediaPlayback(
+        seekDelay: const Duration(milliseconds: 50),
+      );
+      final playback = createTrackingPlaylistPlayback(
+        audioPlayers: [audioPlayer],
+        videoPlayers: [videoPlayer],
+      );
+
+      await playback.openSegments(twoPartLessonSegments());
+      final seek = playback.seekGlobal(180);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      await playback.play();
+      await seek.timeout(const Duration(seconds: 1));
+
+      expect(playback.currentSegmentIndex, 0);
+      expect(playback.globalPositionSec, lessThan(1));
+      expect(playback.isPlaying, isTrue);
+    },
+  );
+
+  test(
+    'natural completion received during seek drain advances after settling',
+    () async {
+      final audioPlayer = FakeLessonMediaPlayback(
+        totalDuration: const Duration(seconds: 4),
+        seekDelay: const Duration(milliseconds: 50),
+      );
+      final videoPlayer = FakeLessonMediaPlayback();
+      final playback = createTrackingPlaylistPlayback(
+        audioPlayers: [audioPlayer],
+        videoPlayers: [videoPlayer],
+      );
+
+      await playback.openSegments([
+        LessonMediaSegment(
+          id: 'audio-part',
+          order: 0,
+          mediaType: 'audio',
+          url: 'https://example.com/audio.mp3',
+          durationSec: 4,
+        ),
+        LessonMediaSegment(
+          id: 'video-part',
+          order: 1,
+          mediaType: 'video',
+          url: 'https://example.com/video.mp4',
+          durationSec: 90,
+        ),
+      ]);
+      await playback.play();
+
+      final seek = playback.seekGlobal(3.6);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      await audioPlayer.simulateNaturalCompletion(emitStoppedFirst: true);
+      await seek.timeout(const Duration(seconds: 1));
+
+      expect(playback.currentSegmentIndex, 1);
+      expect(playback.isPlaying, isTrue);
+      expect(videoPlayer.isPlaying, isTrue);
+    },
+  );
+
+  test(
     'revisiting a prepared video segment resets to the requested start position',
     () async {
       final audioPlayer = FakeLessonMediaPlayback();

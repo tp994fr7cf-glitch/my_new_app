@@ -109,10 +109,22 @@ class LessonMediaCompletionState {
         position < duration;
   }
 
+  void updateKnownDuration({
+    required Duration position,
+    required Duration? duration,
+  }) {
+    if (_completionArmed || _completionReported || !_playRequested) {
+      return;
+    }
+    _completionArmed =
+        duration != null && duration > Duration.zero && position < duration;
+  }
+
   bool consumeNaturalCompletion() {
     if (!_completionArmed || _completionReported) {
       return false;
     }
+    _playRequested = false;
     _completionReported = true;
     _completionArmed = false;
     return true;
@@ -125,6 +137,10 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
     _player.positionStream.listen(_onPlayerPositionUpdate);
     _player.processingStateStream.listen(_handleProcessingStateChanged);
     _player.durationStream.listen((duration) {
+      _completionState.updateKnownDuration(
+        position: _player.position,
+        duration: duration,
+      );
       if (!_durationController.isClosed) {
         _durationController.add(duration);
       }
@@ -496,6 +512,10 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
     if (!_durationController.isClosed) {
       _durationController.add(_controller!.value.duration);
     }
+    _completionState.updateKnownDuration(
+      position: _controller!.value.position,
+      duration: _controller!.value.duration,
+    );
     _notifyPlaying();
     _notifyCompleted();
   }
