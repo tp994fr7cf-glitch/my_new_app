@@ -18,7 +18,7 @@ void main() {
         onStarted: () {
           started = true;
         },
-        onError: (_, __) {},
+        onError: (_, _) {},
       ).timeout(const Duration(milliseconds: 100));
 
       expect(started, isTrue);
