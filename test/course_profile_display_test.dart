@@ -40,6 +40,45 @@ void main() {
     );
   });
 
+  test(
+    'shouldUseCourseSharedStudentProfile works without Firebase initialization',
+    () {
+      expect(
+        shouldUseCourseSharedStudentProfile(
+          authorId: 'user-a',
+          authorRole: 'student',
+          authorProfileVisible: true,
+          courseId: 'course-1',
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test('authorPublicProfileStream falls back without Firebase', () async {
+    final profile = await authorPublicProfileStream(
+      courseId: 'course-1',
+      authorId: 'user-a',
+      authorRole: 'student',
+      authorProfileVisible: true,
+      fallbackDisplayName: '学習者A',
+    ).first;
+
+    expect(profile.displayName, '学習者A');
+  });
+
+  test('resolveAuthorPublicProfile falls back without Firebase', () async {
+    final profile = await resolveAuthorPublicProfile(
+      courseId: 'course-1',
+      authorId: 'user-a',
+      authorRole: 'student',
+      authorProfileVisible: true,
+      fallbackDisplayName: '学習者A',
+    );
+
+    expect(profile.displayName, '学習者A');
+  });
+
   test('CourseParticipantIdentity exposes shared profile mirror', () {
     const identity = CourseParticipantIdentity(
       courseId: 'course-1',
