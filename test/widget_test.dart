@@ -2931,16 +2931,13 @@ void main() {
     expect(find.text('レッスン管理'), findsOneWidget);
     expect(find.text('メディアパート'), findsWidgets);
     expect(find.text('パートを追加'), findsWidgets);
-    await tester.scrollUntilVisible(
-      find.text('クイズを管理').first,
-      500,
-      scrollable: find.byType(Scrollable).last,
-    );
+    await tester.ensureVisible(find.text('クイズを管理').first);
+    await tester.pumpAndSettle();
     await tester.tap(find.text('クイズを管理').first);
     await tester.pumpAndSettle();
 
     expect(find.text('クイズ管理'), findsOneWidget);
-    expect(find.text('授業の何秒地点でクイズを表示するかを設定できます。'), findsOneWidget);
+    expect(find.text('公開済みパートと、そのパート内でクイズを表示する秒数を設定できます。'), findsOneWidget);
     expect(find.text('クイズ1'), findsOneWidget);
     expect(find.text('表示タイミング（秒）'), findsOneWidget);
   });
@@ -2999,6 +2996,13 @@ void main() {
         home: CourseDetailPage(course: course, isTeacherMode: true),
       ),
     );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('講座設定'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
 
     expect(find.text('講座設定'), findsOneWidget);
     expect(find.text('公開メモ・質問を管理'), findsNothing);

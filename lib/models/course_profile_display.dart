@@ -5,9 +5,15 @@ import 'package:firebase_core/firebase_core.dart';
 import 'course_participant_identity.dart';
 import 'public_user_profile.dart';
 
+String? _authenticatedUserId() {
+  if (Firebase.apps.isEmpty) {
+    return null;
+  }
+  return FirebaseAuth.instance.currentUser?.uid;
+}
+
 String authorProfileRoleFor(String? authorRole) {
-  return authorRole == publicUserProfileRoleTeacher ||
-          authorRole == 'teacher'
+  return authorRole == publicUserProfileRoleTeacher || authorRole == 'teacher'
       ? publicUserProfileRoleTeacher
       : publicUserProfileRoleStudent;
 }
@@ -69,7 +75,7 @@ bool shouldUseCourseSharedStudentProfile({
   if ((courseId ?? '').trim().isEmpty) {
     return false;
   }
-  final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+  final currentUserId = _authenticatedUserId();
   if (currentUserId != null && currentUserId == authorId) {
     return false;
   }
@@ -92,7 +98,7 @@ Stream<PublicUserProfile> authorPublicProfileStream({
     );
   }
 
-  final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+  final currentUserId = _authenticatedUserId();
   if (currentUserId != null && currentUserId == authorId) {
     return publicUserProfileStream(
       userId: authorId,
@@ -140,7 +146,7 @@ Future<PublicUserProfile> resolveAuthorPublicProfile({
     return await loadPublicUserProfile(userId: authorId, role: profileRole) ??
         fallback;
   }
-  final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+  final currentUserId = _authenticatedUserId();
   if (currentUserId != null && currentUserId == authorId) {
     return await loadPublicUserProfile(userId: authorId, role: profileRole) ??
         fallback;
