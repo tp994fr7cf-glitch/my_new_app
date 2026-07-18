@@ -72,7 +72,7 @@ void main() {
       courseId: 'course-1',
       authorId: 'user-a',
       authorRole: 'student',
-      authorProfileVisible: false,
+      authorProfileVisible: true,
       fallbackDisplayName: '学習者A',
     );
 

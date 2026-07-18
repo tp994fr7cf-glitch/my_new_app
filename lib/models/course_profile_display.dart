@@ -142,6 +142,9 @@ Future<PublicUserProfile> resolveAuthorPublicProfile({
     role: profileRole,
     displayName: fallbackDisplayName,
   );
+  if (Firebase.apps.isEmpty) {
+    return fallback;
+  }
   if (profileRole == publicUserProfileRoleTeacher) {
     return await loadPublicUserProfile(userId: authorId, role: profileRole) ??
         fallback;
