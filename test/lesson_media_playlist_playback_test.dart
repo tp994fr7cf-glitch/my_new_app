@@ -435,6 +435,74 @@ void main() {
   });
 
   test(
+    'manual seek while playing still auto-advances at natural completion',
+    () async {
+      final audioPlayer = FakeLessonMediaPlayback(
+        totalDuration: const Duration(seconds: 4),
+        naturalEndPosition: const Duration(seconds: 4),
+      );
+      final videoPlayer = FakeLessonMediaPlayback();
+      final playback = createTrackingPlaylistPlayback(
+        audioPlayers: [audioPlayer],
+        videoPlayers: [videoPlayer],
+      );
+
+      await playback.openSegments([
+        LessonMediaSegment(
+          id: 'audio-part',
+          order: 0,
+          mediaType: 'audio',
+          url: 'https://example.com/audio.mp3',
+          durationSec: 4,
+        ),
+        LessonMediaSegment(
+          id: 'video-part',
+          order: 1,
+          mediaType: 'video',
+          url: 'https://example.com/video.mp4',
+          durationSec: 90,
+        ),
+      ]);
+      await playback.play();
+      await playback.seekGlobal(2);
+      await Future<void>.delayed(const Duration(seconds: 3));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.currentSegmentIndex, 1);
+      expect(playback.isPlaying, isTrue);
+      expect(videoPlayer.isPlaying, isTrue);
+    },
+  );
+
+  test(
+    'manual seek to the lesson end pauses and replay restarts at zero',
+    () async {
+      final audioPlayer = FakeLessonMediaPlayback();
+      final videoPlayer = FakeLessonMediaPlayback();
+      final playback = createTrackingPlaylistPlayback(
+        audioPlayers: [audioPlayer],
+        videoPlayers: [videoPlayer],
+      );
+
+      await playback.openSegments(twoPartLessonSegments());
+      await playback.play();
+      await playback.seekGlobal(180);
+
+      expect(playback.currentSegmentIndex, 1);
+      expect(playback.globalPositionSec, closeTo(180, 0.01));
+      expect(playback.isPlaying, isFalse);
+
+      await playback.play();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(playback.currentSegmentIndex, 0);
+      expect(playback.globalPositionSec, lessThan(1));
+      expect(playback.isPlaying, isTrue);
+      expect(audioPlayer.isPlaying, isTrue);
+    },
+  );
+
+  test(
     'revisiting a prepared video segment resets to the requested start position',
     () async {
       final audioPlayer = FakeLessonMediaPlayback();

@@ -63,6 +63,62 @@ bool shouldSuppressVideoPlayingUpdate({
   return !isPlaying && isBuffering;
 }
 
+/// Tracks completion from the user's play/pause intent rather than a native
+/// player's momentary `isPlaying` value.
+///
+/// Video players commonly report `isPlaying=false` while a seek buffers even
+/// though playback will resume automatically. Using that transient value to
+/// re-arm completion loses the eventual natural-end event and prevents the
+/// playlist from advancing.
+@visibleForTesting
+class LessonMediaCompletionState {
+  bool _playRequested = false;
+  bool _completionArmed = false;
+  bool _completionReported = false;
+
+  bool get playRequested => _playRequested;
+  bool get completionArmed => _completionArmed;
+
+  void reset() {
+    _playRequested = false;
+    _completionArmed = false;
+    _completionReported = false;
+  }
+
+  void markPlayRequested() {
+    _playRequested = true;
+    _completionArmed = true;
+    _completionReported = false;
+  }
+
+  void markPauseRequested() {
+    _playRequested = false;
+    _completionArmed = false;
+  }
+
+  void beginSeek() {
+    _completionArmed = false;
+  }
+
+  void finishSeek({required Duration position, required Duration? duration}) {
+    _completionReported = false;
+    _completionArmed =
+        _playRequested &&
+        duration != null &&
+        duration > Duration.zero &&
+        position < duration;
+  }
+
+  bool consumeNaturalCompletion() {
+    if (!_completionArmed || _completionReported) {
+      return false;
+    }
+    _completionReported = true;
+    _completionArmed = false;
+    return true;
+  }
+}
+
 class AudioLessonMediaPlayback implements LessonMediaPlayback {
   AudioLessonMediaPlayback() : _player = AudioPlayer() {
     _player.playingStream.listen(_handlePlayingChanged);
@@ -117,8 +173,8 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   Duration _anchorPosition = Duration.zero;
   DateTime? _anchorWallTime;
   bool _isReady = false;
-  bool _completionArmed = false;
-  bool _completionReported = false;
+  final LessonMediaCompletionState _completionState =
+      LessonMediaCompletionState();
   bool? _lastReportedPlaying;
 
   @override
@@ -211,13 +267,10 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
 
   void _handleProcessingStateChanged(ProcessingState state) {
     if (state != ProcessingState.completed ||
-        !_completionArmed ||
-        _completionReported ||
+        !_completionState.consumeNaturalCompletion() ||
         _completedController.isClosed) {
       return;
     }
-    _completionReported = true;
-    _completionArmed = false;
     _completedController.add(null);
   }
 
@@ -239,6 +292,7 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   Future<void> open(Uri url) async {
     _logPlayback('AudioLessonMediaPlayback.open: url=$url');
     _isReady = false;
+    _completionState.reset();
     if (kIsWeb) {
       await _player.setWebCrossOrigin(WebCrossOrigin.anonymous);
     }
@@ -303,11 +357,16 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   @override
   Future<void> play() async {
     _logPlayback('AudioLessonMediaPlayback.play');
-    if (_player.processingState == ProcessingState.completed) {
-      await _player.seek(_player.position);
+    final total = _player.duration;
+    if (_player.processingState == ProcessingState.completed &&
+        total != null &&
+        total > Duration.zero &&
+        _player.position >= total) {
+      await _player.seek(Duration.zero);
+      _resetPlaybackAnchor(position: Duration.zero, playing: false);
+      _publishCurrentPosition();
     }
-    _completionArmed = true;
-    _completionReported = false;
+    _completionState.markPlayRequested();
     await completePlayCommandOnStart(
       playbackUntilStopped: _player.play(),
       onStarted: () {
@@ -315,6 +374,7 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
         _publishCurrentPosition();
       },
       onError: (error, stackTrace) {
+        _completionState.markPauseRequested();
         _logPlayback(
           'AudioLessonMediaPlayback.play: ERROR error=$error\n$stackTrace',
         );
@@ -327,7 +387,7 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
     _logPlayback('AudioLessonMediaPlayback.pause');
     // Disarm before awaiting the native player so a pause at (or very near)
     // the end cannot be mistaken for natural completion.
-    _completionArmed = false;
+    _completionState.markPauseRequested();
     await _player.pause();
     _anchorWallTime = null;
     _stopPositionRefresh();
@@ -337,23 +397,24 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   @override
   Future<void> seek(Duration position) async {
     _logPlayback('AudioLessonMediaPlayback.seek: position=$position');
-    _completionArmed = false;
-    await _player.seek(position);
-    _resetPlaybackAnchor(position: position, playing: _player.playing);
-    _publishCurrentPosition();
-    final total = _player.duration;
-    _completionReported = false;
-    _completionArmed =
-        _player.playing &&
-        total != null &&
-        total > Duration.zero &&
-        position < total;
+    _completionState.beginSeek();
+    try {
+      await _player.seek(position);
+      _resetPlaybackAnchor(position: position, playing: _player.playing);
+      _publishCurrentPosition();
+    } finally {
+      _completionState.finishSeek(
+        position: _player.position,
+        duration: _player.duration,
+      );
+    }
     _logPlayback('AudioLessonMediaPlayback.seek: done position=$position');
   }
 
   @override
   Future<void> disposePlayer() async {
     _isReady = false;
+    _completionState.reset();
     _stopPositionRefresh();
     await _player.dispose();
     await _playingController.close();
@@ -376,8 +437,8 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
   final StreamController<Duration?> _durationController =
       StreamController<Duration?>.broadcast();
   bool _isReady = false;
-  bool _completionArmed = false;
-  bool _completionReported = false;
+  final LessonMediaCompletionState _completionState =
+      LessonMediaCompletionState();
   bool? _lastReportedPlaying;
 
   @override
@@ -411,6 +472,7 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
   Future<void> open(Uri url) async {
     _logPlayback('VideoLessonMediaPlayback.open: url=$url');
     _isReady = false;
+    _completionState.reset();
     final controller = VideoPlayerController.networkUrl(url);
     _controller = controller;
     controller.addListener(_onControllerUpdate);
@@ -467,13 +529,10 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
     final controller = _controller;
     if (controller == null ||
         _completedController.isClosed ||
-        !_completionArmed ||
-        _completionReported ||
-        !controller.value.isCompleted) {
+        !controller.value.isCompleted ||
+        !_completionState.consumeNaturalCompletion()) {
       return;
     }
-    _completionReported = true;
-    _completionArmed = false;
     _completedController.add(null);
   }
 
@@ -485,18 +544,22 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
         controller.value.isInitialized &&
         controller.value.position >= controller.value.duration &&
         controller.value.duration > Duration.zero) {
-      await controller.seekTo(controller.value.position);
+      await controller.seekTo(Duration.zero);
     }
-    _completionArmed = true;
-    _completionReported = false;
-    await _controller?.play();
-    _notifyPlaying();
+    _completionState.markPlayRequested();
+    try {
+      await _controller?.play();
+      _notifyPlaying();
+    } catch (_) {
+      _completionState.markPauseRequested();
+      rethrow;
+    }
   }
 
   @override
   Future<void> pause() async {
     _logPlayback('VideoLessonMediaPlayback.pause');
-    _completionArmed = false;
+    _completionState.markPauseRequested();
     await _controller?.pause();
     _notifyPlaying();
   }
@@ -504,18 +567,17 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
   @override
   Future<void> seek(Duration position) async {
     _logPlayback('VideoLessonMediaPlayback.seek: position=$position');
-    _completionArmed = false;
-    await _controller?.seekTo(position);
-    _onControllerUpdate();
-    final controller = _controller;
-    final total = controller?.value.duration;
-    _completionReported = false;
-    _completionArmed =
-        controller != null &&
-        controller.value.isPlaying &&
-        total != null &&
-        total > Duration.zero &&
-        position < total;
+    _completionState.beginSeek();
+    try {
+      await _controller?.seekTo(position);
+      _onControllerUpdate();
+    } finally {
+      final controller = _controller;
+      _completionState.finishSeek(
+        position: controller?.value.position ?? position,
+        duration: controller?.value.duration,
+      );
+    }
     _logPlayback(
       'VideoLessonMediaPlayback.seek: done position=$position '
       'actualPosition=${_controller?.value.position}',
@@ -525,6 +587,7 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
   @override
   Future<void> disposePlayer() async {
     _isReady = false;
+    _completionState.reset();
     _controller?.removeListener(_onControllerUpdate);
     await _controller?.dispose();
     _controller = null;

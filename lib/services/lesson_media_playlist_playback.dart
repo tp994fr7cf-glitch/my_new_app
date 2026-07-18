@@ -5,6 +5,7 @@ import 'package:video_player/video_player.dart';
 
 import '../models/lesson_media_segment.dart';
 import '../models/lesson_media_timeline.dart';
+import '../models/lesson_player_view_state.dart';
 import 'lesson_media_playback.dart';
 
 typedef LessonMediaPlaylistPlaybackFactory =
@@ -613,7 +614,10 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     if (_activePlayer == null) {
       return;
     }
-    if (_globalPositionSec >= _totalDurationSec && _totalDurationSec > 0) {
+    if (isLessonPlaybackAtEnd(
+      totalDurationSec: _totalDurationSec,
+      positionSecExact: _globalPositionSec,
+    )) {
       await seekGlobal(0);
     }
     _logSwitch('_playInternal: currentSegmentIndex=$_currentSegmentIndex');
@@ -709,6 +713,11 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
             globalSec: target.globalSec,
             segment: _timeline.orderedSegments[forcedSegmentIndex],
           );
+    final stopsAtSegmentEnd = isLessonPlaybackAtEnd(
+      totalDurationSec: position.segment.durationSec,
+      positionSecExact: position.localSec,
+      endToleranceSec: 0.001,
+    );
     _logSwitch(
       '_seekImmediate: globalSec=${target.globalSec} -> '
       'segmentIndex=${position.segmentIndex} localSec=${position.localSec} '
@@ -738,9 +747,13 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
         await _activateSegment(
           position.segmentIndex,
           localStartSec: position.localSec,
-          resumePlaying: wasPlaying,
+          resumePlaying: stopsAtSegmentEnd ? false : wasPlaying,
           resumeDecisionGeneration: generationAtStart,
         );
+        if (stopsAtSegmentEnd &&
+            _playbackIntentGeneration == generationAtStart) {
+          await _pauseInternal();
+        }
       } catch (error, stackTrace) {
         debugPrint(
           'LessonMediaPlaylistPlayback: cross-segment seek to '
@@ -757,11 +770,15 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       '_seekGlobalImmediate: same-segment seek to localSec=${position.localSec} '
       'segmentIndex=${position.segmentIndex}',
     );
+    final generationAtStart = _playbackIntentGeneration;
     await _activePlayer?.seek(
       Duration(milliseconds: (position.localSec * 1000).round()),
     );
     _globalPositionSec = position.globalSec;
     _globalPositionController.add(_globalPositionSec);
+    if (stopsAtSegmentEnd && _playbackIntentGeneration == generationAtStart) {
+      await _pauseInternal();
+    }
   }
 
   @override
