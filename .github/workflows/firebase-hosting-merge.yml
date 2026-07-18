@@ -11,33 +11,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:firestore-rules
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
       - run: flutter pub get
       - run: flutter build web --release
+      - name: Deploy Firestore and Storage rules
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_MY_NEW_APP_NAONA_20260523 }}
+        run: |
+          set -euo pipefail
+          credentials_file="$RUNNER_TEMP/firebase-sa.json"
+          trap 'rm -f "$credentials_file"' EXIT
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$credentials_file"
+          chmod 600 "$credentials_file"
+          export GOOGLE_APPLICATION_CREDENTIALS="$credentials_file"
+          ./node_modules/.bin/firebase deploy --only firestore:rules,storage --project my-new-app-naona-20260523 --non-interactive
       - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_MY_NEW_APP_NAONA_20260523 }}
           channelId: live
-          firebaseToolsVersion: latest
+          firebaseToolsVersion: 15.24.0
           projectId: my-new-app-naona-20260523
-      - name: Deploy Firestore and Storage rules
-        id: deploy_rules
-        continue-on-error: true
-        env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_MY_NEW_APP_NAONA_20260523 }}
-        run: |
-          echo "$FIREBASE_SERVICE_ACCOUNT" > "$HOME/firebase-sa.json"
-          export GOOGLE_APPLICATION_CREDENTIALS="$HOME/firebase-sa.json"
-          npm install -g firebase-tools
-          firebase deploy --only firestore:rules --project my-new-app-naona-20260523 --non-interactive
-          firebase deploy --only storage --project my-new-app-naona-20260523 --non-interactive
-      - name: Rules deploy reminder
-        if: steps.deploy_rules.outcome == 'failure'
-        run: |
-          echo "::warning::Firebase rules were not deployed automatically."
-          echo "::warning::Grant the GitHub Actions service account Firebase Rules Admin and Storage Admin roles,"
-          echo "::warning::or run locally: firebase deploy --only storage,firestore:rules"
