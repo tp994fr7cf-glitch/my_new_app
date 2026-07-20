@@ -50,56 +50,55 @@ void main() {
     );
   });
 
-  testWidgets(
-    'teacher can hide and restore courses without changing publishing',
-    (tester) async {
-      final updates = <({String? id, bool hidden})>[];
-      final createdAt = Timestamp.fromDate(DateTime.utc(2026, 7, 20, 9, 30));
-      final visible = _course(
-        id: 'visible',
-        title: '表示中の講座',
-        createdAt: createdAt,
-        updatedAt: createdAt,
-      );
-      final hidden = _course(
-        id: 'hidden',
-        title: '隠した講座',
-        teacherListHidden: true,
-      );
+  testWidgets('teacher can hide and restore courses in management list', (
+    tester,
+  ) async {
+    final updates = <({String? id, bool hidden})>[];
+    final createdAt = Timestamp.fromDate(DateTime.utc(2026, 7, 20, 9, 30));
+    final visible = _course(
+      id: 'visible',
+      title: '表示中の講座',
+      createdAt: createdAt,
+      updatedAt: createdAt,
+    );
+    final hidden = _course(
+      id: 'hidden',
+      title: '隠した講座',
+      teacherListHidden: true,
+    );
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: TeacherCourseListPage(
-            user: _FakeUser(),
-            courseStream: Stream.value([visible, hidden]),
-            visibilityUpdater: (course, isHidden) async {
-              updates.add((id: course.id, hidden: isHidden));
-            },
-            orderSaver: (_) async {},
-          ),
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherCourseListPage(
+          user: _FakeUser(),
+          courseStream: Stream.value([visible, hidden]),
+          visibilityUpdater: (course, isHidden) async {
+            updates.add((id: course.id, hidden: isHidden));
+          },
+          orderSaver: (_) async {},
         ),
-      );
-      await tester.pumpAndSettle();
+      ),
+    );
+    await tester.pumpAndSettle();
 
-      expect(find.text('表示中の講座'), findsOneWidget);
-      expect(find.text('非表示の講座（1件）'), findsOneWidget);
-      expect(
-        find.text('作成日時: ${formatTeacherCourseTimestamp(createdAt)}'),
-        findsOneWidget,
-      );
+    expect(find.text('表示中の講座'), findsOneWidget);
+    expect(find.text('非表示の講座（1件）'), findsOneWidget);
+    expect(
+      find.text('作成日時: ${formatTeacherCourseTimestamp(createdAt)}'),
+      findsOneWidget,
+    );
 
-      await tester.tap(find.widgetWithText(OutlinedButton, '非表示'));
-      await tester.pumpAndSettle();
-      expect(updates, [(id: 'visible', hidden: true)]);
-      expect(find.text('非表示の講座（2件）'), findsOneWidget);
+    await tester.tap(find.widgetWithText(OutlinedButton, '非表示'));
+    await tester.pumpAndSettle();
+    expect(updates, [(id: 'visible', hidden: true)]);
+    expect(find.text('非表示の講座（2件）'), findsOneWidget);
 
-      await tester.tap(find.text('非表示の講座（2件）'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(OutlinedButton, '再表示').first);
-      await tester.pumpAndSettle();
-      expect(updates.last.hidden, isFalse);
-    },
-  );
+    await tester.tap(find.text('非表示の講座（2件）'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(OutlinedButton, '再表示').first);
+    await tester.pumpAndSettle();
+    expect(updates.last.hidden, isFalse);
+  });
 
   testWidgets('teacher course order is saved after dragging', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 1400));
@@ -123,10 +122,16 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.drag(
-      find.byIcon(Icons.drag_handle).first,
-      const Offset(0, 350),
-    );
+    final handles = find.byIcon(Icons.drag_handle);
+    final firstCenter = tester.getCenter(handles.first);
+    final secondCenter = tester.getCenter(handles.last);
+    final drag = await tester.startGesture(firstCenter);
+    await tester.pump(const Duration(milliseconds: 200));
+    await drag.moveBy(const Offset(0, 10));
+    await tester.pump();
+    await drag.moveBy(Offset(0, secondCenter.dy - firstCenter.dy));
+    await tester.pump();
+    await drag.up();
     await tester.pumpAndSettle();
 
     expect(savedOrder?.map((course) => course.id), ['b', 'a']);
