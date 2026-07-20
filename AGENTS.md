@@ -4,10 +4,11 @@
 
 This is a **Flutter** (Dart) e-learning app backed by **Firebase**. The primary/deployed target is **web**; Android/iOS/desktop scaffolding also exists.
 
-### Toolchain (already installed in the VM snapshot)
-- Flutter **stable** (SDK 3.44.7 / Dart 3.12.2) lives at `$HOME/flutter` and is on `PATH` via `~/.bashrc`. `pubspec.yaml` requires Dart `^3.12.0`.
-- Google Chrome is at `/usr/local/bin/google-chrome`. For `flutter run -d chrome` set `CHROME_EXECUTABLE=/usr/local/bin/google-chrome`.
-- The startup update script runs `flutter pub get`; no manual dependency install is needed.
+### Toolchain (`.cursor/environment.json` + Dockerfile)
+- **Stable Flutter SDK** is installed via `.cursor/Dockerfile` at `/opt/flutter` (`FLUTTER_ROOT`) and added to `PATH`. `pubspec.yaml` requires Dart `^3.12.0`; the Dockerfile clones the `stable` channel (currently 3.44.x / Dart 3.12.x).
+- On every Cloud Agent startup, `.cursor/cloud-agent-install.sh` runs (`install` in `environment.json`) and executes `flutter pub get`.
+- After startup you can run **`flutter pub get`**, **`flutter analyze`**, and **`flutter test`** directly — no extra SDK setup.
+- Google Chrome (when present in the VM) is at `/usr/local/bin/google-chrome`. For `flutter run -d chrome` set `CHROME_EXECUTABLE=/usr/local/bin/google-chrome`.
 
 ### Run / lint / test / build (standard Flutter commands)
 - Run web dev server (headless-friendly): `flutter run -d web-server --web-port 8080 --web-hostname 0.0.0.0`. First compile takes ~30–60s; it prints `lib/main.dart is being served at http://0.0.0.0:8080`. Open that URL in Chrome (via computer use) to test.
