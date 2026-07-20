@@ -105,7 +105,6 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(1000, 1400));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final semanticsHandle = tester.ensureSemantics();
-    addTearDown(semanticsHandle.dispose);
     List<Course>? savedOrder;
 
     await tester.pumpWidget(
@@ -138,6 +137,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    semanticsHandle.dispose();
     expect(savedOrder?.map((course) => course.id), ['b', 'a']);
   });
 
