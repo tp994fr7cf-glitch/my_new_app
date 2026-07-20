@@ -82,6 +82,10 @@ class Course {
     this.lessonEvents = const [],
     this.instructorId,
     this.lessonContentVersion = 0,
+    this.createdAt,
+    this.updatedAt,
+    this.teacherListHidden = false,
+    this.teacherListOrder,
   });
 
   final String? id;
@@ -99,6 +103,10 @@ class Course {
   final List<CourseLesson> lessons;
   final List<LessonEvent> lessonEvents;
   final int lessonContentVersion;
+  final Timestamp? createdAt;
+  final Timestamp? updatedAt;
+  final bool teacherListHidden;
+  final int? teacherListOrder;
 
   String get storageId => id ?? title.replaceAll('/', '_');
 
@@ -135,6 +143,10 @@ class Course {
       lessonContentVersion: _parseLessonContentVersion(
         data['lessonContentVersion'],
       ),
+      createdAt: data['createdAt'] as Timestamp?,
+      updatedAt: data['updatedAt'] as Timestamp?,
+      teacherListHidden: data['teacherListHidden'] == true,
+      teacherListOrder: _parseTeacherListOrder(data['teacherListOrder']),
       lessons: lessonsData is List
           ? lessonsData
                 .whereType<Map>()
@@ -193,6 +205,16 @@ class Course {
   static int _parseLessonContentVersion(Object? value) {
     final parsed = parseIntField(value);
     return parsed >= 1 && parsed <= 2147483647 ? parsed : 0;
+  }
+
+  static int? _parseTeacherListOrder(Object? value) {
+    if (value is int && value >= 0) {
+      return value;
+    }
+    if (value is num && value.isFinite && value >= 0) {
+      return value.toInt();
+    }
+    return null;
   }
 }
 

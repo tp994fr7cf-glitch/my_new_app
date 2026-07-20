@@ -2923,7 +2923,7 @@ void main() {
     );
     expect(find.text('講座を編集'), findsOneWidget);
     expect(find.text('レッスンを管理'), findsOneWidget);
-    expect(find.text('プレビューを見る'), findsOneWidget);
+    expect(find.text('プレビューを見る'), findsNothing);
 
     await tester.tap(find.text('レッスンを管理'));
     await tester.pumpAndSettle();

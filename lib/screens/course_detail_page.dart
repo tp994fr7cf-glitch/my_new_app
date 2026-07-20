@@ -324,17 +324,18 @@ class CourseDetailPage extends StatelessWidget {
     );
   }
 
-  void _previewLesson(BuildContext context, Course activeCourse) {
-    if (activeCourse.lessons.isEmpty) {
-      return;
-    }
-
+  void _previewLesson(
+    BuildContext context, {
+    required Course activeCourse,
+    required CourseLesson lesson,
+    required int lessonNumber,
+  }) {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => VideoLessonPage(
           course: activeCourse,
-          lesson: activeCourse.lessons.first,
-          lessonNumber: 1,
+          lesson: lesson,
+          lessonNumber: lessonNumber,
           isTeacherPreview: true,
         ),
       ),
@@ -577,16 +578,24 @@ class CourseDetailPage extends StatelessWidget {
               _LessonTile(
                 index: entry.$1 + 1,
                 lesson: entry.$2,
-                onTap: isTeacherMode
-                    ? null
-                    : () {
-                        _openLesson(
-                          context,
-                          activeCourse: activeCourse,
-                          lesson: entry.$2,
-                          lessonNumber: entry.$1 + 1,
-                        );
-                      },
+                isTeacherPreview: isTeacherMode,
+                onTap: () {
+                  if (isTeacherMode) {
+                    _previewLesson(
+                      context,
+                      activeCourse: activeCourse,
+                      lesson: entry.$2,
+                      lessonNumber: entry.$1 + 1,
+                    );
+                    return;
+                  }
+                  _openLesson(
+                    context,
+                    activeCourse: activeCourse,
+                    lesson: entry.$2,
+                    lessonNumber: entry.$1 + 1,
+                  );
+                },
               ),
             const SizedBox(height: 24),
             if (isTeacherMode)
@@ -608,7 +617,6 @@ class CourseDetailPage extends StatelessWidget {
                     ),
                   );
                 },
-                onPreview: () => _previewLesson(context, activeCourse),
               )
             else
               FilledButton.icon(
@@ -659,13 +667,11 @@ class _TeacherActionButtons extends StatelessWidget {
     required this.onEditCourse,
     required this.onManageLessons,
     required this.onManageCourseSettings,
-    required this.onPreview,
   });
 
   final VoidCallback onEditCourse;
   final VoidCallback onManageLessons;
   final VoidCallback onManageCourseSettings;
-  final VoidCallback onPreview;
 
   @override
   Widget build(BuildContext context) {
@@ -688,12 +694,6 @@ class _TeacherActionButtons extends StatelessWidget {
           onPressed: onManageCourseSettings,
           icon: const Icon(Icons.settings_outlined),
           label: const Text('講座設定'),
-        ),
-        const SizedBox(height: 8),
-        OutlinedButton.icon(
-          onPressed: onPreview,
-          icon: const Icon(Icons.visibility),
-          label: const Text('プレビューを見る'),
         ),
       ],
     );
@@ -735,11 +735,17 @@ class _BulletText extends StatelessWidget {
 }
 
 class _LessonTile extends StatelessWidget {
-  const _LessonTile({required this.index, required this.lesson, this.onTap});
+  const _LessonTile({
+    required this.index,
+    required this.lesson,
+    this.onTap,
+    this.isTeacherPreview = false,
+  });
 
   final int index;
   final CourseLesson lesson;
   final VoidCallback? onTap;
+  final bool isTeacherPreview;
 
   @override
   Widget build(BuildContext context) {
@@ -748,8 +754,12 @@ class _LessonTile extends StatelessWidget {
         onTap: onTap,
         leading: CircleAvatar(child: Text('$index')),
         title: Text(lesson.title),
-        subtitle: Text(lesson.duration),
-        trailing: lesson.isPreview
+        subtitle: isTeacherPreview
+            ? Text('${lesson.duration}\nタップしてプレビュー')
+            : Text(lesson.duration),
+        trailing: isTeacherPreview
+            ? const Icon(Icons.visibility_outlined)
+            : lesson.isPreview
             ? const Chip(label: Text('無料プレビュー'))
             : const Icon(Icons.lock_open),
       ),

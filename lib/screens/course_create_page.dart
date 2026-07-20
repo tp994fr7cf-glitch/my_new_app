@@ -20,11 +20,7 @@ class _CourseCreatePageState extends State<CourseCreatePage> {
   final _levelController = TextEditingController(text: '初心者向け');
   final _descriptionController = TextEditingController();
   final _priceLabelController = TextEditingController(text: '無料');
-  final _lessonControllers = [
-    TextEditingController(text: 'レッスン1'),
-    TextEditingController(text: 'レッスン2'),
-    TextEditingController(text: 'レッスン3'),
-  ];
+  final _lessonControllers = [TextEditingController(text: 'レッスン1')];
 
   bool _isSaving = false;
   String? _message;
@@ -222,6 +218,7 @@ class _CourseCreatePageState extends State<CourseCreatePage> {
                     border: const OutlineInputBorder(),
                     labelText: 'レッスン${index + 1}',
                   ),
+                  validator: _requiredText,
                 ),
                 const SizedBox(height: 12),
               ],
