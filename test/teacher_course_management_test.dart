@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:my_new_app/models/course.dart';
 import 'package:my_new_app/screens/course_create_page.dart';
@@ -100,9 +101,11 @@ void main() {
     expect(updates.last.hidden, isFalse);
   });
 
-  testWidgets('teacher course order is saved after dragging', (tester) async {
+  testWidgets('teacher course order is saved after reordering', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 1400));
     addTearDown(() => tester.binding.setSurfaceSize(null));
+    final semantics = SemanticsTester(tester);
+    addTearDown(semantics.dispose);
     List<Course>? savedOrder;
 
     await tester.pumpWidget(
@@ -122,16 +125,15 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final handles = find.byIcon(Icons.drag_handle);
-    final firstCenter = tester.getCenter(handles.first);
-    final secondCenter = tester.getCenter(handles.last);
-    final drag = await tester.startGesture(firstCenter);
-    await tester.pump(const Duration(milliseconds: 200));
-    await drag.moveBy(const Offset(0, 10));
-    await tester.pump();
-    await drag.moveBy(Offset(0, secondCenter.dy - firstCenter.dy));
-    await tester.pump();
-    await drag.up();
+    final firstCourseNode = tester.getSemantics(find.text('講座A'));
+    final moveDownActionId = CustomSemanticsAction.getIdentifier(
+      const CustomSemanticsAction(label: 'Move down'),
+    );
+    tester.binding.pipelineOwner.semanticsOwner!.performAction(
+      firstCourseNode.id,
+      SemanticsAction.customAction,
+      moveDownActionId,
+    );
     await tester.pumpAndSettle();
 
     expect(savedOrder?.map((course) => course.id), ['b', 'a']);
