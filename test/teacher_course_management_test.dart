@@ -104,8 +104,8 @@ void main() {
   testWidgets('teacher course order is saved after reordering', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1000, 1400));
     addTearDown(() => tester.binding.setSurfaceSize(null));
-    final semantics = SemanticsTester(tester);
-    addTearDown(semantics.dispose);
+    final semanticsHandle = tester.ensureSemantics();
+    addTearDown(semanticsHandle.dispose);
     List<Course>? savedOrder;
 
     await tester.pumpWidget(
