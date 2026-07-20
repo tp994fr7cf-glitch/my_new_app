@@ -130,10 +130,13 @@ void main() {
     final moveDownActionId = CustomSemanticsAction.getIdentifier(
       const CustomSemanticsAction(label: 'Move down'),
     );
-    tester.binding.pipelineOwner.semanticsOwner!.performAction(
-      firstCourseNode.id,
-      SemanticsAction.customAction,
-      moveDownActionId,
+    tester.binding.performSemanticsAction(
+      SemanticsActionEvent(
+        type: SemanticsAction.customAction,
+        nodeId: firstCourseNode.id,
+        viewId: tester.view.viewId,
+        arguments: moveDownActionId,
+      ),
     );
     await tester.pumpAndSettle();
 
