@@ -134,9 +134,6 @@ class _TeacherCourseListPageState extends State<TeacherCourseListPage> {
     if (_isSavingOrder) {
       return;
     }
-    if (newIndex > oldIndex) {
-      newIndex -= 1;
-    }
     if (oldIndex == newIndex) {
       return;
     }
@@ -269,7 +266,7 @@ class _TeacherCourseListPageState extends State<TeacherCourseListPage> {
                           ),
                         );
                       },
-                      onReorder: (oldIndex, newIndex) {
+                      onReorderItem: (oldIndex, newIndex) {
                         _reorderCourses(visibleCourses, oldIndex, newIndex);
                       },
                     ),
