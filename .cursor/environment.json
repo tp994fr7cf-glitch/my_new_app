@@ -1,0 +1,8 @@
+{
+  "name": "my_new_app Flutter",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "install": "bash .cursor/cloud-agent-install.sh"
+}
