@@ -125,7 +125,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final firstCourseNode = tester.getSemantics(find.text('講座A'));
+    final firstCourseNode = tester.getSemantics(
+      find.byKey(const ValueKey('a')),
+    );
     final moveDownActionId = CustomSemanticsAction.getIdentifier(
       const CustomSemanticsAction(label: 'Move down'),
     );
