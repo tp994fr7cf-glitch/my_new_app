@@ -6,10 +6,25 @@ import '../models/lesson_whiteboard_board_set.dart';
 
 const String lessonDocumentVersionConflictMessage =
     'このレッスンは別の画面で更新されています。画面を開き直してから、もう一度編集してください。';
+const String lessonQuizVersionConflictMessage =
+    'このレッスンのクイズは別の画面で更新されています。画面を開き直してから、もう一度編集してください。';
+const int maxLessonEventsPerLesson = 500;
+const String lessonEventLimitMessage = '1レッスンに保存できるクイズは500件までです。';
 
 class LessonDocumentVersionConflict implements Exception {
   const LessonDocumentVersionConflict([
     this.message = lessonDocumentVersionConflictMessage,
+  ]);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class LessonQuizVersionConflict implements Exception {
+  const LessonQuizVersionConflict([
+    this.message = lessonQuizVersionConflictMessage,
   ]);
 
   final String message;
@@ -152,6 +167,7 @@ class CourseLessonRepository {
       final saved = editedLesson.copyWith(
         order: previous.order,
         documentVersion: _nextDocumentVersion(previous.documentVersion),
+        quizVersion: previous.quizVersion,
         lessonEvents: previous.lessonEvents,
         createdAt: previous.createdAt,
         publishedBoardSet: persistedDraft ?? editedLesson.publishedBoardSet,
@@ -226,9 +242,12 @@ class CourseLessonRepository {
   Future<CourseLesson> saveLessonEvents({
     required String courseId,
     required String lessonId,
-    required int expectedDocumentVersion,
+    required int expectedQuizVersion,
     required List<LessonEvent> lessonEvents,
   }) async {
+    if (lessonEvents.length > maxLessonEventsPerLesson) {
+      throw const LessonPayloadValidationException(lessonEventLimitMessage);
+    }
     final firestore = FirebaseFirestore.instance;
     final courseReference = firestore.collection('courses').doc(courseId);
     final lessonReference = courseReference.collection('lessons').doc(lessonId);
@@ -241,11 +260,11 @@ class CourseLessonRepository {
         snapshot.data() ?? {},
         id: snapshot.id,
       );
-      if (previous.documentVersion != expectedDocumentVersion) {
-        throw const LessonDocumentVersionConflict();
+      if (previous.quizVersion != expectedQuizVersion) {
+        throw const LessonQuizVersionConflict();
       }
       final saved = previous.copyWith(
-        documentVersion: _nextDocumentVersion(previous.documentVersion),
+        quizVersion: _nextDocumentVersion(previous.quizVersion),
         lessonEvents: lessonEvents,
       );
       final lessonData = {

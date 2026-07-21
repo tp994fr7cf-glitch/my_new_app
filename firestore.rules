@@ -1482,10 +1482,13 @@ service cloud.firestore {
             && request.resource.data.documentVersion is int
             && request.resource.data.documentVersion >= 1
             && request.resource.data.documentVersion <= 2147483647
+            && request.resource.data.quizVersion is int
+            && request.resource.data.quizVersion >= 1
+            && request.resource.data.quizVersion <= 2147483647
             && request.resource.data.mediaSegments is list
-            && request.resource.data.mediaSegments.size() <= 50
+            && request.resource.data.mediaSegments.size() <= 100
             && request.resource.data.publishedSegmentIds is list
-            && request.resource.data.publishedSegmentIds.size() <= 50
+            && request.resource.data.publishedSegmentIds.size() <= 100
             && request.resource.data.lessonEvents is list
             && request.resource.data.lessonEvents.size() <= 500
             && request.resource.data.updatedAt is timestamp
@@ -1496,17 +1499,32 @@ service cloud.firestore {
             ]);
         }
 
+        function validLessonVersionUpdate() {
+          return (request.resource.data.documentVersion
+                == resource.data.documentVersion + 1
+              && request.resource.data.quizVersion
+                == resource.data.quizVersion
+              && request.resource.data.lessonEvents
+                == resource.data.lessonEvents)
+            || (request.resource.data.documentVersion
+                == resource.data.documentVersion
+              && request.resource.data.quizVersion
+                == resource.data.quizVersion + 1
+              && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['lessonEvents', 'quizVersion', 'updatedAt']));
+        }
+
         allow read: if canReadLesson();
         allow create: if canWriteLesson()
           && validLessonPayload()
           && request.resource.data.documentVersion == 1
+          && request.resource.data.quizVersion == 1
           && request.resource.data.createdAt is timestamp;
         allow update: if isCourseInstructor(courseId)
           && validLessonPayload()
           && request.resource.data.createdAt == resource.data.createdAt
           && request.resource.data.order == resource.data.order
-          && request.resource.data.documentVersion
-            == resource.data.documentVersion + 1;
+          && validLessonVersionUpdate();
         allow update: if signedIn()
           && courseId.matches('sample-.*')
           && parentCourseAfterWrite().status == 'published'

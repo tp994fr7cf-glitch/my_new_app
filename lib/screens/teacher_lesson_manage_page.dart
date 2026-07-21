@@ -466,6 +466,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                 id: previous.id,
                 order: previous.order,
                 documentVersion: previous.documentVersion,
+                quizVersion: previous.quizVersion,
                 lessonEvents: previous.lessonEvents,
                 createdAt: previous.createdAt,
                 updatedAt: previous.updatedAt,

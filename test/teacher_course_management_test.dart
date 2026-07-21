@@ -7,6 +7,8 @@ import 'package:my_new_app/models/course.dart';
 import 'package:my_new_app/screens/course_create_page.dart';
 import 'package:my_new_app/screens/course_detail_page.dart';
 import 'package:my_new_app/screens/teacher_course_list_page.dart';
+import 'package:my_new_app/screens/teacher_lesson_list_page.dart';
+import 'package:my_new_app/services/course_lesson_repository.dart';
 import 'package:my_new_app/services/teacher_course_list_service.dart';
 
 void main() {
@@ -48,6 +50,55 @@ void main() {
         preferredIds: ['second', 'first'],
       ).map((course) => course.id),
       ['second', 'first', 'title-last'],
+    );
+  });
+
+  test('individual lesson documents parse identity, order, and quizzes', () {
+    final lesson = CourseLesson.fromMap({
+      'title': '個別レッスン',
+      'duration': '5分',
+      'order': 2,
+      'documentVersion': 7,
+      'quizVersion': 4,
+      'lessonEvents': [
+        {
+          'id': 'quiz-1',
+          'lessonNumber': 3,
+          'timestampSec': 5,
+          'type': 'quiz',
+          'quiz': {
+            'question': '問題',
+            'choices': ['A', 'B'],
+            'correctChoiceIndex': 0,
+          },
+        },
+      ],
+    }, id: 'lesson-a');
+
+    expect(lesson.id, 'lesson-a');
+    expect(lesson.order, 2);
+    expect(lesson.documentVersion, 7);
+    expect(lesson.quizVersion, 4);
+    expect(lesson.lessonEvents.single.id, 'quiz-1');
+    expect(
+      _course(id: 'course-1', title: '概要').toSummaryMap(),
+      isNot(contains('lessons')),
+    );
+    expect(
+      _course(id: 'course-1', title: '概要').toFirestore(),
+      isNot(contains('lessons')),
+    );
+    expect(
+      sortCourseLessons([
+        lesson,
+        const CourseLesson(
+          id: 'lesson-b',
+          order: 0,
+          title: '先',
+          duration: '1分',
+        ),
+      ]).map((item) => item.id),
+      ['lesson-b', 'lesson-a'],
     );
   });
 
@@ -187,6 +238,67 @@ void main() {
 
     expect(find.text('レッスン2: 二番目のレッスン'), findsOneWidget);
     expect(find.textContaining('先生プレビュー中です'), findsOneWidget);
+  });
+
+  testWidgets('teacher selects one lesson before editing', (tester) async {
+    final course = _course(
+      id: 'course-1',
+      title: '個別編集講座',
+      lessons: const [
+        CourseLesson(
+          id: 'lesson-1',
+          order: 0,
+          title: '最初のレッスン',
+          duration: '10分',
+        ),
+        CourseLesson(
+          id: 'lesson-2',
+          order: 1,
+          title: '二番目のレッスン',
+          duration: '20分',
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonListPage(
+          course: course,
+          courseStream: Stream.value(course),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('二番目のレッスン'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('レッスン管理'), findsOneWidget);
+    expect(find.text('二番目のレッスン'), findsOneWidget);
+    expect(find.text('最初のレッスン'), findsNothing);
+  });
+
+  testWidgets('teacher can add a lesson from the selection screen', (
+    tester,
+  ) async {
+    var addCount = 0;
+    final course = _course(id: 'course-1', title: '追加講座');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonListPage(
+          course: course,
+          courseStream: Stream.value(course),
+          onAddLessonOverride: () async {
+            addCount++;
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'レッスンを追加'));
+    await tester.pumpAndSettle();
+
+    expect(addCount, 1);
   });
 }
 

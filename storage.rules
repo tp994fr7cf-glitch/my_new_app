@@ -6,8 +6,21 @@ service firebase.storage {
       return request.auth != null;
     }
 
-    function isCourseInstructor(courseId) {
+    function hasActiveTeacherRole() {
       return signedIn()
+        && firestore.exists(
+          /databases/(default)/documents/users/$(request.auth.uid)
+        )
+        && firestore.get(
+          /databases/(default)/documents/users/$(request.auth.uid)
+        ).data.roles.hasAny(['teacher'])
+        && firestore.get(
+          /databases/(default)/documents/users/$(request.auth.uid)
+        ).data.activeRole == 'teacher';
+    }
+
+    function isCourseInstructor(courseId) {
+      return hasActiveTeacherRole()
         && firestore.exists(/databases/(default)/documents/courses/$(courseId))
         && firestore.get(/databases/(default)/documents/courses/$(courseId)).data.instructorId
           == request.auth.uid;
@@ -35,15 +48,17 @@ service firebase.storage {
         && request.resource.size <= 50 * 1024 * 1024;
     }
 
-    match /courseMedia/{courseId}/lessons/{lessonId}/{fileName} {
-      allow read: if canReadCourseMedia(courseId);
-      allow create, update: if isCourseInstructor(courseId) && isValidLessonMediaUpload();
-      allow delete: if isCourseInstructor(courseId);
+    function lessonExists(courseId, lessonId) {
+      return firestore.exists(
+        /databases/(default)/documents/courses/$(courseId)/lessons/$(lessonId)
+      );
     }
 
     match /courseMedia/{courseId}/lessons/{lessonId}/segments/{segmentId}/{fileName} {
       allow read: if canReadCourseMedia(courseId);
-      allow create, update: if isCourseInstructor(courseId) && isValidLessonMediaUpload();
+      allow create, update: if isCourseInstructor(courseId)
+        && lessonExists(courseId, lessonId)
+        && isValidLessonMediaUpload();
       allow delete: if isCourseInstructor(courseId);
     }
   }

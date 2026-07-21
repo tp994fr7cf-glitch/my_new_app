@@ -184,21 +184,10 @@ class Course {
 
   Map<String, dynamic> toFirestore() {
     return {
-      'title': title,
-      if (courseCode != null) 'courseCode': courseCode,
-      if (instructorId != null) 'instructorId': instructorId,
-      'instructorName': instructorName,
-      'category': category,
-      'level': level,
-      'duration': duration,
-      'lessonCount': lessonCount,
-      'rating': rating,
-      'priceLabel': priceLabel,
-      'description': description,
+      ...toSummaryMap(),
+      'lessonSchemaVersion': 2,
       if (lessonContentVersion > 0)
         'lessonContentVersion': lessonContentVersion,
-      'lessons': lessons.map((lesson) => lesson.toSnapshotMap()).toList(),
-      'lessonEvents': lessonEvents.map((event) => event.toMap()).toList(),
     };
   }
 
@@ -263,6 +252,7 @@ class CourseLesson {
     this.id,
     this.order = 0,
     this.documentVersion = 1,
+    this.quizVersion = 1,
     required this.title,
     required this.duration,
     this.mediaSegments = const [],
@@ -293,6 +283,7 @@ class CourseLesson {
   final String? id;
   final int order;
   final int documentVersion;
+  final int quizVersion;
   final String title;
   final String duration;
   final List<LessonMediaSegment> mediaSegments;
@@ -471,6 +462,7 @@ class CourseLesson {
       id: id ?? (data['id'] is String ? data['id'] as String : null),
       order: _parsePositiveOrZeroInt(data['order'], fallback: fallbackOrder),
       documentVersion: _parsePositiveInt(data['documentVersion']),
+      quizVersion: _parsePositiveInt(data['quizVersion']),
       title: data['title'] is String ? data['title'] as String : '',
       duration: data['duration'] is String ? data['duration'] as String : '',
       mediaSegments: normalizedSegments,
@@ -671,6 +663,7 @@ class CourseLesson {
       ...toMap(),
       'order': order,
       'documentVersion': documentVersion,
+      'quizVersion': quizVersion,
       'lessonEvents': lessonEvents.map((event) => event.toMap()).toList(),
     };
   }
@@ -683,6 +676,7 @@ class CourseLesson {
     String? id,
     int? order,
     int? documentVersion,
+    int? quizVersion,
     String? title,
     String? duration,
     List<LessonMediaSegment>? mediaSegments,
@@ -738,6 +732,7 @@ class CourseLesson {
       id: id ?? this.id,
       order: order ?? this.order,
       documentVersion: documentVersion ?? this.documentVersion,
+      quizVersion: quizVersion ?? this.quizVersion,
       title: title ?? this.title,
       duration: duration ?? this.duration,
       mediaSegments: mediaSegments ?? this.mediaSegments,

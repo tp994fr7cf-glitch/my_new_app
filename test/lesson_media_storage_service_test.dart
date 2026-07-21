@@ -26,4 +26,16 @@ void main() {
       'courseMedia/course-1/lessons/2/segments/seg-abc/sample.mp3',
     );
   });
+
+  test('storagePath uses a stable lesson document id when provided', () {
+    expect(
+      service.storagePath(
+        courseId: 'course-1',
+        lessonId: 'lesson-stable-id',
+        segmentId: 'seg-abc',
+        fileName: 'sample.mp3',
+      ),
+      'courseMedia/course-1/lessons/lesson-stable-id/segments/seg-abc/sample.mp3',
+    );
+  });
 }

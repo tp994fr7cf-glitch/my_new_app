@@ -347,7 +347,7 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
         final savedLesson = await _lessonRepository.saveLessonEvents(
           courseId: courseId!,
           lessonId: lessonId,
-          expectedDocumentVersion: lesson.documentVersion,
+          expectedQuizVersion: lesson.quizVersion,
           lessonEvents: events,
         );
         latestCourse = _courseWithUpdatedLesson(latestCourse, savedLesson);
@@ -361,7 +361,7 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
           _message = 'クイズを保存しました。';
         });
       }
-    } on LessonDocumentVersionConflict catch (error) {
+    } on LessonQuizVersionConflict catch (error) {
       if (mounted) {
         setState(() {
           _message = error.message;
