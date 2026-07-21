@@ -2896,11 +2896,27 @@ void main() {
   testWidgets('Teacher course list shows own courses', (
     WidgetTester tester,
   ) async {
+    final sourceCourse = sampleCourses.first;
+    final course = Course.fromMap({
+      ...sourceCourse.toSummaryMap(),
+      'courseCode': sourceCourse.courseCode,
+      'lessons': [
+        for (final entry in sourceCourse.lessons.indexed)
+          {
+            ...entry.$2.toMap(),
+            'id': 'lesson-${entry.$1 + 1}',
+            'order': entry.$1,
+          },
+      ],
+      'lessonEvents': sourceCourse.lessonEvents
+          .map((event) => event.toMap())
+          .toList(),
+    }, id: sourceCourse.id);
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherCourseListPage(
           user: _FakeUser(),
-          courseStream: Stream.value(sampleCourses.take(1).toList()),
+          courseStream: Stream.value([course]),
         ),
       ),
     );
@@ -2926,6 +2942,10 @@ void main() {
     expect(find.text('プレビューを見る'), findsNothing);
 
     await tester.tap(find.text('レッスンを管理'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('編集するレッスンを選んでください。保存は選択したレッスンだけに反映されます。'), findsOneWidget);
+    await tester.tap(find.text(course.lessons.first.title));
     await tester.pumpAndSettle();
 
     expect(find.text('レッスン管理'), findsOneWidget);
