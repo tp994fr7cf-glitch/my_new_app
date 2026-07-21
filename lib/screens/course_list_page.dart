@@ -62,32 +62,40 @@ class _CourseListPageState extends State<CourseListPage> {
         await FirebaseFirestore.instance.runTransaction((transaction) async {
           final snapshot = await transaction.get(docRef);
           final existingData = snapshot.data();
-          final courseData = course.toFirestore();
-          final lessonsChanged =
-              existingData == null ||
-              !_firestoreValuesEqual(
-                existingData['lessons'],
-                courseData['lessons'],
-              );
+          final courseData = course.toFirestore()
+            ..remove('lessons')
+            ..remove('lessonEvents')
+            ..remove('lessonContentVersion');
           final writeData = <String, dynamic>{
             ...courseData,
+            'lessonSchemaVersion': 2,
             'status': 'published',
             'source': 'developmentSeed',
             'createdAt':
                 existingData?['createdAt'] ?? FieldValue.serverTimestamp(),
             'updatedAt': FieldValue.serverTimestamp(),
           };
-          if (existingData == null) {
-            writeData['lessonContentVersion'] = 1;
-          } else if (lessonsChanged) {
-            writeData['lessonContentVersion'] = nextLessonContentVersion(
-              existingData['lessonContentVersion'],
-            );
-          } else if (existingData.containsKey('lessonContentVersion')) {
-            writeData['lessonContentVersion'] =
-                existingData['lessonContentVersion'];
-          }
           transaction.set(docRef, writeData);
+          for (final entry in course.lessons.indexed) {
+            final lessonNumber = entry.$1 + 1;
+            final lessonRef = docRef
+                .collection('lessons')
+                .doc('lesson-$lessonNumber');
+            final lesson = entry.$2.copyWith(
+              id: lessonRef.id,
+              order: entry.$1,
+              documentVersion: 1,
+              lessonEvents: course.lessonEvents
+                  .where((event) => event.lessonNumber == lessonNumber)
+                  .toList(),
+            );
+            transaction.set(lessonRef, {
+              ...lesson.toDocumentMap(),
+              'schemaVersion': 2,
+              'createdAt': FieldValue.serverTimestamp(),
+              'updatedAt': FieldValue.serverTimestamp(),
+            });
+          }
         });
       }
 
@@ -115,30 +123,6 @@ class _CourseListPageState extends State<CourseListPage> {
         });
       }
     }
-  }
-
-  bool _firestoreValuesEqual(Object? left, Object? right) {
-    if (left is Map && right is Map) {
-      if (left.length != right.length ||
-          left.keys.any((key) => !right.containsKey(key))) {
-        return false;
-      }
-      return left.keys.every(
-        (key) => _firestoreValuesEqual(left[key], right[key]),
-      );
-    }
-    if (left is List && right is List) {
-      if (left.length != right.length) {
-        return false;
-      }
-      for (var index = 0; index < left.length; index++) {
-        if (!_firestoreValuesEqual(left[index], right[index])) {
-          return false;
-        }
-      }
-      return true;
-    }
-    return left == right;
   }
 
   List<Course> _filteredCourses(List<Course> courses) {

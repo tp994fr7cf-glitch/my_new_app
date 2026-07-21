@@ -35,13 +35,13 @@ service firebase.storage {
         && request.resource.size <= 50 * 1024 * 1024;
     }
 
-    match /courseMedia/{courseId}/lessons/{lessonNumber}/{fileName} {
+    match /courseMedia/{courseId}/lessons/{lessonId}/{fileName} {
       allow read: if canReadCourseMedia(courseId);
       allow create, update: if isCourseInstructor(courseId) && isValidLessonMediaUpload();
       allow delete: if isCourseInstructor(courseId);
     }
 
-    match /courseMedia/{courseId}/lessons/{lessonNumber}/segments/{segmentId}/{fileName} {
+    match /courseMedia/{courseId}/lessons/{lessonId}/segments/{segmentId}/{fileName} {
       allow read: if canReadCourseMedia(courseId);
       allow create, update: if isCourseInstructor(courseId) && isValidLessonMediaUpload();
       allow delete: if isCourseInstructor(courseId);

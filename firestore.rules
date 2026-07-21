@@ -90,16 +90,14 @@ service cloud.firestore {
     }
 
     function validCourseLessonCount(data) {
-      return data.lessons is list
+      return data.lessonSchemaVersion == 2
         && data.lessonCount is int
         && data.lessonCount >= 0
-        && data.lessonCount == data.lessons.size();
+        && !data.keys().hasAny(['lessons', 'lessonEvents']);
     }
 
     function validCourseLessonUpdateInvariant() {
-      return !request.resource.data.diff(resource.data).affectedKeys()
-          .hasAny(['lessons', 'lessonCount'])
-        || validCourseLessonCount(request.resource.data);
+      return validCourseLessonCount(request.resource.data);
     }
 
     function validLessonContentVersionUpdate() {
@@ -145,10 +143,7 @@ service cloud.firestore {
         && request.resource.data.courseCode == resource.data.courseCode
         && request.resource.data.source == resource.data.source
         && request.resource.data.status == resource.data.status
-        && request.resource.data.lessons is list
-        && request.resource.data.lessonCount is int
         && validCourseLessonUpdateInvariant()
-        && validLessonContentVersionUpdate()
         && validCoursePrivacyPolicyMap(request.resource.data);
     }
 
@@ -1429,14 +1424,13 @@ service cloud.firestore {
         && courseId.matches('sample-.*')
         && request.resource.data.status == 'published'
         && request.resource.data.source == 'developmentSeed'
-        && validLessonContentVersionCreate();
+        && validCourseLessonCount(request.resource.data);
 
       allow update: if signedIn()
         && courseId.matches('sample-.*')
         && request.resource.data.status == 'published'
         && request.resource.data.source == 'developmentSeed'
-        && validCourseLessonUpdateInvariant()
-        && validLessonContentVersionUpdate();
+        && validCourseLessonUpdateInvariant();
 
       allow create: if isTeacher()
         && request.resource.data.instructorId == request.auth.uid
@@ -1444,37 +1438,99 @@ service cloud.firestore {
         && request.resource.data.source == 'teacherCreated'
         && request.resource.data.courseCode is string
         && request.resource.data.title is string
-        && request.resource.data.lessons is list
-        && validLessonContentVersionCreate();
+        && validCourseLessonCount(request.resource.data);
 
-      // CourseLesson, LessonEvent, and board-set data live inside arrays/maps.
-      // Rules cannot iterate those nested values or prove that published media
-      // arrays are append-only. The app validates per-item publication changes
-      // transactionally for concurrency correctness, but that client check is
-      // not a server security boundary. Rules enforce only document-level shape
-      // plus lesson-count/version consistency without claiming stronger guarantees.
       allow update: if canUpdateOwnTeacherCourse();
 
-      match /lessonDrafts/{lessonNumber} {
-        function currentLessonContentVersion() {
-          let courseData = get(
+      match /lessons/{lessonId} {
+        function parentCourse() {
+          return get(
             /databases/$(database)/documents/courses/$(courseId)
           ).data;
-          return courseData.keys().hasAny(['lessonContentVersion'])
-            ? courseData.lessonContentVersion
-            : 0;
+        }
+
+        function parentCourseAfterWrite() {
+          return getAfter(
+            /databases/$(database)/documents/courses/$(courseId)
+          ).data;
+        }
+
+        function canReadLesson() {
+          return signedIn()
+            && (parentCourse().status == 'published'
+              || parentCourse().instructorId == request.auth.uid);
+        }
+
+        function canWriteLesson() {
+          return isCourseInstructor(courseId)
+            || (hasActiveTeacherRole()
+              && parentCourseAfterWrite().instructorId == request.auth.uid
+              && parentCourseAfterWrite().status == 'published')
+            || (signedIn()
+              && courseId.matches('sample-.*')
+              && parentCourseAfterWrite().status == 'published'
+              && parentCourseAfterWrite().source == 'developmentSeed');
+        }
+
+        function validLessonPayload() {
+          return request.resource.data.schemaVersion == 2
+            && request.resource.data.title is string
+            && request.resource.data.duration is string
+            && request.resource.data.order is int
+            && request.resource.data.order >= 0
+            && request.resource.data.order <= 10000
+            && request.resource.data.documentVersion is int
+            && request.resource.data.documentVersion >= 1
+            && request.resource.data.documentVersion <= 2147483647
+            && request.resource.data.mediaSegments is list
+            && request.resource.data.mediaSegments.size() <= 50
+            && request.resource.data.publishedSegmentIds is list
+            && request.resource.data.publishedSegmentIds.size() <= 50
+            && request.resource.data.lessonEvents is list
+            && request.resource.data.lessonEvents.size() <= 500
+            && request.resource.data.updatedAt is timestamp
+            && !request.resource.data.keys().hasAny([
+              'draftBoardSet',
+              'whiteboardDraft',
+              'whiteboardDraftLayers'
+            ]);
+        }
+
+        allow read: if canReadLesson();
+        allow create: if canWriteLesson()
+          && validLessonPayload()
+          && request.resource.data.documentVersion == 1
+          && request.resource.data.createdAt is timestamp;
+        allow update: if isCourseInstructor(courseId)
+          && validLessonPayload()
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.order == resource.data.order
+          && request.resource.data.documentVersion
+            == resource.data.documentVersion + 1;
+        allow update: if signedIn()
+          && courseId.matches('sample-.*')
+          && parentCourseAfterWrite().status == 'published'
+          && parentCourseAfterWrite().source == 'developmentSeed'
+          && validLessonPayload();
+        allow delete: if isCourseInstructor(courseId);
+      }
+
+      match /lessonDrafts/{lessonId} {
+        function currentLessonDocumentVersion() {
+          return get(
+            /databases/$(database)/documents/courses/$(courseId)/lessons/$(lessonId)
+          ).data.documentVersion;
         }
 
         function validLessonDraft() {
           return request.resource.data.keys().hasOnly([
-              'lessonNumber',
+              'lessonId',
               'boardSet',
-              'baseLessonContentVersion',
+              'baseLessonDocumentVersion',
               'draftRevision',
               'updatedAt'
             ])
-            && lessonNumber.matches('^[1-9][0-9]{0,3}$')
-            && request.resource.data.lessonNumber == lessonNumber
+            && request.resource.data.lessonId == lessonId
             && request.resource.data.boardSet is map
             && request.resource.data.boardSet.keys().hasOnly([
               'boards',
@@ -1484,9 +1540,9 @@ service cloud.firestore {
             && request.resource.data.boardSet.boards.size() <= 20
             && request.resource.data.boardSet.switchEvents is list
             && request.resource.data.boardSet.switchEvents.size() <= 10000
-            && request.resource.data.baseLessonContentVersion is int
-            && request.resource.data.baseLessonContentVersion
-              == currentLessonContentVersion()
+            && request.resource.data.baseLessonDocumentVersion is int
+            && request.resource.data.baseLessonDocumentVersion
+              == currentLessonDocumentVersion()
             && request.resource.data.draftRevision is int
             && request.resource.data.draftRevision >= 1
             && request.resource.data.draftRevision <= 2147483647

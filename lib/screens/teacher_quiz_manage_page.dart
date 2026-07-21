@@ -7,6 +7,7 @@ import '../models/lesson_media_segment.dart';
 import '../models/lesson_payload_size_validator.dart';
 import '../models/lesson_quiz_placement.dart';
 import '../models/lesson_timed_anchor.dart';
+import '../services/course_lesson_repository.dart';
 
 typedef QuizSaveOverride = Future<void> Function(List<LessonEvent> events);
 typedef QuizCourseLoadOverride = Future<Course?> Function();
@@ -32,6 +33,7 @@ class TeacherQuizManagePage extends StatefulWidget {
 }
 
 class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
+  final _lessonRepository = const CourseLessonRepository();
   final List<_QuizEditorState> _quizEditors = [];
   late List<LessonEvent> _baseLessonEvents;
   late Course _latestCourse;
@@ -89,6 +91,16 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
     return _latestCourse.lessons[lessonIndex];
   }
 
+  Course _courseWithUpdatedLesson(Course course, CourseLesson lesson) {
+    final lessons = [...course.lessons];
+    final index = lessons.indexWhere((item) => item.id == lesson.id);
+    if (index < 0) {
+      return course;
+    }
+    lessons[index] = lesson;
+    return course.withLessonContent(sortCourseLessons(lessons));
+  }
+
   void _attachEditorListeners(_QuizEditorState editor) {
     editor.timestampController.addListener(_refreshSaveState);
     editor.questionController.addListener(_refreshSaveState);
@@ -120,11 +132,18 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
       if (loadOverride != null) {
         latestCourse = await loadOverride();
       } else {
-        final snapshot = await FirebaseFirestore.instance
-            .collection('courses')
-            .doc(courseId)
-            .get();
-        latestCourse = snapshot.exists ? Course.fromFirestore(snapshot) : null;
+        final lessonId = _currentLesson?.id;
+        if (lessonId == null) {
+          latestCourse = null;
+        } else {
+          final lesson = await _lessonRepository.fetchLesson(
+            courseId: courseId!,
+            lessonId: lessonId,
+          );
+          latestCourse = lesson == null
+              ? null
+              : _courseWithUpdatedLesson(_latestCourse, lesson);
+        }
       }
       if (!mounted) {
         return;
@@ -134,7 +153,8 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
       if (loadedCourse != null) {
         setState(() {
           _latestCourse = loadedCourse;
-          _baseLessonEvents = loadedCourse.lessonEvents;
+          _baseLessonEvents =
+              loadedCourse.lessons[widget.lessonNumber - 1].lessonEvents;
           _setQuizEditors(_lessonQuizEvents(_baseLessonEvents));
           _isLoading = false;
         });
@@ -311,46 +331,26 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
         });
         await saveOverride(events);
       } else {
-        final courseRef = FirebaseFirestore.instance
-            .collection('courses')
-            .doc(courseId);
-        final result = await FirebaseFirestore.instance.runTransaction((
-          transaction,
-        ) async {
-          final snapshot = await transaction.get(courseRef);
-          if (!snapshot.exists) {
-            throw const QuizPlacementException('講座が見つかりません。');
-          }
-          final transactionCourse = Course.fromFirestore(snapshot);
-          final lessonIndex = widget.lessonNumber - 1;
-          if (lessonIndex < 0 ||
-              lessonIndex >= transactionCourse.lessons.length) {
-            throw const QuizPlacementException('対象のレッスンが見つかりません。');
-          }
-          final replacementEvents = _buildReplacementQuizEvents(
-            transactionCourse,
-          );
-          final mergedEvents = mergeLessonQuizEvents(
-            latestEvents: transactionCourse.lessonEvents,
-            baseEvents: _baseLessonEvents,
-            lessonNumber: widget.lessonNumber,
-            replacementQuizEvents: replacementEvents,
-            lesson: transactionCourse.lessons[lessonIndex],
-          );
-          final eventMaps = mergedEvents.map((event) => event.toMap()).toList();
-          validateCourseDocumentForPersistence({
-            ...(snapshot.data() ?? const <String, dynamic>{}),
-            'lessonEvents': eventMaps,
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
-          transaction.update(courseRef, {
-            'lessonEvents': eventMaps,
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
-          return (course: transactionCourse, events: mergedEvents);
-        });
-        latestCourse = result.course;
-        events = result.events;
+        final lesson = _currentLesson;
+        final lessonId = lesson?.id;
+        if (lesson == null || lessonId == null) {
+          throw const QuizPlacementException('対象のレッスンが見つかりません。');
+        }
+        final replacementEvents = _buildReplacementQuizEvents(latestCourse);
+        events = mergeLessonQuizEvents(
+          latestEvents: lesson.lessonEvents,
+          baseEvents: _baseLessonEvents,
+          lessonNumber: widget.lessonNumber,
+          replacementQuizEvents: replacementEvents,
+          lesson: lesson,
+        );
+        final savedLesson = await _lessonRepository.saveLessonEvents(
+          courseId: courseId!,
+          lessonId: lessonId,
+          expectedDocumentVersion: lesson.documentVersion,
+          lessonEvents: events,
+        );
+        latestCourse = _courseWithUpdatedLesson(latestCourse, savedLesson);
       }
 
       if (mounted) {
@@ -359,6 +359,12 @@ class _TeacherQuizManagePageState extends State<TeacherQuizManagePage> {
           _baseLessonEvents = events;
           _setQuizEditors(_lessonQuizEvents(events));
           _message = 'クイズを保存しました。';
+        });
+      }
+    } on LessonDocumentVersionConflict catch (error) {
+      if (mounted) {
+        setState(() {
+          _message = error.message;
         });
       }
     } on QuizPlacementException catch (error) {

@@ -4,6 +4,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../models/course.dart';
+
 class CourseCreatePage extends StatefulWidget {
   const CourseCreatePage({super.key, required this.user});
 
@@ -86,8 +88,16 @@ class _CourseCreatePageState extends State<CourseCreatePage> {
 
     try {
       final courseCode = _generateCourseCode();
-      final docRef = FirebaseFirestore.instance.collection('courses').doc();
-      await docRef.set({
+      final firestore = FirebaseFirestore.instance;
+      final docRef = firestore.collection('courses').doc();
+      final lessonRef = docRef.collection('lessons').doc();
+      final initialLesson = CourseLesson.fromMap(
+        lessons.single,
+        id: lessonRef.id,
+        fallbackOrder: 0,
+      );
+      final batch = firestore.batch();
+      batch.set(docRef, {
         'courseCode': courseCode,
         'title': _titleController.text.trim(),
         'instructorId': widget.user.uid,
@@ -99,13 +109,19 @@ class _CourseCreatePageState extends State<CourseCreatePage> {
         'rating': 0,
         'priceLabel': _priceLabelController.text.trim(),
         'description': _descriptionController.text.trim(),
-        'lessons': lessons,
-        'lessonEvents': [],
+        'lessonSchemaVersion': 2,
         'status': 'published',
         'source': 'teacherCreated',
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       });
+      batch.set(lessonRef, {
+        ...initialLesson.toDocumentMap(),
+        'schemaVersion': 2,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      await batch.commit();
 
       if (mounted) {
         Navigator.of(context).pop();
