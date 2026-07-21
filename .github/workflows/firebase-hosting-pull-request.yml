@@ -13,6 +13,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:firestore-rules
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -20,10 +30,9 @@ jobs:
       - run: flutter pub get
       - run: flutter build web --release
       - uses: FirebaseExtended/action-hosting-deploy@v0
-        continue-on-error: true
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_MY_NEW_APP_NAONA_20260523 }}
           channelId: p${{ github.event.number }}-${{ github.run_id }}-${{ github.run_attempt }}
-          firebaseToolsVersion: latest
+          firebaseToolsVersion: 15.24.0
           projectId: my-new-app-naona-20260523

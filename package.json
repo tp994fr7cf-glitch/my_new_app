@@ -1,0 +1,31 @@
+{
+  "name": "my-new-app-rules-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A new Flutter project.",
+  "directories": {
+    "doc": "docs",
+    "lib": "lib",
+    "test": "test"
+  },
+  "scripts": {
+    "test": "npm run test:firestore-rules",
+    "test:firestore-rules": "firebase emulators:exec --only firestore --project demo-lesson-rules \"node --test test/firestore_rules_test.mjs\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tp994fr7cf-glitch/my_new_app.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/tp994fr7cf-glitch/my_new_app/issues"
+  },
+  "homepage": "https://github.com/tp994fr7cf-glitch/my_new_app#readme",
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.1",
+    "firebase": "^12.16.0",
+    "firebase-tools": "^15.24.0"
+  }
+}
