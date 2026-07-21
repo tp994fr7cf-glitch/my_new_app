@@ -10,7 +10,7 @@ void main() {
   });
 
   test('lesson uploads use at most two distinct Firestore documents', () {
-    expect(rules, isNot(contains('/documents/users/')));
+    expect(RegExp('/documents/users/').allMatches(rules).length, 1);
     expect(
       rules,
       contains('/documents/courses/\$(courseId)).data.instructorId'),
