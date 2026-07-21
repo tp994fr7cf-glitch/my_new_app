@@ -6,22 +6,8 @@ service firebase.storage {
       return request.auth != null;
     }
 
-    function hasActiveTeacherRole() {
-      return signedIn()
-        && firestore.exists(
-          /databases/(default)/documents/users/$(request.auth.uid)
-        )
-        && firestore.get(
-          /databases/(default)/documents/users/$(request.auth.uid)
-        ).data.roles.hasAny(['teacher'])
-        && firestore.get(
-          /databases/(default)/documents/users/$(request.auth.uid)
-        ).data.activeRole == 'teacher';
-    }
-
     function isCourseInstructor(courseId) {
-      return hasActiveTeacherRole()
-        && firestore.exists(/databases/(default)/documents/courses/$(courseId))
+      return signedIn()
         && firestore.get(/databases/(default)/documents/courses/$(courseId)).data.instructorId
           == request.auth.uid;
     }

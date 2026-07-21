@@ -177,17 +177,21 @@ class LessonMediaStorageService {
       file: pickedFile,
       metadata: metadata,
     );
-    if (onProgress != null) {
-      uploadTask.snapshotEvents.listen((snapshot) {
-        final totalBytes = snapshot.totalBytes;
-        if (totalBytes <= 0) {
-          return;
-        }
-        onProgress(snapshot.bytesTransferred / totalBytes);
-      });
-    }
+    final progressSubscription = onProgress == null
+        ? null
+        : uploadTask.snapshotEvents.listen((snapshot) {
+            final totalBytes = snapshot.totalBytes;
+            if (totalBytes <= 0) {
+              return;
+            }
+            onProgress(snapshot.bytesTransferred / totalBytes);
+          }, onError: (_) {});
 
-    await uploadTask;
+    try {
+      await uploadTask;
+    } finally {
+      await progressSubscription?.cancel();
+    }
     final downloadUrl = await ref.getDownloadURL();
 
     return LessonMediaUploadResult(
