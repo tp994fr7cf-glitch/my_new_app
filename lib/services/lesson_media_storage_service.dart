@@ -42,22 +42,32 @@ class LessonMediaStorageService {
 
   Reference lessonMediaRef({
     required String courseId,
-    required int lessonNumber,
+    int? lessonNumber,
+    String? lessonId,
     required String segmentId,
     required String fileName,
   }) {
+    final lessonStorageKey = _lessonStorageKey(
+      lessonNumber: lessonNumber,
+      lessonId: lessonId,
+    );
     return FirebaseStorage.instance.ref(
-      'courseMedia/$courseId/lessons/$lessonNumber/segments/$segmentId/$fileName',
+      'courseMedia/$courseId/lessons/$lessonStorageKey/segments/$segmentId/$fileName',
     );
   }
 
   String storagePath({
     required String courseId,
-    required int lessonNumber,
+    int? lessonNumber,
+    String? lessonId,
     required String segmentId,
     required String fileName,
   }) {
-    return 'courseMedia/$courseId/lessons/$lessonNumber/segments/$segmentId/$fileName';
+    final lessonStorageKey = _lessonStorageKey(
+      lessonNumber: lessonNumber,
+      lessonId: lessonId,
+    );
+    return 'courseMedia/$courseId/lessons/$lessonStorageKey/segments/$segmentId/$fileName';
   }
 
   List<String> allowedExtensionsForMediaType(String mediaType) {
@@ -113,7 +123,8 @@ class LessonMediaStorageService {
 
   Future<LessonMediaUploadResult> uploadLessonMediaFile({
     required String courseId,
-    required int lessonNumber,
+    int? lessonNumber,
+    String? lessonId,
     required String segmentId,
     required String mediaType,
     required PlatformFile pickedFile,
@@ -128,9 +139,10 @@ class LessonMediaStorageService {
     if (courseId.isEmpty) {
       throw LessonMediaStorageException('講座IDがないためアップロードできません。');
     }
-    if (lessonNumber <= 0) {
-      throw LessonMediaStorageException('レッスン番号が不正です。');
-    }
+    final lessonStorageKey = _lessonStorageKey(
+      lessonNumber: lessonNumber,
+      lessonId: lessonId,
+    );
     if (segmentId.trim().isEmpty) {
       throw LessonMediaStorageException('パートIDが不正です。');
     }
@@ -145,6 +157,7 @@ class LessonMediaStorageService {
     final ref = lessonMediaRef(
       courseId: courseId,
       lessonNumber: lessonNumber,
+      lessonId: lessonId,
       segmentId: segmentId,
       fileName: storedFileName,
     );
@@ -152,7 +165,7 @@ class LessonMediaStorageService {
       contentType: contentType,
       customMetadata: {
         'courseId': courseId,
-        'lessonNumber': '$lessonNumber',
+        'lessonStorageKey': lessonStorageKey,
         'segmentId': segmentId,
         'mediaType': mediaType,
         'originalFileName': originalName,
@@ -182,6 +195,7 @@ class LessonMediaStorageService {
       storagePath: storagePath(
         courseId: courseId,
         lessonNumber: lessonNumber,
+        lessonId: lessonId,
         segmentId: segmentId,
         fileName: storedFileName,
       ),
@@ -214,7 +228,8 @@ class LessonMediaStorageService {
 
   Future<LessonMediaUploadResult?> pickAndUploadLessonMedia({
     required String courseId,
-    required int lessonNumber,
+    int? lessonNumber,
+    String? lessonId,
     required String segmentId,
     required String mediaType,
     void Function(double progress)? onProgress,
@@ -226,11 +241,26 @@ class LessonMediaStorageService {
     return uploadLessonMediaFile(
       courseId: courseId,
       lessonNumber: lessonNumber,
+      lessonId: lessonId,
       segmentId: segmentId,
       mediaType: mediaType,
       pickedFile: pickedFile,
       onProgress: onProgress,
     );
+  }
+
+  String _lessonStorageKey({int? lessonNumber, String? lessonId}) {
+    final normalizedId = lessonId?.trim() ?? '';
+    if (normalizedId.isNotEmpty) {
+      if (normalizedId.contains('/')) {
+        throw LessonMediaStorageException('レッスンIDが不正です。');
+      }
+      return normalizedId;
+    }
+    if (lessonNumber == null || lessonNumber <= 0) {
+      throw LessonMediaStorageException('レッスンIDまたは番号が不正です。');
+    }
+    return '$lessonNumber';
   }
 
   void _validatePickedFile({

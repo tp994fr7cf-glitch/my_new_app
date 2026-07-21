@@ -12,7 +12,7 @@ import '../services/course_identity_service.dart';
 import '../services/course_privacy_service.dart';
 import 'course_entry_gate.dart';
 import 'teacher_interaction_manage_page.dart';
-import 'teacher_lesson_manage_page.dart';
+import 'teacher_lesson_list_page.dart';
 import 'video_lesson_page.dart';
 
 class CourseDetailPage extends StatelessWidget {
@@ -231,13 +231,14 @@ class CourseDetailPage extends StatelessWidget {
         .collection('learningEvents')
         .doc();
     final now = FieldValue.serverTimestamp();
-    final courseSnapshot = {'id': courseId, ...activeCourse.toFirestore()};
+    final courseSnapshot = {'id': courseId, ...activeCourse.toSummaryMap()};
 
     final batch = firestore.batch()
       ..set(enrollmentRef, {
         'userId': user.uid,
         'courseId': courseId,
         'course': courseSnapshot,
+        if (lesson.id != null) 'lastLessonId': lesson.id,
         'lastLessonNumber': lessonNumber,
         'lastLessonTitle': lesson.title,
         'status': 'inProgress',
@@ -249,6 +250,7 @@ class CourseDetailPage extends StatelessWidget {
         'type': 'lessonOpened',
         'courseId': courseId,
         'courseTitle': activeCourse.title,
+        if (lesson.id != null) 'lessonId': lesson.id,
         'lessonNumber': lessonNumber,
         'lessonTitle': lesson.title,
         'createdAt': now,
@@ -605,7 +607,7 @@ class CourseDetailPage extends StatelessWidget {
                   Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (_) =>
-                          TeacherLessonManagePage(course: activeCourse),
+                          TeacherLessonListPage(course: activeCourse),
                     ),
                   );
                 },

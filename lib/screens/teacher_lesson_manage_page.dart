@@ -15,6 +15,7 @@ import '../models/lesson_playback_mode.dart';
 import '../models/lesson_publication_validator.dart';
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
+import '../services/course_lesson_repository.dart';
 import '../services/lesson_media_duration_service.dart';
 import '../services/lesson_media_storage_service.dart';
 import '../utils/firebase_error_message.dart';
@@ -186,6 +187,7 @@ class TeacherLessonManagePage extends StatefulWidget {
   const TeacherLessonManagePage({
     super.key,
     required this.course,
+    this.lessonId,
     this.onSaveOverride,
     this.onLessonDraftSaveOverride,
     this.onVersionedLessonDraftSaveOverride,
@@ -196,6 +198,7 @@ class TeacherLessonManagePage extends StatefulWidget {
   });
 
   final Course course;
+  final String? lessonId;
   final LessonSaveOverride? onSaveOverride;
   final LessonDraftSaveOverride? onLessonDraftSaveOverride;
   final VersionedLessonDraftSaveOverride? onVersionedLessonDraftSaveOverride;
@@ -211,12 +214,14 @@ class TeacherLessonManagePage extends StatefulWidget {
 
 class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
   static const _mediaConfig = LessonMediaConfig.current;
+  final _lessonRepository = const CourseLessonRepository();
 
   late List<_LessonEditorState> _lessonEditors;
   late Course _activeCourse;
   late List<CourseLesson> _lastPersistedLessons;
   late int _loadedLessonContentVersion;
   late Map<int, int> _loadedDraftRevisions;
+  late int _selectedLessonNumber;
   bool _isSaving = false;
   bool _isLoadingLessons = false;
   String? _message;
@@ -233,8 +238,22 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       _activeCourse.lessons,
       widget.initialLessonDrafts,
     );
-    _lessonEditors = initialLessons.map(_LessonEditorState.fromLesson).toList();
-    _lastPersistedLessons = initialLessons;
+    final selectedIndex = widget.lessonId == null
+        ? -1
+        : initialLessons.indexWhere((lesson) => lesson.id == widget.lessonId);
+    _selectedLessonNumber = selectedIndex < 0 ? 1 : selectedIndex + 1;
+    final editableLessons = widget.lessonId == null
+        ? initialLessons
+        : selectedIndex < 0
+        ? const <CourseLesson>[]
+        : <CourseLesson>[initialLessons[selectedIndex]];
+    _lessonEditors = editableLessons
+        .map(_LessonEditorState.fromLesson)
+        .toList();
+    _lastPersistedLessons = editableLessons;
+    if (editableLessons.isNotEmpty && widget.lessonId != null) {
+      _loadedLessonContentVersion = editableLessons.single.documentVersion;
+    }
     unawaited(_loadLatestLessons());
   }
 
@@ -250,6 +269,11 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
   Future<void> _loadLatestLessons() async {
     final courseId = widget.course.id;
     if (courseId == null || widget.onSaveOverride != null) {
+      return;
+    }
+
+    if (widget.lessonId != null) {
+      await _loadSelectedLesson(courseId);
       return;
     }
 
@@ -329,6 +353,82 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     }
   }
 
+  Future<void> _loadSelectedLesson(String courseId) async {
+    setState(() {
+      _isLoadingLessons = true;
+    });
+    try {
+      final lesson = await _lessonRepository.fetchLesson(
+        courseId: courseId,
+        lessonId: widget.lessonId!,
+      );
+      if (lesson == null) {
+        throw StateError('レッスンが見つかりません。');
+      }
+      final draftSnapshot = await FirebaseFirestore.instance
+          .collection('courses')
+          .doc(courseId)
+          .collection('lessonDrafts')
+          .doc(widget.lessonId)
+          .get();
+      final draftData = draftSnapshot.data();
+      BoardSet? draftBoardSet;
+      var draftRevision = 0;
+      if (draftData != null &&
+          draftData['baseLessonDocumentVersion'] == lesson.documentVersion &&
+          draftData['draftRevision'] is int &&
+          draftData['boardSet'] is Map) {
+        draftBoardSet = BoardSet.fromMap(draftData['boardSet']);
+        draftRevision = draftData['draftRevision'] as int;
+      }
+      final lessonWithDraft = draftBoardSet == null
+          ? lesson
+          : lesson.copyWith(draftBoardSet: draftBoardSet);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        for (final editor in _lessonEditors) {
+          editor.dispose();
+        }
+        _lessonEditors = [_LessonEditorState.fromLesson(lessonWithDraft)];
+        _lastPersistedLessons = [lessonWithDraft];
+        _loadedLessonContentVersion = lesson.documentVersion;
+        _loadedDraftRevisions = {
+          if (draftRevision > 0) _selectedLessonNumber: draftRevision,
+        };
+        _activeCourse = _replaceLessonInCourse(_activeCourse, lessonWithDraft);
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _message = '保存済みレッスン情報の読み込みに失敗しました。';
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingLessons = false;
+        });
+      }
+    }
+  }
+
+  Course _replaceLessonInCourse(Course course, CourseLesson lesson) {
+    final lessons = [...course.lessons];
+    final index = lessons.indexWhere((item) => item.id == lesson.id);
+    if (index >= 0) {
+      lessons[index] = lesson;
+    } else {
+      lessons.add(lesson);
+    }
+    return course.withLessonContent(sortCourseLessons(lessons));
+  }
+
+  int _lessonNumberForEditor(int editorIndex) {
+    return widget.lessonId == null ? editorIndex + 1 : _selectedLessonNumber;
+  }
+
   String? _requiredText(String? value) {
     if (value == null || value.trim().isEmpty) {
       return '入力してください';
@@ -339,7 +439,8 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
   List<CourseLesson>? _buildLessons() {
     final lessons = <CourseLesson>[];
 
-    for (final editor in _lessonEditors) {
+    for (final entry in _lessonEditors.indexed) {
+      final editor = entry.$2;
       final title = editor.titleController.text.trim();
       if (title.isEmpty) {
         setState(() {
@@ -351,11 +452,25 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       final durationLabel = editor.durationController.text.trim().isEmpty
           ? '1分30秒'
           : editor.durationController.text.trim();
+      final builtLesson = editor.buildLessonForPublication(
+        title: title,
+        durationLabel: durationLabel,
+      );
+      final previous = entry.$1 < _lastPersistedLessons.length
+          ? _lastPersistedLessons[entry.$1]
+          : null;
       lessons.add(
-        editor.buildLessonForPublication(
-          title: title,
-          durationLabel: durationLabel,
-        ),
+        previous == null
+            ? builtLesson
+            : builtLesson.copyWith(
+                id: previous.id,
+                order: previous.order,
+                documentVersion: previous.documentVersion,
+                quizVersion: previous.quizVersion,
+                lessonEvents: previous.lessonEvents,
+                createdAt: previous.createdAt,
+                updatedAt: previous.updatedAt,
+              ),
       );
     }
 
@@ -398,12 +513,9 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       _lastPersistedLessons = savedLessons;
       _loadedLessonContentVersion = result.lessonContentVersion;
       _loadedDraftRevisions.clear();
-      _activeCourse = Course.fromMap({
-        ..._activeCourse.toFirestore(),
-        'lessons': savedLessons.map((lesson) => lesson.toMap()).toList(),
-        'lessonCount': savedLessons.length,
-        'lessonContentVersion': result.lessonContentVersion,
-      }, id: _activeCourse.id);
+      _activeCourse = widget.lessonId == null
+          ? _activeCourse.withLessonContent(savedLessons)
+          : _replaceLessonInCourse(_activeCourse, savedLessons.single);
 
       if (mounted) {
         setState(() {
@@ -420,6 +532,12 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
 
       if (courseId != null && removedSegments.isNotEmpty) {
         unawaited(_deleteRemovedSegmentFiles(removedSegments));
+      }
+    } on LessonDocumentVersionConflict catch (error) {
+      if (mounted) {
+        setState(() {
+          _message = error.message;
+        });
       }
     } on FirebaseException catch (error) {
       if (mounted) {
@@ -485,6 +603,24 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     required String? courseId,
   }) async {
     final saveOverride = widget.onSaveOverride;
+    if (widget.lessonId != null && saveOverride == null) {
+      final publishedLessons = _prepareLessonsForPublication(
+        previousLessons: _lastPersistedLessons,
+        nextLessons: lessons,
+      );
+      final saveResult = await _lessonRepository.saveLesson(
+        courseId: courseId!,
+        editedLesson: publishedLessons.single,
+        expectedDocumentVersion: _loadedLessonContentVersion,
+        expectedDraftRevision:
+            _loadedDraftRevisions[_selectedLessonNumber] ?? 0,
+      );
+      return _LessonSaveResult(
+        lessons: [saveResult.savedLesson],
+        previousLessons: [saveResult.previousLesson],
+        lessonContentVersion: saveResult.savedLesson.documentVersion,
+      );
+    }
     if (saveOverride != null) {
       final publishedLessons = _prepareLessonsForPublication(
         previousLessons: _lastPersistedLessons,
@@ -726,7 +862,8 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     try {
       final result = await widget.mediaStorageService.uploadLessonMediaFile(
         courseId: courseId,
-        lessonNumber: lessonNumber,
+        lessonNumber: widget.lessonId == null ? lessonNumber : null,
+        lessonId: widget.lessonId,
         segmentId: segment.id,
         mediaType: segment.mediaType,
         pickedFile: pickedFile,
@@ -851,7 +988,9 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         ? '1分30秒'
         : editor.durationController.text.trim();
 
-    final lessonNumber = lessonIndex + 1;
+    final lessonNumber = widget.lessonId == null
+        ? lessonIndex + 1
+        : _selectedLessonNumber;
     final expectedDraftRevision = _loadedDraftRevisions[lessonNumber] ?? 0;
     final expectedNextDraftRevision = nextLessonDraftRevision(
       expectedDraftRevision == 0 ? null : expectedDraftRevision,
@@ -873,6 +1012,14 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         expectedLessonContentVersion: _loadedLessonContentVersion,
       );
       savedDraftRevision = expectedNextDraftRevision;
+    } else if (widget.lessonId != null) {
+      savedDraftRevision = await _lessonRepository.saveLessonDraft(
+        courseId: courseId,
+        lessonId: widget.lessonId!,
+        expectedDocumentVersion: _loadedLessonContentVersion,
+        expectedDraftRevision: expectedDraftRevision,
+        boardSet: boardSet,
+      );
     } else {
       savedDraftRevision = await saveLessonWhiteboardDraft(
         courseId: courseId,
@@ -942,8 +1089,8 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
               for (final entry in _lessonEditors.indexed) ...[
                 _LessonEditorCardHost(
                   key: ObjectKey(entry.$2),
-                  index: entry.$1 + 1,
-                  lessonIndex: entry.$1,
+                  index: _lessonNumberForEditor(entry.$1),
+                  lessonIndex: _lessonNumberForEditor(entry.$1) - 1,
                   course: _activeCourse,
                   editor: entry.$2,
                   canUploadMedia: canUploadMedia,
@@ -953,7 +1100,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                   onAddSegment: (segment) {
                     unawaited(
                       _uploadSegmentMedia(
-                        lessonNumber: entry.$1 + 1,
+                        lessonNumber: _lessonNumberForEditor(entry.$1),
                         editor: entry.$2,
                         segment: segment,
                         showGuide: false,
@@ -961,12 +1108,12 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                     );
                   },
                   onUploadSegment: (segment) => _uploadSegmentMedia(
-                    lessonNumber: entry.$1 + 1,
+                    lessonNumber: _lessonNumberForEditor(entry.$1),
                     editor: entry.$2,
                     segment: segment,
                   ),
                   onDraftSaved: (boardSet) => _saveWhiteboardDraft(
-                    lessonIndex: entry.$1,
+                    lessonIndex: _lessonNumberForEditor(entry.$1) - 1,
                     editor: entry.$2,
                     boardSet: boardSet,
                   ),

@@ -184,6 +184,15 @@ class Course {
 
   Map<String, dynamic> toFirestore() {
     return {
+      ...toSummaryMap(),
+      'lessonSchemaVersion': 2,
+      if (lessonContentVersion > 0)
+        'lessonContentVersion': lessonContentVersion,
+    };
+  }
+
+  Map<String, dynamic> toSummaryMap() {
+    return {
       'title': title,
       if (courseCode != null) 'courseCode': courseCode,
       if (instructorId != null) 'instructorId': instructorId,
@@ -195,11 +204,31 @@ class Course {
       'rating': rating,
       'priceLabel': priceLabel,
       'description': description,
-      if (lessonContentVersion > 0)
-        'lessonContentVersion': lessonContentVersion,
-      'lessons': lessons.map((lesson) => lesson.toMap()).toList(),
-      'lessonEvents': lessonEvents.map((event) => event.toMap()).toList(),
     };
+  }
+
+  Course withLessonContent(List<CourseLesson> nextLessons) {
+    return Course(
+      id: id,
+      courseCode: courseCode,
+      instructorId: instructorId,
+      title: title,
+      instructorName: instructorName,
+      category: category,
+      level: level,
+      duration: duration,
+      lessonCount: nextLessons.length,
+      rating: rating,
+      priceLabel: priceLabel,
+      description: description,
+      lessons: nextLessons,
+      lessonEvents: [for (final lesson in nextLessons) ...lesson.lessonEvents],
+      lessonContentVersion: lessonContentVersion,
+      createdAt: createdAt,
+      updatedAt: updatedAt,
+      teacherListHidden: teacherListHidden,
+      teacherListOrder: teacherListOrder,
+    );
   }
 
   static int _parseLessonContentVersion(Object? value) {
@@ -220,6 +249,10 @@ class Course {
 
 class CourseLesson {
   const CourseLesson({
+    this.id,
+    this.order = 0,
+    this.documentVersion = 1,
+    this.quizVersion = 1,
     required this.title,
     required this.duration,
     this.mediaSegments = const [],
@@ -232,6 +265,9 @@ class CourseLesson {
     bool publishedSegmentIdsMetadataValid = true,
     BoardSet? publishedBoardSet,
     BoardSet? draftBoardSet,
+    this.lessonEvents = const [],
+    this.createdAt,
+    this.updatedAt,
   }) : _legacyPublishedLayers = whiteboardLayers,
        _legacyDraftLayers = whiteboardDraftLayers,
        _publishedSegmentIds = publishedSegmentIds ?? const [],
@@ -244,6 +280,10 @@ class CourseLesson {
        // ignore: prefer_initializing_formals
        _draftBoardSet = draftBoardSet;
 
+  final String? id;
+  final int order;
+  final int documentVersion;
+  final int quizVersion;
   final String title;
   final String duration;
   final List<LessonMediaSegment> mediaSegments;
@@ -257,6 +297,9 @@ class CourseLesson {
   final bool _publishedSegmentIdsMetadataValid;
   final BoardSet? _publishedBoardSet;
   final BoardSet? _draftBoardSet;
+  final List<LessonEvent> lessonEvents;
+  final Timestamp? createdAt;
+  final Timestamp? updatedAt;
 
   List<String> get publishedSegmentIds {
     if (!_publishedSegmentIdsMetadataValid) {
@@ -355,7 +398,7 @@ class CourseLesson {
     (segment) => segment.isAudio && segment.hasUrl,
   );
 
-  factory CourseLesson.fromMap(Map data) {
+  factory CourseLesson.fromMap(Map data, {String? id, int fallbackOrder = 0}) {
     final segmentsData = data['mediaSegments'];
     final whiteboardLayersData = data['whiteboardLayers'];
     final whiteboardDraftLayersData = data['whiteboardDraftLayers'];
@@ -363,6 +406,7 @@ class CourseLesson {
     final legacyWhiteboardDraftData = data['whiteboardDraft'];
     final publishedBoardSetData = data['publishedBoardSet'];
     final draftBoardSetData = data['draftBoardSet'];
+    final lessonEventsData = data['lessonEvents'];
 
     final parsedSegments = segmentsData is List
         ? segmentsData
@@ -415,6 +459,10 @@ class CourseLesson {
     );
 
     return CourseLesson(
+      id: id ?? (data['id'] is String ? data['id'] as String : null),
+      order: _parsePositiveOrZeroInt(data['order'], fallback: fallbackOrder),
+      documentVersion: _parsePositiveInt(data['documentVersion']),
+      quizVersion: _parsePositiveInt(data['quizVersion']),
       title: data['title'] is String ? data['title'] as String : '',
       duration: data['duration'] is String ? data['duration'] as String : '',
       mediaSegments: normalizedSegments,
@@ -438,7 +486,35 @@ class CourseLesson {
       draftBoardSet: draftBoardSetData is Map
           ? BoardSet.fromMap(draftBoardSetData)
           : null,
+      lessonEvents: lessonEventsData is List
+          ? lessonEventsData
+                .whereType<Map>()
+                .map(_tryParseLessonEvent)
+                .whereType<LessonEvent>()
+                .toList()
+          : const [],
+      createdAt: data['createdAt'] as Timestamp?,
+      updatedAt: data['updatedAt'] as Timestamp?,
     );
+  }
+
+  static int _parsePositiveOrZeroInt(Object? value, {required int fallback}) {
+    final parsed = parseIntField(value, fallback: fallback);
+    return parsed >= 0 && parsed <= 2147483647 ? parsed : fallback;
+  }
+
+  static int _parsePositiveInt(Object? value) {
+    final parsed = parseIntField(value, fallback: 1);
+    return parsed >= 1 && parsed <= 2147483647 ? parsed : 1;
+  }
+
+  static LessonEvent? _tryParseLessonEvent(Map data) {
+    try {
+      return LessonEvent.fromMap(data);
+    } catch (error, stackTrace) {
+      debugPrint('Skip lesson event in lesson data: $error\n$stackTrace');
+      return null;
+    }
   }
 
   static List<LessonMediaSegment> _legacySegmentsFromMap(Map data) {
@@ -582,7 +658,25 @@ class CourseLesson {
     };
   }
 
+  Map<String, dynamic> toDocumentMap() {
+    return {
+      ...toMap(),
+      'order': order,
+      'documentVersion': documentVersion,
+      'quizVersion': quizVersion,
+      'lessonEvents': lessonEvents.map((event) => event.toMap()).toList(),
+    };
+  }
+
+  Map<String, dynamic> toSnapshotMap() {
+    return {...toDocumentMap(), if (id != null) 'id': id};
+  }
+
   CourseLesson copyWith({
+    String? id,
+    int? order,
+    int? documentVersion,
+    int? quizVersion,
     String? title,
     String? duration,
     List<LessonMediaSegment>? mediaSegments,
@@ -595,6 +689,9 @@ class CourseLesson {
     bool? publishedSegmentIdsMetadataValid,
     BoardSet? publishedBoardSet,
     BoardSet? draftBoardSet,
+    List<LessonEvent>? lessonEvents,
+    Timestamp? createdAt,
+    Timestamp? updatedAt,
     bool clearWhiteboardLayers = false,
     bool clearWhiteboardDraftLayers = false,
     bool clearPublishedBoardSet = false,
@@ -632,6 +729,10 @@ class CourseLesson {
     }
 
     return CourseLesson(
+      id: id ?? this.id,
+      order: order ?? this.order,
+      documentVersion: documentVersion ?? this.documentVersion,
+      quizVersion: quizVersion ?? this.quizVersion,
       title: title ?? this.title,
       duration: duration ?? this.duration,
       mediaSegments: mediaSegments ?? this.mediaSegments,
@@ -651,6 +752,9 @@ class CourseLesson {
                 _publishedSegmentIdsMetadataValid),
       publishedBoardSet: nextPublishedBoardSet,
       draftBoardSet: nextDraftBoardSet,
+      lessonEvents: lessonEvents ?? this.lessonEvents,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
     );
   }
 }

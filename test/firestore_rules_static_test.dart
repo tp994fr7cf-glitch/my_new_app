@@ -47,39 +47,26 @@ void main() {
     }
   });
 
-  test('lesson count equality applies when teacher lesson fields change', () {
-    expect(rules, contains("hasAny(['lessons', 'lessonCount'])"));
-    expect(rules, contains('data.lessonCount == data.lessons.size()'));
+  test('course metadata requires the individual lesson schema', () {
+    expect(rules, contains('data.lessonSchemaVersion == 2'));
+    expect(rules, contains("!data.keys().hasAny(['lessons', 'lessonEvents'])"));
     expect(rules, contains('validCourseLessonUpdateInvariant()'));
   });
 
-  test('lesson array writes require a monotonic content version', () {
-    expect(rules, contains('function validLessonContentVersionUpdate()'));
-    expect(rules, contains('function validLessonContentVersionCreate()'));
-    expect(rules, contains("hasAny(['lessonContentVersion'])"));
-    expect(rules, contains('hadVersion == hasVersion'));
-    expect(
-      rules,
-      contains(
-        'request.resource.data.lessonContentVersion\n'
-        '                == resource.data.lessonContentVersion',
-      ),
-    );
-    expect(
-      rules,
-      contains(
-        'request.resource.data.lessonContentVersion\n'
-        '                == resource.data.lessonContentVersion + 1',
-      ),
-    );
-    expect(
-      RegExp('validLessonContentVersionUpdate\\(\\)').allMatches(rules).length,
-      greaterThanOrEqualTo(3),
-    );
+  test('individual lesson writes require a monotonic document version', () {
+    expect(rules, contains('match /lessons/{lessonId}'));
+    expect(rules, contains('request.resource.data.schemaVersion == 2'));
+    expect(rules, contains('request.resource.data.documentVersion == 1'));
+    expect(rules, contains('request.resource.data.quizVersion == 1'));
+    expect(rules, contains('function validLessonVersionUpdate()'));
+    expect(rules, contains('resource.data.documentVersion + 1'));
+    expect(rules, contains('resource.data.quizVersion + 1'));
+    expect(rules, contains("!request.resource.data.keys().hasAny(["));
+    expect(rules, contains("'draftBoardSet'"));
   });
 
   test('lesson drafts are instructor-only and structurally bounded', () {
-    expect(rules, contains('match /lessonDrafts/{lessonNumber}'));
+    expect(rules, contains('match /lessonDrafts/{lessonId}'));
     expect(rules, contains('allow read: if isCourseInstructor(courseId);'));
     expect(
       rules,
@@ -88,8 +75,8 @@ void main() {
     expect(
       rules,
       contains(
-        'request.resource.data.baseLessonContentVersion\n'
-        '              == currentLessonContentVersion()',
+        'request.resource.data.baseLessonDocumentVersion\n'
+        '              == currentLessonDocumentVersion()',
       ),
     );
     expect(rules, contains('request.resource.data.draftRevision == 1'));

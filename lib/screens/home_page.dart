@@ -230,15 +230,17 @@ Future<void> _saveResumeLearningEvent({
   final batch = FirebaseFirestore.instance.batch()
     ..set(userRef.collection('enrollments').doc(courseId), {
       'updatedAt': now,
+      if (lesson.id != null) 'lastLessonId': lesson.id,
       'lastLessonNumber': lessonNumber,
       'lastLessonTitle': lesson.title,
-      'course': {'id': courseId, ...course.toFirestore()},
+      'course': {'id': courseId, ...course.toSummaryMap()},
     }, SetOptions(merge: true))
     ..set(userRef.collection('learningEvents').doc(), {
       'userId': user.uid,
       'type': 'lessonOpened',
       'courseId': courseId,
       'courseTitle': course.title,
+      if (lesson.id != null) 'lessonId': lesson.id,
       'lessonNumber': lessonNumber,
       'lessonTitle': lesson.title,
       'createdAt': now,
@@ -260,8 +262,12 @@ Future<void> _resumeLearningFromEnrollment(
     return;
   }
 
-  final fallbackCourse = Course.fromMap(courseData, id: data['courseId'] as String?);
-  final courseId = data['courseId'] as String? ?? fallbackCourse.id ?? enrollment.id;
+  final fallbackCourse = Course.fromMap(
+    courseData,
+    id: data['courseId'] as String?,
+  );
+  final courseId =
+      data['courseId'] as String? ?? fallbackCourse.id ?? enrollment.id;
   final activeCourse = await const CourseCatalogService().fetchCourse(
     courseId,
     fallback: fallbackCourse,
@@ -273,7 +279,13 @@ Future<void> _resumeLearningFromEnrollment(
     return;
   }
 
-  final savedLessonNumber = (data['lastLessonNumber'] as num?)?.toInt() ?? 1;
+  final savedLessonId = data['lastLessonId'] as String?;
+  final savedLessonIndex = savedLessonId == null
+      ? -1
+      : activeCourse.lessons.indexWhere((lesson) => lesson.id == savedLessonId);
+  final savedLessonNumber = savedLessonIndex >= 0
+      ? savedLessonIndex + 1
+      : (data['lastLessonNumber'] as num?)?.toInt() ?? 1;
   final lessonNumber = savedLessonNumber.clamp(1, activeCourse.lessons.length);
   final lesson = activeCourse.lessons[lessonNumber - 1];
 
