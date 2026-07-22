@@ -94,6 +94,11 @@ class _LessonAudioWhiteboardRecorderPanelState
   bool get _hasUnsavedRecording =>
       _hasActiveRecording || _recordedFile != null || _isUploading;
   bool get _drawingEnabled => _isRecording && !_drawingLimitReached;
+  bool get _canAddBoard =>
+      (_isRecording || _isPaused) &&
+      !_drawingLimitReached &&
+      _boardSet.canAddBoard &&
+      _boardSet.switchEvents.length < maxLessonBoardSwitchEvents;
   double get _recordingPositionSec =>
       _sessionSegmentStartSec + _clock.elapsedSeconds;
 
@@ -795,6 +800,44 @@ class _LessonAudioWhiteboardRecorderPanelState
     );
   }
 
+  void _addBoard() {
+    if (!_canAddBoard) {
+      return;
+    }
+    _finishInProgressStroke();
+    _commitSelectedBoard();
+    var id = LessonWhiteboardBoard.generateId();
+    while (_boardSet.boardById(id) != null) {
+      id = LessonWhiteboardBoard.generateId();
+    }
+    final board = LessonWhiteboardBoard(
+      id: id,
+      order: _boardSet.boards.length,
+      title: 'ボード${_boardSet.boards.length + 1}',
+    );
+    final sequence = _boardSet.nextSwitchSequence;
+    final candidate = _boardSet.copyWith(
+      boards: [..._boardSet.orderedBoards, board],
+      switchEvents: [
+        ..._boardSet.switchEvents,
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: id,
+          globalTimestampSec: _recordingPositionSec,
+          sequence: sequence,
+        ),
+      ],
+    );
+    if (!_canAcceptBoardSet(candidate)) {
+      return;
+    }
+    _boardSet = candidate;
+    _sessionSwitchSequences.add(sequence);
+    setState(() {
+      _selectedBoardId = id;
+      _loadSelectedStrokes();
+    });
+  }
+
   void _switchBoard(String boardId) {
     if (boardId == _selectedBoardId ||
         _boardSet.boardById(boardId) == null ||
@@ -945,31 +988,41 @@ class _LessonAudioWhiteboardRecorderPanelState
                   _drawingEnabled
                       ? '録音中はペンで書けます（最大20点/秒）。'
                       : _isPaused
-                      ? '一時停止中は書けません。'
+                      ? '一時停止中は書けませんが、ボードの追加と切替はできます。'
                       : '録音した書き物を確認できます。',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: 8),
-                if (_boardSet.boards.length > 1)
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: [
-                      for (final entry in _boardSet.orderedBoards.indexed)
-                        ChoiceChip(
-                          selected: entry.$2.id == _selectedBoardId,
-                          label: Text(
-                            entry.$2.title.isEmpty
-                                ? '${entry.$1 + 1}'
-                                : '${entry.$1 + 1}. ${entry.$2.title}',
-                          ),
-                          onSelected: _hasActiveRecording
-                              ? (_) => _switchBoard(entry.$2.id)
-                              : null,
+                Wrap(
+                  key: const ValueKey('audio-whiteboard-board-selector'),
+                  spacing: 6,
+                  runSpacing: 6,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    for (final entry in _boardSet.orderedBoards.indexed)
+                      ChoiceChip(
+                        selected: entry.$2.id == _selectedBoardId,
+                        label: Text(
+                          entry.$2.title.isEmpty
+                              ? '${entry.$1 + 1}'
+                              : '${entry.$1 + 1}. ${entry.$2.title}',
                         ),
-                    ],
-                  ),
-                if (_boardSet.boards.length > 1) const SizedBox(height: 8),
+                        onSelected: _hasActiveRecording
+                            ? (_) => _switchBoard(entry.$2.id)
+                            : null,
+                      ),
+                    OutlinedButton.icon(
+                      key: const ValueKey('audio-whiteboard-add-board'),
+                      onPressed: _canAddBoard ? _addBoard : null,
+                      icon: const Icon(Icons.add),
+                      label: const Text('ボードを追加'),
+                    ),
+                    Text(
+                      '${_boardSet.boards.length}/$maxLessonWhiteboardBoards',
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
                 SizedBox(
                   height: 220,
                   child: LessonWhiteboardCanvas(
