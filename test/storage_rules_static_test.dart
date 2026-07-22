@@ -25,7 +25,7 @@ void main() {
     expect(rules, contains('request.auth.uid'));
     expect(rules, contains('lessonExists(courseId, lessonId)'));
     expect(rules, contains("request.resource.contentType.matches('video/.*')"));
-    expect(rules, contains('request.resource.size <= 50 * 1024 * 1024'));
+    expect(rules, contains('request.resource.size <= 100 * 1024 * 1024'));
   });
 
   test('enrolled learners remain eligible to read course media', () {

@@ -36,15 +36,14 @@ class LessonWhiteboardLayer {
       id: data['id'] as String? ?? primaryLayerId,
       order: (data['order'] as num?)?.toInt() ?? 0,
       title: data['title'] as String? ?? '',
-      anchorType: LessonTimedAnchorType.fromStorage(data['anchorType'] as String?),
+      anchorType: LessonTimedAnchorType.fromStorage(
+        data['anchorType'] as String?,
+      ),
       segmentId: data['segmentId'] as String?,
       visibleFromSec: (data['visibleFromSec'] as num?)?.toDouble(),
       visibleUntilSec: (data['visibleUntilSec'] as num?)?.toDouble(),
       strokes: strokesData is List
-          ? strokesData
-                .whereType<Map>()
-                .map(WhiteboardStroke.fromMap)
-                .toList()
+          ? strokesData.whereType<Map>().map(WhiteboardStroke.fromMap).toList()
           : const [],
       updatedAtMs: (data['updatedAtMs'] as num?)?.toInt() ?? 0,
     );
@@ -244,10 +243,7 @@ class LessonWhiteboard {
     return LessonWhiteboard(
       version: (data['version'] as num?)?.toInt() ?? currentVersion,
       strokes: strokesData is List
-          ? strokesData
-                .whereType<Map>()
-                .map(WhiteboardStroke.fromMap)
-                .toList()
+          ? strokesData.whereType<Map>().map(WhiteboardStroke.fromMap).toList()
           : const [],
       updatedAtMs: (data['updatedAtMs'] as num?)?.toInt() ?? 0,
     );
@@ -294,10 +290,7 @@ class WhiteboardStroke {
       timestampSec: (data['timestampSec'] as num?)?.toDouble() ?? 0,
       endTimestampSec: (data['endTimestampSec'] as num?)?.toDouble(),
       points: pointsData is List
-          ? pointsData
-                .whereType<Map>()
-                .map(WhiteboardPoint.fromMap)
-                .toList()
+          ? pointsData.whereType<Map>().map(WhiteboardPoint.fromMap).toList()
           : const [],
       colorArgb: (data['colorArgb'] as num?)?.toInt() ?? 0xFF000000,
       strokeWidth: (data['strokeWidth'] as num?)?.toDouble() ?? 3,
@@ -315,9 +308,7 @@ class WhiteboardStroke {
     };
   }
 
-  WhiteboardStroke copyWith({
-    List<WhiteboardPoint>? points,
-  }) {
+  WhiteboardStroke copyWith({List<WhiteboardPoint>? points}) {
     return WhiteboardStroke(
       id: id,
       timestampSec: timestampSec,
@@ -330,11 +321,7 @@ class WhiteboardStroke {
 }
 
 class WhiteboardPoint {
-  const WhiteboardPoint({
-    required this.x,
-    required this.y,
-    this.timestampSec,
-  });
+  const WhiteboardPoint({required this.x, required this.y, this.timestampSec});
 
   final double x;
   final double y;
@@ -424,7 +411,8 @@ WhiteboardStroke? visiblePortionOfWhiteboardStroke({
 
   final visiblePoints = stroke.points
       .where(
-        (point) => point.timestampSec != null && point.timestampSec! <= positionSec,
+        (point) =>
+            point.timestampSec != null && point.timestampSec! <= positionSec,
       )
       .toList(growable: false);
   if (visiblePoints.length < 2) {
@@ -454,13 +442,7 @@ LessonWhiteboardLayerBundle mergeWhiteboardDraftLayers({
   return published ?? const LessonWhiteboardLayerBundle();
 }
 
-enum WhiteboardEditSessionKind {
-  none,
-  fresh,
-  published,
-  draft,
-  pendingReset,
-}
+enum WhiteboardEditSessionKind { none, fresh, published, draft, pendingReset }
 
 /// Chooses which whiteboard should be published when saving lesson info.
 /// Unsaved in-memory edits are ignored when a published whiteboard already exists.
@@ -525,7 +507,10 @@ List<WhiteboardStroke> visibleWhiteboardLayerStrokes({
   if (!isWhiteboardLayerVisible(layer: layer, positionSec: positionSec)) {
     return const [];
   }
-  return visibleWhiteboardStrokes(strokes: layer.strokes, positionSec: positionSec);
+  return visibleWhiteboardStrokes(
+    strokes: layer.strokes,
+    positionSec: positionSec,
+  );
 }
 
 List<WhiteboardStroke> visibleWhiteboardBundleStrokes({

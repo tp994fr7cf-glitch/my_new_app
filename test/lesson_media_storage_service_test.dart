@@ -4,6 +4,10 @@ import 'package:my_new_app/services/lesson_media_storage_service.dart';
 void main() {
   const service = LessonMediaStorageService();
 
+  test('lesson media limit is 100MB', () {
+    expect(LessonMediaStorageService.maxBytes, 100 * 1024 * 1024);
+  });
+
   test('contentTypeForExtension returns expected mime types', () {
     expect(service.contentTypeForExtension('mp3'), 'audio/mpeg');
     expect(service.contentTypeForExtension('m4a'), 'audio/mp4');

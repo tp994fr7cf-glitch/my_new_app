@@ -36,7 +36,7 @@ class LessonMediaUploadResult {
 class LessonMediaStorageService {
   const LessonMediaStorageService();
 
-  static const int maxBytes = 50 * 1024 * 1024;
+  static const int maxBytes = 100 * 1024 * 1024;
   static const List<String> audioExtensions = ['mp3', 'm4a', 'aac', 'wav'];
   static const List<String> videoExtensions = ['mp4', 'webm', 'mov'];
 
@@ -289,7 +289,7 @@ class LessonMediaStorageService {
       throw LessonMediaStorageException('ファイルサイズを取得できませんでした。');
     }
     if (fileSize > maxBytes) {
-      throw LessonMediaStorageException('ファイルサイズは50MB以下にしてください。');
+      throw LessonMediaStorageException('ファイルサイズは100MB以下にしてください。');
     }
   }
 

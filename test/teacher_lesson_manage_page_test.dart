@@ -295,6 +295,38 @@ void main() {
     });
   }
 
+  testWidgets('録音しながら書くはファイル選択を開始せず録音画面を追加する', (tester) async {
+    final storageService = _RecordingMediaStorageService();
+    final course = _courseWithLesson(
+      const CourseLesson(id: 'lesson-1', title: 'レッスン1', duration: '10分'),
+    );
+    await tester.binding.setSurfaceSize(const Size(800, 1600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonManagePage(
+          course: course,
+          lessonId: 'lesson-1',
+          mediaStorageService: storageService,
+          onSaveOverride: (_) async {},
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('パートを追加'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('録音しながら書く'));
+    await tester.pumpAndSettle();
+
+    expect(storageService.pickCount, 0);
+    expect(
+      find.byKey(const ValueKey('audio-whiteboard-recorder')),
+      findsOneWidget,
+    );
+    expect(find.text('音声をアップロード'), findsOneWidget);
+  });
+
   testWidgets('再生モードに列挙値の日本語ラベルと説明を表示する', (tester) async {
     await tester.binding.setSurfaceSize(const Size(800, 1200));
     addTearDown(() => tester.binding.setSurfaceSize(null));

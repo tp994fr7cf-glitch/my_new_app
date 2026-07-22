@@ -31,7 +31,7 @@ service firebase.storage {
     function isValidLessonMediaUpload() {
       return isLessonMediaContentType()
         && request.resource.size > 0
-        && request.resource.size <= 50 * 1024 * 1024;
+        && request.resource.size <= 100 * 1024 * 1024;
     }
 
     function lessonExists(courseId, lessonId) {

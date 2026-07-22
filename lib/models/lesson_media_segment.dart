@@ -10,6 +10,7 @@ class LessonMediaSegment {
     this.mediaType = 'video',
     this.url = '',
     this.durationSec = 0,
+    this.durationMs = 0,
   });
 
   final String id;
@@ -18,10 +19,13 @@ class LessonMediaSegment {
   final String mediaType;
   final String url;
   final int durationSec;
+  final int durationMs;
 
   bool get hasUrl => url.trim().isNotEmpty;
   bool get isAudio => mediaType == 'audio';
   bool get isVideo => !isAudio;
+  double get durationSecExact =>
+      durationMs > 0 ? durationMs / 1000 : durationSec.toDouble();
 
   factory LessonMediaSegment.fromMap(Map data) {
     return LessonMediaSegment(
@@ -31,6 +35,7 @@ class LessonMediaSegment {
       mediaType: parseStringField(data['mediaType'], fallback: 'video'),
       url: parseStringField(data['url']),
       durationSec: parseIntField(data['durationSec']),
+      durationMs: parseIntField(data['durationMs']),
     );
   }
 
@@ -42,6 +47,7 @@ class LessonMediaSegment {
       'mediaType': mediaType,
       'url': url,
       if (durationSec > 0) 'durationSec': durationSec,
+      if (durationMs > 0) 'durationMs': durationMs,
     };
   }
 
@@ -52,6 +58,7 @@ class LessonMediaSegment {
     String? mediaType,
     String? url,
     int? durationSec,
+    int? durationMs,
   }) {
     return LessonMediaSegment(
       id: id ?? this.id,
@@ -60,6 +67,7 @@ class LessonMediaSegment {
       mediaType: mediaType ?? this.mediaType,
       url: url ?? this.url,
       durationSec: durationSec ?? this.durationSec,
+      durationMs: durationMs ?? this.durationMs,
     );
   }
 

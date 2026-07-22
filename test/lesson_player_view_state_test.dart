@@ -8,36 +8,17 @@ void main() {
       expect(formatLessonTime(65), '01:05');
     });
 
-    test('calculates completion threshold', () {
-      expect(
-        calculateCompletionThresholdSec(
-          totalDurationSec: 90,
-          completionRate: 0.92,
-        ),
-        83,
-      );
-    });
-
     test('detects playback end with exact position tolerance', () {
       expect(
-        isLessonPlaybackAtEnd(
-          totalDurationSec: 90,
-          positionSecExact: 89.4,
-        ),
+        isLessonPlaybackAtEnd(totalDurationSec: 90, positionSecExact: 89.4),
         isFalse,
       );
       expect(
-        isLessonPlaybackAtEnd(
-          totalDurationSec: 90,
-          positionSecExact: 89.6,
-        ),
+        isLessonPlaybackAtEnd(totalDurationSec: 90, positionSecExact: 89.6),
         isTrue,
       );
       expect(
-        isLessonPlaybackAtEnd(
-          totalDurationSec: 90,
-          positionSecExact: 90,
-        ),
+        isLessonPlaybackAtEnd(totalDurationSec: 90, positionSecExact: 90),
         isTrue,
       );
     });

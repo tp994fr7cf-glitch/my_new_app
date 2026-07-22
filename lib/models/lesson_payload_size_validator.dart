@@ -4,6 +4,7 @@ import 'course.dart';
 import 'lesson_whiteboard_board_set.dart';
 
 const int maxLessonPayloadUtf8Bytes = 850 * 1024;
+const int lessonPayloadWarningUtf8Bytes = 700 * 1024;
 const int maxLessonBoardSwitchEvents = 10000;
 const String lessonPayloadTooLargeMessage =
     '書き物のデータ量が大きすぎるため保存できません。内容を減らしてください。';

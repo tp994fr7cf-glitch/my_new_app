@@ -8,29 +8,23 @@ bool lessonHasPlayableMedia({
   required List<LessonMediaSegment> mediaSegments,
 }) => lessonHasMediaSegments(mediaSegments);
 
-int calculateCompletionThresholdSec({
-  required int totalDurationSec,
-  required double completionRate,
-}) {
-  return (totalDurationSec * completionRate).round();
-}
-
 /// Returns true when playback has reached (or passed) the lesson end.
 ///
 /// Uses [positionSecExact] with a small tolerance so natural stops slightly
 /// before the integer second boundary (common on web audio) still count as end.
 bool isLessonPlaybackAtEnd({
-  required int totalDurationSec,
+  required num totalDurationSec,
   required double positionSecExact,
   double endToleranceSec = 0.5,
 }) {
-  if (totalDurationSec <= 0) {
+  final totalDurationSecExact = totalDurationSec.toDouble();
+  if (totalDurationSecExact <= 0) {
     return false;
   }
-  if (positionSecExact >= totalDurationSec - endToleranceSec) {
+  if (positionSecExact >= totalDurationSecExact - endToleranceSec) {
     return true;
   }
-  return positionSecExact.floor() >= totalDurationSec;
+  return positionSecExact >= totalDurationSecExact;
 }
 
 String formatLessonTime(int seconds) {

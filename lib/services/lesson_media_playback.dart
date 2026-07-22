@@ -742,6 +742,7 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
     this.naturalEndPosition,
     this.openDelay = Duration.zero,
     this.seekDelay = Duration.zero,
+    this.pauseDelay = Duration.zero,
     this.suppressPeriodicPositionTicks = false,
     this.republishPositionOnPause = false,
   }) : _totalDuration = totalDuration ?? const Duration(seconds: 90);
@@ -753,6 +754,7 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
   /// Artificial delay before a seek() call resolves, used to simulate a
   /// slow/real native seek and reproduce races between overlapping seeks.
   final Duration seekDelay;
+  final Duration pauseDelay;
   final bool suppressPeriodicPositionTicks;
 
   /// When true, mimics [AudioLessonMediaPlayback.pause] re-publishing its
@@ -764,6 +766,7 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
 
   /// Every position (in seconds) that [seek] was called with, in order.
   final List<double> seekCallsSec = [];
+  int pauseCallCount = 0;
   Duration _position = Duration.zero;
   bool _isPlaying = false;
   bool _isReady = false;
@@ -852,6 +855,10 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
 
   @override
   Future<void> pause() async {
+    pauseCallCount += 1;
+    if (pauseDelay > Duration.zero) {
+      await Future<void>.delayed(pauseDelay);
+    }
     _timer?.cancel();
     _timer = null;
     _isPlaying = false;

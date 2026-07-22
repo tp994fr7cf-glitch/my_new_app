@@ -187,7 +187,7 @@ Future<PlatformFile?> pickLessonMediaFileForPlatform({
         return;
       }
       if (file.size > maxBytes) {
-        fail(const LessonMediaFilePickerException('ファイルサイズは50MB以下にしてください。'));
+        fail(const LessonMediaFilePickerException('ファイルサイズは100MB以下にしてください。'));
         return;
       }
 

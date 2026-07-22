@@ -1544,6 +1544,7 @@ service cloud.firestore {
           return request.resource.data.keys().hasOnly([
               'lessonId',
               'boardSet',
+              'mediaSegments',
               'baseLessonDocumentVersion',
               'draftRevision',
               'updatedAt'
@@ -1558,6 +1559,10 @@ service cloud.firestore {
             && request.resource.data.boardSet.boards.size() <= 20
             && request.resource.data.boardSet.switchEvents is list
             && request.resource.data.boardSet.switchEvents.size() <= 10000
+            && (!request.resource.data.keys().hasAny(['mediaSegments'])
+              || (request.resource.data.mediaSegments is list
+                && request.resource.data.mediaSegments.size() > 0
+                && request.resource.data.mediaSegments.size() <= 100))
             && request.resource.data.baseLessonDocumentVersion is int
             && request.resource.data.baseLessonDocumentVersion
               == currentLessonDocumentVersion()

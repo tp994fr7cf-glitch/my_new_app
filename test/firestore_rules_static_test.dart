@@ -6,7 +6,7 @@ void main() {
   late String rules;
 
   setUpAll(() {
-    rules = File('firestore.rules').readAsStringSync();
+    rules = File('firestore.rules').readAsStringSync().replaceAll('\r\n', '\n');
   });
 
   test(
@@ -71,6 +71,10 @@ void main() {
     expect(
       rules,
       contains('request.resource.data.boardSet.boards.size() <= 20'),
+    );
+    expect(
+      rules,
+      contains('request.resource.data.mediaSegments.size() <= 100'),
     );
     expect(
       rules,

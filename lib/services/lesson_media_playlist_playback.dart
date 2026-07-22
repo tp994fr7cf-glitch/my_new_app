@@ -115,6 +115,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   bool _isResetting = false;
   _PlaylistSeekTarget? _pendingSeekTarget;
   Future<void>? _seekDrainFuture;
+  Future<void>? _pauseFuture;
   int? _deferredCompletionSegmentIndex;
   int? _deferredCompletionIntentGeneration;
   bool _replayAfterSeekDrain = false;
@@ -243,10 +244,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
 
     final slot = _slotForSegment(segment);
     final url = segment.url.trim();
-    final targetLocalSec = localStartSec.clamp(
-      0.0,
-      segment.durationSec.toDouble(),
-    );
+    final targetLocalSec = localStartSec.clamp(0.0, segment.durationSecExact);
 
     _logSwitch(
       '_prepareSegmentInSlot start: segmentIndex=$segmentIndex '
@@ -394,10 +392,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       _activeSlot = slot;
       _currentSegmentIndex = segmentIndex;
 
-      final targetLocalSec = localStartSec.clamp(
-        0.0,
-        segment.durationSec.toDouble(),
-      );
+      final targetLocalSec = localStartSec.clamp(0.0, segment.durationSecExact);
       _globalPositionSec = _timeline.globalSecForSegmentIndex(
         segmentIndex: segmentIndex,
         localSec: targetLocalSec,
@@ -549,7 +544,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       final ordered = _timeline.orderedSegments;
       if (nextIndex >= ordered.length) {
         _playRequested = false;
-        _globalPositionSec = _totalDurationSec.toDouble();
+        _globalPositionSec = _timeline.totalDurationSecExact;
         _globalPositionController.add(_globalPositionSec);
         await _pauseInternal();
         return;
@@ -635,7 +630,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       return;
     }
     if (isLessonPlaybackAtEnd(
-      totalDurationSec: _totalDurationSec,
+      totalDurationSec: _timeline.totalDurationSecExact,
       positionSecExact: _globalPositionSec,
       endToleranceSec: 0.001,
     )) {
@@ -654,9 +649,27 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _syncActivePlaybackPosition(forceEmit: true);
   }
 
-  Future<void> _pauseInternal() async {
+  Future<void> _pauseInternal() {
+    final activePause = _pauseFuture;
+    if (activePause != null) {
+      return activePause;
+    }
+    final pauseFuture = _performPauseInternal();
+    _pauseFuture = pauseFuture;
+    return pauseFuture.whenComplete(() {
+      if (identical(_pauseFuture, pauseFuture)) {
+        _pauseFuture = null;
+      }
+    });
+  }
+
+  Future<void> _performPauseInternal() async {
+    final activePlayer = _activePlayer;
+    if (!_isPlaying && !(activePlayer?.isPlaying ?? false)) {
+      return;
+    }
     _logSwitch('_pauseInternal: currentSegmentIndex=$_currentSegmentIndex');
-    await _activePlayer?.pause();
+    await activePlayer?.pause();
     _emitPlaying(false);
   }
 
@@ -665,7 +678,10 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     if (_isResetting || _timeline.isEmpty) {
       return;
     }
-    final clampedGlobalSec = globalSec.clamp(0.0, _totalDurationSec.toDouble());
+    final clampedGlobalSec = globalSec.clamp(
+      0.0,
+      _timeline.totalDurationSecExact,
+    );
     await _enqueueSeek(_PlaylistSeekTarget(globalSec: clampedGlobalSec));
   }
 
@@ -749,7 +765,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     final segment = currentSegment;
     if (segment == null ||
         !isLessonPlaybackAtEnd(
-          totalDurationSec: segment.durationSec,
+          totalDurationSec: segment.durationSecExact,
           positionSecExact: _activePlayer!.position.inMilliseconds / 1000,
         )) {
       return;
@@ -788,7 +804,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
             segment: _timeline.orderedSegments[forcedSegmentIndex],
           );
     final stopsAtSegmentEnd = isLessonPlaybackAtEnd(
-      totalDurationSec: position.segment.durationSec,
+      totalDurationSec: position.segment.durationSecExact,
       positionSecExact: position.localSec,
       endToleranceSec: 0.001,
     );
@@ -876,10 +892,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       localSec: localStartSec,
     );
     final segment = _timeline.orderedSegments[segmentIndex];
-    final clampedLocalSec = localStartSec.clamp(
-      0.0,
-      segment.durationSec.toDouble(),
-    );
+    final clampedLocalSec = localStartSec.clamp(0.0, segment.durationSecExact);
     await _enqueueSeek(
       _PlaylistSeekTarget(
         globalSec: globalSec,
@@ -900,6 +913,14 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   }
 
   Future<void> _disposePlayerInternal() async {
+    final activePause = _pauseFuture;
+    if (activePause != null) {
+      try {
+        await activePause;
+      } catch (_) {
+        // Disposal still needs to release the player after a failed pause.
+      }
+    }
     final activeSeekDrain = _seekDrainFuture;
     if (activeSeekDrain != null) {
       try {

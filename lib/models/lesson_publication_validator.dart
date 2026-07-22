@@ -193,6 +193,7 @@ bool _lockedFieldsMatch(LessonMediaSegment previous, LessonMediaSegment next) {
       previous.mediaType == next.mediaType &&
       previous.url == next.url &&
       previous.durationSec == next.durationSec &&
+      previous.durationMs == next.durationMs &&
       previous.order == next.order;
 }
 

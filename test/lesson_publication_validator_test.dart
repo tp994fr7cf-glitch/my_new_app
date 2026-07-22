@@ -131,6 +131,7 @@ void main() {
       locked.copyWith(mediaType: 'audio'),
       locked.copyWith(url: 'https://example.com/other.mp4'),
       locked.copyWith(durationSec: 31),
+      locked.copyWith(durationMs: 30001),
       locked.copyWith(order: 1),
     ];
 
