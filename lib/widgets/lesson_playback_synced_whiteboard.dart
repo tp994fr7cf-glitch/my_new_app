@@ -20,7 +20,6 @@ class LessonPlaybackSyncedWhiteboard extends StatefulWidget {
     required this.isPlaying,
     required this.positionSecExact,
     required this.totalDurationSec,
-    this.height = 220,
   }) : assert(bundle != null || boardSet != null);
 
   final LessonWhiteboardLayerBundle? bundle;
@@ -30,7 +29,6 @@ class LessonPlaybackSyncedWhiteboard extends StatefulWidget {
   final bool isPlaying;
   final double positionSecExact;
   final int totalDurationSec;
-  final double height;
 
   @override
   State<LessonPlaybackSyncedWhiteboard> createState() =>
@@ -91,8 +89,15 @@ class _LessonPlaybackSyncedWhiteboardState
   bool get _tracksLivePlayback =>
       widget.playback != null && widget.playback!.isPlaying;
 
+  double get _maxPositionSec {
+    final exactTimelineDuration = widget.timeline.totalDurationSecExact;
+    return exactTimelineDuration > 0
+        ? exactTimelineDuration
+        : widget.totalDurationSec.toDouble();
+  }
+
   void _syncRefreshTimer() {
-    final shouldRefresh = _tracksLivePlayback && widget.totalDurationSec > 0;
+    final shouldRefresh = _tracksLivePlayback && _maxPositionSec > 0;
     if (shouldRefresh) {
       _refreshTimer ??= Timer.periodic(_refreshInterval, (_) {
         if (!mounted) {
@@ -117,7 +122,7 @@ class _LessonPlaybackSyncedWhiteboardState
   }
 
   double _resolvedPositionSec() {
-    final maxSec = widget.totalDurationSec.toDouble();
+    final maxSec = _maxPositionSec;
     if (maxSec <= 0) {
       return 0;
     }
@@ -157,6 +162,13 @@ class _LessonPlaybackSyncedWhiteboardState
     });
   }
 
+  void _handleManualViewportChange(LessonWhiteboardViewportChange change) {
+    if (_followsTeacher &&
+        change.phase == LessonWhiteboardViewportChangePhase.start) {
+      setState(() => _followsTeacher = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final positionSec = _tracksLivePlayback
@@ -174,6 +186,12 @@ class _LessonPlaybackSyncedWhiteboardState
       segmentLocalPositionSec: _segmentLocalPositionSec(positionSec),
       activeSegmentId: widget.playback?.currentSegment?.id,
     );
+    final teacherViewport = activeBoard == null
+        ? LessonWhiteboardViewport.full
+        : _boardSet.resolveViewportAt(
+            boardId: activeBoard.id,
+            globalTimestampSec: positionSec,
+          );
 
     return Column(
       key: const ValueKey('synced-whiteboard'),
@@ -207,19 +225,21 @@ class _LessonPlaybackSyncedWhiteboardState
             Switch(
               key: const ValueKey('learner-whiteboard-follow-switch'),
               value: _followsTeacher,
-              onChanged: orderedBoards.length > 1 ? _setFollowsTeacher : null,
+              onChanged: activeBoard == null ? null : _setFollowsTeacher,
             ),
           ],
         ),
-        Text('先生の切替に合わせる', style: Theme.of(context).textTheme.bodySmall),
+        Text(
+          '先生のボードと表示範囲に合わせる（自分で操作すると一時解除）',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
         const SizedBox(height: 6),
-        SizedBox(
-          height: widget.height,
-          child: LessonWhiteboardCanvas(
-            key: ValueKey('learner-whiteboard-canvas-${activeBoard?.id}'),
-            strokes: strokes,
-            drawingEnabled: false,
-          ),
+        LessonWhiteboardCanvas(
+          key: ValueKey('learner-whiteboard-canvas-${activeBoard?.id}'),
+          strokes: strokes,
+          drawingEnabled: false,
+          viewport: _followsTeacher ? teacherViewport : null,
+          onViewportChanged: _handleManualViewportChange,
         ),
       ],
     );

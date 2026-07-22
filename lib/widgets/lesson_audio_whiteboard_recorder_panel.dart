@@ -67,6 +67,10 @@ class _LessonAudioWhiteboardRecorderPanelState
   double? _strokeStartSec;
   final Set<String> _sessionStrokeIds = {};
   final Set<int> _sessionSwitchSequences = {};
+  final Set<int> _sessionViewportSequences = {};
+  int? _activeViewportInteractionId;
+  double? _lastViewportEventSec;
+  LessonWhiteboardViewport? _pendingPausedViewport;
   PlatformFile? _recordedFile;
   int _recordedDurationSec = 0;
   int _recordedDurationMs = 0;
@@ -101,11 +105,27 @@ class _LessonAudioWhiteboardRecorderPanelState
       _boardSet.switchEvents.length < maxLessonBoardSwitchEvents;
   double get _recordingPositionSec =>
       _sessionSegmentStartSec + _clock.elapsedSeconds;
+  double get _previewGlobalPositionSec =>
+      _sessionSegmentStartSec +
+      (_preview.position.inMicroseconds / Duration.microsecondsPerSecond);
 
   LessonWhiteboardBoard get _selectedBoard =>
       _boardSet.boardById(_selectedBoardId) ??
       _boardSet.defaultBoard ??
       _boardSet.ensureEditable().defaultBoard!;
+
+  List<WhiteboardStroke> get _displayedStrokes {
+    if (_status != _RecordingStatus.ready) {
+      return _strokes;
+    }
+    final localPositionSec =
+        _preview.position.inMicroseconds / Duration.microsecondsPerSecond;
+    return visibleWhiteboardBundleStrokes(
+      bundle: _selectedBoard.layerBundle,
+      globalPositionSec: _previewGlobalPositionSec,
+      segmentLocalPositionSec: localPositionSec,
+    );
+  }
 
   @override
   void initState() {
@@ -120,6 +140,11 @@ class _LessonAudioWhiteboardRecorderPanelState
     _previewPlayingSubscription = _preview.playingStream.listen((playing) {
       if (mounted) {
         setState(() => _previewPlaying = playing);
+        if (playing) {
+          _startPreviewDisplayTimer();
+        } else {
+          _displayTimer?.cancel();
+        }
       }
     });
     _resetWorkingBoardSet();
@@ -199,6 +224,10 @@ class _LessonAudioWhiteboardRecorderPanelState
     _strokeStartSec = null;
     _sessionStrokeIds.clear();
     _sessionSwitchSequences.clear();
+    _sessionViewportSequences.clear();
+    _activeViewportInteractionId = null;
+    _lastViewportEventSec = null;
+    _pendingPausedViewport = null;
     _drawingLimitReached = false;
     _payloadWarningShown = false;
   }
@@ -295,6 +324,22 @@ class _LessonAudioWhiteboardRecorderPanelState
     });
   }
 
+  void _startPreviewDisplayTimer() {
+    _displayTimer?.cancel();
+    _displayTimer = Timer.periodic(const Duration(milliseconds: 50), (_) {
+      if (!mounted || !_previewPlaying) {
+        return;
+      }
+      final board = _boardSet.resolveBoardAt(_previewGlobalPositionSec);
+      setState(() {
+        if (board != null && board.id != _selectedBoardId) {
+          _selectedBoardId = board.id;
+          _loadSelectedStrokes();
+        }
+      });
+    });
+  }
+
   Future<void> _pauseRecording() {
     final active = _activeTransitionFuture;
     if (active != null) {
@@ -361,6 +406,7 @@ class _LessonAudioWhiteboardRecorderPanelState
     setState(() => _status = _RecordingStatus.resuming);
     try {
       await _recorder.resume();
+      _flushPendingViewport();
       _clock.resume();
       _startDisplayTimer();
       if (mounted) {
@@ -422,6 +468,10 @@ class _LessonAudioWhiteboardRecorderPanelState
       if (file == null || file.size <= 0 || file.path == null) {
         throw StateError('録音ファイルを作成できませんでした。');
       }
+      if (!mounted) {
+        await _deleteRecordingQuietly(file);
+        return;
+      }
       Duration? previewDuration;
       try {
         previewDuration = await _preview.load(file.path!);
@@ -443,12 +493,18 @@ class _LessonAudioWhiteboardRecorderPanelState
       final durationSec = (durationMs ~/ 1000).clamp(1, 2147483647).toInt();
       _scaleSessionTimestamps(clockDuration, resolvedDuration);
       if (!mounted) {
+        await _deleteRecordingQuietly(file);
         return;
       }
       setState(() {
         _recordedFile = file;
         _recordedDurationSec = durationSec;
         _recordedDurationMs = durationMs;
+        final previewBoard = _boardSet.resolveBoardAt(_sessionSegmentStartSec);
+        if (previewBoard != null) {
+          _selectedBoardId = previewBoard.id;
+          _loadSelectedStrokes();
+        }
         _status = _RecordingStatus.ready;
         _message = file.size > LessonMediaStorageService.maxBytes
             ? '録音ファイルが100MBを超えました。録り直してください。'
@@ -469,6 +525,15 @@ class _LessonAudioWhiteboardRecorderPanelState
       }
     } finally {
       _isStopping = false;
+    }
+  }
+
+  Future<void> _deleteRecordingQuietly(PlatformFile file) async {
+    try {
+      await _recorder.deleteRecording(file);
+    } on Object {
+      // The widget is already leaving; there is no safe UI surface for this
+      // cleanup error, and recorder disposal still runs afterward.
     }
   }
 
@@ -518,6 +583,18 @@ class _LessonAudioWhiteboardRecorderPanelState
                   ((event.globalTimestampSec - _sessionSegmentStartSec) * scale)
                       .clamp(0.0, durationSec),
               sequence: event.sequence,
+            )
+          else
+            event,
+      ],
+      viewportEvents: [
+        for (final event in _boardSet.viewportEvents)
+          if (_sessionViewportSequences.contains(event.sequence))
+            scaleRecordedViewportEvent(
+              event: event,
+              segmentStartSec: _sessionSegmentStartSec,
+              scale: scale,
+              segmentDurationSec: durationSec,
             )
           else
             event,
@@ -717,6 +794,87 @@ class _LessonAudioWhiteboardRecorderPanelState
     _finishInProgressStroke();
   }
 
+  void _handleViewportChanged(LessonWhiteboardViewportChange change) {
+    if (_drawingLimitReached) {
+      return;
+    }
+    if (_isPaused) {
+      _pendingPausedViewport = change.viewport;
+      return;
+    }
+    if (!_isRecording) {
+      return;
+    }
+    switch (change.phase) {
+      case LessonWhiteboardViewportChangePhase.start:
+        _activeViewportInteractionId = _boardSet.nextViewportInteractionId;
+        _lastViewportEventSec = null;
+        _appendViewportEvent(change.viewport, force: true);
+        return;
+      case LessonWhiteboardViewportChangePhase.update:
+        _activeViewportInteractionId ??= _boardSet.nextViewportInteractionId;
+        _appendViewportEvent(change.viewport, force: false);
+        return;
+      case LessonWhiteboardViewportChangePhase.end:
+        _activeViewportInteractionId ??= _boardSet.nextViewportInteractionId;
+        _appendViewportEvent(change.viewport, force: true);
+        _activeViewportInteractionId = null;
+        _lastViewportEventSec = null;
+        return;
+    }
+  }
+
+  void _flushPendingViewport() {
+    final viewport = _pendingPausedViewport;
+    if (viewport == null) {
+      return;
+    }
+    _activeViewportInteractionId = _boardSet.nextViewportInteractionId;
+    _appendViewportEvent(viewport, force: true);
+    _activeViewportInteractionId = null;
+    _lastViewportEventSec = null;
+    _pendingPausedViewport = null;
+  }
+
+  void _appendViewportEvent(
+    LessonWhiteboardViewport viewport, {
+    required bool force,
+  }) {
+    if (_boardSet.viewportEvents.length >= maxLessonViewportEvents) {
+      if (mounted) {
+        setState(() {
+          _drawingLimitReached = true;
+          _message = lessonViewportEventLimitMessage;
+        });
+      }
+      return;
+    }
+    final timestampSec = _recordingPositionSec;
+    final previousSec = _lastViewportEventSec;
+    if (!force && previousSec != null && timestampSec - previousSec < 0.095) {
+      return;
+    }
+    final interactionId =
+        _activeViewportInteractionId ?? _boardSet.nextViewportInteractionId;
+    final event = LessonWhiteboardViewportEvent(
+      boardId: _selectedBoardId,
+      globalTimestampSec: timestampSec,
+      sequence: _boardSet.nextViewportSequence,
+      interactionId: interactionId,
+      viewport: viewport,
+    );
+    final candidate = _boardSet.copyWith(
+      viewportEvents: [..._boardSet.viewportEvents, event],
+    );
+    if (candidate.viewportEvents.length % 20 == 0 &&
+        !_canAcceptBoardSet(candidate)) {
+      return;
+    }
+    setState(() => _boardSet = candidate);
+    _sessionViewportSequences.add(event.sequence);
+    _lastViewportEventSec = timestampSec;
+  }
+
   void _finishInProgressStroke() {
     if (_inProgressPoints.length >= 2 && _strokeStartSec != null) {
       final id = '${DateTime.now().microsecondsSinceEpoch}';
@@ -743,6 +901,14 @@ class _LessonAudioWhiteboardRecorderPanelState
       _inProgressPoints = [];
       _strokeStartSec = null;
     }
+  }
+
+  void _cancelInProgressStroke() {
+    setState(() {
+      _inProgressStroke = null;
+      _inProgressPoints = [];
+      _strokeStartSec = null;
+    });
   }
 
   bool _canAcceptBoardSet(BoardSet boardSet) {
@@ -805,6 +971,7 @@ class _LessonAudioWhiteboardRecorderPanelState
       return;
     }
     _finishInProgressStroke();
+    _pendingPausedViewport = null;
     _commitSelectedBoard();
     var id = LessonWhiteboardBoard.generateId();
     while (_boardSet.boardById(id) != null) {
@@ -845,6 +1012,7 @@ class _LessonAudioWhiteboardRecorderPanelState
       return;
     }
     _finishInProgressStroke();
+    _pendingPausedViewport = null;
     _commitSelectedBoard();
     if (_boardSet.switchEvents.length >= maxLessonBoardSwitchEvents) {
       setState(() {
@@ -1023,16 +1191,32 @@ class _LessonAudioWhiteboardRecorderPanelState
                   ],
                 ),
                 const SizedBox(height: 8),
-                SizedBox(
-                  height: 220,
-                  child: LessonWhiteboardCanvas(
-                    strokes: _strokes,
-                    inProgressStroke: _inProgressStroke,
-                    drawingEnabled: _drawingEnabled,
-                    onStrokeStart: _handleStrokeStart,
-                    onStrokeUpdate: _handleStrokeUpdate,
-                    onStrokeEnd: _handleStrokeEnd,
-                  ),
+                LessonWhiteboardCanvas(
+                  key: ValueKey('audio-canvas-$_selectedBoardId'),
+                  strokes: _displayedStrokes,
+                  inProgressStroke: _inProgressStroke,
+                  drawingEnabled: _drawingEnabled,
+                  onStrokeStart: _handleStrokeStart,
+                  onStrokeUpdate: _handleStrokeUpdate,
+                  onStrokeEnd: _handleStrokeEnd,
+                  onStrokeCancel: _cancelInProgressStroke,
+                  maxWidth: lessonWhiteboardCompactMaxWidth,
+                  viewport: _previewPlaying
+                      ? _boardSet.resolveViewportAt(
+                          boardId: _selectedBoardId,
+                          globalTimestampSec: _previewGlobalPositionSec,
+                        )
+                      : (_isRecording || _isPaused) &&
+                            _pendingPausedViewport == null
+                      ? _boardSet.resolveViewportAt(
+                          boardId: _selectedBoardId,
+                          globalTimestampSec: _recordingPositionSec,
+                        )
+                      : null,
+                  onViewportChanged: _handleViewportChanged,
+                  viewportInteractionEnabled:
+                      !_previewPlaying &&
+                      (!_hasActiveRecording || !_drawingLimitReached),
                 ),
               ],
               if (_isUploading) ...[

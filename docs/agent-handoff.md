@@ -107,6 +107,24 @@ Firebase Console: https://console.firebase.google.com/project/my-new-app-naona-2
 
 今回の機能について、現時点でユーザーから報告されている未解決不具合はない。
 
+### 2026-07-23 ホワイトボード拡大・追従機能（実装済み・実機確認待ち）
+
+同じブランチで、次の機能を追加した。
+
+- 全画面でホワイトボードを4:3へ統一
+- 1〜8倍のズーム、パン、`＋`・`－`・元に戻すボタン
+- 操作中と操作終了後2秒だけ右下へ表示するミニマップ
+- 拡大中は線も同じ倍率で太く表示し、描画座標は元の0〜1正規化座標へ変換
+- 先生の表示範囲を約10Hzの `viewportEvents` として時刻付き保存し、再生時に補間
+- 録音・再生の一時停止中は途中の動きを保存せず、再開時の最終位置だけ反映
+- 受講者は初期状態で先生のボードと表示範囲へ追従し、手動操作すると一時解除。
+  スイッチで追従へ戻せる
+- Android録音停止直後の端末内プレビューでも、ボード切替と表示範囲を再現
+
+関連テスト、変更対象の静的解析、Web release buildは成功。
+全テストの失敗は従来からのheadless環境固有テストのみで、今回の関連テストは成功している。
+ユーザーによるAndroid実機・Webの最終確認はまだ。
+
 ### Firebase rules
 
 今回変更した `firestore.rules` と `storage.rules` は、ユーザーが次のコマンドで本番へ手動デプロイ済み:
@@ -116,7 +134,12 @@ firebase deploy --only firestore:rules,storage
 ```
 
 デプロイは成功。Firestore compilerの既存warningは出たが、rulesは正常にreleaseされた。
-以後rulesを変更しない限り、再デプロイ不要。
+ただし、上記の `viewportEvents` 追加で `firestore.rules` を再変更したため、
+このブランチを公開するときは次をもう一度手動実行する必要がある（Storage rulesは今回変更なし）。
+
+```powershell
+firebase deploy --only firestore:rules
+```
 
 ### 確認済みコマンド
 

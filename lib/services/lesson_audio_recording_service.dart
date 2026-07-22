@@ -14,6 +14,8 @@ LessonAudioRecordingController createLessonAudioRecordingController() {
 abstract interface class LessonAudioPreviewController {
   bool get isPlaying;
 
+  Duration get position;
+
   Stream<bool> get playingStream;
 
   Future<Duration?> load(String path);
@@ -37,6 +39,9 @@ class JustAudioLessonAudioPreviewController
 
   @override
   bool get isPlaying => _player.playing;
+
+  @override
+  Duration get position => _player.position;
 
   @override
   Stream<bool> get playingStream => _player.playingStream;

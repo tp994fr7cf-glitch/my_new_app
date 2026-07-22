@@ -615,6 +615,114 @@ void main() {
     },
   );
 
+  testWidgets(
+    'viewport changes record live timestamps and only paused final state',
+    (tester) async {
+      final playback = _ControllableLivePositionPlaylistPlayback(
+        totalDurationSec: 90,
+      );
+      BoardSet? saved;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: testMediaSegments(),
+              durationLabel: '1分30秒',
+              draftBoardSet: const BoardSet(),
+              onBoardSetDraftSaved: (boardSet) async {
+                saved = boardSet;
+              },
+              playlistPlaybackFactory: () => playback,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'スタート'));
+      await tester.pumpAndSettle();
+
+      var canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      playback.liveOffsetSec = 0.2;
+      canvas.onViewportChanged!(
+        const LessonWhiteboardViewportChange(
+          viewport: LessonWhiteboardViewport.full,
+          phase: LessonWhiteboardViewportChangePhase.start,
+        ),
+      );
+      playback.liveOffsetSec = 0.3;
+      canvas.onViewportChanged!(
+        const LessonWhiteboardViewportChange(
+          viewport: LessonWhiteboardViewport(
+            centerX: 0.5,
+            centerY: 0.5,
+            scale: 1.5,
+          ),
+          phase: LessonWhiteboardViewportChangePhase.update,
+        ),
+      );
+      playback.liveOffsetSec = 0.4;
+      canvas.onViewportChanged!(
+        const LessonWhiteboardViewportChange(
+          viewport: LessonWhiteboardViewport(
+            centerX: 0.5,
+            centerY: 0.5,
+            scale: 2,
+          ),
+          phase: LessonWhiteboardViewportChangePhase.end,
+        ),
+      );
+      await tester.pump();
+
+      await tester.tap(find.widgetWithText(OutlinedButton, '一時停止'));
+      await tester.pumpAndSettle();
+      canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+      canvas.onViewportChanged!(
+        const LessonWhiteboardViewportChange(
+          viewport: LessonWhiteboardViewport(
+            centerX: 0.5,
+            centerY: 0.5,
+            scale: 3,
+          ),
+          phase: LessonWhiteboardViewportChangePhase.update,
+        ),
+      );
+      canvas.onViewportChanged!(
+        const LessonWhiteboardViewportChange(
+          viewport: LessonWhiteboardViewport(
+            centerX: 0.5,
+            centerY: 0.5,
+            scale: 4,
+          ),
+          phase: LessonWhiteboardViewportChangePhase.end,
+        ),
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'スタート'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(OutlinedButton, '書き物を一時保存'));
+      await tester.pumpAndSettle();
+
+      expect(saved, isNotNull);
+      expect(saved!.viewportEvents, hasLength(4));
+      expect(saved!.viewportEvents.map((event) => event.globalTimestampSec), [
+        0.2,
+        0.3,
+        0.4,
+        0.4,
+      ]);
+      expect(saved!.viewportEvents.last.viewport.scale, 4);
+      expect(saved!.viewportEvents.map((event) => event.interactionId), [
+        0,
+        0,
+        0,
+        1,
+      ]);
+    },
+  );
+
   testWidgets('deleting a board removes every switch event targeting it', (
     tester,
   ) async {
@@ -639,6 +747,30 @@ void main() {
           boardId: 'third',
           globalTimestampSec: 2,
           sequence: 1,
+        ),
+      ],
+      viewportEvents: [
+        LessonWhiteboardViewportEvent(
+          boardId: 'second',
+          globalTimestampSec: 1,
+          sequence: 0,
+          interactionId: 0,
+          viewport: LessonWhiteboardViewport(
+            centerX: 0.5,
+            centerY: 0.5,
+            scale: 2,
+          ),
+        ),
+        LessonWhiteboardViewportEvent(
+          boardId: 'third',
+          globalTimestampSec: 2,
+          sequence: 1,
+          interactionId: 1,
+          viewport: LessonWhiteboardViewport(
+            centerX: 0.5,
+            centerY: 0.5,
+            scale: 3,
+          ),
         ),
       ],
     );
@@ -679,6 +811,14 @@ void main() {
     );
     expect(
       saved!.switchEvents.any((event) => event.boardId == 'third'),
+      isTrue,
+    );
+    expect(
+      saved!.viewportEvents.where((event) => event.boardId == 'second'),
+      isEmpty,
+    );
+    expect(
+      saved!.viewportEvents.any((event) => event.boardId == 'third'),
       isTrue,
     );
   });

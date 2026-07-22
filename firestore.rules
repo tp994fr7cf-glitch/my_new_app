@@ -1553,12 +1553,16 @@ service cloud.firestore {
             && request.resource.data.boardSet is map
             && request.resource.data.boardSet.keys().hasOnly([
               'boards',
-              'switchEvents'
+              'switchEvents',
+              'viewportEvents'
             ])
             && request.resource.data.boardSet.boards is list
             && request.resource.data.boardSet.boards.size() <= 20
             && request.resource.data.boardSet.switchEvents is list
             && request.resource.data.boardSet.switchEvents.size() <= 10000
+            && (!request.resource.data.boardSet.keys().hasAny(['viewportEvents'])
+              || (request.resource.data.boardSet.viewportEvents is list
+                && request.resource.data.boardSet.viewportEvents.size() <= 2000))
             && (!request.resource.data.keys().hasAny(['mediaSegments'])
               || (request.resource.data.mediaSegments is list
                 && request.resource.data.mediaSegments.size() > 0

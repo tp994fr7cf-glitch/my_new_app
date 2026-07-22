@@ -70,6 +70,7 @@ class _LessonWhiteboardEditorPanelState
   StreamSubscription<double>? _positionSubscription;
   StreamSubscription<int>? _durationSubscription;
   StreamSubscription<bool>? _playingSubscription;
+  Timer? _viewportRefreshTimer;
 
   List<WhiteboardStroke> _strokes = [];
   BoardSet _boardSet = const BoardSet();
@@ -88,6 +89,9 @@ class _LessonWhiteboardEditorPanelState
   double _currentPositionSecExact = 0;
   double? _sliderDragPositionSec;
   double? _strokeStartSec;
+  int? _activeViewportInteractionId;
+  double? _lastViewportEventSec;
+  LessonWhiteboardViewport? _pendingPausedViewport;
 
   bool get _isDraggingSlider => _sliderDragPositionSec != null;
 
@@ -104,10 +108,11 @@ class _LessonWhiteboardEditorPanelState
   double get _recordingPositionSec {
     final playback = _playback;
     if (_isPlaying && playback != null && _totalDurationSec > 0) {
-      return playback.liveGlobalPositionSec.clamp(
-        0.0,
-        _totalDurationSec.toDouble(),
-      );
+      final exactTimelineDuration = _timeline.totalDurationSecExact;
+      final maxPositionSec = exactTimelineDuration > 0
+          ? exactTimelineDuration
+          : _totalDurationSec.toDouble();
+      return playback.liveGlobalPositionSec.clamp(0.0, maxPositionSec);
     }
     return _currentPositionSecExact;
   }
@@ -235,6 +240,9 @@ class _LessonWhiteboardEditorPanelState
     _strokes = List<WhiteboardStroke>.from(
       _selectedBoard.layerBundle.primaryLayer?.strokes ?? const [],
     );
+    _pendingPausedViewport = null;
+    _activeViewportInteractionId = null;
+    _lastViewportEventSec = null;
   }
 
   bool _segmentsEqual(
@@ -256,6 +264,7 @@ class _LessonWhiteboardEditorPanelState
 
   @override
   void dispose() {
+    _viewportRefreshTimer?.cancel();
     _positionSubscription?.cancel();
     _durationSubscription?.cancel();
     _playingSubscription?.cancel();
@@ -318,6 +327,7 @@ class _LessonWhiteboardEditorPanelState
         setState(() {
           _isPlaying = isPlaying;
         });
+        _syncViewportRefreshTimer();
       });
 
       _applyResolvedPlaybackState(playback);
@@ -385,6 +395,22 @@ class _LessonWhiteboardEditorPanelState
       _totalDurationSec > 0 &&
       (_playback?.isReady ?? false);
 
+  void _syncViewportRefreshTimer() {
+    if (_isPlaying) {
+      _viewportRefreshTimer ??= Timer.periodic(
+        const Duration(milliseconds: 50),
+        (_) {
+          if (mounted && _isPlaying) {
+            setState(() {});
+          }
+        },
+      );
+      return;
+    }
+    _viewportRefreshTimer?.cancel();
+    _viewportRefreshTimer = null;
+  }
+
   Future<void> _startRecording() async {
     if (!_canControlPlayback) {
       return;
@@ -395,7 +421,9 @@ class _LessonWhiteboardEditorPanelState
     });
 
     try {
+      final resumePositionSec = _currentPositionSecExact;
       await _playback?.play();
+      _flushPendingViewport(timestampSec: resumePositionSec);
     } catch (error) {
       if (mounted) {
         setState(() {
@@ -406,8 +434,87 @@ class _LessonWhiteboardEditorPanelState
   }
 
   Future<void> _pauseRecording() async {
+    final pausedPositionSec = _recordingPositionSec;
     await _playback?.pause();
+    if (mounted) {
+      setState(() {
+        _currentPositionSecExact = pausedPositionSec;
+        _currentPositionSec = pausedPositionSec.floor();
+      });
+    }
     _finishInProgressStroke();
+  }
+
+  void _handleViewportChanged(LessonWhiteboardViewportChange change) {
+    if (!_isPlaying) {
+      _pendingPausedViewport = change.viewport;
+      return;
+    }
+    switch (change.phase) {
+      case LessonWhiteboardViewportChangePhase.start:
+        _activeViewportInteractionId = _boardSet.nextViewportInteractionId;
+        _lastViewportEventSec = null;
+        _appendViewportEvent(change.viewport, force: true);
+        return;
+      case LessonWhiteboardViewportChangePhase.update:
+        _activeViewportInteractionId ??= _boardSet.nextViewportInteractionId;
+        _appendViewportEvent(change.viewport, force: false);
+        return;
+      case LessonWhiteboardViewportChangePhase.end:
+        _activeViewportInteractionId ??= _boardSet.nextViewportInteractionId;
+        _appendViewportEvent(change.viewport, force: true);
+        _activeViewportInteractionId = null;
+        _lastViewportEventSec = null;
+        return;
+    }
+  }
+
+  void _flushPendingViewport({double? timestampSec}) {
+    final viewport = _pendingPausedViewport;
+    if (viewport == null) {
+      return;
+    }
+    _activeViewportInteractionId = _boardSet.nextViewportInteractionId;
+    _appendViewportEvent(viewport, force: true, timestampSec: timestampSec);
+    _activeViewportInteractionId = null;
+    _lastViewportEventSec = null;
+    _pendingPausedViewport = null;
+  }
+
+  void _appendViewportEvent(
+    LessonWhiteboardViewport viewport, {
+    required bool force,
+    double? timestampSec,
+  }) {
+    if (_boardSet.viewportEvents.length >= maxLessonViewportEvents) {
+      if (mounted) {
+        setState(() => _message = lessonViewportEventLimitMessage);
+      }
+      return;
+    }
+    final resolvedTimestampSec = timestampSec ?? _recordingPositionSec;
+    final previousSec = _lastViewportEventSec;
+    if (!force &&
+        previousSec != null &&
+        resolvedTimestampSec - previousSec < 0.095) {
+      return;
+    }
+    final interactionId =
+        _activeViewportInteractionId ?? _boardSet.nextViewportInteractionId;
+    final event = LessonWhiteboardViewportEvent(
+      boardId: _selectedBoardId,
+      globalTimestampSec: resolvedTimestampSec,
+      sequence: _boardSet.nextViewportSequence,
+      interactionId: interactionId,
+      viewport: viewport,
+    );
+    setState(() {
+      _boardSet = _boardSet.copyWith(
+        viewportEvents: [..._boardSet.viewportEvents, event],
+      );
+    });
+    _lastViewportEventSec = resolvedTimestampSec;
+    widget.onBoardSetChanged?.call(_boardSet);
   }
 
   Future<void> _seekPlaybackPosition(int positionSec) async {
@@ -619,6 +726,7 @@ class _LessonWhiteboardEditorPanelState
       return;
     }
     _finishInProgressStroke();
+    _pendingPausedViewport = null;
     _commitSelectedBoard();
     final nextSequence = _boardSet.nextSwitchSequence;
     setState(() {
@@ -726,6 +834,7 @@ class _LessonWhiteboardEditorPanelState
       return;
     }
     _finishInProgressStroke();
+    _pendingPausedViewport = null;
     final removedId = _selectedBoardId;
     final remaining = _boardSet.orderedBoards
         .where((board) => board.id != removedId)
@@ -739,6 +848,10 @@ class _LessonWhiteboardEditorPanelState
         ],
         switchEvents: [
           for (final event in _boardSet.switchEvents)
+            if (event.boardId != removedId) event,
+        ],
+        viewportEvents: [
+          for (final event in _boardSet.viewportEvents)
             if (event.boardId != removedId) event,
         ],
       );
@@ -1029,16 +1142,14 @@ class _LessonWhiteboardEditorPanelState
             ],
             const SizedBox(height: 8),
             if (_hasPublishedWhiteboard && !_shouldShowEditingCanvas) ...[
-              SizedBox(
-                height: 220,
-                child: LessonWhiteboardCanvas(
-                  strokes: [
-                    for (final layer
-                        in _selectedBoard.layerBundle.orderedLayers)
-                      ...layer.strokes,
-                  ],
-                  drawingEnabled: false,
-                ),
+              LessonWhiteboardCanvas(
+                key: ValueKey('published-canvas-$_selectedBoardId'),
+                strokes: [
+                  for (final layer in _selectedBoard.layerBundle.orderedLayers)
+                    ...layer.strokes,
+                ],
+                drawingEnabled: false,
+                maxWidth: lessonWhiteboardCompactMaxWidth,
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
@@ -1049,16 +1160,23 @@ class _LessonWhiteboardEditorPanelState
                 label: const Text('書き物を描き直す'),
               ),
             ] else ...[
-              SizedBox(
-                height: 220,
-                child: LessonWhiteboardCanvas(
-                  strokes: _visibleStrokes,
-                  inProgressStroke: _inProgressStroke,
-                  drawingEnabled: _drawingEnabled,
-                  onStrokeStart: _handleStrokeStart,
-                  onStrokeUpdate: _handleStrokeUpdate,
-                  onStrokeEnd: _handleStrokeEnd,
-                ),
+              LessonWhiteboardCanvas(
+                key: ValueKey('editor-canvas-$_selectedBoardId'),
+                strokes: _visibleStrokes,
+                inProgressStroke: _inProgressStroke,
+                drawingEnabled: _drawingEnabled,
+                onStrokeStart: _handleStrokeStart,
+                onStrokeUpdate: _handleStrokeUpdate,
+                onStrokeEnd: _handleStrokeEnd,
+                onStrokeCancel: _clearInProgressStroke,
+                maxWidth: lessonWhiteboardCompactMaxWidth,
+                viewport: _pendingPausedViewport == null
+                    ? _boardSet.resolveViewportAt(
+                        boardId: _selectedBoardId,
+                        globalTimestampSec: _recordingPositionSec,
+                      )
+                    : null,
+                onViewportChanged: _handleViewportChanged,
               ),
               const SizedBox(height: 8),
               Wrap(

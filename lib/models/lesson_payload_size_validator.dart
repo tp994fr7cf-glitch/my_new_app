@@ -5,14 +5,14 @@ import 'lesson_whiteboard_board_set.dart';
 
 const int maxLessonPayloadUtf8Bytes = 850 * 1024;
 const int lessonPayloadWarningUtf8Bytes = 700 * 1024;
-const int maxLessonBoardSwitchEvents = 10000;
 const String lessonPayloadTooLargeMessage =
     '書き物のデータ量が大きすぎるため保存できません。内容を減らしてください。';
 const String lessonBoardLimitMessage = '書き物は20枚まで保存できます。';
 const String lessonBoardSwitchEventLimitMessage = '書き物の切替履歴は10000件まで保存できます。';
+const String lessonViewportEventLimitMessage = '表示範囲の操作履歴が多すぎるため保存できません。';
 const String lessonBoardDataInvalidMessage = '書き物のIDまたは順序が不正なため保存できません。';
-const String lessonBoardSwitchDataInvalidMessage =
-    '書き物の切替履歴に、存在しないボードが含まれているため保存できません。';
+const String lessonBoardSwitchDataInvalidMessage = '書き物の切替履歴が不正なため保存できません。';
+const String lessonViewportDataInvalidMessage = '表示範囲の操作履歴が不正なため保存できません。';
 
 class LessonPayloadValidationException implements Exception {
   const LessonPayloadValidationException(this.message);
@@ -36,6 +36,11 @@ void validateBoardSetForPersistence(BoardSet boardSet) {
       lessonBoardSwitchEventLimitMessage,
     );
   }
+  if (boardSet.viewportEvents.length > maxLessonViewportEvents) {
+    throw const LessonPayloadValidationException(
+      lessonViewportEventLimitMessage,
+    );
+  }
   final ids = <String>{};
   final orders = <int>{};
   if (boardSet.boards.any(
@@ -46,9 +51,41 @@ void validateBoardSetForPersistence(BoardSet boardSet) {
   )) {
     throw const LessonPayloadValidationException(lessonBoardDataInvalidMessage);
   }
-  if (boardSet.switchEvents.any((event) => !ids.contains(event.boardId))) {
+  final switchSequences = <int>{};
+  if (boardSet.switchEvents.any(
+    (event) =>
+        !ids.contains(event.boardId) ||
+        !event.globalTimestampSec.isFinite ||
+        event.globalTimestampSec < 0 ||
+        event.sequence < 0 ||
+        !switchSequences.add(event.sequence),
+  )) {
     throw const LessonPayloadValidationException(
       lessonBoardSwitchDataInvalidMessage,
+    );
+  }
+  final viewportSequences = <int>{};
+  if (boardSet.viewportEvents.any((event) {
+    final viewport = event.viewport;
+    final halfExtent = 0.5 / viewport.scale;
+    return !ids.contains(event.boardId) ||
+        !event.globalTimestampSec.isFinite ||
+        event.globalTimestampSec < 0 ||
+        event.sequence < 0 ||
+        !viewportSequences.add(event.sequence) ||
+        event.interactionId < 0 ||
+        !viewport.scale.isFinite ||
+        viewport.scale < minLessonWhiteboardViewportScale ||
+        viewport.scale > maxLessonWhiteboardViewportScale ||
+        !viewport.centerX.isFinite ||
+        !viewport.centerY.isFinite ||
+        viewport.centerX < halfExtent ||
+        viewport.centerX > 1 - halfExtent ||
+        viewport.centerY < halfExtent ||
+        viewport.centerY > 1 - halfExtent;
+  })) {
+    throw const LessonPayloadValidationException(
+      lessonViewportDataInvalidMessage,
     );
   }
   _validateEncodedPayload(boardSet.toMap());

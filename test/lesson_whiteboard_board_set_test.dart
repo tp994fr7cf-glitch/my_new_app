@@ -44,6 +44,48 @@ void main() {
         sequence: 0,
       ),
     ],
+    viewportEvents: [
+      LessonWhiteboardViewportEvent(
+        boardId: LessonWhiteboardBoard.defaultBoardId,
+        globalTimestampSec: 1,
+        sequence: 0,
+        interactionId: 0,
+        viewport: LessonWhiteboardViewport.full,
+      ),
+      LessonWhiteboardViewportEvent(
+        boardId: LessonWhiteboardBoard.defaultBoardId,
+        globalTimestampSec: 2,
+        sequence: 1,
+        interactionId: 0,
+        viewport: LessonWhiteboardViewport(
+          centerX: 0.5,
+          centerY: 0.5,
+          scale: 2,
+        ),
+      ),
+      LessonWhiteboardViewportEvent(
+        boardId: LessonWhiteboardBoard.defaultBoardId,
+        globalTimestampSec: 4,
+        sequence: 2,
+        interactionId: 1,
+        viewport: LessonWhiteboardViewport(
+          centerX: 0.5,
+          centerY: 0.5,
+          scale: 2,
+        ),
+      ),
+      LessonWhiteboardViewportEvent(
+        boardId: LessonWhiteboardBoard.defaultBoardId,
+        globalTimestampSec: 5,
+        sequence: 3,
+        interactionId: 1,
+        viewport: LessonWhiteboardViewport(
+          centerX: 0.5,
+          centerY: 0.5,
+          scale: 4,
+        ),
+      ),
+    ],
   );
 
   test('orders boards and resolves switches by global time then sequence', () {
@@ -77,8 +119,91 @@ void main() {
         2,
       ]);
       expect(restored.resolveBoardAt(10)?.id, 'second');
+      expect(restored.viewportEvents, hasLength(4));
+      expect(restored.nextViewportSequence, 4);
+      expect(restored.nextViewportInteractionId, 2);
     },
   );
+
+  test('viewport playback interpolates only within one interaction', () {
+    expect(
+      boardSet
+          .resolveViewportAt(
+            boardId: LessonWhiteboardBoard.defaultBoardId,
+            globalTimestampSec: 0.5,
+          )
+          .scale,
+      1,
+    );
+    expect(
+      boardSet
+          .resolveViewportAt(
+            boardId: LessonWhiteboardBoard.defaultBoardId,
+            globalTimestampSec: 1.5,
+          )
+          .scale,
+      1.5,
+    );
+    expect(
+      boardSet
+          .resolveViewportAt(
+            boardId: LessonWhiteboardBoard.defaultBoardId,
+            globalTimestampSec: 3,
+          )
+          .scale,
+      2,
+    );
+    expect(
+      boardSet
+          .resolveViewportAt(
+            boardId: LessonWhiteboardBoard.defaultBoardId,
+            globalTimestampSec: 4.5,
+          )
+          .scale,
+      3,
+    );
+  });
+
+  test('same-time viewport events resolve to the final sequence', () {
+    const pausedEvents = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+        ),
+      ],
+      viewportEvents: [
+        LessonWhiteboardViewportEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 3,
+          sequence: 0,
+          interactionId: 0,
+          viewport: LessonWhiteboardViewport.full,
+        ),
+        LessonWhiteboardViewportEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 3,
+          sequence: 1,
+          interactionId: 0,
+          viewport: LessonWhiteboardViewport(
+            centerX: 0.5,
+            centerY: 0.5,
+            scale: 8,
+          ),
+        ),
+      ],
+    );
+
+    expect(
+      pausedEvents
+          .resolveViewportAt(
+            boardId: LessonWhiteboardBoard.defaultBoardId,
+            globalTimestampSec: 3,
+          )
+          .scale,
+      8,
+    );
+  });
 
   test('parsing enforces the maximum of 20 boards', () {
     final parsed = BoardSet.fromMap({
@@ -91,6 +216,40 @@ void main() {
 
     expect(parsed.boards, hasLength(maxLessonWhiteboardBoards));
     expect(parsed.boards.last.id, 'board-19');
+  });
+
+  test('parsing bounds switch events and skips invalid sequences', () {
+    final parsed = BoardSet.fromMap({
+      'boards': [
+        {
+          'id': LessonWhiteboardBoard.defaultBoardId,
+          'order': 0,
+          'layers': <Object>[],
+        },
+      ],
+      'switchEvents': [
+        {
+          'boardId': LessonWhiteboardBoard.defaultBoardId,
+          'globalTimestampSec': 0,
+          'sequence': -1,
+        },
+        for (var index = 0; index <= maxLessonBoardSwitchEvents; index++)
+          {
+            'boardId': LessonWhiteboardBoard.defaultBoardId,
+            'globalTimestampSec': index / 10,
+            'sequence': index,
+          },
+        {
+          'boardId': LessonWhiteboardBoard.defaultBoardId,
+          'globalTimestampSec': 2,
+          'sequence': 2,
+        },
+      ],
+    });
+
+    expect(parsed.switchEvents, hasLength(maxLessonBoardSwitchEvents));
+    expect(parsed.switchEvents.first.sequence, 0);
+    expect(parsed.switchEvents.last.sequence, maxLessonBoardSwitchEvents - 1);
   });
 
   test('parsing repairs blank and duplicate board IDs', () {
@@ -185,6 +344,7 @@ void main() {
 
     expect(restored.publishedBoardSet.boards, hasLength(2));
     expect(restored.publishedBoardSet.switchEvents, hasLength(3));
+    expect(restored.publishedBoardSet.viewportEvents, hasLength(4));
     expect(lesson.toMap(), isNot(contains('draftBoardSet')));
     expect(lesson.toMap(), isNot(contains('whiteboardDraftLayers')));
     expect(restored.draftBoardSet, isEmpty);
@@ -209,5 +369,6 @@ void main() {
     expect(changed.whiteboardLayers.single.id, 'edited');
     expect(changed.publishedBoardSet.boardById('second'), isNotNull);
     expect(changed.publishedBoardSet.switchEvents, hasLength(3));
+    expect(changed.publishedBoardSet.viewportEvents, hasLength(4));
   });
 }

@@ -74,6 +74,10 @@ void main() {
     );
     expect(
       rules,
+      contains('request.resource.data.boardSet.viewportEvents.size() <= 2000'),
+    );
+    expect(
+      rules,
       contains('request.resource.data.mediaSegments.size() <= 100'),
     );
     expect(

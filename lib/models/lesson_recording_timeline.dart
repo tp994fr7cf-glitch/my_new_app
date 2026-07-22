@@ -1,4 +1,5 @@
 import 'lesson_whiteboard.dart';
+import 'lesson_whiteboard_board_set.dart';
 
 typedef LessonMonotonicNow = Duration Function();
 
@@ -101,5 +102,25 @@ WhiteboardStroke scaleRecordedWhiteboardStroke({
     ],
     colorArgb: stroke.colorArgb,
     strokeWidth: stroke.strokeWidth,
+  );
+}
+
+LessonWhiteboardViewportEvent scaleRecordedViewportEvent({
+  required LessonWhiteboardViewportEvent event,
+  required double segmentStartSec,
+  required double scale,
+  required double segmentDurationSec,
+}) {
+  final localSec = (event.globalTimestampSec - segmentStartSec).clamp(
+    0.0,
+    double.infinity,
+  );
+  return LessonWhiteboardViewportEvent(
+    boardId: event.boardId,
+    globalTimestampSec:
+        segmentStartSec + (localSec * scale).clamp(0.0, segmentDurationSec),
+    sequence: event.sequence,
+    interactionId: event.interactionId,
+    viewport: event.viewport,
   );
 }
