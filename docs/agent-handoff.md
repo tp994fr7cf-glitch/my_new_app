@@ -1,8 +1,12 @@
-# 引き継ぎノート（my_new_app / レッスン再生・ホワイトボード修正後）
+# 引き継ぎノート（my_new_app / Android音声録音＋同時板書機能追加後）
 
-最終更新: 2026-07-09
+最終更新: 2026-07-23
 
-**⚠️ 現在の状態: 音声⇄動画の切り替え不具合の修正は、ユーザーの判断でいったん保留中です。**
+**最新機能「録音しながら書く」は、Android実機でユーザー確認済みです。**
+**実装ブランチ `cursor/android-audio-whiteboard-recording-c48f` はGitHubへpush済みですが、
+まだmainへマージされていません。**
+
+**⚠️ 以前からの音声⇄動画の切り替え不具合は、ユーザーの判断でいったん保留中です。**
 **次の agent は、ユーザーから明示的に「この続きをやってほしい」と言われない限り、
 この不具合を自発的に直そうとしないでください。** 詳細は本ファイル末尾「8. 引き継ぎ用
 コピペブロック」を参照。
@@ -10,6 +14,125 @@
 本番 Web: https://my-new-app-naona-20260523.web.app
 Firebase プロジェクト: my-new-app-naona-20260523
 Firebase Console: https://console.firebase.google.com/project/my-new-app-naona-20260523/overview
+
+---
+
+## 0. 2026-07-23 最新引き継ぎ（最初に読むこと）
+
+### Gitの現在地
+
+- main / origin/main: `fd28776`
+- 実装ブランチ: `cursor/android-audio-whiteboard-recording-c48f`
+- 機能実装コミット: `729030a Add synchronized audio whiteboard recording`
+- ブランチは `origin/cursor/android-audio-whiteboard-recording-c48f` へpush済み
+- **mainには未マージ**。次のagentはmainから作業を始めると今回の機能を失うため、
+  まず現在のブランチと `git log` を確認すること
+- Android/Flutterの大量のビルドキャッシュが未追跡ファイルとして残る場合がある。
+  `.dart_tool/`、`build/`、`android/.gradle/` 等を誤ってコミットしないこと
+
+### 今回追加した機能
+
+先生がAndroid端末で**音声を録音しながら、同時にホワイトボードへ書ける機能**を追加した。
+これは既存の「音声・動画を先にアップロードしてから板書・編集する機能」を置き換えるものではなく、
+追加機能である。既存のアップロード後編集は残っている。
+
+仕様:
+
+- 初期リリースは音声のみ。動画同時撮影は未実装
+- 1パート約6分は目安であり、6分で自動停止しない
+- 録音中の一時停止・再開に対応
+- 電話着信、画面ロック、別アプリ移動時は自動停止し、端末内ファイルを保持
+- 録音中は端末へ保存し、終了後に先生が再生確認して
+  「この音声を使用」を押した場合だけFirebase Storageへアップロード
+- 「録り直す」場合は、その録音と同時に作った板書を削除して最初からやり直す
+- 公開後の音声は変更不可。公開後もホワイトボードは既存機能で編集可能
+- 録音中の板書点は最大20点/秒
+- Firestore用板書データは約700KBで警告、850KBで追加描画を停止
+- メディア上限は50MBから100MBへ変更（アプリ・Storage rulesの両方）
+- Webでは録音機能を提供しないstub実装。主対象はAndroid実機・エミュレータ
+- 録音URLと時間は非公開のlesson draftにも保存し、公開前のアプリ終了による紛失を防止
+
+主な新規ファイル:
+
+- `lib/widgets/lesson_audio_whiteboard_recorder_panel.dart`
+- `lib/services/lesson_audio_recording_service.dart`
+- `lib/services/lesson_audio_recording_service_io.dart`
+- `lib/services/lesson_audio_recording_service_stub.dart`
+- `lib/services/lesson_audio_recording_types.dart`
+- `lib/models/lesson_recording_timeline.dart`
+- `test/lesson_audio_whiteboard_recorder_panel_test.dart`
+- `test/lesson_recording_timeline_test.dart`
+
+統合・保存の中心:
+
+- `lib/screens/teacher_lesson_manage_page.dart`
+- `lib/services/course_lesson_repository.dart`
+- `lib/widgets/lesson_whiteboard_editor_panel.dart`
+- `lib/models/lesson_media_segment.dart`
+- `lib/models/lesson_media_timeline.dart`
+
+### 実機で見つかった再生不具合と修正
+
+ユーザーがAndroid実機で確認し、次の3件はすべて修正後に「直った」と確認済み。
+
+1. **先生プレビューが音声終端でフリーズする**
+   - 原因: 終了位置通知 → `pause()` → pauseによる位置再通知 → 再度`pause()`という循環
+   - ログでは `_pauseInternal` と `AudioLessonMediaPlayback.pause` が連続していた
+   - Androidの `signal 3` / tombstoned は、この処理集中でANRになった結果
+   - 修正: 位置通知から終端pauseを繰り返す処理を撤去し、playlist側のpauseを多重実行しないよう防御
+
+2. **受講者側が92%地点で意図的に一時停止する**
+   - ユーザーが不要と判断したため、92%完了判定を完全撤去
+   - 現在は最終パートのjust_audio自然終了イベントで完了待ち状態へ移る
+   - Firestoreの既存キー `completionThresholdSec` は互換性のため残すが、値は100%終端
+
+3. **「録音しながら書く」の音声だけ、表示上の残り1秒で終了する**
+   - 原因: 録音実長7.2秒などを `ceil()` して8秒として保存していた一方、
+     just_audioは実ファイル終端7.2秒で自然終了していた
+   - 修正: 表示・従来互換用の `durationSec` は通常アップロードと同じ整数秒（切り捨て）、
+     正確な同期用に `durationMs` を追加
+   - `LessonMediaTimeline` は `durationMs` があればミリ秒精度の `durationSecExact` を使い、
+     なければ従来の `durationSec` へフォールバック
+   - 板書タイムスタンプ、パート開始位置、自然終了判定は正確な実時間を使う
+   - 公開後は `durationMs` もロックされ、音声時間を変更できない
+   - **この二層構造を単純なfloor/ceilだけへ戻さないこと**。板書終端や次パート境界がずれる
+
+### 実機確認結果（2026-07-23）
+
+ユーザー確認済み:
+
+- 録音しながら板書できる
+- 先生プレビュー終端のフリーズは解消
+- 受講者側の92%一時停止は解消
+- 新しく録音したパートの「残り1秒」表示も解消
+
+今回の機能について、現時点でユーザーから報告されている未解決不具合はない。
+
+### Firebase rules
+
+今回変更した `firestore.rules` と `storage.rules` は、ユーザーが次のコマンドで本番へ手動デプロイ済み:
+
+```powershell
+firebase deploy --only firestore:rules,storage
+```
+
+デプロイは成功。Firestore compilerの既存warningは出たが、rulesは正常にreleaseされた。
+以後rulesを変更しない限り、再デプロイ不要。
+
+### 確認済みコマンド
+
+- 録音・タイムライン・再生・公開ロック・先生管理画面・Firestore静的テストを個別実行し成功
+- `flutter build apk --debug --no-pub` 成功
+- `flutter analyze`: 今回の新規errorなし。既存のwarning/infoが26件残る
+- 全テストには以前からheadless環境固有の失敗があるため、下記の旧引き継ぎ内容も参照
+
+### 次のagentへの注意
+
+- 今回の音声録音＋同時板書機能はユーザー実機確認済み。新しい依頼がない限り追加改修しない
+- 既存アップロード後板書・編集機能を削除しない
+- `durationMs` と `durationSecExact` を消さない
+- `[LessonMediaSwitchDebug]` ログは既存方針どおり無害な診断ログとして残す
+- 音声⇄動画切り替え不具合は引き続き保留。ユーザーから明示指示があるまで着手しない
 
 ---
 
@@ -51,9 +174,12 @@ cd C:\Users\naona\StudioProjects\my_new_app
 
 ---
 
-## 3. 現在の main の状態（2026-07-09）
+## 3. 現在のGit状態（2026-07-23）
 
-**main 先端: PR #64 マージ済み（コミット cda4b50 以降。詳細は `git log` で確認）**
+**main / origin/main: `fd28776`**
+
+**今回の機能ブランチ: `cursor/android-audio-whiteboard-recording-c48f`**
+（機能実装コミット `729030a`、GitHubへpush済み、mainへ未マージ）
 
 **⚠️ 音声⇄動画パートの切り替え不具合は、ユーザーの判断で調査・修正をいったん保留中。
 次の agent が自発的に着手しないこと。詳細は本ファイル末尾のコピペブロックを参照。**
@@ -521,9 +647,15 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 **以下を1つのブロックとしてそのままコピーすること。ブロックを分割しないこと。**
 
 ```
-【引き継ぎ】my_new_app Flutter/Firebase 学習アプリ（2026-07-09・音声⇄動画切り替え不具合はユーザー判断で保留中）
+【引き継ぎ】my_new_app Flutter/Firebase 学習アプリ（2026-07-23・Android音声録音＋同時板書追加済み）
 
 ■ 最重要・最初に読むこと
+2026-07-23、先生がAndroid端末で「録音しながらホワイトボードへ書く」機能を追加し、
+ユーザーが実機で正常動作を確認済み。
+実装ブランチ `cursor/android-audio-whiteboard-recording-c48f` はGitHubへpush済みだが、
+mainには未マージ。mainから新規ブランチを作ると今回の機能を失うため、必ず最初に
+現在ブランチとgit logを確認すること。
+
 ユーザーは「音声⇄動画パートの切り替え不具合」に何度も修正を試みたが直りきらず、
 2026-07-09 に「一旦諦める。しばらくこのバグは直さない」と明言した。
 → このバグについて、次の agent は自発的に調査・修正を始めないこと。
@@ -537,8 +669,10 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 - ローカル: C:\Users\naona\StudioProjects\my_new_app（Windows、PowerShell 使用可）
 - Firebase: my-new-app-naona-20260523
 - 本番 Web: https://my-new-app-naona-20260523.web.app
-- main 先端: PR #64 マージ済み（コミット cda4b50 のあとに続く最新コミットを git log で確認すること）
-- ブランチ名ルール（Cloud Agent）: cursor/<名前>-c0b7（このセッションで使用中のサフィックス。
+- main / origin/main: fd28776
+- 実装ブランチ: cursor/android-audio-whiteboard-recording-c48f
+- 機能実装コミット: 729030a Add synchronized audio whiteboard recording
+- ブランチ名ルール（Cloud Agent）: cursor/<名前>-c48f（このセッションで使用中のサフィックス。
   セッションが変わるとサフィックスも変わるので、実際の指示に従うこと）
 
 ■ ユーザー preferences（必読）
@@ -556,6 +690,12 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 - テストレッスン構成: 音声パート90秒 → 動画パート90秒 = 合計180秒
 
 ■ いま直っていること（ユーザー確認済み・回帰なし）
+- Android実機で音声を録音しながらホワイトボードへ書ける
+- 録音停止後、端末内で再生確認してから手動アップロードできる
+- 録音の一時停止・再開、アプリ離脱時の自動停止・端末保存
+- 先生プレビューの音声終端フリーズ（pause位置通知ループ）は解消
+- 92%地点で意図的に一時停止する旧仕様は撤去済み
+- 録音パートだけ「残り1秒」で終了する表示不整合は、durationMsによる正確な同期で解消
 - 動画再生中に音声へ巻き戻しても時間表示が止まらない（#54）
 - 時間表示・スライダーのガタつきなし（#55）
 - 視聴完了後のレッスン開き直し表示（#55）
@@ -563,6 +703,22 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 - 音声パートのホワイトボードも、録画し直した後は滑らかになった（#59・ユーザー確認済み）
 - 一時停止ボタンが常に即座に反応する（#64・ユーザー確認済み。以前は音声⇄動画の切り替え中に
   一時停止すると反応しなくなるバグが#63で新たに入り込んだが、これは直った）
+
+■ 2026-07-23 音声録音＋同時板書の重要技術メモ
+- 既存のアップロード後板書・編集機能は残す。今回機能は追加であり置換ではない
+- 表示・互換用 `LessonMediaSegment.durationSec` は整数秒
+- 正確な録音実長は `LessonMediaSegment.durationMs` に保存
+- `durationSecExact` / `LessonMediaTimeline.totalDurationSecExact` が板書同期とパート境界を担当
+- durationMsのない旧データはdurationSecへフォールバック
+- durationSecだけをceil/floorしてdurationMsを消すと、板書終端・次パート開始がずれるので禁止
+- 録音中の板書は最大20点/秒、700KB警告、850KB停止
+- メディア上限100MB
+- rulesはユーザーが本番へ手動デプロイ済み
+- Android debug APKビルド成功。関連テスト成功。analyzeは新規errorなし（既存26指摘）
+- 主な新規ファイル:
+  lesson_audio_whiteboard_recorder_panel.dart /
+  lesson_audio_recording_service*.dart /
+  lesson_recording_timeline.dart
 
 ■ 未解決の音声⇄動画切り替え不具合（ユーザーの判断で 2026-07-09 に一旦保留・要着手判断）
 
@@ -652,10 +808,13 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 
 ■ ローカル確認（ユーザー PC）
 cd C:\Users\naona\StudioProjects\my_new_app
-git pull origin main
+git fetch origin
+git switch cursor/android-audio-whiteboard-recording-c48f
+git pull --ff-only
 flutter pub get
 flutter test
 flutter run
+（今回ブランチがmainへマージされた後は、mainへ戻ってgit pull origin mainでよい）
 
 ■ Firebase rules（変更時のみ・手動）
 cd C:\Users\naona\StudioProjects\my_new_app
