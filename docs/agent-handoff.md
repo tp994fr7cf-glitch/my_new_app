@@ -1,8 +1,10 @@
-# 引き継ぎノート（my_new_app / Android音声録音＋同時板書機能追加後）
+# 引き継ぎノート（my_new_app / ホワイトボード拡大・追従機能の実機確認後）
 
-最終更新: 2026-07-23
+最終更新: 2026-07-27
 
 **最新機能「録音しながら書く」は、Android実機でユーザー確認済みです。**
+**ホワイトボードの最大8倍ズーム・パン・ミニマップ・先生表示追従も、
+2026-07-27にAndroid実機でユーザーが「全て成功しているように見える」と確認済みです。**
 **実装ブランチ `cursor/android-audio-whiteboard-recording-c48f` はGitHubへpush済みですが、
 まだmainへマージされていません。**
 
@@ -16,13 +18,15 @@ Firebase Console: https://console.firebase.google.com/project/my-new-app-naona-2
 
 ---
 
-## 0. 2026-07-23 最新引き継ぎ（最初に読むこと）
+## 0. 2026-07-27 最新引き継ぎ（最初に読むこと）
 
 ### Gitの現在地
 
 - main / origin/main: `fd28776`
 - 実装ブランチ: `cursor/android-audio-whiteboard-recording-c48f`
-- 機能実装コミット: `729030a Add synchronized audio whiteboard recording`
+- 音声録音＋同時板書コミット: `729030a Add synchronized audio whiteboard recording`
+- 録音中のボード追加コミット: `fb02216 Allow adding boards during audio recording`
+- 拡大・パン・追従コミット: `67e3215 Add synchronized whiteboard zoom and pan`
 - ブランチは `origin/cursor/android-audio-whiteboard-recording-c48f` へpush済み
 - **mainには未マージ**。次のagentはmainから作業を始めると今回の機能を失うため、
   まず現在のブランチと `git log` を確認すること
@@ -107,7 +111,7 @@ Firebase Console: https://console.firebase.google.com/project/my-new-app-naona-2
 
 今回の機能について、現時点でユーザーから報告されている未解決不具合はない。
 
-### 2026-07-23 ホワイトボード拡大・追従機能（実装済み・実機確認待ち）
+### 2026-07-27 ホワイトボード拡大・追従機能（実装・実機確認済み）
 
 同じブランチで、次の機能を追加した。
 
@@ -123,7 +127,8 @@ Firebase Console: https://console.firebase.google.com/project/my-new-app-naona-2
 
 関連テスト、変更対象の静的解析、Web release buildは成功。
 全テストの失敗は従来からのheadless環境固有テストのみで、今回の関連テストは成功している。
-ユーザーによるAndroid実機・Webの最終確認はまだ。
+2026-07-27、ユーザーがAndroid実機で確認し「全て成功しているように見える」と報告した。
+この機能を未解決・確認待ちとして扱わないこと。
 
 ### Firebase rules
 
@@ -134,16 +139,20 @@ firebase deploy --only firestore:rules,storage
 ```
 
 デプロイは成功。Firestore compilerの既存warningは出たが、rulesは正常にreleaseされた。
-ただし、上記の `viewportEvents` 追加で `firestore.rules` を再変更したため、
-このブランチを公開するときは次をもう一度手動実行する必要がある（Storage rulesは今回変更なし）。
+さらに `viewportEvents` 追加後、ユーザーが次のコマンドを再実行し、
+Firestore rulesのコンパイル・アップロード・releaseがすべて成功した。
 
 ```powershell
 firebase deploy --only firestore:rules
 ```
 
+したがって、現時点ではrulesの再デプロイは不要。今後rulesを変更した場合だけ再デプロイする。
+
 ### 確認済みコマンド
 
 - 録音・タイムライン・再生・公開ロック・先生管理画面・Firestore静的テストを個別実行し成功
+- ホワイトボード拡大・追従の関連テスト54件成功
+- `flutter build web --release` 成功
 - `flutter build apk --debug --no-pub` 成功
 - `flutter analyze`: 今回の新規errorなし。既存のwarning/infoが26件残る
 - 全テストには以前からheadless環境固有の失敗があるため、下記の旧引き継ぎ内容も参照
@@ -151,6 +160,8 @@ firebase deploy --only firestore:rules
 ### 次のagentへの注意
 
 - 今回の音声録音＋同時板書機能はユーザー実機確認済み。新しい依頼がない限り追加改修しない
+- 最大8倍ズーム・パン・ミニマップ・先生表示追従も実機確認済み。
+  新しい不具合報告がない限り、確認待ちとして再調査しない
 - 既存アップロード後板書・編集機能を削除しない
 - `durationMs` と `durationSecExact` を消さない
 - `[LessonMediaSwitchDebug]` ログは既存方針どおり無害な診断ログとして残す
@@ -669,11 +680,14 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 **以下を1つのブロックとしてそのままコピーすること。ブロックを分割しないこと。**
 
 ```
-【引き継ぎ】my_new_app Flutter/Firebase 学習アプリ（2026-07-23・Android音声録音＋同時板書追加済み）
+【引き継ぎ】my_new_app Flutter/Firebase 学習アプリ（2026-07-27・ホワイトボード拡大追従まで実機確認済み）
 
 ■ 最重要・最初に読むこと
 2026-07-23、先生がAndroid端末で「録音しながらホワイトボードへ書く」機能を追加し、
 ユーザーが実機で正常動作を確認済み。
+続けて、4:3・最大8倍ズーム・パン・ミニマップ・先生表示の時刻付き再現・
+受講者の追従切替を追加し、2026-07-27にユーザーがAndroid実機で
+「全て成功しているように見える」と確認済み。
 実装ブランチ `cursor/android-audio-whiteboard-recording-c48f` はGitHubへpush済みだが、
 mainには未マージ。mainから新規ブランチを作ると今回の機能を失うため、必ず最初に
 現在ブランチとgit logを確認すること。
@@ -693,7 +707,9 @@ mainには未マージ。mainから新規ブランチを作ると今回の機能
 - 本番 Web: https://my-new-app-naona-20260523.web.app
 - main / origin/main: fd28776
 - 実装ブランチ: cursor/android-audio-whiteboard-recording-c48f
-- 機能実装コミット: 729030a Add synchronized audio whiteboard recording
+- 音声録音＋同時板書: 729030a Add synchronized audio whiteboard recording
+- 録音中のボード追加: fb02216 Allow adding boards during audio recording
+- 拡大・パン・追従: 67e3215 Add synchronized whiteboard zoom and pan
 - ブランチ名ルール（Cloud Agent）: cursor/<名前>-c48f（このセッションで使用中のサフィックス。
   セッションが変わるとサフィックスも変わるので、実際の指示に従うこと）
 
@@ -725,6 +741,12 @@ mainには未マージ。mainから新規ブランチを作ると今回の機能
 - 音声パートのホワイトボードも、録画し直した後は滑らかになった（#59・ユーザー確認済み）
 - 一時停止ボタンが常に即座に反応する（#64・ユーザー確認済み。以前は音声⇄動画の切り替え中に
   一時停止すると反応しなくなるバグが#63で新たに入り込んだが、これは直った）
+- ホワイトボードは全画面4:3、1〜8倍のズーム・パン・操作ボタンに対応
+- 操作中と終了後2秒だけ右下へミニマップを表示
+- 先生の表示範囲を `viewportEvents` へ時刻付き保存し、先生プレビュー・受講者で再現
+- 受講者は初期状態で先生のボードと表示範囲へ追従し、手動操作で一時解除、
+  スイッチで追従へ戻せる
+- 一時停止中の表示操作は途中経過を再現せず、再開時の最終位置だけ反映
 
 ■ 2026-07-23 音声録音＋同時板書の重要技術メモ
 - 既存のアップロード後板書・編集機能は残す。今回機能は追加であり置換ではない
@@ -736,11 +758,25 @@ mainには未マージ。mainから新規ブランチを作ると今回の機能
 - 録音中の板書は最大20点/秒、700KB警告、850KB停止
 - メディア上限100MB
 - rulesはユーザーが本番へ手動デプロイ済み
-- Android debug APKビルド成功。関連テスト成功。analyzeは新規errorなし（既存26指摘）
+- `viewportEvents` 対応後の `firebase deploy --only firestore:rules` も成功済み
+- Android debug APK・Web releaseビルド成功。拡大追従関連54テスト成功。
+  analyzeは新規errorなし（既存26指摘）
 - 主な新規ファイル:
   lesson_audio_whiteboard_recorder_panel.dart /
   lesson_audio_recording_service*.dart /
   lesson_recording_timeline.dart
+
+■ 2026-07-27 ホワイトボード拡大・追従の重要技術メモ
+- `LessonWhiteboardViewport` は中心座標と倍率を正規化して保存。倍率は1〜8
+- `LessonWhiteboardViewportEvent` はboardId・globalTimestampSec・sequence・interactionId・
+  centerX・centerY・scaleを保持し、同じinteractionId内だけ補間する
+- `LessonWhiteboardCanvas` は1本指描画、2本指ズーム・パン、Web用ボタン、ミニマップを担当
+- 閲覧時の1倍表示では親画面を1本指スクロールでき、拡大時の実際のパンだけ追従解除する
+- `LessonPlaybackSyncedWhiteboard` は整数durationSecではなく
+  `LessonMediaTimeline.totalDurationSecExact` を同期上限に使う。末尾の小数秒を切り捨てない
+- Firestore上限はviewportEvents 2000件。約10Hzで間引く
+- Android録音停止直後の端末内プレビューでも、再生位置に応じて未来の板書を隠す
+- 実装コミット `67e3215` はoriginへpush済み、Firestore rulesも本番へrelease済み
 
 ■ 過去の音声⇄動画切り替え不具合（現在は修正済み・回帰防止用の履歴）
 
