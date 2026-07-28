@@ -1952,6 +1952,14 @@ class _LessonEditorCard extends StatelessWidget {
     final builtSegments = editor.buildSegments(
       fallbackDurationLabel: durationLabel,
     );
+    final publishedSegmentIds = editor.publishedSegmentIdsMetadataValid
+        ? editor.publishedSegmentIds.toSet()
+        : builtSegments.map((segment) => segment.id).toSet();
+    final publishedTimelineDurationSec = LessonMediaTimeline(
+      segments: builtSegments
+          .where((segment) => publishedSegmentIds.contains(segment.id))
+          .toList(),
+    ).totalDurationSecExact;
     final canAddSegment = mediaConfig.canAddSegment(
       currentSegmentCount: editor.segments.length,
     );
@@ -2188,6 +2196,7 @@ class _LessonEditorCard extends StatelessWidget {
                 enabled: !editor.hasAudioRecordingDraft,
                 publishedBoardSet: editor.publishedBoardSet,
                 draftBoardSet: editor.draftBoardSet,
+                publishedTimelineDurationSec: publishedTimelineDurationSec,
                 onBoardSetDraftSaved: onDraftSaved,
                 onBoardSetChanged: (boardSet) {
                   editor.workingBoardSet = boardSet;

@@ -37,6 +37,8 @@ class LessonWhiteboardCanvas extends StatefulWidget {
     this.viewport,
     this.onViewportChanged,
     this.viewportInteractionEnabled = true,
+    this.showViewportControls = true,
+    this.bottomLeftOverlay,
     this.maxWidth = lessonWhiteboardMaxWidth,
     this.backgroundColor = Colors.white,
   });
@@ -51,6 +53,8 @@ class LessonWhiteboardCanvas extends StatefulWidget {
   final LessonWhiteboardViewport? viewport;
   final ValueChanged<LessonWhiteboardViewportChange>? onViewportChanged;
   final bool viewportInteractionEnabled;
+  final bool showViewportControls;
+  final Widget? bottomLeftOverlay;
   final double maxWidth;
   final Color backgroundColor;
 
@@ -542,8 +546,11 @@ class _LessonWhiteboardCanvasState extends State<LessonWhiteboardCanvas> {
                             ),
                           ),
                         ),
-                        if (widget.viewportInteractionEnabled)
+                        if (widget.viewportInteractionEnabled &&
+                            widget.showViewportControls)
                           _buildControls(size),
+                        if (widget.bottomLeftOverlay case final overlay?)
+                          Positioned(left: 8, bottom: 8, child: overlay),
                         Positioned(
                           right: 8,
                           bottom: 8,

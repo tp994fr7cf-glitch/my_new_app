@@ -61,6 +61,9 @@ class _LessonAudioWhiteboardRecorderPanelState
   _RecordingStatus _status = _RecordingStatus.idle;
   late BoardSet _boardSet;
   late String _selectedBoardId;
+  BoardSet? _preRecordingBoardSet;
+  String? _preRecordingSelectedBoardId;
+  Map<String, LessonWhiteboardViewport> _preRecordingEditorViewports = {};
   List<WhiteboardStroke> _strokes = [];
   WhiteboardStroke? _inProgressStroke;
   List<WhiteboardPoint> _inProgressPoints = [];
@@ -71,6 +74,7 @@ class _LessonAudioWhiteboardRecorderPanelState
   int? _activeViewportInteractionId;
   double? _lastViewportEventSec;
   LessonWhiteboardViewport? _pendingPausedViewport;
+  final Map<String, LessonWhiteboardViewport> _editorViewports = {};
   PlatformFile? _recordedFile;
   int _recordedDurationSec = 0;
   int _recordedDurationMs = 0;
@@ -81,6 +85,7 @@ class _LessonAudioWhiteboardRecorderPanelState
   Future<void>? _activeStopFuture;
   Future<void>? _activeTransitionFuture;
   bool _isUploading = false;
+  bool _isDeletingCurrentRecording = false;
   bool _drawingLimitReached = false;
   bool _payloadWarningShown = false;
   String? _message;
@@ -96,13 +101,18 @@ class _LessonAudioWhiteboardRecorderPanelState
       _status == _RecordingStatus.stopping ||
       _isStopping;
   bool get _hasUnsavedRecording =>
-      _hasActiveRecording || _recordedFile != null || _isUploading;
+      _hasActiveRecording ||
+      _recordedFile != null ||
+      _isUploading ||
+      _isDeletingCurrentRecording;
+  bool get _controlsBusy => _isUploading || _isDeletingCurrentRecording;
   bool get _drawingEnabled => _isRecording && !_drawingLimitReached;
   bool get _canAddBoard =>
-      (_isRecording || _isPaused) &&
+      (_status == _RecordingStatus.idle || _isRecording || _isPaused) &&
       !_drawingLimitReached &&
-      _boardSet.canAddBoard &&
-      _boardSet.switchEvents.length < maxLessonBoardSwitchEvents;
+      _boardSet.canAddBoard;
+  bool get _canSelectBoard =>
+      _status == _RecordingStatus.idle || _isRecording || _isPaused;
   double get _recordingPositionSec =>
       _sessionSegmentStartSec + _clock.elapsedSeconds;
   double get _previewGlobalPositionSec =>
@@ -113,6 +123,12 @@ class _LessonAudioWhiteboardRecorderPanelState
       _boardSet.boardById(_selectedBoardId) ??
       _boardSet.defaultBoard ??
       _boardSet.ensureEditable().defaultBoard!;
+  LessonWhiteboardViewport get _selectedEditorViewport =>
+      _editorViewports[_selectedBoardId] ??
+      _boardSet.resolveViewportAt(
+        boardId: _selectedBoardId,
+        globalTimestampSec: _recordingPositionSec,
+      );
 
   List<WhiteboardStroke> get _displayedStrokes {
     if (_status != _RecordingStatus.ready) {
@@ -139,7 +155,16 @@ class _LessonAudioWhiteboardRecorderPanelState
     _sessionSegmentStartSec = widget.segmentStartSec;
     _previewPlayingSubscription = _preview.playingStream.listen((playing) {
       if (mounted) {
-        setState(() => _previewPlaying = playing);
+        setState(() {
+          _previewPlaying = playing;
+          if (!playing && _status == _RecordingStatus.ready) {
+            final board = _boardSet.resolveBoardAt(_previewGlobalPositionSec);
+            if (board != null && board.id != _selectedBoardId) {
+              _selectedBoardId = board.id;
+              _loadSelectedStrokes();
+            }
+          }
+        });
         if (playing) {
           _startPreviewDisplayTimer();
         } else {
@@ -228,8 +253,72 @@ class _LessonAudioWhiteboardRecorderPanelState
     _activeViewportInteractionId = null;
     _lastViewportEventSec = null;
     _pendingPausedViewport = null;
+    _editorViewports
+      ..clear()
+      ..[_selectedBoardId] = _boardSet.resolveViewportAt(
+        boardId: _selectedBoardId,
+        globalTimestampSec: _sessionSegmentStartSec,
+      );
     _drawingLimitReached = false;
     _payloadWarningShown = false;
+    _preRecordingBoardSet = null;
+    _preRecordingSelectedBoardId = null;
+    _preRecordingEditorViewports = {};
+  }
+
+  void _capturePreRecordingSetup() {
+    _commitSelectedBoard();
+    _preRecordingBoardSet = _boardSet;
+    _preRecordingSelectedBoardId = _selectedBoardId;
+    _preRecordingEditorViewports = Map.of(_editorViewports);
+    _sessionStrokeIds.clear();
+    _sessionSwitchSequences.clear();
+    _sessionViewportSequences.clear();
+    _activeViewportInteractionId = null;
+    _lastViewportEventSec = null;
+    _pendingPausedViewport = null;
+    _inProgressStroke = null;
+    _inProgressPoints = [];
+    _strokeStartSec = null;
+    _drawingLimitReached = false;
+    _payloadWarningShown = false;
+  }
+
+  void _restorePreRecordingSetup() {
+    _boardSet =
+        _preRecordingBoardSet ?? widget.initialBoardSet.ensureEditable();
+    final preferredId = _preRecordingSelectedBoardId;
+    _selectedBoardId =
+        (preferredId != null && _boardSet.boardById(preferredId) != null
+            ? preferredId
+            : _boardSet.resolveBoardAt(widget.segmentStartSec)?.id) ??
+        _boardSet.defaultBoard?.id ??
+        LessonWhiteboardBoard.defaultBoardId;
+    _editorViewports
+      ..clear()
+      ..addAll(_preRecordingEditorViewports);
+    _editorViewports.putIfAbsent(
+      _selectedBoardId,
+      () => _boardSet.resolveViewportAt(
+        boardId: _selectedBoardId,
+        globalTimestampSec: widget.segmentStartSec,
+      ),
+    );
+    _loadSelectedStrokes();
+    _inProgressStroke = null;
+    _inProgressPoints = [];
+    _strokeStartSec = null;
+    _sessionStrokeIds.clear();
+    _sessionSwitchSequences.clear();
+    _sessionViewportSequences.clear();
+    _activeViewportInteractionId = null;
+    _lastViewportEventSec = null;
+    _pendingPausedViewport = null;
+    _drawingLimitReached = false;
+    _payloadWarningShown = false;
+    _preRecordingBoardSet = null;
+    _preRecordingSelectedBoardId = null;
+    _preRecordingEditorViewports = {};
   }
 
   void _loadSelectedStrokes() {
@@ -283,6 +372,7 @@ class _LessonAudioWhiteboardRecorderPanelState
       if (previousFile != null) {
         await _recorder.deleteRecording(previousFile);
       }
+      _capturePreRecordingSetup();
       await _recorder.start();
       _sessionSegmentStartSec = widget.segmentStartSec;
       _clock.start();
@@ -291,7 +381,6 @@ class _LessonAudioWhiteboardRecorderPanelState
         return;
       }
       setState(() {
-        _resetWorkingBoardSet();
         _recordedFile = null;
         _recordedDurationSec = 0;
         _recordedDurationMs = 0;
@@ -301,7 +390,11 @@ class _LessonAudioWhiteboardRecorderPanelState
       });
     } catch (error) {
       if (mounted) {
+        _clock.reset();
         setState(() {
+          if (_preRecordingBoardSet != null) {
+            _restorePreRecordingSetup();
+          }
           _status = _RecordingStatus.idle;
           _message = '録音を開始できませんでした: $error';
         });
@@ -517,7 +610,13 @@ class _LessonAudioWhiteboardRecorderPanelState
         await _recorder.cancel();
       } catch (_) {}
       if (mounted) {
+        _clock.reset();
         setState(() {
+          _recordedFile = null;
+          _recordedDurationSec = 0;
+          _recordedDurationMs = 0;
+          _previewLoaded = false;
+          _restorePreRecordingSetup();
           _status = _RecordingStatus.idle;
           _message = '録音の保存に失敗しました: $error';
         });
@@ -604,7 +703,7 @@ class _LessonAudioWhiteboardRecorderPanelState
   }
 
   Future<void> _togglePreview() async {
-    if (_recordedFile == null || _isUploading) {
+    if (_recordedFile == null || _controlsBusy) {
       return;
     }
     try {
@@ -634,7 +733,7 @@ class _LessonAudioWhiteboardRecorderPanelState
         file.size > LessonMediaStorageService.maxBytes ||
         _recordedDurationSec <= 0 ||
         _recordedDurationMs <= 0 ||
-        _isUploading) {
+        _controlsBusy) {
       return;
     }
     setState(() {
@@ -669,46 +768,67 @@ class _LessonAudioWhiteboardRecorderPanelState
     }
   }
 
-  Future<void> _recordAgain() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('録り直しますか？'),
-        content: const Text('端末に保存した音声と、同時に書いた書き物を両方削除します。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('キャンセル'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('録り直す'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) {
+  Future<void> _deleteCurrentRecording() async {
+    if (_controlsBusy) {
       return;
     }
-    await _preview.stop();
-    final file = _recordedFile;
-    if (file != null) {
-      await _recorder.deleteRecording(file);
+    setState(() => _isDeletingCurrentRecording = true);
+    try {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('今の録音を消しますか？'),
+          content: const Text('端末に保存した音声と、同時に書いた書き物を両方削除します。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('キャンセル'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('削除'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) {
+        return;
+      }
+      setState(() => _message = '今の録音を削除しています…');
+      await _preview.stop();
+      final file = _recordedFile;
+      if (file != null) {
+        await _recorder.deleteRecording(file);
+      }
+      if (!mounted) {
+        return;
+      }
+      _clock.reset();
+      setState(() {
+        _recordedFile = null;
+        _recordedDurationSec = 0;
+        _recordedDurationMs = 0;
+        _previewLoaded = false;
+        _status = _RecordingStatus.idle;
+        _restorePreRecordingSetup();
+        _message = '今の録音を削除しました。「録音を開始」を押すまで録音は始まりません。';
+      });
+      widget.onBusyChanged(false);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _message = '今の録音を削除できませんでした: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isDeletingCurrentRecording = false);
+      }
     }
-    _clock.reset();
-    setState(() {
-      _recordedFile = null;
-      _recordedDurationSec = 0;
-      _recordedDurationMs = 0;
-      _previewLoaded = false;
-      _status = _RecordingStatus.idle;
-      _resetWorkingBoardSet();
-      _message = null;
-    });
-    await _startRecording();
   }
 
   Future<void> _discardRecordingPart() async {
+    if (_controlsBusy) {
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -795,7 +915,12 @@ class _LessonAudioWhiteboardRecorderPanelState
   }
 
   void _handleViewportChanged(LessonWhiteboardViewportChange change) {
+    _editorViewports[_selectedBoardId] = change.viewport;
     if (_drawingLimitReached) {
+      return;
+    }
+    if (!_isSelectedBoardShared()) {
+      _pendingPausedViewport = null;
       return;
     }
     if (_isPaused) {
@@ -829,8 +954,10 @@ class _LessonAudioWhiteboardRecorderPanelState
     if (viewport == null) {
       return;
     }
-    _activeViewportInteractionId = _boardSet.nextViewportInteractionId;
-    _appendViewportEvent(viewport, force: true);
+    if (_isSelectedBoardShared()) {
+      _activeViewportInteractionId = _boardSet.nextViewportInteractionId;
+      _appendViewportEvent(viewport, force: true);
+    }
     _activeViewportInteractionId = null;
     _lastViewportEventSec = null;
     _pendingPausedViewport = null;
@@ -874,6 +1001,9 @@ class _LessonAudioWhiteboardRecorderPanelState
     _sessionViewportSequences.add(event.sequence);
     _lastViewportEventSec = timestampSec;
   }
+
+  bool _isSelectedBoardShared() =>
+      _boardSet.resolveBoardAt(_recordingPositionSec)?.id == _selectedBoardId;
 
   void _finishInProgressStroke() {
     if (_inProgressPoints.length >= 2 && _strokeStartSec != null) {
@@ -971,7 +1101,9 @@ class _LessonAudioWhiteboardRecorderPanelState
       return;
     }
     _finishInProgressStroke();
-    _pendingPausedViewport = null;
+    if (_pendingPausedViewport != null) {
+      _flushPendingViewport();
+    }
     _commitSelectedBoard();
     var id = LessonWhiteboardBoard.generateId();
     while (_boardSet.boardById(id) != null) {
@@ -982,25 +1114,16 @@ class _LessonAudioWhiteboardRecorderPanelState
       order: _boardSet.boards.length,
       title: 'ボード${_boardSet.boards.length + 1}',
     );
-    final sequence = _boardSet.nextSwitchSequence;
     final candidate = _boardSet.copyWith(
       boards: [..._boardSet.orderedBoards, board],
-      switchEvents: [
-        ..._boardSet.switchEvents,
-        LessonWhiteboardBoardSwitchEvent(
-          boardId: id,
-          globalTimestampSec: _recordingPositionSec,
-          sequence: sequence,
-        ),
-      ],
     );
     if (!_canAcceptBoardSet(candidate)) {
       return;
     }
     _boardSet = candidate;
-    _sessionSwitchSequences.add(sequence);
     setState(() {
       _selectedBoardId = id;
+      _editorViewports[id] = LessonWhiteboardViewport.full;
       _loadSelectedStrokes();
     });
   }
@@ -1008,38 +1131,163 @@ class _LessonAudioWhiteboardRecorderPanelState
   void _switchBoard(String boardId) {
     if (boardId == _selectedBoardId ||
         _boardSet.boardById(boardId) == null ||
-        !_hasActiveRecording) {
+        !_canSelectBoard) {
       return;
     }
     _finishInProgressStroke();
-    _pendingPausedViewport = null;
+    if (_pendingPausedViewport != null) {
+      _flushPendingViewport();
+    }
     _commitSelectedBoard();
+    setState(() {
+      _selectedBoardId = boardId;
+      _editorViewports.putIfAbsent(
+        boardId,
+        () => _boardSet.resolveViewportAt(
+          boardId: boardId,
+          globalTimestampSec: _recordingPositionSec,
+        ),
+      );
+      _loadSelectedStrokes();
+    });
+  }
+
+  void _shareBoard(String boardId) {
+    if ((!_isRecording && !_isPaused) || _boardSet.boardById(boardId) == null) {
+      return;
+    }
+    if (boardId != _selectedBoardId) {
+      _switchBoard(boardId);
+    }
     if (_boardSet.switchEvents.length >= maxLessonBoardSwitchEvents) {
-      setState(() {
-        _message = lessonBoardSwitchEventLimitMessage;
-      });
+      setState(() => _message = lessonBoardSwitchEventLimitMessage);
       return;
     }
     final sequence = _boardSet.nextSwitchSequence;
-    final candidate = _boardSet.copyWith(
-      switchEvents: [
-        ..._boardSet.switchEvents,
-        LessonWhiteboardBoardSwitchEvent(
-          boardId: boardId,
-          globalTimestampSec: _recordingPositionSec,
-          sequence: sequence,
-        ),
-      ],
+    final switchEvent = LessonWhiteboardBoardSwitchEvent(
+      boardId: _selectedBoardId,
+      globalTimestampSec: _recordingPositionSec,
+      sequence: sequence,
+    );
+    var candidate = _boardSet.copyWith(
+      switchEvents: [..._boardSet.switchEvents, switchEvent],
+    );
+    final viewportSequence = candidate.nextViewportSequence;
+    final viewportEvent = LessonWhiteboardViewportEvent(
+      boardId: _selectedBoardId,
+      globalTimestampSec: _recordingPositionSec,
+      sequence: viewportSequence,
+      interactionId: candidate.nextViewportInteractionId,
+      viewport: _selectedEditorViewport,
+    );
+    candidate = candidate.copyWith(
+      viewportEvents: [...candidate.viewportEvents, viewportEvent],
     );
     if (!_canAcceptBoardSet(candidate)) {
       return;
     }
-    _boardSet = candidate;
-    _sessionSwitchSequences.add(sequence);
     setState(() {
-      _selectedBoardId = boardId;
-      _loadSelectedStrokes();
+      _boardSet = candidate;
+      _message = 'この時点から「${_selectedBoard.title}」を受講者に共有します。';
     });
+    _sessionSwitchSequences.add(sequence);
+    _sessionViewportSequences.add(viewportSequence);
+  }
+
+  String _boardLabel(int index, LessonWhiteboardBoard board) {
+    return board.title.isEmpty
+        ? 'ボード${index + 1}'
+        : '${index + 1}. ${board.title}';
+  }
+
+  Widget? _buildScreenShareButton(BuildContext context) {
+    if (!_isRecording && !_isPaused) {
+      return null;
+    }
+    final isShared = _isSelectedBoardShared();
+    final colorScheme = Theme.of(context).colorScheme;
+    return FilledButton.icon(
+      key: const ValueKey('audio-whiteboard-share-current-board'),
+      onPressed: () => _shareBoard(_selectedBoardId),
+      style: FilledButton.styleFrom(
+        minimumSize: Size.zero,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+        backgroundColor: isShared
+            ? Colors.red.shade700
+            : colorScheme.surfaceContainerHighest.withValues(alpha: 0.92),
+        foregroundColor: isShared ? Colors.white : colorScheme.onSurface,
+      ),
+      icon: const Icon(Icons.screen_share_outlined, size: 17),
+      label: const Text('画面共有'),
+    );
+  }
+
+  Widget _buildRecordingControls({required bool canUseRecording}) {
+    return Wrap(
+      key: const ValueKey('audio-recording-controls'),
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        if (_status == _RecordingStatus.idle)
+          FilledButton.icon(
+            key: const ValueKey('start-audio-whiteboard-recording'),
+            onPressed: _startRecording,
+            icon: const Icon(Icons.mic),
+            label: const Text('録音を開始'),
+          ),
+        if (_isRecording)
+          OutlinedButton.icon(
+            key: const ValueKey('pause-audio-recording'),
+            onPressed: _pauseRecording,
+            icon: const Icon(Icons.pause),
+            label: const Text('一時停止'),
+          ),
+        if (_isPaused)
+          FilledButton.icon(
+            key: const ValueKey('resume-audio-recording'),
+            onPressed: _resumeRecording,
+            icon: const Icon(Icons.mic),
+            label: const Text('録音を再開'),
+          ),
+        if (_isRecording || _isPaused)
+          FilledButton.icon(
+            key: const ValueKey('stop-audio-recording'),
+            onPressed: _isStopping ? null : _stopRecording,
+            icon: const Icon(Icons.stop),
+            label: const Text('録音を停止'),
+          ),
+        if (_status == _RecordingStatus.ready) ...[
+          OutlinedButton.icon(
+            key: const ValueKey('preview-audio-recording'),
+            onPressed: _controlsBusy ? null : _togglePreview,
+            icon: Icon(_previewPlaying ? Icons.pause : Icons.play_arrow),
+            label: Text(_previewPlaying ? '再生を一時停止' : '録音を再生'),
+          ),
+          FilledButton.icon(
+            key: const ValueKey('use-audio-recording'),
+            onPressed: canUseRecording ? _useRecording : null,
+            icon: const Icon(Icons.cloud_upload_outlined),
+            label: const Text('この音声を使用'),
+          ),
+          OutlinedButton.icon(
+            key: const ValueKey('delete-current-audio-recording'),
+            onPressed: _controlsBusy ? null : _deleteCurrentRecording,
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('今の録音を消す'),
+          ),
+        ],
+        if (_status == _RecordingStatus.idle ||
+            _status == _RecordingStatus.ready)
+          OutlinedButton.icon(
+            key: const ValueKey('discard-audio-recording-part'),
+            onPressed: _controlsBusy ? null : _discardRecordingPart,
+            icon: const Icon(Icons.delete_forever_outlined),
+            label: const Text('録音パートを削除'),
+          ),
+      ],
+    );
   }
 
   @override
@@ -1048,7 +1296,7 @@ class _LessonAudioWhiteboardRecorderPanelState
     final canUseRecording =
         _recordedFile != null &&
         _recordedFile!.size <= LessonMediaStorageService.maxBytes &&
-        !_isUploading;
+        !_controlsBusy;
     return PopScope(
       canPop: !_hasUnsavedRecording,
       onPopInvokedWithResult: (didPop, _) {
@@ -1085,75 +1333,12 @@ class _LessonAudioWhiteboardRecorderPanelState
                       : null,
                 ),
               ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  if (_status == _RecordingStatus.idle)
-                    FilledButton.icon(
-                      key: const ValueKey('start-audio-whiteboard-recording'),
-                      onPressed: _startRecording,
-                      icon: const Icon(Icons.mic),
-                      label: const Text('録音を開始'),
-                    ),
-                  if (_isRecording)
-                    OutlinedButton.icon(
-                      key: const ValueKey('pause-audio-recording'),
-                      onPressed: _pauseRecording,
-                      icon: const Icon(Icons.pause),
-                      label: const Text('一時停止'),
-                    ),
-                  if (_isPaused)
-                    FilledButton.icon(
-                      key: const ValueKey('resume-audio-recording'),
-                      onPressed: _resumeRecording,
-                      icon: const Icon(Icons.mic),
-                      label: const Text('録音を再開'),
-                    ),
-                  if (_isRecording || _isPaused)
-                    FilledButton.icon(
-                      key: const ValueKey('stop-audio-recording'),
-                      onPressed: _isStopping ? null : _stopRecording,
-                      icon: const Icon(Icons.stop),
-                      label: const Text('録音を停止'),
-                    ),
-                  if (_status == _RecordingStatus.ready) ...[
-                    OutlinedButton.icon(
-                      key: const ValueKey('preview-audio-recording'),
-                      onPressed: _isUploading ? null : _togglePreview,
-                      icon: Icon(
-                        _previewPlaying ? Icons.pause : Icons.play_arrow,
-                      ),
-                      label: Text(_previewPlaying ? '再生を一時停止' : '録音を再生'),
-                    ),
-                    FilledButton.icon(
-                      key: const ValueKey('use-audio-recording'),
-                      onPressed: canUseRecording ? _useRecording : null,
-                      icon: const Icon(Icons.cloud_upload_outlined),
-                      label: const Text('この音声を使用'),
-                    ),
-                    OutlinedButton.icon(
-                      key: const ValueKey('record-audio-again'),
-                      onPressed: _isUploading ? null : _recordAgain,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('録り直す'),
-                    ),
-                  ],
-                  if (_status == _RecordingStatus.idle ||
-                      _status == _RecordingStatus.ready)
-                    OutlinedButton.icon(
-                      key: const ValueKey('discard-audio-recording-part'),
-                      onPressed: _isUploading ? null : _discardRecordingPart,
-                      icon: const Icon(Icons.delete_outline),
-                      label: const Text('録音パートを削除'),
-                    ),
-                ],
-              ),
-              if (_hasActiveRecording || _status == _RecordingStatus.ready) ...[
+              if (_status != _RecordingStatus.used) ...[
                 const SizedBox(height: 16),
                 Text(
-                  _drawingEnabled
+                  _status == _RecordingStatus.idle
+                      ? '録音開始前は、ボードの追加と表示するボードの選択だけできます。'
+                      : _drawingEnabled
                       ? '録音中はペンで書けます（最大20点/秒）。'
                       : _isPaused
                       ? '一時停止中は書けませんが、ボードの追加と切替はできます。'
@@ -1161,32 +1346,49 @@ class _LessonAudioWhiteboardRecorderPanelState
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: 8),
-                Wrap(
+                Row(
                   key: const ValueKey('audio-whiteboard-board-selector'),
-                  spacing: 6,
-                  runSpacing: 6,
-                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
-                    for (final entry in _boardSet.orderedBoards.indexed)
-                      ChoiceChip(
-                        selected: entry.$2.id == _selectedBoardId,
-                        label: Text(
-                          entry.$2.title.isEmpty
-                              ? '${entry.$1 + 1}'
-                              : '${entry.$1 + 1}. ${entry.$2.title}',
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        key: ValueKey(
+                          'audio-whiteboard-board-dropdown-$_selectedBoardId',
                         ),
-                        onSelected: _hasActiveRecording
-                            ? (_) => _switchBoard(entry.$2.id)
+                        initialValue: _selectedBoardId,
+                        isExpanded: true,
+                        decoration: const InputDecoration(
+                          border: OutlineInputBorder(),
+                          labelText: '表示するボード',
+                          isDense: true,
+                        ),
+                        items: [
+                          for (final entry in _boardSet.orderedBoards.indexed)
+                            DropdownMenuItem(
+                              value: entry.$2.id,
+                              child: Text(
+                                _boardLabel(entry.$1, entry.$2),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                        ],
+                        onChanged: _canSelectBoard
+                            ? (boardId) {
+                                if (boardId != null) {
+                                  _switchBoard(boardId);
+                                }
+                              }
                             : null,
                       ),
+                    ),
+                    const SizedBox(width: 8),
                     OutlinedButton.icon(
                       key: const ValueKey('audio-whiteboard-add-board'),
                       onPressed: _canAddBoard ? _addBoard : null,
                       icon: const Icon(Icons.add),
-                      label: const Text('ボードを追加'),
-                    ),
-                    Text(
-                      '${_boardSet.boards.length}/$maxLessonWhiteboardBoards',
+                      label: Text(
+                        '追加 ${_boardSet.boards.length}/'
+                        '$maxLessonWhiteboardBoards',
+                      ),
                     ),
                   ],
                 ),
@@ -1201,23 +1403,22 @@ class _LessonAudioWhiteboardRecorderPanelState
                   onStrokeEnd: _handleStrokeEnd,
                   onStrokeCancel: _cancelInProgressStroke,
                   maxWidth: lessonWhiteboardCompactMaxWidth,
-                  viewport: _previewPlaying
+                  viewport: _status == _RecordingStatus.ready
                       ? _boardSet.resolveViewportAt(
                           boardId: _selectedBoardId,
                           globalTimestampSec: _previewGlobalPositionSec,
                         )
-                      : (_isRecording || _isPaused) &&
-                            _pendingPausedViewport == null
-                      ? _boardSet.resolveViewportAt(
-                          boardId: _selectedBoardId,
-                          globalTimestampSec: _recordingPositionSec,
-                        )
-                      : null,
+                      : _selectedEditorViewport,
                   onViewportChanged: _handleViewportChanged,
                   viewportInteractionEnabled:
                       !_previewPlaying &&
-                      (!_hasActiveRecording || !_drawingLimitReached),
+                      (_isRecording || _isPaused) &&
+                      !_drawingLimitReached,
+                  showViewportControls: false,
+                  bottomLeftOverlay: _buildScreenShareButton(context),
                 ),
+                const SizedBox(height: 12),
+                _buildRecordingControls(canUseRecording: canUseRecording),
               ],
               if (_isUploading) ...[
                 const SizedBox(height: 12),

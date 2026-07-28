@@ -387,7 +387,7 @@ void main() {
     expect(
       tester
           .widget<DropdownButtonFormField<String>>(
-            find.byType(DropdownButtonFormField<String>),
+            find.byType(DropdownButtonFormField<String>).first,
           )
           .onChanged,
       isNull,

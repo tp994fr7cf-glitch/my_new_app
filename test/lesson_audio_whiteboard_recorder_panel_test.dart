@@ -57,10 +57,26 @@ class _DelayedStopRecordingController extends _FakeRecordingController {
   }
 }
 
+class _FailedStopRecordingController extends _FakeRecordingController {
+  @override
+  Future<PlatformFile?> stop() async {
+    started = false;
+    return null;
+  }
+}
+
+class _DelayedDeleteRecordingController extends _FakeRecordingController {
+  final Completer<void> deleteCompleter = Completer<void>();
+
+  @override
+  Future<void> deleteRecording(PlatformFile file) => deleteCompleter.future;
+}
+
 class _FakePreviewController implements LessonAudioPreviewController {
   final StreamController<bool> _playing = StreamController<bool>.broadcast();
   bool _isPlaying = false;
   Duration currentPosition = Duration.zero;
+  bool throwOnStop = false;
 
   @override
   bool get isPlaying => _isPlaying;
@@ -89,6 +105,9 @@ class _FakePreviewController implements LessonAudioPreviewController {
 
   @override
   Future<void> stop() async {
+    if (throwOnStop) {
+      throw StateError('preview stop failed');
+    }
     _isPlaying = false;
     _playing.add(false);
   }
@@ -165,10 +184,70 @@ void main() {
     expect(usedDurationMs, 7200);
   });
 
-  testWidgets('boards can be added while recording and paused', (tester) async {
+  testWidgets(
+    'deleting the current recording returns to idle without auto-starting',
+    (tester) async {
+      final recorder = _FakeRecordingController();
+      final preview = _FakePreviewController();
+
+      await tester.binding.setSurfaceSize(const Size(800, 1400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: LessonAudioWhiteboardRecorderPanel(
+                segmentStartSec: 30,
+                initialBoardSet: const BoardSet(),
+                recordingControllerFactory: () => recorder,
+                previewControllerFactory: () => preview,
+                onDiscard: () {},
+                onBusyChanged: (_) {},
+                onUseRecording: (_, _, _, _) async {},
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(
+        find.byKey(const ValueKey('audio-whiteboard-add-board')),
+      );
+      await tester.pump();
+      await tester.tap(
+        find.byKey(const ValueKey('start-audio-whiteboard-recording')),
+      );
+      await tester.pump();
+      await tester.tap(
+        find.byKey(const ValueKey('audio-whiteboard-add-board')),
+      );
+      await tester.pump();
+      expect(find.text('3. ボード3'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('stop-audio-recording')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('delete-current-audio-recording')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, '削除'));
+      await tester.pumpAndSettle();
+
+      expect(recorder.started, isFalse);
+      expect(
+        find.byKey(const ValueKey('start-audio-whiteboard-recording')),
+        findsOneWidget,
+      );
+      expect(find.text('2. ボード2'), findsOneWidget);
+      expect(find.text('3. ボード3'), findsNothing);
+    },
+  );
+
+  testWidgets('restored setup is not reused after later start failure', (
+    tester,
+  ) async {
     final recorder = _FakeRecordingController();
     final preview = _FakePreviewController();
-    BoardSet? usedBoardSet;
 
     await tester.binding.setSurfaceSize(const Size(800, 1400));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -183,73 +262,306 @@ void main() {
               previewControllerFactory: () => preview,
               onDiscard: () {},
               onBusyChanged: (_) {},
-              onUseRecording: (file, durationSec, durationMs, boardSet) async {
-                usedBoardSet = boardSet;
-              },
+              onUseRecording: (_, _, _, _) async {},
             ),
           ),
         ),
       ),
     );
 
+    await tester.tap(find.byKey(const ValueKey('audio-whiteboard-add-board')));
+    await tester.pump();
     await tester.tap(
       find.byKey(const ValueKey('start-audio-whiteboard-recording')),
     );
-    await tester.pump(const Duration(milliseconds: 200));
-    await tester.tap(find.byKey(const ValueKey('whiteboard-zoom-in')));
     await tester.pump();
-
-    var addButton = tester.widget<OutlinedButton>(
-      find.byKey(const ValueKey('audio-whiteboard-add-board')),
-    );
-    expect(addButton.onPressed, isNotNull);
-    await tester.tap(find.byKey(const ValueKey('audio-whiteboard-add-board')));
-    await tester.pump();
-    expect(find.text('2. ボード2'), findsOneWidget);
-
-    await tester.tap(find.byKey(const ValueKey('pause-audio-recording')));
+    await tester.tap(find.byKey(const ValueKey('stop-audio-recording')));
     await tester.pumpAndSettle();
-    addButton = tester.widget<OutlinedButton>(
-      find.byKey(const ValueKey('audio-whiteboard-add-board')),
+    await tester.tap(
+      find.byKey(const ValueKey('delete-current-audio-recording')),
     );
-    expect(addButton.onPressed, isNotNull);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '削除'));
+    await tester.pumpAndSettle();
+
     await tester.tap(find.byKey(const ValueKey('audio-whiteboard-add-board')));
     await tester.pump();
     expect(find.text('3. ボード3'), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey('whiteboard-zoom-in')));
+    preview.throwOnStop = true;
+
+    await tester.tap(
+      find.byKey(const ValueKey('start-audio-whiteboard-recording')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('start-audio-whiteboard-recording')),
+      findsOneWidget,
+    );
+    expect(find.text('3. ボード3'), findsOneWidget);
+    expect(find.textContaining('録音を開始できませんでした'), findsOneWidget);
+  });
+
+  testWidgets(
+    'recording actions are disabled while current audio is deleting',
+    (tester) async {
+      final recorder = _DelayedDeleteRecordingController();
+      final preview = _FakePreviewController();
+
+      await tester.binding.setSurfaceSize(const Size(800, 1400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: LessonAudioWhiteboardRecorderPanel(
+                segmentStartSec: 30,
+                initialBoardSet: const BoardSet(),
+                recordingControllerFactory: () => recorder,
+                previewControllerFactory: () => preview,
+                onDiscard: () {},
+                onBusyChanged: (_) {},
+                onUseRecording: (_, _, _, _) async {},
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(
+        find.byKey(const ValueKey('start-audio-whiteboard-recording')),
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('stop-audio-recording')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('delete-current-audio-recording')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, '削除'));
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.byKey(const ValueKey('preview-audio-recording')),
+            )
+            .onPressed,
+        isNull,
+      );
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.byKey(const ValueKey('use-audio-recording')),
+            )
+            .onPressed,
+        isNull,
+      );
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.byKey(const ValueKey('delete-current-audio-recording')),
+            )
+            .onPressed,
+        isNull,
+      );
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.byKey(const ValueKey('discard-audio-recording-part')),
+            )
+            .onPressed,
+        isNull,
+      );
+
+      recorder.deleteCompleter.complete();
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('start-audio-whiteboard-recording')),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'boards can be prepared before recording and added while paused',
+    (tester) async {
+      final recorder = _FakeRecordingController();
+      final preview = _FakePreviewController();
+      BoardSet? usedBoardSet;
+
+      await tester.binding.setSurfaceSize(const Size(800, 1400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: LessonAudioWhiteboardRecorderPanel(
+                segmentStartSec: 30,
+                initialBoardSet: const BoardSet(),
+                recordingControllerFactory: () => recorder,
+                previewControllerFactory: () => preview,
+                onDiscard: () {},
+                onBusyChanged: (_) {},
+                onUseRecording:
+                    (file, durationSec, durationMs, boardSet) async {
+                      usedBoardSet = boardSet;
+                    },
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(find.byType(LessonWhiteboardCanvas), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('audio-whiteboard-share-current-board')),
+        findsNothing,
+      );
+      expect(find.byKey(const ValueKey('whiteboard-zoom-in')), findsNothing);
+      var addButton = tester.widget<OutlinedButton>(
+        find.byKey(const ValueKey('audio-whiteboard-add-board')),
+      );
+      expect(addButton.onPressed, isNotNull);
+      await tester.tap(
+        find.byKey(const ValueKey('audio-whiteboard-add-board')),
+      );
+      await tester.pump();
+      expect(find.text('2. ボード2'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const ValueKey('start-audio-whiteboard-recording')),
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+      var canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      canvas.onViewportChanged!(
+        const LessonWhiteboardViewportChange(
+          viewport: LessonWhiteboardViewport(
+            centerX: 0.5,
+            centerY: 0.5,
+            scale: 2,
+          ),
+          phase: LessonWhiteboardViewportChangePhase.end,
+        ),
+      );
+      await tester.tap(
+        find.byKey(const ValueKey('audio-whiteboard-share-current-board')),
+      );
+      await tester.pump();
+
+      await tester.tap(find.byKey(const ValueKey('pause-audio-recording')));
+      await tester.pumpAndSettle();
+      addButton = tester.widget<OutlinedButton>(
+        find.byKey(const ValueKey('audio-whiteboard-add-board')),
+      );
+      expect(addButton.onPressed, isNotNull);
+      await tester.tap(
+        find.byKey(const ValueKey('audio-whiteboard-add-board')),
+      );
+      await tester.pump();
+      expect(find.text('3. ボード3'), findsOneWidget);
+      canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+      canvas.onViewportChanged!(
+        const LessonWhiteboardViewportChange(
+          viewport: LessonWhiteboardViewport(
+            centerX: 0.5,
+            centerY: 0.5,
+            scale: 3,
+          ),
+          phase: LessonWhiteboardViewportChangePhase.end,
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('resume-audio-recording')));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      await tester.tap(find.byKey(const ValueKey('stop-audio-recording')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('use-audio-recording')));
+      await tester.pumpAndSettle();
+
+      expect(usedBoardSet, isNotNull);
+      expect(usedBoardSet!.boards, hasLength(3));
+      expect(usedBoardSet!.switchEvents, hasLength(1));
+      expect(usedBoardSet!.orderedSwitchEvents.map((event) => event.sequence), [
+        0,
+      ]);
+      expect(usedBoardSet!.orderedSwitchEvents.map((event) => event.boardId), [
+        usedBoardSet!.orderedBoards[1].id,
+      ]);
+      expect(
+        usedBoardSet!.orderedSwitchEvents.every(
+          (event) =>
+              event.globalTimestampSec >= 30 &&
+              event.globalTimestampSec <= 37.2,
+        ),
+        isTrue,
+      );
+      expect(usedBoardSet!.viewportEvents, hasLength(1));
+      expect(
+        usedBoardSet!.viewportEvents.map((event) => event.boardId).toSet(),
+        {usedBoardSet!.orderedBoards[1].id},
+      );
+      expect(
+        usedBoardSet!.viewportEvents
+            .where(
+              (event) => event.boardId == usedBoardSet!.orderedBoards[1].id,
+            )
+            .single
+            .viewport
+            .scale,
+        2,
+      );
+    },
+  );
+
+  testWidgets('failed stop restores the board setup from before recording', (
+    tester,
+  ) async {
+    final recorder = _FailedStopRecordingController();
+    final preview = _FakePreviewController();
+
+    await tester.binding.setSurfaceSize(const Size(800, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: LessonAudioWhiteboardRecorderPanel(
+              segmentStartSec: 30,
+              initialBoardSet: const BoardSet(),
+              recordingControllerFactory: () => recorder,
+              previewControllerFactory: () => preview,
+              onDiscard: () {},
+              onBusyChanged: (_) {},
+              onUseRecording: (_, _, _, _) async {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byKey(const ValueKey('audio-whiteboard-add-board')));
     await tester.pump();
-    await tester.tap(find.byKey(const ValueKey('resume-audio-recording')));
-    await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(
+      find.byKey(const ValueKey('start-audio-whiteboard-recording')),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('audio-whiteboard-add-board')));
+    await tester.pump();
+    expect(find.text('3. ボード3'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('stop-audio-recording')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('use-audio-recording')));
-    await tester.pumpAndSettle();
 
-    expect(usedBoardSet, isNotNull);
-    expect(usedBoardSet!.boards, hasLength(3));
-    expect(usedBoardSet!.switchEvents, hasLength(2));
-    expect(usedBoardSet!.orderedSwitchEvents.map((event) => event.sequence), [
-      0,
-      1,
-    ]);
-    expect(usedBoardSet!.orderedSwitchEvents.map((event) => event.boardId), [
-      usedBoardSet!.orderedBoards[1].id,
-      usedBoardSet!.orderedBoards[2].id,
-    ]);
     expect(
-      usedBoardSet!.orderedSwitchEvents.every(
-        (event) =>
-            event.globalTimestampSec >= 30 && event.globalTimestampSec <= 37.2,
-      ),
-      isTrue,
+      find.byKey(const ValueKey('start-audio-whiteboard-recording')),
+      findsOneWidget,
     );
-    expect(usedBoardSet!.viewportEvents, hasLength(3));
-    expect(usedBoardSet!.viewportEvents.map((event) => event.boardId).toSet(), {
-      LessonWhiteboardBoard.defaultBoardId,
-      usedBoardSet!.orderedBoards[2].id,
-    });
-    expect(usedBoardSet!.viewportEvents.last.viewport.scale, 2);
+    expect(find.text('2. ボード2'), findsOneWidget);
+    expect(find.text('3. ボード3'), findsNothing);
+    expect(find.textContaining('録音の保存に失敗しました'), findsOneWidget);
   });
 
   testWidgets('paused local preview keeps future strokes hidden', (
@@ -290,6 +602,30 @@ void main() {
           ),
         ),
       ],
+      viewportEvents: [
+        LessonWhiteboardViewportEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 31,
+          sequence: 0,
+          interactionId: 0,
+          viewport: LessonWhiteboardViewport(
+            centerX: 0.5,
+            centerY: 0.5,
+            scale: 2,
+          ),
+        ),
+        LessonWhiteboardViewportEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 35,
+          sequence: 1,
+          interactionId: 1,
+          viewport: LessonWhiteboardViewport(
+            centerX: 0.5,
+            centerY: 0.5,
+            scale: 3,
+          ),
+        ),
+      ],
     );
     await tester.binding.setSurfaceSize(const Size(800, 1200));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -325,11 +661,13 @@ void main() {
       find.byType(LessonWhiteboardCanvas),
     );
     expect(canvas.strokes.map((stroke) => stroke.id), ['early']);
+    expect(canvas.viewport?.scale, 2);
 
     await tester.tap(find.byKey(const ValueKey('preview-audio-recording')));
     await tester.pump();
     canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
     expect(canvas.strokes.map((stroke) => stroke.id), ['early']);
+    expect(canvas.viewport?.scale, 2);
   });
 
   testWidgets('a stopped file is deleted when disposal wins the stop race', (

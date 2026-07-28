@@ -365,6 +365,189 @@ class BoardSet {
     );
   }
 
+  /// Replaces only one interval of the learner-facing board/viewport timeline.
+  ///
+  /// [baseline] is the flat timeline as it looked when the teacher enabled
+  /// screen-share overwrite. Events recorded while overwrite was enabled are
+  /// supplied separately. At [endGlobalSec], the baseline board and every
+  /// touched board's baseline viewport are restored so later playback keeps
+  /// the original published behavior.
+  BoardSet replaceScreenShareTimelineInterval({
+    required BoardSet baseline,
+    required double startGlobalSec,
+    required double endGlobalSec,
+    required List<LessonWhiteboardBoardSwitchEvent> replacementSwitchEvents,
+    required List<LessonWhiteboardViewportEvent> replacementViewportEvents,
+  }) {
+    if (!startGlobalSec.isFinite ||
+        !endGlobalSec.isFinite ||
+        endGlobalSec <= startGlobalSec) {
+      return this;
+    }
+
+    final validBoardIds = boards.map((board) => board.id).toSet();
+    final replacementSwitches = replacementSwitchEvents
+        .where(
+          (event) =>
+              validBoardIds.contains(event.boardId) &&
+              event.globalTimestampSec >= startGlobalSec &&
+              event.globalTimestampSec <= endGlobalSec,
+        )
+        .toList();
+    final replacementViewports = replacementViewportEvents
+        .where(
+          (event) =>
+              validBoardIds.contains(event.boardId) &&
+              event.globalTimestampSec >= startGlobalSec &&
+              event.globalTimestampSec <= endGlobalSec,
+        )
+        .toList();
+
+    var nextSwitchSequence = 0;
+    for (final event in switchEvents.followedBy(replacementSwitches)) {
+      if (event.sequence >= nextSwitchSequence) {
+        nextSwitchSequence = event.sequence + 1;
+      }
+    }
+    final restoredBoard = baseline.resolveBoardAt(endGlobalSec);
+    final mergedSwitches = <LessonWhiteboardBoardSwitchEvent>[
+      for (final event in switchEvents)
+        if (event.globalTimestampSec < startGlobalSec ||
+            event.globalTimestampSec > endGlobalSec)
+          event,
+      ...replacementSwitches,
+      if (restoredBoard != null && validBoardIds.contains(restoredBoard.id))
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: restoredBoard.id,
+          globalTimestampSec: endGlobalSec,
+          sequence: nextSwitchSequence,
+        ),
+    ]..sort(_compareSwitchEvents);
+
+    final touchedBoardIds = <String>{
+      for (final event in replacementSwitches) event.boardId,
+      for (final event in replacementViewports) event.boardId,
+    };
+    var nextViewportSequence = 0;
+    var nextInteractionId = 0;
+    for (final event in viewportEvents.followedBy(replacementViewports)) {
+      if (event.sequence >= nextViewportSequence) {
+        nextViewportSequence = event.sequence + 1;
+      }
+      if (event.interactionId >= nextInteractionId) {
+        nextInteractionId = event.interactionId + 1;
+      }
+    }
+    final mergedViewports = <LessonWhiteboardViewportEvent>[
+      for (final event in viewportEvents)
+        if (!touchedBoardIds.contains(event.boardId) ||
+            event.globalTimestampSec < startGlobalSec ||
+            event.globalTimestampSec > endGlobalSec)
+          event,
+      for (final boardId in touchedBoardIds)
+        if (validBoardIds.contains(boardId))
+          LessonWhiteboardViewportEvent(
+            boardId: boardId,
+            globalTimestampSec: startGlobalSec,
+            sequence: -1,
+            interactionId:
+                baseline._continuingViewportInteractionIdAt(
+                  boardId: boardId,
+                  globalTimestampSec: startGlobalSec,
+                ) ??
+                nextInteractionId++,
+            viewport: baseline.resolveViewportAt(
+              boardId: boardId,
+              globalTimestampSec: startGlobalSec,
+            ),
+          ),
+      ...replacementViewports,
+      for (final boardId in touchedBoardIds)
+        if (validBoardIds.contains(boardId))
+          LessonWhiteboardViewportEvent(
+            boardId: boardId,
+            globalTimestampSec: endGlobalSec,
+            sequence: nextViewportSequence++,
+            interactionId:
+                baseline._continuingViewportInteractionIdAt(
+                  boardId: boardId,
+                  globalTimestampSec: endGlobalSec,
+                ) ??
+                nextInteractionId++,
+            viewport: baseline.resolveViewportAt(
+              boardId: boardId,
+              globalTimestampSec: endGlobalSec,
+            ),
+          ),
+    ]..sort(_compareViewportEvents);
+
+    return copyWith(
+      switchEvents: [
+        for (final entry in mergedSwitches.indexed)
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: entry.$2.boardId,
+            globalTimestampSec: entry.$2.globalTimestampSec,
+            sequence: entry.$1,
+          ),
+      ],
+      viewportEvents: [
+        for (final entry in mergedViewports.indexed)
+          LessonWhiteboardViewportEvent(
+            boardId: entry.$2.boardId,
+            globalTimestampSec: entry.$2.globalTimestampSec,
+            sequence: entry.$1,
+            interactionId: entry.$2.interactionId,
+            viewport: entry.$2.viewport,
+          ),
+      ],
+    );
+  }
+
+  int? _continuingViewportInteractionIdAt({
+    required String boardId,
+    required double globalTimestampSec,
+  }) {
+    LessonWhiteboardViewportEvent? previous;
+    for (final event in orderedViewportEvents) {
+      if (event.boardId != boardId) {
+        continue;
+      }
+      if (event.globalTimestampSec <= globalTimestampSec) {
+        previous = event;
+        continue;
+      }
+      if (previous != null && previous.interactionId == event.interactionId) {
+        return event.interactionId;
+      }
+      return null;
+    }
+    return null;
+  }
+
+  static int _compareSwitchEvents(
+    LessonWhiteboardBoardSwitchEvent left,
+    LessonWhiteboardBoardSwitchEvent right,
+  ) {
+    final timeComparison = left.globalTimestampSec.compareTo(
+      right.globalTimestampSec,
+    );
+    return timeComparison != 0
+        ? timeComparison
+        : left.sequence.compareTo(right.sequence);
+  }
+
+  static int _compareViewportEvents(
+    LessonWhiteboardViewportEvent left,
+    LessonWhiteboardViewportEvent right,
+  ) {
+    final timeComparison = left.globalTimestampSec.compareTo(
+      right.globalTimestampSec,
+    );
+    return timeComparison != 0
+        ? timeComparison
+        : left.sequence.compareTo(right.sequence);
+  }
+
   factory BoardSet.fromMap(Object? data) {
     if (data is! Map) {
       return const BoardSet();

@@ -205,6 +205,159 @@ void main() {
     );
   });
 
+  test('screen-share overwrite restores the previous flat timeline', () {
+    const baseline = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+        ),
+        LessonWhiteboardBoard(id: 'second', order: 1),
+        LessonWhiteboardBoard(id: 'third', order: 2),
+      ],
+      switchEvents: [
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: 'second',
+          globalTimestampSec: 4,
+          sequence: 0,
+        ),
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 7,
+          sequence: 1,
+        ),
+      ],
+    );
+
+    final overwritten = baseline.replaceScreenShareTimelineInterval(
+      baseline: baseline,
+      startGlobalSec: 2,
+      endGlobalSec: 6,
+      replacementSwitchEvents: const [
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: 'third',
+          globalTimestampSec: 2,
+          sequence: 2,
+        ),
+      ],
+      replacementViewportEvents: const [
+        LessonWhiteboardViewportEvent(
+          boardId: 'third',
+          globalTimestampSec: 2,
+          sequence: 0,
+          interactionId: 0,
+          viewport: LessonWhiteboardViewport(
+            centerX: 0.5,
+            centerY: 0.5,
+            scale: 8,
+          ),
+        ),
+      ],
+    );
+
+    expect(overwritten.resolveBoardAt(1)?.id, 'default');
+    expect(overwritten.resolveBoardAt(3)?.id, 'third');
+    expect(overwritten.resolveBoardAt(6)?.id, 'second');
+    expect(overwritten.resolveBoardAt(8)?.id, 'default');
+    expect(
+      overwritten
+          .resolveViewportAt(boardId: 'third', globalTimestampSec: 3)
+          .scale,
+      8,
+    );
+    expect(
+      overwritten
+          .resolveViewportAt(boardId: 'third', globalTimestampSec: 6)
+          .scale,
+      1,
+    );
+  });
+
+  test('viewport overwrite preserves interpolation outside its interval', () {
+    const baseline = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+        ),
+      ],
+      viewportEvents: [
+        LessonWhiteboardViewportEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 1,
+          sequence: 0,
+          interactionId: 4,
+          viewport: LessonWhiteboardViewport.full,
+        ),
+        LessonWhiteboardViewportEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 5,
+          sequence: 1,
+          interactionId: 4,
+          viewport: LessonWhiteboardViewport(
+            centerX: 0.5,
+            centerY: 0.5,
+            scale: 5,
+          ),
+        ),
+      ],
+    );
+
+    final overwritten = baseline.replaceScreenShareTimelineInterval(
+      baseline: baseline,
+      startGlobalSec: 2,
+      endGlobalSec: 4,
+      replacementSwitchEvents: const [
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 2,
+          sequence: 0,
+        ),
+      ],
+      replacementViewportEvents: const [
+        LessonWhiteboardViewportEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 2,
+          sequence: 2,
+          interactionId: 5,
+          viewport: LessonWhiteboardViewport(
+            centerX: 0.5,
+            centerY: 0.5,
+            scale: 8,
+          ),
+        ),
+      ],
+    );
+
+    expect(
+      overwritten
+          .resolveViewportAt(
+            boardId: LessonWhiteboardBoard.defaultBoardId,
+            globalTimestampSec: 1.5,
+          )
+          .scale,
+      1.5,
+    );
+    expect(
+      overwritten
+          .resolveViewportAt(
+            boardId: LessonWhiteboardBoard.defaultBoardId,
+            globalTimestampSec: 3,
+          )
+          .scale,
+      8,
+    );
+    expect(
+      overwritten
+          .resolveViewportAt(
+            boardId: LessonWhiteboardBoard.defaultBoardId,
+            globalTimestampSec: 4.5,
+          )
+          .scale,
+      4.5,
+    );
+  });
+
   test('parsing enforces the maximum of 20 boards', () {
     final parsed = BoardSet.fromMap({
       'boards': [

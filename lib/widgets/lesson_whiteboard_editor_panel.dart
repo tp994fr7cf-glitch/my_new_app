@@ -35,6 +35,7 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
     this.onBoardSetDraftSaved,
     this.onWhiteboardChanged,
     this.onBoardSetChanged,
+    this.publishedTimelineDurationSec = 0,
     this.enabled = true,
     this.playlistPlaybackFactory = createLessonMediaPlaylistPlayback,
   }) : assert(
@@ -54,6 +55,7 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
   final WhiteboardBoardSetDraftSaveCallback? onBoardSetDraftSaved;
   final ValueChanged<LessonWhiteboard>? onWhiteboardChanged;
   final ValueChanged<BoardSet>? onBoardSetChanged;
+  final double publishedTimelineDurationSec;
   final bool enabled;
   final LessonMediaPlaylistPlaybackFactory playlistPlaybackFactory;
 
@@ -92,6 +94,15 @@ class _LessonWhiteboardEditorPanelState
   int? _activeViewportInteractionId;
   double? _lastViewportEventSec;
   LessonWhiteboardViewport? _pendingPausedViewport;
+  final Map<String, LessonWhiteboardViewport> _editorViewports = {};
+  bool _screenShareOverrideEnabled = false;
+  BoardSet? _screenShareOverrideBaseline;
+  double? _screenShareOverrideStartSec;
+  final List<LessonWhiteboardBoardSwitchEvent> _overrideSwitchEvents = [];
+  final List<LessonWhiteboardViewportEvent> _overrideViewportEvents = [];
+  int _nextOverrideSwitchSequence = 0;
+  int _nextOverrideViewportSequence = 0;
+  int _nextOverrideInteractionId = 0;
 
   bool get _isDraggingSlider => _sliderDragPositionSec != null;
 
@@ -119,6 +130,19 @@ class _LessonWhiteboardEditorPanelState
 
   bool get _drawingEnabled => _isPlaying && widget.enabled;
   bool get _hasPublishedWhiteboard => _publishedBoardSet.isNotEmpty;
+  bool get _isInPublishedTimeline {
+    final publishedEnd = widget.publishedTimelineDurationSec;
+    return _hasPublishedWhiteboard &&
+        publishedEnd > 0 &&
+        _recordingPositionSec < publishedEnd;
+  }
+
+  LessonWhiteboardViewport get _selectedEditorViewport =>
+      _editorViewports[_selectedBoardId] ??
+      _boardSet.resolveViewportAt(
+        boardId: _selectedBoardId,
+        globalTimestampSec: _recordingPositionSec,
+      );
 
   bool get _hasUnpublishedDraft {
     return _draftBoardSet.isNotEmpty;
@@ -243,6 +267,13 @@ class _LessonWhiteboardEditorPanelState
     _pendingPausedViewport = null;
     _activeViewportInteractionId = null;
     _lastViewportEventSec = null;
+    _editorViewports
+      ..clear()
+      ..[_selectedBoardId] = _boardSet.resolveViewportAt(
+        boardId: _selectedBoardId,
+        globalTimestampSec: _recordingPositionSec,
+      );
+    _clearScreenShareOverride();
   }
 
   bool _segmentsEqual(
@@ -307,6 +338,12 @@ class _LessonWhiteboardEditorPanelState
       _positionSubscription = playback.globalPositionStream.listen((position) {
         if (!mounted) {
           return;
+        }
+        if (_screenShareOverrideEnabled &&
+            position >= widget.publishedTimelineDurationSec) {
+          _finishScreenShareOverride(
+            endGlobalSec: widget.publishedTimelineDurationSec,
+          );
         }
         if (_isDraggingSlider) {
           _currentPositionSecExact = position;
@@ -401,6 +438,7 @@ class _LessonWhiteboardEditorPanelState
         const Duration(milliseconds: 50),
         (_) {
           if (mounted && _isPlaying) {
+            _finishOverrideAtPublishedBoundaryIfNeeded();
             setState(() {});
           }
         },
@@ -446,22 +484,28 @@ class _LessonWhiteboardEditorPanelState
   }
 
   void _handleViewportChanged(LessonWhiteboardViewportChange change) {
+    _finishOverrideAtPublishedBoundaryIfNeeded();
+    _editorViewports[_selectedBoardId] = change.viewport;
+    if (!_shouldRecordSelectedViewport()) {
+      _pendingPausedViewport = null;
+      return;
+    }
     if (!_isPlaying) {
       _pendingPausedViewport = change.viewport;
       return;
     }
     switch (change.phase) {
       case LessonWhiteboardViewportChangePhase.start:
-        _activeViewportInteractionId = _boardSet.nextViewportInteractionId;
+        _activeViewportInteractionId = _allocateViewportInteractionId();
         _lastViewportEventSec = null;
         _appendViewportEvent(change.viewport, force: true);
         return;
       case LessonWhiteboardViewportChangePhase.update:
-        _activeViewportInteractionId ??= _boardSet.nextViewportInteractionId;
+        _activeViewportInteractionId ??= _allocateViewportInteractionId();
         _appendViewportEvent(change.viewport, force: false);
         return;
       case LessonWhiteboardViewportChangePhase.end:
-        _activeViewportInteractionId ??= _boardSet.nextViewportInteractionId;
+        _activeViewportInteractionId ??= _allocateViewportInteractionId();
         _appendViewportEvent(change.viewport, force: true);
         _activeViewportInteractionId = null;
         _lastViewportEventSec = null;
@@ -474,52 +518,87 @@ class _LessonWhiteboardEditorPanelState
     if (viewport == null) {
       return;
     }
-    _activeViewportInteractionId = _boardSet.nextViewportInteractionId;
-    _appendViewportEvent(viewport, force: true, timestampSec: timestampSec);
+    if (_shouldRecordSelectedViewport()) {
+      _activeViewportInteractionId = _allocateViewportInteractionId();
+      _appendViewportEvent(viewport, force: true, timestampSec: timestampSec);
+    }
     _activeViewportInteractionId = null;
     _lastViewportEventSec = null;
     _pendingPausedViewport = null;
   }
 
-  void _appendViewportEvent(
+  bool _appendViewportEvent(
     LessonWhiteboardViewport viewport, {
     required bool force,
     double? timestampSec,
   }) {
-    if (_boardSet.viewportEvents.length >= maxLessonViewportEvents) {
+    if (_boardSet.viewportEvents.length + _overrideViewportEvents.length >=
+        maxLessonViewportEvents) {
       if (mounted) {
-        setState(() => _message = lessonViewportEventLimitMessage);
+        if (_screenShareOverrideEnabled) {
+          _cancelScreenShareOverrideDueToLimit();
+        } else {
+          setState(() => _message = lessonViewportEventLimitMessage);
+        }
       }
-      return;
+      return false;
     }
     final resolvedTimestampSec = timestampSec ?? _recordingPositionSec;
     final previousSec = _lastViewportEventSec;
     if (!force &&
         previousSec != null &&
         resolvedTimestampSec - previousSec < 0.095) {
-      return;
+      return false;
     }
     final interactionId =
-        _activeViewportInteractionId ?? _boardSet.nextViewportInteractionId;
+        _activeViewportInteractionId ?? _allocateViewportInteractionId();
     final event = LessonWhiteboardViewportEvent(
       boardId: _selectedBoardId,
       globalTimestampSec: resolvedTimestampSec,
-      sequence: _boardSet.nextViewportSequence,
+      sequence: _screenShareOverrideEnabled
+          ? _nextOverrideViewportSequence++
+          : _boardSet.nextViewportSequence,
       interactionId: interactionId,
       viewport: viewport,
     );
-    setState(() {
-      _boardSet = _boardSet.copyWith(
-        viewportEvents: [..._boardSet.viewportEvents, event],
-      );
-    });
+    if (_screenShareOverrideEnabled) {
+      _overrideViewportEvents.add(event);
+    } else {
+      setState(() {
+        _boardSet = _boardSet.copyWith(
+          viewportEvents: [..._boardSet.viewportEvents, event],
+        );
+      });
+      widget.onBoardSetChanged?.call(_boardSet);
+    }
     _lastViewportEventSec = resolvedTimestampSec;
-    widget.onBoardSetChanged?.call(_boardSet);
+    return true;
+  }
+
+  bool _shouldRecordSelectedViewport() {
+    if (_screenShareOverrideEnabled && _isInPublishedTimeline) {
+      return true;
+    }
+    if (_isInPublishedTimeline) {
+      return false;
+    }
+    return _boardSet.resolveBoardAt(_recordingPositionSec)?.id ==
+        _selectedBoardId;
+  }
+
+  int _allocateViewportInteractionId() {
+    if (_screenShareOverrideEnabled) {
+      return _nextOverrideInteractionId++;
+    }
+    return _boardSet.nextViewportInteractionId;
   }
 
   Future<void> _seekPlaybackPosition(int positionSec) async {
     if (_totalDurationSec <= 0) {
       return;
+    }
+    if (_screenShareOverrideEnabled) {
+      _finishScreenShareOverride(endGlobalSec: _recordingPositionSec);
     }
     final nextPosition = positionSec.clamp(0, _totalDurationSec);
     await _playback?.seekGlobal(nextPosition.toDouble());
@@ -685,6 +764,9 @@ class _LessonWhiteboardEditorPanelState
   }
 
   Future<void> _saveDraft() async {
+    if (_screenShareOverrideEnabled) {
+      _finishScreenShareOverride(endGlobalSec: _recordingPositionSec);
+    }
     setState(() {
       _isSavingDraft = true;
       _message = null;
@@ -721,32 +803,193 @@ class _LessonWhiteboardEditorPanelState
     }
   }
 
+  void _setScreenShareOverride(bool enabled) {
+    if (enabled) {
+      if (!_isInPublishedTimeline || _screenShareOverrideEnabled) {
+        return;
+      }
+      _commitSelectedBoard();
+      _screenShareOverrideBaseline = _boardSet;
+      _screenShareOverrideStartSec = _recordingPositionSec;
+      _overrideSwitchEvents.clear();
+      _overrideViewportEvents.clear();
+      _nextOverrideSwitchSequence = _boardSet.nextSwitchSequence;
+      _nextOverrideViewportSequence = _boardSet.nextViewportSequence;
+      _nextOverrideInteractionId = _boardSet.nextViewportInteractionId;
+      setState(() {
+        _screenShareOverrideEnabled = true;
+        _message = 'この時点から、受講者に見せる画面を上書きしています。';
+      });
+      _recordSharedBoardSelection();
+      return;
+    }
+    _finishScreenShareOverride(endGlobalSec: _recordingPositionSec);
+  }
+
+  void _finishScreenShareOverride({required double endGlobalSec}) {
+    if (!_screenShareOverrideEnabled) {
+      return;
+    }
+    final baseline = _screenShareOverrideBaseline;
+    final startGlobalSec = _screenShareOverrideStartSec;
+    if (baseline == null || startGlobalSec == null) {
+      _clearScreenShareOverride();
+      return;
+    }
+    final boundedEnd = endGlobalSec
+        .clamp(startGlobalSec, widget.publishedTimelineDurationSec)
+        .toDouble();
+    if (_pendingPausedViewport != null) {
+      _flushPendingViewport(timestampSec: boundedEnd);
+    }
+    if (!_screenShareOverrideEnabled) {
+      return;
+    }
+    _commitSelectedBoard();
+    final merged = _boardSet.replaceScreenShareTimelineInterval(
+      baseline: baseline,
+      startGlobalSec: startGlobalSec,
+      endGlobalSec: boundedEnd,
+      replacementSwitchEvents: List.of(_overrideSwitchEvents),
+      replacementViewportEvents: List.of(_overrideViewportEvents),
+    );
+    if (merged.switchEvents.length > maxLessonBoardSwitchEvents ||
+        merged.viewportEvents.length > maxLessonViewportEvents) {
+      setState(() {
+        _clearScreenShareOverride();
+        _message = '操作履歴が保存上限に達したため、今回の画面共有上書きは反映されませんでした。';
+      });
+      return;
+    }
+    setState(() {
+      _boardSet = merged;
+      _clearScreenShareOverride();
+      _message = '画面共有の上書きを終了しました。この先は元の共有内容を引き継ぎます。';
+    });
+    widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
+  }
+
+  void _finishOverrideAtPublishedBoundaryIfNeeded() {
+    if (_screenShareOverrideEnabled &&
+        _recordingPositionSec >= widget.publishedTimelineDurationSec) {
+      _finishScreenShareOverride(
+        endGlobalSec: widget.publishedTimelineDurationSec,
+      );
+    }
+  }
+
+  void _clearScreenShareOverride() {
+    _screenShareOverrideEnabled = false;
+    _screenShareOverrideBaseline = null;
+    _screenShareOverrideStartSec = null;
+    _overrideSwitchEvents.clear();
+    _overrideViewportEvents.clear();
+    _activeViewportInteractionId = null;
+    _lastViewportEventSec = null;
+  }
+
+  void _cancelScreenShareOverrideDueToLimit() {
+    setState(() {
+      _clearScreenShareOverride();
+      _message = '操作履歴が保存上限に達したため、今回の画面共有上書きは反映されませんでした。';
+    });
+  }
+
   void _switchBoard(String boardId) {
     if (boardId == _selectedBoardId || _boardSet.boardById(boardId) == null) {
       return;
     }
+    _finishOverrideAtPublishedBoundaryIfNeeded();
     _finishInProgressStroke();
-    _pendingPausedViewport = null;
+    if (_pendingPausedViewport != null) {
+      _flushPendingViewport(timestampSec: _recordingPositionSec);
+    }
     _commitSelectedBoard();
-    final nextSequence = _boardSet.nextSwitchSequence;
     setState(() {
-      _boardSet = _boardSet.copyWith(
-        switchEvents: [
-          ..._boardSet.switchEvents,
-          LessonWhiteboardBoardSwitchEvent(
-            boardId: boardId,
-            globalTimestampSec: _recordingPositionSec,
-            sequence: nextSequence,
-          ),
-        ],
-      );
       _selectedBoardId = boardId;
       _strokes = List<WhiteboardStroke>.from(
         _selectedBoard.layerBundle.primaryLayer?.strokes ?? const [],
       );
+      _editorViewports.putIfAbsent(
+        boardId,
+        () => _boardSet.resolveViewportAt(
+          boardId: boardId,
+          globalTimestampSec: _recordingPositionSec,
+        ),
+      );
       _message = null;
     });
-    widget.onBoardSetChanged?.call(_boardSet);
+    if (_screenShareOverrideEnabled && _isInPublishedTimeline) {
+      _recordSharedBoardSelection();
+    }
+  }
+
+  void _shareBoard(String boardId) {
+    _finishOverrideAtPublishedBoundaryIfNeeded();
+    if (_boardSet.boardById(boardId) == null || _isInPublishedTimeline) {
+      return;
+    }
+    if (boardId != _selectedBoardId) {
+      _switchBoard(boardId);
+    }
+    if (_recordSharedBoardSelection()) {
+      setState(() {
+        _message = 'この時点から「${_selectedBoard.title}」を受講者に共有します。';
+      });
+    }
+  }
+
+  bool _recordSharedBoardSelection() {
+    if (_boardSet.switchEvents.length + _overrideSwitchEvents.length >=
+        maxLessonBoardSwitchEvents) {
+      if (_screenShareOverrideEnabled) {
+        _cancelScreenShareOverrideDueToLimit();
+      } else {
+        setState(() => _message = lessonBoardSwitchEventLimitMessage);
+      }
+      return false;
+    }
+    if (_boardSet.viewportEvents.length + _overrideViewportEvents.length >=
+        maxLessonViewportEvents) {
+      if (_screenShareOverrideEnabled) {
+        _cancelScreenShareOverrideDueToLimit();
+      } else {
+        setState(() => _message = lessonViewportEventLimitMessage);
+      }
+      return false;
+    }
+    final timestampSec = _recordingPositionSec;
+    final switchEvent = LessonWhiteboardBoardSwitchEvent(
+      boardId: _selectedBoardId,
+      globalTimestampSec: timestampSec,
+      sequence: _screenShareOverrideEnabled
+          ? _nextOverrideSwitchSequence++
+          : _boardSet.nextSwitchSequence,
+    );
+    if (_screenShareOverrideEnabled) {
+      _overrideSwitchEvents.add(switchEvent);
+    } else {
+      _boardSet = _boardSet.copyWith(
+        switchEvents: [..._boardSet.switchEvents, switchEvent],
+      );
+    }
+
+    _activeViewportInteractionId = _allocateViewportInteractionId();
+    _lastViewportEventSec = null;
+    final viewportRecorded = _appendViewportEvent(
+      _selectedEditorViewport,
+      force: true,
+      timestampSec: timestampSec,
+    );
+    _activeViewportInteractionId = null;
+    _lastViewportEventSec = null;
+    if (!viewportRecorded) {
+      return false;
+    }
+    if (!_screenShareOverrideEnabled) {
+      widget.onBoardSetChanged?.call(_boardSet);
+    }
+    return true;
   }
 
   void _addBoard() {
@@ -856,24 +1099,21 @@ class _LessonWhiteboardEditorPanelState
         ],
       );
       _selectedBoardId = nextId;
+      _editorViewports.remove(removedId);
+      _editorViewports.putIfAbsent(
+        nextId,
+        () => _boardSet.resolveViewportAt(
+          boardId: nextId,
+          globalTimestampSec: _recordingPositionSec,
+        ),
+      );
       _strokes = List<WhiteboardStroke>.from(
         _selectedBoard.layerBundle.primaryLayer?.strokes ?? const [],
       );
     });
-    // Deleting the active board necessarily selects another board.
-    final sequence = _boardSet.nextSwitchSequence;
-    setState(() {
-      _boardSet = _boardSet.copyWith(
-        switchEvents: [
-          ..._boardSet.switchEvents,
-          LessonWhiteboardBoardSwitchEvent(
-            boardId: nextId,
-            globalTimestampSec: _recordingPositionSec,
-            sequence: sequence,
-          ),
-        ],
-      );
-    });
+    if (_screenShareOverrideEnabled && _isInPublishedTimeline) {
+      _recordSharedBoardSelection();
+    }
     widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
   }
 
@@ -1017,6 +1257,37 @@ class _LessonWhiteboardEditorPanelState
     await _seekPlaybackPosition(0);
   }
 
+  String _boardLabel(int index, LessonWhiteboardBoard board) {
+    return board.title.isEmpty
+        ? 'ボード${index + 1}'
+        : '${index + 1}. ${board.title}';
+  }
+
+  Widget? _buildScreenShareButton(BuildContext context) {
+    if (!_shouldShowEditingCanvas || _isInPublishedTimeline) {
+      return null;
+    }
+    final isShared =
+        _boardSet.resolveBoardAt(_recordingPositionSec)?.id == _selectedBoardId;
+    final colorScheme = Theme.of(context).colorScheme;
+    return FilledButton.icon(
+      key: const ValueKey('whiteboard-share-current-board'),
+      onPressed: () => _shareBoard(_selectedBoardId),
+      style: FilledButton.styleFrom(
+        minimumSize: Size.zero,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+        backgroundColor: isShared
+            ? Colors.red.shade700
+            : colorScheme.surfaceContainerHighest.withValues(alpha: 0.92),
+        foregroundColor: isShared ? Colors.white : colorScheme.onSurface,
+      ),
+      icon: const Icon(Icons.screen_share_outlined, size: 17),
+      label: const Text('画面共有'),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final sliderMax = _totalDurationSec > 0
@@ -1093,30 +1364,47 @@ class _LessonWhiteboardEditorPanelState
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 8),
-            Wrap(
+            Row(
               key: const ValueKey('whiteboard-board-selector'),
-              spacing: 6,
-              runSpacing: 6,
-              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                for (final entry in _boardSet.orderedBoards.indexed)
-                  ChoiceChip(
-                    key: ValueKey('whiteboard-board-${entry.$2.id}'),
-                    selected: entry.$2.id == _selectedBoardId,
-                    label: Text(
-                      entry.$2.title.isEmpty
-                          ? '${entry.$1 + 1}'
-                          : '${entry.$1 + 1}. ${entry.$2.title}',
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    key: ValueKey(
+                      'whiteboard-board-dropdown-$_selectedBoardId',
                     ),
-                    onSelected: (_) => _switchBoard(entry.$2.id),
+                    initialValue: _selectedBoardId,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      labelText: '表示するボード',
+                      isDense: true,
+                    ),
+                    items: [
+                      for (final entry in _boardSet.orderedBoards.indexed)
+                        DropdownMenuItem(
+                          value: entry.$2.id,
+                          child: Text(
+                            _boardLabel(entry.$1, entry.$2),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                    ],
+                    onChanged: (boardId) {
+                      if (boardId != null) {
+                        _switchBoard(boardId);
+                      }
+                    },
                   ),
-                if (_shouldShowEditingCanvas)
+                ),
+                if (_shouldShowEditingCanvas) ...[
+                  const SizedBox(width: 8),
                   OutlinedButton.icon(
                     key: const ValueKey('whiteboard-add-board'),
                     onPressed: _boardSet.canAddBoard ? _addBoard : null,
                     icon: const Icon(Icons.add),
-                    label: const Text('ボードを追加'),
+                    label: const Text('追加'),
                   ),
+                ],
               ],
             ),
             if (_shouldShowEditingCanvas) ...[
@@ -1140,6 +1428,32 @@ class _LessonWhiteboardEditorPanelState
                 ],
               ),
             ],
+            if (_shouldShowEditingCanvas &&
+                _hasPublishedWhiteboard &&
+                _isInPublishedTimeline) ...[
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  child: CheckboxListTile(
+                    key: const ValueKey('screen-share-override-checkbox'),
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    dense: true,
+                    title: const Text('画面共有を上書き'),
+                    subtitle: Text(
+                      _screenShareOverrideEnabled
+                          ? '先生が開くボードとズームを受講者向けに記録しています。'
+                          : 'オフの間は、公開済みの画面共有を変更しません。',
+                    ),
+                    value: _screenShareOverrideEnabled,
+                    onChanged: (value) =>
+                        _setScreenShareOverride(value ?? false),
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 8),
             if (_hasPublishedWhiteboard && !_shouldShowEditingCanvas) ...[
               LessonWhiteboardCanvas(
@@ -1150,6 +1464,7 @@ class _LessonWhiteboardEditorPanelState
                 ],
                 drawingEnabled: false,
                 maxWidth: lessonWhiteboardCompactMaxWidth,
+                showViewportControls: false,
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
@@ -1170,13 +1485,10 @@ class _LessonWhiteboardEditorPanelState
                 onStrokeEnd: _handleStrokeEnd,
                 onStrokeCancel: _clearInProgressStroke,
                 maxWidth: lessonWhiteboardCompactMaxWidth,
-                viewport: _pendingPausedViewport == null
-                    ? _boardSet.resolveViewportAt(
-                        boardId: _selectedBoardId,
-                        globalTimestampSec: _recordingPositionSec,
-                      )
-                    : null,
+                viewport: _selectedEditorViewport,
                 onViewportChanged: _handleViewportChanged,
+                showViewportControls: false,
+                bottomLeftOverlay: _buildScreenShareButton(context),
               ),
               const SizedBox(height: 8),
               Wrap(
