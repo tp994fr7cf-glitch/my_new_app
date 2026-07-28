@@ -8,6 +8,7 @@ import '../models/lesson_note.dart';
 import '../models/lesson_question.dart';
 import '../models/course_profile_display.dart';
 import '../models/public_user_profile.dart';
+import '../services/course_access_service.dart';
 import '../services/lesson_interaction_service.dart';
 import 'lesson_notes_page.dart';
 import 'lesson_questions_page.dart';
@@ -24,6 +25,7 @@ class LearningRecordsPage extends StatefulWidget {
     this.lessonQuestionsStream,
     this.lessonQuestionAnswersStream,
     this.questionPublicEnabledResolver,
+    this.courseAccessResolver,
   });
 
   final User user;
@@ -36,6 +38,7 @@ class LearningRecordsPage extends StatefulWidget {
   final Stream<List<LessonQuestionAnswer>>? lessonQuestionAnswersStream;
   final Future<bool> Function(LessonQuestion question)?
   questionPublicEnabledResolver;
+  final Future<bool> Function(String courseId)? courseAccessResolver;
 
   @override
   State<LearningRecordsPage> createState() => _LearningRecordsPageState();
@@ -49,6 +52,14 @@ enum _CommentRecordType { questions, answers }
 
 const String _recordRoleMismatchDeleteMessage =
     'この立場で作成したコメントではないため、ここからは削除できません。';
+
+Future<bool> _isRecordCourseAccessible(
+  String courseId, {
+  Future<bool> Function(String courseId)? resolver,
+}) {
+  return resolver?.call(courseId) ??
+      const CourseAccessService().isLearnerAccessible(courseId);
+}
 
 String _normalizedRecordCommentRole(String? role) {
   final normalized = (role ?? '').trim();
@@ -317,10 +328,12 @@ class _LearningRecordsPageState extends State<LearningRecordsPage> {
               _RecordType.notes => _LessonNoteRecordsList(
                 notesStream: _lessonNotesStream(),
                 filterNotes: _filterNotes,
+                courseAccessResolver: widget.courseAccessResolver,
               ),
               _RecordType.comments => _LessonQuestionRecordsList(
                 questionsStream: _lessonQuestionsStream(),
                 answersStream: _lessonQuestionAnswersStream(),
+                courseAccessResolver: widget.courseAccessResolver,
                 filterQuestions: _filterQuestions,
                 filterAnswers: _filterAnswers,
                 currentCommentRole: _currentCommentRole,
@@ -746,10 +759,12 @@ class _LessonNoteRecordsList extends StatelessWidget {
   const _LessonNoteRecordsList({
     required this.notesStream,
     required this.filterNotes,
+    this.courseAccessResolver,
   });
 
   final Stream<List<LessonNote>> notesStream;
   final List<LessonNote> Function(List<LessonNote> notes) filterNotes;
+  final Future<bool> Function(String courseId)? courseAccessResolver;
 
   @override
   Widget build(BuildContext context) {
@@ -763,7 +778,10 @@ class _LessonNoteRecordsList extends StatelessWidget {
         return Column(
           children: [
             for (final note in notes) ...[
-              _LessonNoteRecordCard(note: note),
+              _LessonNoteRecordCard(
+                note: note,
+                courseAccessResolver: courseAccessResolver,
+              ),
               const SizedBox(height: 12),
             ],
           ],
@@ -786,6 +804,7 @@ class _LessonQuestionRecordsList extends StatelessWidget {
     required this.onSelectedSort,
     required this.user,
     this.questionPublicEnabledResolver,
+    this.courseAccessResolver,
   });
 
   final Stream<List<LessonQuestion>> questionsStream;
@@ -802,6 +821,7 @@ class _LessonQuestionRecordsList extends StatelessWidget {
   final User user;
   final Future<bool> Function(LessonQuestion question)?
   questionPublicEnabledResolver;
+  final Future<bool> Function(String courseId)? courseAccessResolver;
 
   @override
   Widget build(BuildContext context) {
@@ -861,6 +881,7 @@ class _LessonQuestionRecordsList extends StatelessWidget {
                       answers: answers,
                       user: user,
                       currentCommentRole: currentCommentRole,
+                      courseAccessResolver: courseAccessResolver,
                       questionPublicEnabledResolver:
                           questionPublicEnabledResolver,
                     ),
@@ -878,6 +899,7 @@ class _LessonQuestionRecordsList extends StatelessWidget {
                       ),
                       questions: allQuestions,
                       answers: answers,
+                      courseAccessResolver: courseAccessResolver,
                       questionPublicEnabledResolver:
                           questionPublicEnabledResolver,
                     ),
@@ -965,9 +987,37 @@ bool _canIgnorePublicMirrorDeleteError(FirebaseException error) {
 }
 
 class _LessonNoteRecordCard extends StatelessWidget {
-  const _LessonNoteRecordCard({required this.note});
+  const _LessonNoteRecordCard({required this.note, this.courseAccessResolver});
 
   final LessonNote note;
+  final Future<bool> Function(String courseId)? courseAccessResolver;
+
+  Future<void> _openNote(BuildContext context) async {
+    final courseAccessible = await _isRecordCourseAccessible(
+      note.courseId,
+      resolver: courseAccessResolver,
+    );
+    if (!context.mounted) {
+      return;
+    }
+    if (!courseAccessible) {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => _LearningRecordNoteEditPage(note: note),
+        ),
+      );
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => LessonNotesPage(
+          course: _courseFromNote(note),
+          lesson: CourseLesson(title: note.lessonTitle, duration: '1分30秒'),
+          lessonNumber: note.lessonNumber,
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1003,22 +1053,139 @@ class _LessonNoteRecordCard extends StatelessWidget {
             Align(
               alignment: Alignment.centerRight,
               child: TextButton(
-                onPressed: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => LessonNotesPage(
-                        course: _courseFromNote(note),
-                        lesson: CourseLesson(
-                          title: note.lessonTitle,
-                          duration: '1分30秒',
-                        ),
-                        lessonNumber: note.lessonNumber,
-                      ),
-                    ),
-                  );
-                },
+                onPressed: () => _openNote(context),
                 child: const Text('メモを開いて編集'),
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LearningRecordNoteEditPage extends StatefulWidget {
+  const _LearningRecordNoteEditPage({required this.note});
+
+  final LessonNote note;
+
+  @override
+  State<_LearningRecordNoteEditPage> createState() =>
+      _LearningRecordNoteEditPageState();
+}
+
+class _LearningRecordNoteEditPageState
+    extends State<_LearningRecordNoteEditPage> {
+  late final TextEditingController _titleController;
+  late final TextEditingController _bodyController;
+  bool _isSaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _titleController = TextEditingController(text: widget.note.title);
+    _bodyController = TextEditingController(text: widget.note.body);
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _bodyController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final user = Firebase.apps.isEmpty
+        ? null
+        : FirebaseAuth.instance.currentUser;
+    final noteId = widget.note.id;
+    if (user == null || noteId == null || noteId.isEmpty) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(const SnackBar(content: Text('メモを保存できませんでした。')));
+      return;
+    }
+    setState(() {
+      _isSaving = true;
+    });
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('lessonNotes')
+          .doc(noteId)
+          .update({
+            'title': _titleController.text.trim(),
+            'body': _bodyController.text,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(const SnackBar(content: Text('メモを保存しました。')));
+    } on FirebaseException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          SnackBar(content: Text(error.message ?? 'メモの保存に失敗しました。')),
+        );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('学習記録のメモ')),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(24),
+          children: [
+            Text(
+              '${widget.note.courseTitle} / レッスン${widget.note.lessonNumber}: ${widget.note.lessonTitle}',
+            ),
+            const SizedBox(height: 8),
+            const Text('講座は削除済みです。このメモは自分用の記録として編集できますが、再公開はできません。'),
+            const SizedBox(height: 20),
+            TextField(
+              controller: _titleController,
+              maxLength: 100,
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                labelText: 'タイトル',
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _bodyController,
+              minLines: 8,
+              maxLines: 20,
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                labelText: '本文',
+                alignLabelWithHint: true,
+              ),
+            ),
+            const SizedBox(height: 20),
+            FilledButton.icon(
+              onPressed: _isSaving ? null : _save,
+              icon: _isSaving
+                  ? const SizedBox.square(
+                      dimension: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.save_outlined),
+              label: const Text('保存する'),
             ),
           ],
         ),
@@ -1034,6 +1201,7 @@ class _LessonQuestionRecordCard extends StatelessWidget {
     required this.answers,
     required this.user,
     required this.currentCommentRole,
+    this.courseAccessResolver,
     this.questionPublicEnabledResolver,
   });
 
@@ -1042,6 +1210,7 @@ class _LessonQuestionRecordCard extends StatelessWidget {
   final List<LessonQuestionAnswer> answers;
   final User user;
   final String currentCommentRole;
+  final Future<bool> Function(String courseId)? courseAccessResolver;
   final Future<bool> Function(LessonQuestion question)?
   questionPublicEnabledResolver;
   bool get _isQuestionInCurrentRole => _matchesRecordCommentRole(
@@ -1063,6 +1232,7 @@ class _LessonQuestionRecordCard extends StatelessWidget {
       question: question,
       questions: questions,
       answers: answers,
+      courseAccessResolver: courseAccessResolver,
       questionPublicEnabledResolver: questionPublicEnabledResolver,
     );
   }
@@ -1253,10 +1423,7 @@ class _LessonQuestionRecordCard extends StatelessWidget {
               )) ...[
                 const SizedBox(height: 8),
                 Text(
-                  '引用メモ: ${quotedNoteDisplayTitle(
-                    quotedNoteId: question.quotedNoteId,
-                    quotedNoteTitle: question.quotedNoteTitle,
-                  )}',
+                  '引用メモ: ${quotedNoteDisplayTitle(quotedNoteId: question.quotedNoteId, quotedNoteTitle: question.quotedNoteTitle)}',
                 ),
               ],
               if (_unavailableMessage != null) ...[
@@ -1304,6 +1471,7 @@ class _LessonAnswerRecordCard extends StatefulWidget {
     required this.questions,
     required this.answers,
     this.parentQuestion,
+    this.courseAccessResolver,
     this.questionPublicEnabledResolver,
   });
 
@@ -1313,6 +1481,7 @@ class _LessonAnswerRecordCard extends StatefulWidget {
   final List<LessonQuestion> questions;
   final List<LessonQuestionAnswer> answers;
   final LessonQuestion? parentQuestion;
+  final Future<bool> Function(String courseId)? courseAccessResolver;
   final Future<bool> Function(LessonQuestion question)?
   questionPublicEnabledResolver;
 
@@ -1633,6 +1802,7 @@ class _LessonAnswerRecordCardState extends State<_LessonAnswerRecordCard> {
       questions: widget.questions,
       answers: widget.answers,
       highlightedAnswerId: widget.answer.id,
+      courseAccessResolver: widget.courseAccessResolver,
       questionPublicEnabledResolver: widget.questionPublicEnabledResolver,
     );
   }
@@ -2053,8 +2223,26 @@ Future<void> _openQuestionThreadPage({
   required List<LessonQuestion> questions,
   required List<LessonQuestionAnswer> answers,
   String? highlightedAnswerId,
+  Future<bool> Function(String courseId)? courseAccessResolver,
   Future<bool> Function(LessonQuestion question)? questionPublicEnabledResolver,
 }) async {
+  final courseAccessible = await _isRecordCourseAccessible(
+    question.courseId,
+    resolver: courseAccessResolver,
+  );
+  if (!courseAccessible) {
+    if (!context.mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        const SnackBar(
+          content: Text('この講座は削除されているため、コメント欄は開けません。学習記録の内容は引き続き確認できます。'),
+        ),
+      );
+    return;
+  }
   final latestQuestion = await _resolveLatestQuestionForThreadNavigation(
     question,
   );

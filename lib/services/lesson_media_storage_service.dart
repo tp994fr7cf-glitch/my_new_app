@@ -227,6 +227,8 @@ class LessonMediaStorageService {
         return;
       }
       rethrow;
+    } on ArgumentError {
+      return;
     }
   }
 

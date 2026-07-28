@@ -19,8 +19,15 @@ service firebase.storage {
         );
     }
 
+    function courseIsPublished(courseId) {
+      return firestore.get(
+        /databases/(default)/documents/courses/$(courseId)
+      ).data.status == 'published';
+    }
+
     function canReadCourseMedia(courseId) {
-      return isCourseInstructor(courseId) || userHasCourseEnrollment(courseId);
+      return isCourseInstructor(courseId)
+        || (courseIsPublished(courseId) && userHasCourseEnrollment(courseId));
     }
 
     function isLessonMediaContentType() {
@@ -40,9 +47,14 @@ service firebase.storage {
       );
     }
 
+    match /courseMedia/{courseId}/{allPaths=**} {
+      allow list: if isCourseInstructor(courseId);
+    }
+
     match /courseMedia/{courseId}/lessons/{lessonId}/segments/{segmentId}/{fileName} {
       allow read: if canReadCourseMedia(courseId);
       allow create, update: if isCourseInstructor(courseId)
+        && courseIsPublished(courseId)
         && lessonExists(courseId, lessonId)
         && isValidLessonMediaUpload();
       allow delete: if isCourseInstructor(courseId);

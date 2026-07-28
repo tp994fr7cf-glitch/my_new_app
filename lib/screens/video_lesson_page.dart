@@ -21,6 +21,7 @@ import '../models/lesson_segment_boundary.dart';
 import '../models/course_privacy_consent.dart';
 import '../models/quiz_answer_key.dart';
 import '../models/watched_range.dart';
+import '../services/course_access_service.dart';
 import '../services/course_privacy_service.dart';
 import '../services/lesson_media_playback.dart';
 import '../services/lesson_media_playlist_playback.dart';
@@ -97,6 +98,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   Timer? _activeLearningHeartbeatTimer;
   Timer? _postSeekDisplaySyncTimer;
   StreamSubscription<CourseEntryRequirement>? _entryRequirementSubscription;
+  StreamSubscription<bool>? _courseAccessSubscription;
   String? _sessionId;
   String? _segmentId;
   bool _hasActiveLearningLock = false;
@@ -126,6 +128,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   int? _pendingAutoAdvanceIntentGeneration;
   int _userPlaybackIntentGeneration = 0;
   bool _userWantsPlayback = false;
+  bool _courseDeleted = false;
   final Map<String, double> _mediaSegmentResumePositionsSec = {};
   final Set<String> _completedMediaSegmentIds = {};
 
@@ -267,6 +270,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     WidgetsBinding.instance.addObserver(this);
     _isLoadingLearningState = Firebase.apps.isNotEmpty && !_isTeacherPreview;
     _listenEntryRequirement();
+    _listenCourseAccess();
     if (_hasMediaSource) {
       _isLoadingMedia = true;
       unawaited(_initializeMediaPlayer());
@@ -283,6 +287,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _activeLearningHeartbeatTimer?.cancel();
     _postSeekDisplaySyncTimer?.cancel();
     _entryRequirementSubscription?.cancel();
+    _courseAccessSubscription?.cancel();
     _positionSubscription?.cancel();
     _durationSubscription?.cancel();
     _playingSubscription?.cancel();
@@ -299,6 +304,29 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       unawaited(_releaseActiveLearningLock());
     }
     super.dispose();
+  }
+
+  void _listenCourseAccess() {
+    if (Firebase.apps.isEmpty || _isTeacherPreview) {
+      return;
+    }
+    _courseAccessSubscription = const CourseAccessService()
+        .watchLearnerAccessible(course.storageId)
+        .listen((accessible) {
+          if (accessible || !mounted || _courseDeleted) {
+            return;
+          }
+          _playbackTimer?.cancel();
+          _studyTimer?.cancel();
+          _activeLearningHeartbeatTimer?.cancel();
+          unawaited(_playlistPlayback?.pause());
+          setState(() {
+            _courseDeleted = true;
+            _isPlaying = false;
+            _isLessonNotesOpen = false;
+            _isLessonQuestionsOpen = false;
+          });
+        });
   }
 
   @override
@@ -2623,6 +2651,22 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   @override
   Widget build(BuildContext context) {
+    if (_courseDeleted) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('レッスン視聴')),
+        body: const SafeArea(
+          child: Center(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Text(
+                'この講座は削除されたため、レッスンを視聴できません。\n学習記録は引き続き確認できます。',
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     final statusMessage =
         _message ??
         (_pendingCompletion

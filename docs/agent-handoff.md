@@ -1,6 +1,6 @@
-# 引き継ぎノート（my_new_app / ホワイトボード拡大・追従機能の実機確認後）
+# 引き継ぎノート（my_new_app / 講座の永久削除機能実装後）
 
-最終更新: 2026-07-27
+最終更新: 2026-07-28
 
 **最新機能「録音しながら書く」は、Android実機でユーザー確認済みです。**
 **ホワイトボードの最大8倍ズーム・パン・ミニマップ・先生表示追従も、
@@ -18,7 +18,71 @@ Firebase Console: https://console.firebase.google.com/project/my-new-app-naona-2
 
 ---
 
-## 0. 2026-07-27 最新引き継ぎ（最初に読むこと）
+## 0. 2026-07-28 最新引き継ぎ（最初に読むこと）
+
+### 2026-07-28 講座の永久削除機能（実装済み・本番反映済み）
+
+同じブランチ `cursor/android-audio-whiteboard-recording-c48f` で、
+先生が作成した講座を取り消し不能で削除する機能を実装した。
+この変更は現時点では未コミット・未pushだが、本番HostingとFirebase Rulesには反映済み。
+
+削除処理:
+
+1. 講座を `published` から `deleting` に変更し、受講・コメント・メディア追加を即時遮断
+2. Firebase Storage の `courseMedia/{courseId}` 配下を再帰的に全削除
+3. 完了後に `deleted` へ変更し、再公開をRulesで禁止
+4. 途中失敗時は `deleting` で残し、先生画面の「削除処理を再開」から冪等に再試行
+
+削除後:
+
+- 先生・受講者の講座一覧、学習再開一覧から除外
+- 講座・レッスン・動画・音声・公開コメント欄は利用不可
+- 開いたままの受講画面も講座状態を監視し、削除開始時に再生停止
+- 視聴記録、クイズ記録、質問・回答本文、自分用メモなどの学習記録は保持
+- 質問・回答は学習記録で本文確認のみ可能。元コメント欄への遷移は禁止
+- 削除済み講座の自分用メモは専用画面でタイトル・本文のみ編集可能。再公開不可
+- 過去形式の講座も `teacherListHidden` / `teacherListOrder` だけは更新可能
+
+主な変更:
+
+- `lib/services/teacher_course_list_service.dart`
+- `lib/services/course_access_service.dart`
+- `lib/screens/teacher_course_list_page.dart`
+- `lib/screens/course_entry_gate.dart`
+- `lib/screens/home_page.dart`
+- `lib/screens/learning_records_page.dart`
+- `lib/screens/video_lesson_page.dart`
+- `firestore.rules`
+- `storage.rules`
+
+確認:
+
+- 関連テスト26件成功
+- 削除済み学習記録のWidgetテスト2件成功
+- 変更対象の `flutter analyze` 成功
+- Web release build成功
+- Android debug APK build成功
+- `firebase deploy --only firestore:rules,storage --dry-run` 成功
+- 全 `test/widget_test.dart` では既存の
+  `Video lesson completes cycle after threshold` だけ失敗。今回の変更とは無関係
+
+重要:
+
+- 2026-07-28、未コミットのローカル変更から
+  Hosting・Firestore Rules・Storage Rulesを本番へ手動デプロイ済み
+- 本番URL: `https://my-new-app-naona-20260523.web.app`
+- 2026-07-28、Google Cloud ShellのFirestore managed bulk deleteで
+  講座・レッスン・受講・学習記録・メモ・質問/回答・講座設定の
+  現行テストデータを一括削除済み（operationState: `SUCCESSFUL`）
+- Storageの `courseMedia` も60ファイルすべて削除し、
+  再確認で `One or more URLs matched no objects` を確認済み
+- Firebase Authentication、`users` 本体、`publicUserProfiles` は削除対象外で保持
+- Rules単独では、悪意ある先生がFirebaseへ直接アクセスして
+  `deleting → deleted` だけを行うことまでは防げない。
+  通常アプリ操作・偶発競合・途中失敗は二段階削除と再開処理で対策済み。
+  この直接操作まで完全防止する場合はCloud Functions等の信頼済みバックエンドが必要
+
+### 2026-07-27 音声録音・ホワイトボード機能の引き継ぎ
 
 ### Gitの現在地
 

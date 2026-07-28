@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 
 import '../models/course.dart';
 
@@ -29,6 +30,47 @@ class TeacherCourseListService {
     await FirebaseFirestore.instance.collection('courses').doc(courseId).update(
       {'teacherListHidden': hidden},
     );
+  }
+
+  Future<void> deleteCourse({
+    required Course course,
+    required String instructorId,
+  }) async {
+    final courseId = course.id;
+    if (courseId == null || courseId.isEmpty) {
+      throw StateError('講座IDがないため削除できません。');
+    }
+
+    final courseRef = FirebaseFirestore.instance
+        .collection('courses')
+        .doc(courseId);
+    if (!course.isDeleting) {
+      await courseRef.update({
+        'status': courseStatusDeleting,
+        'deletionRequestedAt': FieldValue.serverTimestamp(),
+        'deletedByUserId': instructorId,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    }
+
+    await _deleteStoragePrefix(
+      FirebaseStorage.instance.ref('courseMedia/$courseId'),
+    );
+    await courseRef.update({
+      'status': courseStatusDeleted,
+      'deletedAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<void> _deleteStoragePrefix(Reference reference) async {
+    final result = await reference.listAll();
+    for (final prefix in result.prefixes) {
+      await _deleteStoragePrefix(prefix);
+    }
+    for (final item in result.items) {
+      await item.delete();
+    }
   }
 
   Future<void> saveVisibleOrder(List<Course> orderedCourses) async {

@@ -142,9 +142,55 @@ service cloud.firestore {
         && request.resource.data.instructorId == resource.data.instructorId
         && request.resource.data.courseCode == resource.data.courseCode
         && request.resource.data.source == resource.data.source
+        && resource.data.status == 'published'
         && request.resource.data.status == resource.data.status
         && validCourseLessonUpdateInvariant()
         && validCoursePrivacyPolicyMap(request.resource.data);
+    }
+
+    function canUpdateOwnTeacherCourseListMetadata() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return isTeacher()
+        && resource.data.instructorId == request.auth.uid
+        && (!resource.data.keys().hasAny(['status'])
+          || resource.data.status == 'published')
+        && changed.hasOnly(['teacherListHidden', 'teacherListOrder'])
+        && (!changed.hasAny(['teacherListHidden'])
+          || request.resource.data.teacherListHidden is bool)
+        && (!changed.hasAny(['teacherListOrder'])
+          || request.resource.data.teacherListOrder is int);
+    }
+
+    function canRequestOwnTeacherCourseDeletion() {
+      return isTeacher()
+        && resource.data.instructorId == request.auth.uid
+        && (!resource.data.keys().hasAny(['status'])
+          || resource.data.status == 'published')
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'deletionRequestedAt',
+          'deletedByUserId',
+          'updatedAt'
+        ])
+        && request.resource.data.status == 'deleting'
+        && request.resource.data.deletionRequestedAt is timestamp
+        && request.resource.data.deletedByUserId == request.auth.uid
+        && request.resource.data.updatedAt is timestamp;
+    }
+
+    function canFinalizeOwnTeacherCourseDeletion() {
+      return isTeacher()
+        && resource.data.instructorId == request.auth.uid
+        && resource.data.status == 'deleting'
+        && resource.data.deletedByUserId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'deletedAt',
+          'updatedAt'
+        ])
+        && request.resource.data.status == 'deleted'
+        && request.resource.data.deletedAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
     }
 
     // Rules can bound these collections, but cannot iterate dynamic segment IDs
@@ -200,6 +246,16 @@ service cloud.firestore {
     function userHasCourseEnrollment(courseId) {
       return signedIn()
         && exists(/databases/$(database)/documents/users/$(request.auth.uid)/enrollments/$(courseId));
+    }
+
+    function courseIsPublished(courseId) {
+      return courseId is string
+        && exists(/databases/$(database)/documents/courses/$(courseId))
+        && get(/databases/$(database)/documents/courses/$(courseId)).data.status == 'published';
+    }
+
+    function isPublishedCourseInstructor(courseId) {
+      return isCourseInstructor(courseId) && courseIsPublished(courseId);
     }
 
     function coursePolicyAllowsInstructorLegalNameShare(courseId) {
@@ -754,6 +810,7 @@ service cloud.firestore {
         }
 
         allow create: if isOwner(userId)
+          && courseIsPublished(request.resource.data.courseId)
           && validLessonNoteOwnerWrite();
 
         allow update: if isOwner(userId)
@@ -774,6 +831,24 @@ service cloud.firestore {
             || (resource.data.visibility != 'public'
               && resource.data.visibility != 'teacherOnly')
             || request.resource.data.isDeleted == true);
+
+        allow update: if isOwner(userId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'title',
+            'body',
+            'updatedAt'
+          ])
+          && request.resource.data.title is string
+          && request.resource.data.body is string
+          && request.resource.data.updatedAt is timestamp
+          && request.resource.data.courseId == resource.data.courseId
+          && (!resource.data.keys().hasAny(['authorId'])
+            || (request.resource.data.keys().hasAny(['authorId'])
+              && request.resource.data.authorId == resource.data.authorId))
+          && ((resource.data.keys().hasAny(['authorId'])
+              && resource.data.authorId == userId)
+            || (resource.data.keys().hasAny(['userId'])
+              && resource.data.userId == userId));
 
         allow update: if signedIn()
           && instructorCanResolveLessonNoteApproval(userId)
@@ -806,6 +881,7 @@ service cloud.firestore {
         allow read: if isOwner(userId);
 
         allow create: if isOwner(userId)
+          && courseIsPublished(request.resource.data.courseId)
           && request.resource.data.userId == userId
           && request.resource.data.authorId == userId
           && request.resource.data.courseId is string
@@ -933,6 +1009,7 @@ service cloud.firestore {
         }
 
         allow create: if isOwner(userId)
+          && courseIsPublished(request.resource.data.courseId)
           && request.resource.data.authorId == userId
           && request.resource.data.questionId is string
           && request.resource.data.courseId is string
@@ -957,6 +1034,7 @@ service cloud.firestore {
 
     match /publicLessonNotes/{noteId} {
       allow read: if signedIn()
+        && courseIsPublished(resource.data.courseId)
         && (resource.data.authorId == request.auth.uid
           || isCourseInstructor(resource.data.courseId)
           || (resource.data.studentVisibility == 'public'
@@ -1003,6 +1081,7 @@ service cloud.firestore {
       }
 
       allow create: if signedIn()
+        && courseIsPublished(request.resource.data.courseId)
         && validPublicLessonNoteOwnerWrite()
         && request.resource.data.studentVisibility in ['public', 'teacherOnly']
         && (request.resource.data.studentVisibility != 'public'
@@ -1012,8 +1091,12 @@ service cloud.firestore {
           || request.resource.data.moderationStatus == 'visible');
 
       allow update: if signedIn()
+        && courseIsPublished(resource.data.courseId)
         && validPublicLessonNoteOwnerWrite()
         && resource.data.authorId == request.auth.uid
+        && request.resource.data.courseId == resource.data.courseId
+        && request.resource.data.lessonNumber == resource.data.lessonNumber
+        && request.resource.data.authorId == resource.data.authorId
         && (request.resource.data.studentVisibility != 'public'
           || isCourseInstructor(request.resource.data.courseId)
           || !learnerPublicPostBlocked(request.resource.data.interactionSettingId))
@@ -1093,6 +1176,9 @@ service cloud.firestore {
       match /editHistory/{historyId} {
         function readableParentPublicLessonNote() {
           return exists(/databases/$(database)/documents/publicLessonNotes/$(noteId))
+            && courseIsPublished(
+              get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.courseId
+            )
             && (
               get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.authorId == request.auth.uid
               || isCourseInstructor(get(/databases/$(database)/documents/publicLessonNotes/$(noteId)).data.courseId)
@@ -1141,6 +1227,7 @@ service cloud.firestore {
 
     match /publicLessonQuestions/{questionId} {
       allow read: if signedIn()
+        && courseIsPublished(resource.data.courseId)
         && ((resource.data.authorId == request.auth.uid
             && (!resource.data.keys().hasAny(['authorDisplayName'])
               || resource.data.authorDisplayName != '先生'
@@ -1185,6 +1272,7 @@ service cloud.firestore {
       }
 
       allow create: if signedIn()
+        && courseIsPublished(request.resource.data.courseId)
         && validPublicLessonQuestionOwnerWrite()
         && (request.resource.data.studentVisibility != 'public'
           || isCourseInstructor(request.resource.data.courseId)
@@ -1192,6 +1280,7 @@ service cloud.firestore {
         && request.resource.data.moderationStatus == 'visible';
 
       allow update: if signedIn()
+        && courseIsPublished(resource.data.courseId)
         && resource.data.authorId == request.auth.uid
         && (resource.data.studentVisibility != 'public'
           || isCourseInstructor(resource.data.courseId)
@@ -1302,6 +1391,7 @@ service cloud.firestore {
       }
 
       allow read: if signedIn()
+        && courseIsPublished(resource.data.courseId)
         && ((resource.data.authorId == request.auth.uid
             && (resource.data.authorRole != 'teacher'
               || hasActiveTeacherRole()))
@@ -1322,6 +1412,7 @@ service cloud.firestore {
         && request.resource.data.isDeleted == true;
 
       allow create, update: if signedIn()
+        && courseIsPublished(request.resource.data.courseId)
         && request.resource.data.authorId == request.auth.uid
         && request.resource.data.answerId == answerId
         && request.resource.data.questionId is string
@@ -1338,8 +1429,17 @@ service cloud.firestore {
         && request.resource.data.isDeleted is bool
         && request.resource.data.moderationStatus in ['visible', 'hiddenByTeacher']
         && exists(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId))
+        && get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.courseId
+          == request.resource.data.courseId
+        && get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.lessonNumber
+          == request.resource.data.lessonNumber
         && get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.moderationStatus == 'visible'
         && get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.isDeleted == false
+        && (!exists(/databases/$(database)/documents/publicLessonQuestionAnswers/$(answerId))
+          || (request.resource.data.courseId == resource.data.courseId
+            && request.resource.data.questionId == resource.data.questionId
+            && request.resource.data.lessonNumber == resource.data.lessonNumber
+            && request.resource.data.authorId == resource.data.authorId))
         && !publicParentQuestionBlocksOtherLearnerAnswers(request.resource.data.questionId)
         && (
           (get(/databases/$(database)/documents/publicLessonQuestions/$(request.resource.data.questionId)).data.studentVisibility == 'public'
@@ -1373,11 +1473,13 @@ service cloud.firestore {
     }
 
     match /lessonInteractionSettings/{settingId} {
-      allow read: if signedIn();
+      allow read: if signedIn()
+        && (courseIsPublished(resource.data.courseId)
+          || isCourseInstructor(resource.data.courseId));
 
       allow create, update: if signedIn()
         && request.resource.data.courseId is string
-        && isCourseInstructor(request.resource.data.courseId)
+        && isPublishedCourseInstructor(request.resource.data.courseId)
         && request.resource.data.lessonNumber is int
         && request.resource.data.lessonNotesPublicEnabled is bool
         && request.resource.data.lessonQuestionsPublicEnabled is bool;
@@ -1392,17 +1494,16 @@ service cloud.firestore {
         }
 
         allow read: if signedIn()
-          && (
-            request.auth.uid == learnerId
-            || (parentSettingExists()
-              && parentSettingDoc().courseId is string
-              && isCourseInstructor(parentSettingDoc().courseId))
-          );
+          && parentSettingExists()
+          && parentSettingDoc().courseId is string
+          && courseIsPublished(parentSettingDoc().courseId)
+          && (request.auth.uid == learnerId
+            || isCourseInstructor(parentSettingDoc().courseId));
 
         allow create, update: if signedIn()
           && parentSettingExists()
           && parentSettingDoc().courseId is string
-          && isCourseInstructor(parentSettingDoc().courseId)
+          && isPublishedCourseInstructor(parentSettingDoc().courseId)
           && request.resource.data.courseId == parentSettingDoc().courseId
           && request.resource.data.lessonNumber == parentSettingDoc().lessonNumber
           && request.resource.data.learnerId == learnerId
@@ -1428,6 +1529,8 @@ service cloud.firestore {
 
       allow update: if signedIn()
         && courseId.matches('sample-.*')
+        && resource.data.status == 'published'
+        && resource.data.source == 'developmentSeed'
         && request.resource.data.status == 'published'
         && request.resource.data.source == 'developmentSeed'
         && validCourseLessonUpdateInvariant();
@@ -1441,6 +1544,9 @@ service cloud.firestore {
         && validCourseLessonCount(request.resource.data);
 
       allow update: if canUpdateOwnTeacherCourse();
+      allow update: if canUpdateOwnTeacherCourseListMetadata();
+      allow update: if canRequestOwnTeacherCourseDeletion();
+      allow update: if canFinalizeOwnTeacherCourseDeletion();
 
       match /lessons/{lessonId} {
         function parentCourse() {
@@ -1462,7 +1568,7 @@ service cloud.firestore {
         }
 
         function canWriteLesson() {
-          return isCourseInstructor(courseId)
+          return isPublishedCourseInstructor(courseId)
             || (hasActiveTeacherRole()
               && parentCourseAfterWrite().instructorId == request.auth.uid
               && parentCourseAfterWrite().status == 'published')
@@ -1520,7 +1626,7 @@ service cloud.firestore {
           && request.resource.data.documentVersion == 1
           && request.resource.data.quizVersion == 1
           && request.resource.data.createdAt is timestamp;
-        allow update: if isCourseInstructor(courseId)
+        allow update: if isPublishedCourseInstructor(courseId)
           && validLessonPayload()
           && request.resource.data.createdAt == resource.data.createdAt
           && request.resource.data.order == resource.data.order
@@ -1530,7 +1636,7 @@ service cloud.firestore {
           && parentCourseAfterWrite().status == 'published'
           && parentCourseAfterWrite().source == 'developmentSeed'
           && validLessonPayload();
-        allow delete: if isCourseInstructor(courseId);
+        allow delete: if isPublishedCourseInstructor(courseId);
       }
 
       match /lessonDrafts/{lessonId} {
@@ -1577,10 +1683,10 @@ service cloud.firestore {
         }
 
         allow read: if isCourseInstructor(courseId);
-        allow create: if isCourseInstructor(courseId)
+        allow create: if isPublishedCourseInstructor(courseId)
           && validLessonDraft()
           && request.resource.data.draftRevision == 1;
-        allow update: if isCourseInstructor(courseId)
+        allow update: if isPublishedCourseInstructor(courseId)
           && validLessonDraft()
           && (
             (!resource.data.keys().hasAny(['draftRevision'])
@@ -1591,7 +1697,7 @@ service cloud.firestore {
               && request.resource.data.draftRevision
                 == resource.data.draftRevision + 1)
           );
-        allow delete: if isCourseInstructor(courseId);
+        allow delete: if isPublishedCourseInstructor(courseId);
       }
 
       match /participantIdentities/{userId} {
@@ -1641,10 +1747,12 @@ service cloud.firestore {
           && (
             request.auth.uid == userId
             || isCourseInstructor(courseId)
-            || userHasCourseEnrollment(courseId)
+            || (courseIsPublished(courseId)
+              && userHasCourseEnrollment(courseId))
           );
 
         allow create, update: if signedIn()
+          && courseIsPublished(courseId)
           && validIdentityPayload()
           && (
             (request.auth.uid == userId
@@ -1657,7 +1765,7 @@ service cloud.firestore {
       match /teacherLegalNameShares/{userId} {
         allow read: if signedIn()
           && (request.auth.uid == userId
-            || (isCourseInstructor(courseId)
+            || (isPublishedCourseInstructor(courseId)
               && coursePolicyAllowsInstructorLegalNameShare(courseId)));
 
         allow create, update: if signedIn()
@@ -1674,10 +1782,12 @@ service cloud.firestore {
 
       match /peerLegalNames/{token} {
         allow read: if signedIn()
+          && courseIsPublished(courseId)
           && coursePolicyAllowsPeerLegalNameShare(courseId)
           && (userHasCourseEnrollment(courseId) || isCourseInstructor(courseId));
 
         allow create, update: if signedIn()
+          && courseIsPublished(courseId)
           && userHasCourseEnrollment(courseId)
           && validLegalNameValue(request.resource.data.legalName)
           && request.resource.data.courseId == courseId

@@ -53,6 +53,53 @@ void main() {
     expect(rules, contains('validCourseLessonUpdateInvariant()'));
   });
 
+  test(
+    'course deletion is permanent and old course list metadata stays editable',
+    () {
+      expect(
+        rules,
+        contains('function canUpdateOwnTeacherCourseListMetadata()'),
+      );
+      expect(rules, contains('function canRequestOwnTeacherCourseDeletion()'));
+      expect(rules, contains('function canFinalizeOwnTeacherCourseDeletion()'));
+      expect(rules, contains("request.resource.data.status == 'deleting'"));
+      expect(rules, contains("request.resource.data.status == 'deleted'"));
+      expect(
+        rules,
+        contains(
+          "resource.data.status == 'published'\n"
+          "        && request.resource.data.status == resource.data.status",
+        ),
+      );
+      expect(
+        rules,
+        contains("changed.hasOnly(['teacherListHidden', 'teacherListOrder'])"),
+      );
+    },
+  );
+
+  test(
+    'deleted courses block new comments while owner records remain readable',
+    () {
+      expect(rules, contains('function courseIsPublished(courseId)'));
+      expect(
+        rules,
+        contains(
+          'allow create: if isOwner(userId)\n'
+          '          && courseIsPublished(request.resource.data.courseId)\n'
+          '          && request.resource.data.userId == userId',
+        ),
+      );
+      expect(
+        rules,
+        contains(
+          'match /lessonQuestions/{questionId} {\n'
+          '        allow read: if isOwner(userId);',
+        ),
+      );
+    },
+  );
+
   test('individual lesson writes require a monotonic document version', () {
     expect(rules, contains('match /lessons/{lessonId}'));
     expect(rules, contains('request.resource.data.schemaVersion == 2'));
@@ -95,6 +142,23 @@ void main() {
         '                == resource.data.draftRevision + 1',
       ),
     );
-    expect(rules, contains('allow delete: if isCourseInstructor(courseId);'));
+    expect(
+      rules,
+      contains('allow delete: if isPublishedCourseInstructor(courseId);'),
+    );
+  });
+
+  test('public answers cannot spoof another published course id', () {
+    expect(
+      rules,
+      contains(
+        'data.courseId\n'
+        '          == request.resource.data.courseId',
+      ),
+    );
+    expect(
+      rules,
+      contains('request.resource.data.courseId == resource.data.courseId'),
+    );
   });
 }
