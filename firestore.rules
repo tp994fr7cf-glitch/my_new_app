@@ -76,6 +76,11 @@ service cloud.firestore {
       return hasActiveTeacherRole();
     }
 
+    function isLiveAudioProbeParticipant(sessionId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/liveAudioProbeSessions/$(sessionId)/participants/$(request.auth.uid));
+    }
+
     function validCoursePrivacyPolicyMap(data) {
       return !data.keys().hasAny(['privacyPolicy'])
         || (data.privacyPolicy is map
@@ -1509,6 +1514,31 @@ service cloud.firestore {
           && request.resource.data.learnerId == learnerId
           && request.resource.data.restrictionMode in ['none', 'noPublicPost', 'noPublicReadOrPost']
           && request.resource.data.updatedByUserId is string;
+      }
+    }
+
+    match /liveAudioProbeSessions/{sessionId} {
+      allow get: if isLiveAudioProbeParticipant(sessionId);
+      allow list, create, update, delete: if false;
+
+      match /participants/{participantId} {
+        allow read: if isLiveAudioProbeParticipant(sessionId);
+        allow write: if false;
+      }
+
+      match /whiteboardStrokes/{strokeId} {
+        allow read: if isLiveAudioProbeParticipant(sessionId);
+        allow write: if false;
+      }
+
+      match /timelineChunks/{chunkId} {
+        allow read: if isLiveAudioProbeParticipant(sessionId);
+        allow write: if false;
+      }
+
+      match /state/{stateId} {
+        allow read: if isLiveAudioProbeParticipant(sessionId);
+        allow write: if false;
       }
     }
 

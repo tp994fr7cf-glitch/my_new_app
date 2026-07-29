@@ -1,6 +1,10 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
+// Older Agora plugin Gradle metadata defaults to API 31 unless the host
+// explicitly supplies the compile SDK. Keep it aligned with current Flutter.
+rootProject.extra["compileSdkVersion"] = 36
+
 allprojects {
     repositories {
         google()

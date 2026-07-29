@@ -12,6 +12,7 @@ import 'course_entry_gate.dart';
 import 'course_create_page.dart';
 import 'course_list_page.dart';
 import 'learning_records_page.dart';
+import 'live_audio_probe_page.dart';
 import 'public_user_profile_page.dart';
 import 'role_switch_page.dart';
 import 'teacher_application_page.dart';
@@ -100,6 +101,21 @@ class StudentHomePage extends StatelessWidget {
             const SizedBox(height: 24),
             _ProfileSummaryCard(user: user, profile: profile, roles: roles),
             const SizedBox(height: 16),
+            if (liveAudioProbeEnabled)
+              _HomeActionCard(
+                icon: Icons.podcasts,
+                title: 'ライブ音声・板書配信',
+                description: '先生から届いた配信コードを使い、ライブ音声とホワイトボードへ参加します。',
+                buttonText: '配信へ参加',
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          LiveAudioProbePage(user: user, activeRole: 'student'),
+                    ),
+                  );
+                },
+              ),
             _ResumeLearningCard(
               user: user,
               enrollmentRecordsStream: enrollmentRecordsStream,
@@ -625,6 +641,21 @@ class TeacherHomePage extends StatelessWidget {
           const SizedBox(height: 24),
           _ProfileSummaryCard(user: user, profile: profile, roles: roles),
           const SizedBox(height: 16),
+          if (liveAudioProbeEnabled)
+            _HomeActionCard(
+              icon: Icons.podcasts,
+              title: 'ライブ音声・板書配信',
+              description: '音声とホワイトボードを配信し、発表者の交代やアーカイブを管理します。',
+              buttonText: '配信画面を開く',
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        LiveAudioProbePage(user: user, activeRole: 'teacher'),
+                  ),
+                );
+              },
+            ),
           _HomeActionCard(
             icon: Icons.video_library,
             title: '自分の講座',
