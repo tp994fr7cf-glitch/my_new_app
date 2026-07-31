@@ -19,9 +19,11 @@ import '../models/lesson_whiteboard_board_set.dart';
 import '../services/course_lesson_repository.dart';
 import '../services/lesson_media_duration_service.dart';
 import '../services/lesson_media_storage_service.dart';
+import '../services/live_audio_probe_service.dart';
 import '../utils/firebase_error_message.dart';
 import '../widgets/lesson_audio_whiteboard_recorder_panel.dart';
 import '../widgets/lesson_whiteboard_editor_panel.dart';
+import 'live_audio_probe_page.dart';
 import 'teacher_quiz_manage_page.dart';
 
 typedef LessonSaveOverride = Future<void> Function(List<CourseLesson> lessons);
@@ -1379,6 +1381,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                   index: _lessonNumberForEditor(entry.$1),
                   lessonIndex: _lessonNumberForEditor(entry.$1) - 1,
                   course: _activeCourse,
+                  lessonId: widget.lessonId,
                   editor: entry.$2,
                   canUploadMedia: canUploadMedia,
                   canRecordAudio:
@@ -1418,6 +1421,8 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                     editor: entry.$2,
                     boardSet: boardSet,
                   ),
+                  onPersistRequested: _saveLessons,
+                  onReloadRequested: _loadLatestLessons,
                 ),
                 const SizedBox(height: 16),
               ],
@@ -1464,6 +1469,8 @@ class _MediaSegmentEditorState {
     this.isLocked = false,
     this.durationSec = 0,
     this.durationMs = 0,
+    this.sourceKind = '',
+    this.liveSessionId = '',
     this.isAudioRecordingDraft = false,
     required this.isAudioRecordingBusy,
     required this.isMediaDraft,
@@ -1484,6 +1491,8 @@ class _MediaSegmentEditorState {
       isLocked: isLocked,
       durationSec: segment.durationSec,
       durationMs: segment.durationMs,
+      sourceKind: segment.sourceKind,
+      liveSessionId: segment.liveSessionId,
       isAudioRecordingBusy: false,
       isMediaDraft: isMediaDraft,
     );
@@ -1497,6 +1506,8 @@ class _MediaSegmentEditorState {
   bool isLocked;
   int durationSec;
   int durationMs;
+  String sourceKind;
+  String liveSessionId;
   bool isAudioRecordingDraft;
   bool isAudioRecordingBusy;
   bool isMediaDraft;
@@ -1506,6 +1517,8 @@ class _MediaSegmentEditorState {
   int get displayOrder => order + 1;
 
   bool get hasUrl => urlController.text.trim().isNotEmpty;
+  bool get isLiveArchive => sourceKind == lessonMediaSourceLiveArchive;
+  bool get isLiveReserved => isLiveArchive && liveSessionId.isNotEmpty;
   double get durationSecExact =>
       durationMs > 0 ? durationMs / 1000 : durationSec.toDouble();
 
@@ -1521,6 +1534,8 @@ class _MediaSegmentEditorState {
       url: urlController.text.trim(),
       durationSec: hasUrl ? duration : 0,
       durationMs: hasUrl ? durationMs : 0,
+      sourceKind: sourceKind,
+      liveSessionId: liveSessionId,
     );
   }
 
@@ -1642,7 +1657,10 @@ class _LessonEditorState {
         parseLessonDurationLabel(fallbackDurationLabel) ?? 0;
     return LessonMediaSegment.normalizeOrders(
       segments
-          .where((segment) => segment.isLocked || segment.hasUrl)
+          .where(
+            (segment) =>
+                segment.isLocked || segment.hasUrl || segment.isLiveArchive,
+          )
           .map(
             (segment) =>
                 segment.toSegment(fallbackDurationSec: fallbackDurationSec),
@@ -1722,6 +1740,7 @@ class _LessonEditorState {
   _MediaSegmentEditorState addSegment({
     String mediaType = 'audio',
     bool forAudioRecording = false,
+    bool forLiveArchive = false,
   }) {
     final segment = _MediaSegmentEditorState(
       id: LessonMediaSegment.generateId(),
@@ -1729,6 +1748,7 @@ class _LessonEditorState {
       titleController: TextEditingController(),
       urlController: TextEditingController(),
       mediaType: mediaType,
+      sourceKind: forLiveArchive ? lessonMediaSourceLiveArchive : '',
       isAudioRecordingDraft: forAudioRecording,
       isAudioRecordingBusy: false,
       isMediaDraft: false,
@@ -1797,6 +1817,7 @@ class _LessonEditorCardHost extends StatefulWidget {
     required this.index,
     required this.lessonIndex,
     required this.course,
+    required this.lessonId,
     required this.editor,
     required this.canUploadMedia,
     required this.canRecordAudio,
@@ -1807,11 +1828,14 @@ class _LessonEditorCardHost extends StatefulWidget {
     required this.onUploadSegment,
     required this.onUseRecordedAudio,
     required this.onDraftSaved,
+    required this.onPersistRequested,
+    required this.onReloadRequested,
   });
 
   final int index;
   final int lessonIndex;
   final Course course;
+  final String? lessonId;
   final _LessonEditorState editor;
   final bool canUploadMedia;
   final bool canRecordAudio;
@@ -1829,6 +1853,8 @@ class _LessonEditorCardHost extends StatefulWidget {
   )
   onUseRecordedAudio;
   final WhiteboardBoardSetDraftSaveCallback onDraftSaved;
+  final Future<void> Function() onPersistRequested;
+  final Future<void> Function() onReloadRequested;
 
   @override
   State<_LessonEditorCardHost> createState() => _LessonEditorCardHostState();
@@ -1841,6 +1867,7 @@ class _LessonEditorCardHostState extends State<_LessonEditorCardHost> {
       index: widget.index,
       lessonIndex: widget.lessonIndex,
       course: widget.course,
+      lessonId: widget.lessonId,
       editor: widget.editor,
       canUploadMedia: widget.canUploadMedia,
       canRecordAudio: widget.canRecordAudio,
@@ -1852,6 +1879,8 @@ class _LessonEditorCardHostState extends State<_LessonEditorCardHost> {
       onUploadSegment: widget.onUploadSegment,
       onUseRecordedAudio: widget.onUseRecordedAudio,
       onDraftSaved: widget.onDraftSaved,
+      onPersistRequested: widget.onPersistRequested,
+      onReloadRequested: widget.onReloadRequested,
     );
   }
 }
@@ -1861,6 +1890,7 @@ class _LessonEditorCard extends StatelessWidget {
     required this.index,
     required this.lessonIndex,
     required this.course,
+    required this.lessonId,
     required this.editor,
     required this.canUploadMedia,
     required this.canRecordAudio,
@@ -1872,11 +1902,14 @@ class _LessonEditorCard extends StatelessWidget {
     required this.onUploadSegment,
     required this.onUseRecordedAudio,
     required this.onDraftSaved,
+    required this.onPersistRequested,
+    required this.onReloadRequested,
   });
 
   final int index;
   final int lessonIndex;
   final Course course;
+  final String? lessonId;
   final _LessonEditorState editor;
   final bool canUploadMedia;
   final bool canRecordAudio;
@@ -1895,19 +1928,26 @@ class _LessonEditorCard extends StatelessWidget {
   )
   onUseRecordedAudio;
   final WhiteboardBoardSetDraftSaveCallback onDraftSaved;
+  final Future<void> Function() onPersistRequested;
+  final Future<void> Function() onReloadRequested;
 
   void _showAddSegmentDialog(BuildContext context) {
     unawaited(
       showDialog<void>(
         context: context,
         builder: (dialogContext) {
-          void addSegment(String mediaType, {bool forAudioRecording = false}) {
+          void addSegment(
+            String mediaType, {
+            bool forAudioRecording = false,
+            bool forLiveArchive = false,
+          }) {
             final segment = editor.addSegment(
               mediaType: mediaType,
               forAudioRecording: forAudioRecording,
+              forLiveArchive: forLiveArchive,
             );
             onChanged();
-            if (!forAudioRecording) {
+            if (!forAudioRecording && !forLiveArchive) {
               onAddSegment(segment);
             }
             Navigator.of(dialogContext).pop();
@@ -1927,6 +1967,11 @@ class _LessonEditorCard extends StatelessWidget {
                 TextButton(
                   onPressed: () => addSegment('audio', forAudioRecording: true),
                   child: const Text('録音しながら書く'),
+                ),
+              if (canRecordAudio && liveAudioProbeEnabled)
+                TextButton(
+                  onPressed: () => addSegment('audio', forLiveArchive: true),
+                  child: const Text('ライブ音声配信'),
                 ),
               TextButton(
                 onPressed: () => addSegment('video'),
@@ -2043,16 +2088,19 @@ class _LessonEditorCard extends StatelessWidget {
                     canUploadMedia &&
                     !editor.isAnySegmentUploading &&
                     !entry.$2.isLocked &&
-                    !entry.$2.isAudioRecordingDraft,
+                    !entry.$2.isAudioRecordingDraft &&
+                    !entry.$2.isLiveArchive,
                 mediaStorageService: mediaStorageService,
                 onChanged: onChanged,
                 onUpload: () => onUploadSegment(entry.$2),
                 onMoveUp:
                     !entry.$2.isLocked &&
                         !entry.$2.isAudioRecordingDraft &&
+                        !entry.$2.isLiveReserved &&
                         !editor.hasAudioRecordingInProgress &&
                         entry.$1 > 0 &&
-                        !editor.segments[entry.$1 - 1].isLocked
+                        !editor.segments[entry.$1 - 1].isLocked &&
+                        !editor.segments[entry.$1 - 1].isLiveReserved
                     ? () {
                         editor.moveSegmentUp(entry.$1);
                         onChanged();
@@ -2061,9 +2109,11 @@ class _LessonEditorCard extends StatelessWidget {
                 onMoveDown:
                     !entry.$2.isLocked &&
                         !entry.$2.isAudioRecordingDraft &&
+                        !entry.$2.isLiveReserved &&
                         !editor.hasAudioRecordingInProgress &&
                         entry.$1 < editor.segments.length - 1 &&
-                        !editor.segments[entry.$1 + 1].isLocked
+                        !editor.segments[entry.$1 + 1].isLocked &&
+                        !editor.segments[entry.$1 + 1].isLiveReserved
                     ? () {
                         editor.moveSegmentDown(entry.$1);
                         onChanged();
@@ -2072,6 +2122,7 @@ class _LessonEditorCard extends StatelessWidget {
                 onRemove:
                     entry.$2.isLocked ||
                         entry.$2.isAudioRecordingDraft ||
+                        entry.$2.isLiveReserved ||
                         editor.hasAudioRecordingInProgress
                     ? null
                     : () {
@@ -2079,6 +2130,118 @@ class _LessonEditorCard extends StatelessWidget {
                         onChanged();
                       },
               ),
+              if (entry.$2.isLiveArchive) ...[
+                const SizedBox(height: 8),
+                Card(
+                  color: Theme.of(context).colorScheme.secondaryContainer,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          entry.$2.hasUrl
+                              ? 'ライブ配信アーカイブ（下書き）'
+                              : entry.$2.liveSessionId.isEmpty
+                              ? 'ライブ配信パート（未開始）'
+                              : 'ライブ配信セッションを作成済み',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          entry.$2.hasUrl
+                              ? '板書を確認・編集してから、レッスン情報を保存すると公開されます。'
+                              : '配信中は音声を自動保存し、終了後にこのパートの下書きへ戻します。',
+                        ),
+                        if (!entry.$2.hasUrl) ...[
+                          const SizedBox(height: 8),
+                          FilledButton.icon(
+                            onPressed:
+                                courseId.isEmpty ||
+                                    lessonId == null ||
+                                    lessonId!.isEmpty ||
+                                    FirebaseAuth.instance.currentUser == null
+                                ? null
+                                : () async {
+                                    await onPersistRequested();
+                                    if (!context.mounted) {
+                                      return;
+                                    }
+                                    await Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (_) => LiveAudioProbePage(
+                                          user: FirebaseAuth
+                                              .instance
+                                              .currentUser!,
+                                          activeRole: 'teacher',
+                                          courseId: courseId,
+                                          lessonId: lessonId,
+                                          segmentId: entry.$2.id,
+                                          initialBoardSet:
+                                              editor.workingBoardSet,
+                                          segmentStartSec: editor.segments
+                                              .take(entry.$1)
+                                              .where(
+                                                (segment) => segment.hasUrl,
+                                              )
+                                              .fold<double>(
+                                                0,
+                                                (total, segment) =>
+                                                    total +
+                                                    segment.durationSecExact,
+                                              ),
+                                          initialSessionId:
+                                              entry.$2.liveSessionId,
+                                          onSessionCreated: (sessionId) {
+                                            entry.$2.liveSessionId = sessionId;
+                                            onChanged();
+                                          },
+                                        ),
+                                      ),
+                                    );
+                                    await onReloadRequested();
+                                  },
+                            icon: const Icon(Icons.podcasts),
+                            label: Text(
+                              entry.$2.liveSessionId.isEmpty
+                                  ? '配信画面を開く'
+                                  : '配信へ戻る',
+                            ),
+                          ),
+                          if (entry.$2.liveSessionId.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            OutlinedButton.icon(
+                              onPressed: () async {
+                                try {
+                                  await LiveAudioProbeService().retryArchive(
+                                    entry.$2.liveSessionId,
+                                  );
+                                  await onReloadRequested();
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('アーカイブ処理を再確認しました。'),
+                                      ),
+                                    );
+                                  }
+                                } catch (error) {
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(content: Text('$error')),
+                                    );
+                                  }
+                                }
+                              },
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('録音の保存を再試行'),
+                            ),
+                          ],
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
               if (entry.$2.isAudioRecordingDraft &&
                   !entry.$2.hasUrl &&
                   !entry.$2.isLocked &&
@@ -2256,7 +2419,9 @@ class _SegmentEditorTile extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'パート${segment.displayOrder}',
+              segment.isLiveArchive
+                  ? 'パート${segment.displayOrder}・ライブ音声配信'
+                  : 'パート${segment.displayOrder}',
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
             if (segment.isLocked)
@@ -2289,6 +2454,7 @@ class _SegmentEditorTile extends StatelessWidget {
                   segment.isUploading ||
                       segment.isLocked ||
                       segment.isAudioRecordingDraft ||
+                      segment.isLiveArchive ||
                       lessonHasActiveRecording
                   ? null
                   : (value) {
@@ -2299,23 +2465,25 @@ class _SegmentEditorTile extends StatelessWidget {
                       onChanged();
                     },
             ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: !canUploadMedia || segment.isUploading
-                  ? null
-                  : onUpload,
-              icon: Icon(
-                segment.mediaType == 'audio'
-                    ? Icons.upload_file
-                    : Icons.video_file_outlined,
+            if (!segment.isLiveArchive) ...[
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: !canUploadMedia || segment.isUploading
+                    ? null
+                    : onUpload,
+                icon: Icon(
+                  segment.mediaType == 'audio'
+                      ? Icons.upload_file
+                      : Icons.video_file_outlined,
+                ),
+                label: Text('$mediaLabelをアップロード'),
               ),
-              label: Text('$mediaLabelをアップロード'),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              '対応形式: ${allowedExtensions.join(' / ')}（100MBまで）',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
+              const SizedBox(height: 4),
+              Text(
+                '対応形式: ${allowedExtensions.join(' / ')}（100MBまで）',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
             if (segment.isUploading) ...[
               const SizedBox(height: 8),
               LinearProgressIndicator(

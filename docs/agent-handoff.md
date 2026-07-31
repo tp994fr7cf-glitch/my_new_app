@@ -1,6 +1,12 @@
-# 引き継ぎノート（my_new_app / 講座の永久削除機能実装後）
+# 引き継ぎノート（my_new_app / Agora技術検証準備後）
 
-最終更新: 2026-07-28
+最終更新: 2026-07-29
+
+**2026-07-29、Agora音声＋ホワイトボード技術検証のコードを同じブランチへ追加しました。**
+**これは未コミット・未デプロイで、Agoraアカウント設定前のため実通信はまだ未確認です。**
+**App ID / App CertificateをFirebase Secret Managerへ登録し、FunctionsとFirestore Rulesを
+デプロイしてから、先生1人・受講者2人でAndroid/Web実機確認を行います。**
+**この最初の検証結果が出たら、完成版へ進まず必ずユーザーの次の指示を待ってください。**
 
 **最新機能「録音しながら書く」は、Android実機でユーザー確認済みです。**
 **ホワイトボードの最大8倍ズーム・パン・ミニマップ・先生表示追従も、
@@ -15,6 +21,27 @@
 本番 Web: https://my-new-app-naona-20260523.web.app
 Firebase プロジェクト: my-new-app-naona-20260523
 Firebase Console: https://console.firebase.google.com/project/my-new-app-naona-20260523/overview
+
+---
+
+## 0-A. 2026-07-29 Agora音声・板書技術検証（実装済み・実通信待ち）
+
+- 通常画面から分離し、`ENABLE_AGORA_PROBE=true` のときだけ先生・学習者ホームに入口を表示
+- Firebase Callable Functionsが15分のAgora RTC Tokenを発行
+- App CertificateはFlutterへ渡さず、Firebase Secret Managerだけで保持
+- 先生は常に配信可能。受講者は先生が許可した場合だけ音声・板書を送信可能
+- 動画送信権限は発行しない
+- Agora data streamの `syncWithAudio: true` で板書差分を送信
+- 完了した線だけFirestoreへ保存し、途中参加・再接続時に復元
+- Firestore Rulesは参加済みユーザーの読み取りだけを許可し、クライアント書き込みを全面禁止
+- Web release build成功、Android debug APK build成功
+- 新規Dartテスト3件、Functionsテスト4件、関連回帰テストを含む64件成功
+- `flutter analyze` の新規指摘なし。全体では既存25件のみ
+- AndroidのAGP 9対応として、Agora公式AARの重複namespaceへ
+  `android.uniquePackageNames=false` を一時適用
+- Agora 6.6.3の誤った`ffi` 1.x制約を、既存依存と同じ`ffi` 2.2.0でoverride
+- 詳細な設定・実機確認手順: `docs/agora-live-audio-probe.md`
+- 未実施: Agoraプロジェクト作成、Secret登録、Functions/Rulesデプロイ、3人実通信
 
 ---
 

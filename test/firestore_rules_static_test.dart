@@ -53,6 +53,21 @@ void main() {
     expect(rules, contains('validCourseLessonUpdateInvariant()'));
   });
 
+  test('live audio probe data is read-only and participant-scoped', () {
+    expect(rules, contains('function isLiveAudioProbeParticipant(sessionId)'));
+    expect(rules, contains('match /liveAudioProbeSessions/{sessionId}'));
+    expect(
+      rules,
+      contains('allow get: if isLiveAudioProbeParticipant(sessionId);'),
+    );
+    expect(rules, contains('allow list, create, update, delete: if false;'));
+    expect(rules, contains('match /participants/{participantId}'));
+    expect(rules, contains('match /whiteboardStrokes/{strokeId}'));
+    expect(rules, contains('match /timelineChunks/{chunkId}'));
+    expect(rules, contains('match /state/{stateId}'));
+    expect(rules, contains('allow write: if false;'));
+  });
+
   test(
     'course deletion is permanent and old course list metadata stays editable',
     () {
