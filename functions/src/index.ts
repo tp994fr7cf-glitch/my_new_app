@@ -8,6 +8,7 @@ import {
   getFirestore,
 } from "firebase-admin/firestore";
 import {getStorage} from "firebase-admin/storage";
+import {logger} from "firebase-functions/logger";
 import {defineSecret} from "firebase-functions/params";
 import {setGlobalOptions} from "firebase-functions/v2";
 import {
@@ -16,6 +17,7 @@ import {
   onCall,
   onRequest,
 } from "firebase-functions/v2/https";
+import {onSchedule} from "firebase-functions/v2/scheduler";
 import {RtcTokenBuilder} from "agora-token";
 
 import {
@@ -59,6 +61,8 @@ import {
   rtcUidForFirebaseUser,
   validateTimelineBoardReferences,
 } from "./live_audio_probe";
+import {runLiveAudioProbeRawRetention} from
+  "./live_audio_probe_retention_runtime";
 
 initializeApp();
 setGlobalOptions({region: "asia-northeast1", maxInstances: 10});
@@ -96,6 +100,56 @@ const archiveStorageWarning =
   "配信は終了しましたが、録音をレッスン用保存先へコピーできませんでした。保存元バケットの読み取り権限を確認してください。";
 const archiveDraftWarning =
   "配信は終了しましたが、レッスン下書きを安全に作成できませんでした。講座・レッスン・予約枠・版を確認してください。";
+
+export const cleanupLiveAudioProbeRawArchives = onSchedule(
+  {
+    schedule: "15 4 * * *",
+    timeZone: "Asia/Tokyo",
+    secrets: [agoraGcsBucket],
+    timeoutSeconds: 540,
+    maxInstances: 1,
+    retryCount: 0,
+  },
+  async (event) => {
+    logger.info("live_audio_probe_raw_cleanup_started", {
+      event: "cleanup_started",
+      scheduleTime: event.scheduleTime,
+    });
+    try {
+      const storage = getStorage();
+      const rawBucketName = agoraGcsBucket.value().trim();
+      if (!rawBucketName) {
+        throw new Error("AGORA_GCS_BUCKET is empty.");
+      }
+      await runLiveAudioProbeRawRetention({
+        db,
+        rawBucket: storage.bucket(rawBucketName),
+        completedCopyBucket: storage.bucket(),
+        mode: "apply",
+        selectionPolicy: "threshold",
+        log: (entry) => {
+          const message = `live_audio_probe_raw_${entry.event}`;
+          if (
+            entry.event === "session_skipped" ||
+            entry.event === "session_partially_deleted" ||
+            (entry.event === "cleanup_complete" &&
+              entry.targetReached !== true)
+          ) {
+            logger.warn(message, entry);
+          } else {
+            logger.info(message, entry);
+          }
+        },
+      });
+    } catch (error) {
+      logger.error("live_audio_probe_raw_cleanup_failed", {
+        event: "cleanup_failed",
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
+      throw error;
+    }
+  },
+);
 
 export const createLiveAudioProbeSession = onCall(
   {secrets: archiveSecrets, timeoutSeconds: 120},

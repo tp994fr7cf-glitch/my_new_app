@@ -57,6 +57,63 @@ Functionsの実行サービスアカウントには、そのバケットの
 不足した場合も配信自体は終了でき、先生のレッスン編集画面から保存処理を
 再試行できます。
 
+## 録画元アーカイブの管理スクリプト
+
+`scripts/prune_live_audio_probe_raw.mjs` は、何も指定しなければ削除しない
+`plan` モードです。`apply` は取り消せないため、現在のplanが表示した確認
+トークンと、プロジェクト・2つのバケットの再入力がすべて一致した場合だけ
+実行できます。配信中・確定処理中のセッションや、安全でないファイル構成が
+1つでも見つかるとapplyを拒否します。
+
+これは既存データを一度だけ整理する管理用スクリプトです。定期Functionの
+「9GBを超えたら5GBまで整理」とは異なり、現在の合計が9GB未満でも、安全確認を
+通過した録画元セッションをすべてplanへ含めます。完成MP4を確認できない
+リンク済み録画や、再試行可能な録画は保護され、削除対象に入りません。
+
+このスクリプトはAgoraのHMACアクセスキーを使いません。実行前にGoogle Cloud
+CLIのApplication Default Credentials（ADC）へログインしてください。
+実行ユーザーには、Firestoreのセッション文書を読む権限、両バケットの
+オブジェクト一覧・メタデータを読む権限が必要です。apply時だけ、録画元
+バケットにオブジェクト削除権限も必要です。サービスアカウント鍵を使う場合は
+`GOOGLE_APPLICATION_CREDENTIALS` でリポジトリ外のファイルを指定し、鍵の内容を
+コマンドや設定ファイルへ書かないでください。
+
+初回準備:
+
+```powershell
+cd C:\Users\naona\StudioProjects\my_new_app
+gcloud auth application-default login
+gcloud auth application-default set-quota-project my-new-app-naona-20260523
+npm --prefix functions install
+npm --prefix functions run build
+```
+
+まず読み取り専用planを実行します。`$RAW_BUCKET` はSecret Managerの
+`AGORA_GCS_BUCKET`に登録した「バケット名だけ」を手元で入力します。値を
+ソースコードや文書へ保存しないでください。
+
+```powershell
+cd C:\Users\naona\StudioProjects\my_new_app
+$PROJECT_ID = "my-new-app-naona-20260523"
+$RAW_BUCKET = "<AGORA_GCS_BUCKETのバケット名>"
+$COMPLETED_COPY_BUCKET = "my-new-app-naona-20260523.firebasestorage.app"
+node scripts/prune_live_audio_probe_raw.mjs --mode plan --project $PROJECT_ID --raw-bucket $RAW_BUCKET --completed-copy-bucket $COMPLETED_COPY_BUCKET
+```
+
+出力の`selectedSessions`、`protectedSessions`、容量、プレフィックスを確認します。
+`scope.selectionPolicy`が`allEligible`であることも確認してください。
+問題がない場合だけ、同じ出力の`applyConfirmationToken`を使ってapplyします。
+次のコマンドは実際に削除するため、plan確認前には実行しないでください。
+
+```powershell
+cd C:\Users\naona\StudioProjects\my_new_app
+$PLAN_TOKEN = "<plan出力のapplyConfirmationToken>"
+node scripts/prune_live_audio_probe_raw.mjs --mode apply --project $PROJECT_ID --raw-bucket $RAW_BUCKET --completed-copy-bucket $COMPLETED_COPY_BUCKET --confirm-project $PROJECT_ID --confirm-raw-bucket $RAW_BUCKET --confirm-completed-copy-bucket $COMPLETED_COPY_BUCKET --confirm-plan $PLAN_TOKEN --acknowledge-permanent-delete DELETE_RAW_ARCHIVES_PERMANENTLY
+```
+
+apply開始直前にもplanを取り直します。対象や容量が変わって確認トークンが一致
+しなくなった場合は削除せず終了するため、新しいplanをもう一度確認してください。
+
 ## 検証用バックエンドの反映
 
 ```powershell
