@@ -16,6 +16,16 @@ enum LiveAudioProbePermission {
   }
 }
 
+class LiveAudioProbeCreatedSession {
+  const LiveAudioProbeCreatedSession({
+    required this.sessionId,
+    required this.joinCode,
+  });
+
+  final String sessionId;
+  final String joinCode;
+}
+
 class LiveAudioProbeCredentials {
   const LiveAudioProbeCredentials({
     required this.appId,
@@ -51,6 +61,7 @@ class LiveAudioProbeCredentials {
 class LiveAudioProbeSession {
   const LiveAudioProbeSession({
     required this.id,
+    required this.joinCode,
     required this.ownerUid,
     required this.status,
     required this.presenterUids,
@@ -72,6 +83,7 @@ class LiveAudioProbeSession {
   });
 
   final String id;
+  final String joinCode;
   final String ownerUid;
   final String status;
   final Set<String> presenterUids;
@@ -104,6 +116,7 @@ class LiveAudioProbeSession {
     final presenterUids = data['presenterUids'];
     return LiveAudioProbeSession(
       id: snapshot.id,
+      joinCode: data['joinCode'] as String? ?? '',
       ownerUid: data['ownerUid'] as String? ?? '',
       status: data['status'] as String? ?? 'ended',
       presenterUids: presenterUids is List
@@ -216,7 +229,7 @@ class LiveAudioProbeService {
   CollectionReference<Map<String, dynamic>> get _sessions =>
       _firestore.collection('liveAudioProbeSessions');
 
-  Future<String> createSession({
+  Future<LiveAudioProbeCreatedSession> createSession({
     String? courseId,
     String? lessonId,
     String? segmentId,
@@ -235,8 +248,24 @@ class LiveAudioProbeService {
         });
     final data = _resultMap(result.data);
     final sessionId = data['sessionId'] as String? ?? '';
-    if (sessionId.isEmpty) {
+    final joinCode = data['joinCode'] as String? ?? '';
+    if (sessionId.isEmpty || !RegExp(r'^\d{4}$').hasMatch(joinCode)) {
       throw StateError('配信コードを受け取れませんでした。');
+    }
+    return LiveAudioProbeCreatedSession(
+      sessionId: sessionId,
+      joinCode: joinCode,
+    );
+  }
+
+  Future<String> resolveJoinCode(String joinCode) async {
+    final result = await _functions
+        .httpsCallable('resolveLiveAudioProbeJoinCode')
+        .call({'joinCode': joinCode});
+    final data = _resultMap(result.data);
+    final sessionId = data['sessionId'] as String? ?? '';
+    if (!RegExp(r'^[A-Za-z0-9]{20}$').hasMatch(sessionId)) {
+      throw StateError('配信を確認できませんでした。');
     }
     return sessionId;
   }

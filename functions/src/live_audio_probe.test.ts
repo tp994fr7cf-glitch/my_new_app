@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   canTransitionSessionState,
   isValidBoardSet,
+  isValidLiveAudioJoinCode,
   isValidOptionalLinkId,
   isValidProbeSessionId,
   isValidSegmentStartSec,
@@ -73,6 +74,10 @@ test("validates probe session identifiers", () => {
   assert.equal(isValidProbeSessionId("AbCdEfGhIjKlMnOpQrSt"), true);
   assert.equal(isValidProbeSessionId("../secret"), false);
   assert.equal(isValidProbeSessionId("short"), false);
+  assert.equal(isValidLiveAudioJoinCode("0000"), true);
+  assert.equal(isValidLiveAudioJoinCode("1234"), true);
+  assert.equal(isValidLiveAudioJoinCode("123"), false);
+  assert.equal(isValidLiveAudioJoinCode("12a4"), false);
   assert.equal(isValidOptionalLinkId("course_123"), true);
   assert.equal(isValidOptionalLinkId("../course"), false);
   assert.equal(isValidSegmentStartSec(90.5), true);

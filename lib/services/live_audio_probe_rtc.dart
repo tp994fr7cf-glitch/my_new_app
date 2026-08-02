@@ -12,6 +12,7 @@ import 'live_audio_probe_service.dart';
 
 const Duration _rtcCommandTimeout = Duration(seconds: 10);
 const Duration _rtcCleanupTimeout = Duration(seconds: 3);
+const Duration _defaultDataStreamSendInterval = Duration(milliseconds: 40);
 
 enum LiveAudioProbeRtcState {
   idle,
@@ -36,21 +37,29 @@ class LiveAudioProbeRtcController {
   LiveAudioProbeRtcController({
     required this.refreshToken,
     LiveAudioRtcBackend Function()? createBackend,
+    this.dataStreamSendInterval = _defaultDataStreamSendInterval,
   }) : _createBackend = createBackend ?? createLiveAudioRtcBackend;
 
   final LiveAudioProbeTokenRefresher refreshToken;
   final LiveAudioRtcBackend Function() _createBackend;
+  final Duration dataStreamSendInterval;
   final _statusController =
       StreamController<LiveAudioProbeRtcStatus>.broadcast();
   final _messageController =
       StreamController<LiveAudioProbeMessage>.broadcast();
+  final List<_PendingDataStreamMessage> _pendingDataStreamMessages = [];
 
   LiveAudioRtcBackend? _backend;
   LiveAudioProbeCredentials? _credentials;
   int? _dataStreamId;
+  Future<void>? _dataStreamDrainFuture;
+  final Stopwatch _dataStreamSendClock = Stopwatch()..start();
+  Duration? _lastDataStreamSendElapsed;
   bool _dataStreamUnavailable = false;
+  bool _dataStreamDrainRunning = false;
   bool _disposed = false;
   bool _tokenRefreshInProgress = false;
+  int _dataStreamGeneration = 0;
 
   Stream<LiveAudioProbeRtcStatus> get statuses => _statusController.stream;
   Stream<LiveAudioProbeMessage> get messages => _messageController.stream;
@@ -175,6 +184,8 @@ class LiveAudioProbeRtcController {
       if (warning != null) {
         _emitStatus(LiveAudioProbeRtcState.connected, message: warning);
       }
+    } else {
+      _discardPendingDataStreamMessages();
     }
   }
 
@@ -202,16 +213,29 @@ class LiveAudioProbeRtcController {
     if (_dataStreamUnavailable) {
       return;
     }
-    await _ensureDataStream();
-    final streamId = _dataStreamId;
-    if (streamId == null) {
-      throw StateError('音声同期の板書データストリームを作成できません。');
-    }
     final data = message.encode();
     if (data.length > 1024) {
       throw StateError('板書データがAgoraの上限を超えました。');
     }
-    await backend.sendStreamMessage(streamId, data);
+    final completer = Completer<void>();
+    final pending = _PendingDataStreamMessage(
+      message: message,
+      data: data,
+      completer: completer,
+    );
+    if (_pendingDataStreamMessages.isNotEmpty &&
+        _canReplacePendingDataStreamMessage(
+          _pendingDataStreamMessages.last.message,
+          message,
+        )) {
+      final replaced = _pendingDataStreamMessages.removeLast();
+      if (!replaced.completer.isCompleted) {
+        replaced.completer.complete();
+      }
+    }
+    _pendingDataStreamMessages.add(pending);
+    _startDataStreamDrain();
+    await completer.future;
   }
 
   Future<void> leave() async {
@@ -253,6 +277,82 @@ class LiveAudioProbeRtcController {
     }
   }
 
+  void _startDataStreamDrain() {
+    if (_dataStreamDrainRunning || _disposed) {
+      return;
+    }
+    _dataStreamDrainRunning = true;
+    final generation = _dataStreamGeneration;
+    final future = _drainDataStreamMessages(generation);
+    _dataStreamDrainFuture = future;
+    unawaited(
+      future.whenComplete(() {
+        if (_dataStreamDrainFuture == future) {
+          _dataStreamDrainFuture = null;
+          _dataStreamDrainRunning = false;
+          if (_pendingDataStreamMessages.isNotEmpty &&
+              generation == _dataStreamGeneration &&
+              !_disposed) {
+            _startDataStreamDrain();
+          }
+        }
+      }),
+    );
+  }
+
+  Future<void> _drainDataStreamMessages(int generation) async {
+    while (generation == _dataStreamGeneration &&
+        !_disposed &&
+        _pendingDataStreamMessages.isNotEmpty) {
+      final lastSentAt = _lastDataStreamSendElapsed;
+      if (lastSentAt != null) {
+        final remaining =
+            dataStreamSendInterval -
+            (_dataStreamSendClock.elapsed - lastSentAt);
+        if (remaining > Duration.zero) {
+          await Future<void>.delayed(remaining);
+        }
+      }
+      if (generation != _dataStreamGeneration ||
+          _disposed ||
+          _pendingDataStreamMessages.isEmpty) {
+        break;
+      }
+      final pending = _pendingDataStreamMessages.removeAt(0);
+      try {
+        await _ensureDataStream();
+        final backend = _backend;
+        final streamId = _dataStreamId;
+        if (backend == null ||
+            streamId == null ||
+            _credentials?.permission.canPublish != true) {
+          if (!pending.completer.isCompleted) {
+            pending.completer.complete();
+          }
+          continue;
+        }
+        _lastDataStreamSendElapsed = _dataStreamSendClock.elapsed;
+        await backend.sendStreamMessage(streamId, pending.data);
+        if (!pending.completer.isCompleted) {
+          pending.completer.complete();
+        }
+      } catch (error, stackTrace) {
+        if (!pending.completer.isCompleted) {
+          pending.completer.completeError(error, stackTrace);
+        }
+      }
+    }
+  }
+
+  void _discardPendingDataStreamMessages() {
+    for (final pending in _pendingDataStreamMessages) {
+      if (!pending.completer.isCompleted) {
+        pending.completer.complete();
+      }
+    }
+    _pendingDataStreamMessages.clear();
+  }
+
   Future<void> _refreshCurrentToken() async {
     if (_tokenRefreshInProgress || _disposed || _backend == null) {
       return;
@@ -276,6 +376,19 @@ class LiveAudioProbeRtcController {
     _backend = null;
     _dataStreamId = null;
     _dataStreamUnavailable = false;
+    _dataStreamGeneration += 1;
+    _discardPendingDataStreamMessages();
+    final drainFuture = _dataStreamDrainFuture;
+    if (drainFuture != null) {
+      try {
+        await drainFuture.timeout(_rtcCleanupTimeout);
+      } catch (_) {
+        // Cleanup below still releases the native engine.
+      }
+    }
+    _dataStreamDrainFuture = null;
+    _dataStreamDrainRunning = false;
+    _lastDataStreamSendElapsed = null;
     if (backend == null) {
       return;
     }
@@ -296,6 +409,32 @@ class LiveAudioProbeRtcController {
       _statusController.add(LiveAudioProbeRtcStatus(state, message: message));
     }
   }
+}
+
+class _PendingDataStreamMessage {
+  const _PendingDataStreamMessage({
+    required this.message,
+    required this.data,
+    required this.completer,
+  });
+
+  final LiveAudioProbeMessage message;
+  final Uint8List data;
+  final Completer<void> completer;
+}
+
+bool _canReplacePendingDataStreamMessage(
+  LiveAudioProbeMessage previous,
+  LiveAudioProbeMessage next,
+) {
+  if (previous.kind == LiveAudioProbeMessageKind.strokePoint &&
+      next.kind == LiveAudioProbeMessageKind.strokePoint) {
+    return previous.strokeId == next.strokeId &&
+        previous.boardId == next.boardId;
+  }
+  return previous.kind == LiveAudioProbeMessageKind.viewport &&
+      next.kind == LiveAudioProbeMessageKind.viewport &&
+      previous.boardId == next.boardId;
 }
 
 String _friendlyRtcError(Object error) {

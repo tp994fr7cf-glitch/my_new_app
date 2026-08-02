@@ -157,7 +157,6 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   @override
   void initState() {
     super.initState();
-    _sessionCodeController.text = widget.initialSessionId ?? '';
     if (widget.initialBoardSet?.isNotEmpty == true) {
       _boardState = LiveAudioBoardState.fromBoardSet(
         widget.initialBoardSet!,
@@ -214,14 +213,15 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   Future<void> _createAndJoin() async {
     await _runBusy(() async {
       await ensureLiveAudioMicrophonePermission();
-      final sessionId = await _service.createSession(
+      final createdSession = await _service.createSession(
         courseId: widget.courseId,
         lessonId: widget.lessonId,
         segmentId: widget.segmentId,
         initialBoardSet: _boardState.boardSet,
         segmentStartSec: widget.segmentStartSec,
       );
-      _sessionCodeController.text = sessionId;
+      final sessionId = createdSession.sessionId;
+      _sessionCodeController.text = createdSession.joinCode;
       widget.onSessionCreated?.call(sessionId);
       try {
         await _connect(sessionId);
@@ -240,12 +240,15 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   }
 
   Future<void> _joinEnteredSession() async {
-    final sessionId = _sessionCodeController.text.trim();
-    if (!RegExp(r'^[A-Za-z0-9]{20}$').hasMatch(sessionId)) {
-      setState(() => _message = '20文字の配信コードを入力してください。');
+    final joinCode = _sessionCodeController.text.trim();
+    if (!RegExp(r'^\d{4}$').hasMatch(joinCode)) {
+      setState(() => _message = '4桁の配信コードを入力してください。');
       return;
     }
-    await _runBusy(() => _connect(sessionId));
+    await _runBusy(() async {
+      final sessionId = await _service.resolveJoinCode(joinCode);
+      await _connect(sessionId);
+    });
   }
 
   Future<void> _connect(String sessionId) async {
@@ -964,20 +967,20 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   }
 
   Future<void> _copySessionCode() async {
-    final sessionId = _sessionId;
-    if (sessionId == null) {
+    final joinCode = _session?.joinCode ?? '';
+    if (!RegExp(r'^\d{4}$').hasMatch(joinCode)) {
       return;
     }
-    await Clipboard.setData(ClipboardData(text: sessionId));
+    await Clipboard.setData(ClipboardData(text: joinCode));
     if (mounted) {
       setState(() => _message = '配信コードをコピーしました。');
     }
   }
 
   Future<void> _closeEnteredSessionWithoutAgora() async {
-    final sessionId = _sessionCodeController.text.trim();
-    if (!RegExp(r'^[A-Za-z0-9]{20}$').hasMatch(sessionId)) {
-      setState(() => _message = '終了する配信の20文字のコードを入力してください。');
+    final joinCode = _sessionCodeController.text.trim();
+    if (!RegExp(r'^\d{4}$').hasMatch(joinCode)) {
+      setState(() => _message = '終了する配信の4桁のコードを入力してください。');
       return;
     }
     final confirmed = await showDialog<bool>(
@@ -1002,6 +1005,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     }
     var closed = false;
     await _runBusy(() async {
+      final sessionId = await _service.resolveJoinCode(joinCode);
       await _service.closeSession(sessionId);
       closed = true;
     });
@@ -1220,6 +1224,18 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
             icon: const Icon(Icons.podcasts),
             label: const Text('先生として配信を開始'),
           ),
+          if (widget.initialSessionId?.trim().isNotEmpty == true) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _busy
+                  ? null
+                  : () => _runBusy(
+                      () => _connect(widget.initialSessionId!.trim()),
+                    ),
+              icon: const Icon(Icons.meeting_room),
+              label: const Text('作成済みの配信へ戻る'),
+            ),
+          ],
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 16),
             child: Divider(),
@@ -1228,10 +1244,12 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         TextField(
           controller: _sessionCodeController,
           enabled: !_busy,
-          maxLength: 20,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          maxLength: 4,
           decoration: const InputDecoration(
             labelText: '配信コード',
-            hintText: '先生から届いた20文字のコード',
+            hintText: '先生から届いた4桁のコード',
             border: OutlineInputBorder(),
           ),
         ),
@@ -1295,12 +1313,12 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
           children: [
             Expanded(
               child: Text(
-                '配信コード: ${session.id}',
+                '配信コード: ${session.joinCode.isEmpty ? '未発行' : session.joinCode}',
                 style: const TextStyle(fontWeight: FontWeight.bold),
               ),
             ),
             IconButton(
-              onPressed: _copySessionCode,
+              onPressed: session.joinCode.isEmpty ? null : _copySessionCode,
               icon: const Icon(Icons.copy),
               tooltip: '配信コードをコピー',
             ),

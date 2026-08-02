@@ -1,4 +1,4 @@
-import {createHash, randomUUID} from "node:crypto";
+import {createHash, randomInt, randomUUID} from "node:crypto";
 
 import {initializeApp} from "firebase-admin/app";
 import {
@@ -46,6 +46,7 @@ import {
   isLiveSessionState,
   isSupportedSessionState,
   isValidBoardSet,
+  isValidLiveAudioJoinCode,
   isValidOptionalLinkId,
   isValidProbeSessionId,
   isValidSegmentStartSec,
@@ -86,6 +87,7 @@ const archiveSecrets = [
 
 const db = getFirestore();
 const sessionCollection = "liveAudioProbeSessions";
+const joinCodeCollection = "liveAudioProbeJoinCodes";
 const archivePrefixRoot = "liveAudioProbeSessions";
 const liveArchiveTimingVersion = 2;
 const archiveConfigWarning =
@@ -159,6 +161,10 @@ export const createLiveAudioProbeSession = onCall(
     const input = validatedCreateInput(request.data);
 
     const sessionReference = db.collection(sessionCollection).doc();
+    const joinCode = await reserveLiveAudioJoinCode({
+      sessionId: sessionReference.id,
+      ownerUid: uid,
+    });
     const participantReference = sessionReference
       .collection("participants")
       .doc(uid);
@@ -174,6 +180,7 @@ export const createLiveAudioProbeSession = onCall(
       ownerUid: uid,
       activePresenterUid: uid,
       channelName,
+      joinCode,
       status: "active",
       state: "live",
       presenterUids: [],
@@ -263,6 +270,12 @@ export const createLiveAudioProbeSession = onCall(
         boardSet: input.initialBoardSet ?? null,
         createdAt: now,
       });
+    }).catch(async (error: unknown) => {
+      await releaseLiveAudioJoinCode({
+        joinCode,
+        sessionId: sessionReference.id,
+      });
+      throw error;
     });
 
     const archive = await startArchiveWithoutFailingLive({
@@ -272,11 +285,33 @@ export const createLiveAudioProbeSession = onCall(
     });
     return {
       sessionId: sessionReference.id,
+      joinCode,
       archiveStatus: archive.archiveStatus,
       warning: archive.warning,
     };
   },
 );
+
+export const resolveLiveAudioProbeJoinCode = onCall(async (request) => {
+  requireAuthenticatedUid(request);
+  const joinCode = requireLiveAudioJoinCode(request.data?.joinCode);
+  const mapping = await db.collection(joinCodeCollection).doc(joinCode).get();
+  if (!mapping.exists) {
+    throw new HttpsError("not-found", "配信コードに一致する配信が見つかりません。");
+  }
+  const sessionId = stringField(mapping.data()?.sessionId);
+  if (!isValidProbeSessionId(sessionId)) {
+    throw new HttpsError("not-found", "配信コードに一致する配信が見つかりません。");
+  }
+  const session = await db.collection(sessionCollection).doc(sessionId).get();
+  if (
+    !session.exists ||
+    !isLiveSessionState(storedSessionState(session.data() ?? {}))
+  ) {
+    throw new HttpsError("not-found", "配信コードに一致する配信が見つかりません。");
+  }
+  return {sessionId};
+});
 
 export const issueLiveAudioProbeToken = onCall(
   {secrets: [agoraAppId, agoraAppCertificate]},
@@ -1130,9 +1165,22 @@ async function moveSessionToFinalizing(
       .collection("participants")
       .doc(activePresenterUid);
     const activeParticipant = await transaction.get(activeParticipantReference);
+    const joinCode = stringField(session.joinCode);
+    const joinCodeReference = isValidLiveAudioJoinCode(joinCode) ?
+      db.collection(joinCodeCollection).doc(joinCode) :
+      null;
+    const joinCodeSnapshot = joinCodeReference === null ?
+      null :
+      await transaction.get(joinCodeReference);
     const now = FieldValue.serverTimestamp();
     const archiveStopRequestedAtMs =
       safeNonNegativeInteger(session.archiveStopRequestedAtMs) || Date.now();
+    if (
+      joinCodeReference !== null &&
+      joinCodeSnapshot?.data()?.sessionId === sessionReference.id
+    ) {
+      transaction.delete(joinCodeReference);
+    }
     transaction.update(sessionReference, {
       status: "finalizing",
       state: "finalizing",
@@ -2169,9 +2217,70 @@ function authenticatedDisplayName(request: CallableRequest<unknown>): string {
   return name || email || "参加者";
 }
 
+async function reserveLiveAudioJoinCode({
+  sessionId,
+  ownerUid,
+}: {
+  sessionId: string;
+  ownerUid: string;
+}): Promise<string> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const joinCode = randomInt(10000).toString().padStart(4, "0");
+    const reference = db.collection(joinCodeCollection).doc(joinCode);
+    const reserved = await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(reference);
+      if (snapshot.exists) {
+        return false;
+      }
+      transaction.create(reference, {
+        sessionId,
+        ownerUid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      return true;
+    });
+    if (reserved) {
+      return joinCode;
+    }
+  }
+  throw new HttpsError(
+    "resource-exhausted",
+    "現在は新しい配信コードを発行できません。しばらくしてからお試しください。",
+  );
+}
+
+async function releaseLiveAudioJoinCode({
+  joinCode,
+  sessionId,
+}: {
+  joinCode: string;
+  sessionId: string;
+}): Promise<void> {
+  try {
+    const reference = db.collection(joinCodeCollection).doc(joinCode);
+    await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(reference);
+      if (snapshot.data()?.sessionId === sessionId) {
+        transaction.delete(reference);
+      }
+    });
+  } catch (error) {
+    logger.warn("Failed to release unused live audio join code", {
+      errorName: error instanceof Error ? error.name : "UnknownError",
+    });
+  }
+}
+
 function requireSessionId(value: unknown): string {
   if (!isValidProbeSessionId(value)) {
     throw new HttpsError("invalid-argument", "配信コードが不正です。");
+  }
+  return value;
+}
+
+function requireLiveAudioJoinCode(value: unknown): string {
+  if (!isValidLiveAudioJoinCode(value)) {
+    throw new HttpsError("invalid-argument", "4桁の配信コードを入力してください。");
   }
   return value;
 }

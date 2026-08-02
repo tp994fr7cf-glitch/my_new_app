@@ -140,6 +140,10 @@ export function isValidProbeSessionId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9]{20}$/.test(value);
 }
 
+export function isValidLiveAudioJoinCode(value: unknown): value is string {
+  return typeof value === "string" && /^\d{4}$/.test(value);
+}
+
 export function isValidOptionalLinkId(value: unknown): value is string {
   return (
     typeof value === "string" &&
