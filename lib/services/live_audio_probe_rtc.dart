@@ -1,9 +1,15 @@
 import 'dart:async';
 
 import 'package:agora_rtc_engine/agora_rtc_engine.dart';
+import 'package:flutter/foundation.dart';
 
 import 'live_audio_probe_message.dart';
+import 'live_audio_rtc_connection_confirmation.dart';
+import 'live_audio_rtc_initialization_guard.dart';
 import 'live_audio_probe_service.dart';
+
+const Duration _rtcCommandTimeout = Duration(seconds: 10);
+const Duration _rtcCleanupTimeout = Duration(seconds: 3);
 
 enum LiveAudioProbeRtcState {
   idle,
@@ -36,6 +42,7 @@ class LiveAudioProbeRtcController {
   RtcEngine? _engine;
   LiveAudioProbeCredentials? _credentials;
   int? _dataStreamId;
+  bool _dataStreamUnavailable = false;
   bool _disposed = false;
   bool _tokenRefreshInProgress = false;
 
@@ -54,17 +61,32 @@ class LiveAudioProbeRtcController {
     _emitStatus(LiveAudioProbeRtcState.connecting);
     final engine = createAgoraRtcEngine();
     _engine = engine;
+    final joined = Completer<void>();
     try {
-      await engine.initialize(
-        RtcEngineContext(
-          appId: credentials.appId,
-          channelProfile: ChannelProfileType.channelProfileLiveBroadcasting,
+      await liveAudioRtcInitializationGuard.initialize(
+        () => engine.initialize(
+          RtcEngineContext(
+            appId: credentials.appId,
+            channelProfile: ChannelProfileType.channelProfileLiveBroadcasting,
+            // Core RTC audio and data streams do not need Agora's optional
+            // video/effect extensions. Keep this audio-only initialization
+            // limited to the core modules that this feature actually uses.
+            autoRegisterAgoraExtensions: false,
+          ),
         ),
       );
       engine.registerEventHandler(
         RtcEngineEventHandler(
           onJoinChannelSuccess: (_, _) {
-            _emitStatus(LiveAudioProbeRtcState.connected);
+            if (!joined.isCompleted) {
+              joined.complete();
+            }
+          },
+          onConnectionStateChanged: (_, state, _) {
+            if (state == ConnectionStateType.connectionStateConnected &&
+                !joined.isCompleted) {
+              joined.complete();
+            }
           },
           onRejoinChannelSuccess: (_, _) {
             _emitStatus(LiveAudioProbeRtcState.connected);
@@ -113,30 +135,46 @@ class LiveAudioProbeRtcController {
           },
         ),
       );
-      await engine.enableAudio();
-      await engine.setClientRole(
-        role: credentials.permission.canPublish
-            ? ClientRoleType.clientRoleBroadcaster
-            : ClientRoleType.clientRoleAudience,
-        options: const ClientRoleOptions(
-          audienceLatencyLevel:
-              AudienceLatencyLevelType.audienceLatencyLevelUltraLowLatency,
+      await engine.enableAudio().timeout(_rtcCommandTimeout);
+      await engine
+          .setClientRole(
+            role: credentials.permission.canPublish
+                ? ClientRoleType.clientRoleBroadcaster
+                : ClientRoleType.clientRoleAudience,
+            options: const ClientRoleOptions(
+              audienceLatencyLevel:
+                  AudienceLatencyLevelType.audienceLatencyLevelUltraLowLatency,
+            ),
+          )
+          .timeout(_rtcCommandTimeout);
+      await confirmLiveAudioRtcConnection(
+        joinCommand: engine.joinChannel(
+          token: credentials.token,
+          channelId: credentials.channelName,
+          uid: credentials.rtcUid,
+          options: _mediaOptions(credentials.permission),
         ),
+        callbackSignal: joined.future,
+        isConnected: () async {
+          return await engine.getConnectionState() ==
+              ConnectionStateType.connectionStateConnected;
+        },
       );
-      if (credentials.permission.canPublish) {
-        await _ensureDataStream();
-      }
-      await engine.joinChannel(
-        token: credentials.token,
-        channelId: credentials.channelName,
-        uid: credentials.rtcUid,
-        options: _mediaOptions(credentials.permission),
-      );
+      final warning = credentials.permission.canPublish
+          ? await _preparePublisherDataStream()
+          : null;
+      _emitStatus(LiveAudioProbeRtcState.connected, message: warning);
     } catch (error) {
       _emitStatus(
         LiveAudioProbeRtcState.failed,
         message: _friendlyRtcError(error),
       );
+      if (error is LiveAudioRtcInitializationException) {
+        // Agora's internal initialization future remains pending after this
+        // timeout. Releasing or initializing it again in the same process can
+        // hang too, so leave cleanup to the Android process restart.
+        _engine = null;
+      }
       await _releaseEngine();
       rethrow;
     }
@@ -168,7 +206,10 @@ class LiveAudioProbeRtcController {
     );
     _credentials = credentials;
     if (credentials.permission.canPublish) {
-      await _ensureDataStream();
+      final warning = await _preparePublisherDataStream();
+      if (warning != null) {
+        _emitStatus(LiveAudioProbeRtcState.connected, message: warning);
+      }
     }
   }
 
@@ -192,6 +233,9 @@ class LiveAudioProbeRtcController {
     final engine = _engine;
     if (engine == null || _credentials?.permission.canPublish != true) {
       throw StateError('発表を許可された人だけが板書できます。');
+    }
+    if (_dataStreamUnavailable) {
+      return;
     }
     await _ensureDataStream();
     final streamId = _dataStreamId;
@@ -225,7 +269,7 @@ class LiveAudioProbeRtcController {
   }
 
   Future<void> _ensureDataStream() async {
-    if (_dataStreamId != null) {
+    if (_dataStreamId != null || _dataStreamUnavailable) {
       return;
     }
     final engine = _engine;
@@ -235,6 +279,19 @@ class LiveAudioProbeRtcController {
     _dataStreamId = await engine.createDataStream(
       const DataStreamConfig(syncWithAudio: true, ordered: true),
     );
+  }
+
+  Future<String?> _preparePublisherDataStream() async {
+    try {
+      await _ensureDataStream().timeout(_rtcCommandTimeout);
+      return null;
+    } catch (error) {
+      _dataStreamUnavailable = true;
+      debugPrint('[LiveAudioRtc] data stream unavailable: $error');
+      return kIsWeb
+          ? 'Webでは板書の途中経過を送信できないため、書き終えた線を共有します。'
+          : '板書の途中経過を送信できないため、書き終えた線を共有します。';
+    }
   }
 
   Future<void> _refreshCurrentToken() async {
@@ -275,13 +332,19 @@ class LiveAudioProbeRtcController {
     final engine = _engine;
     _engine = null;
     _dataStreamId = null;
+    _dataStreamUnavailable = false;
     if (engine == null) {
       return;
     }
     try {
-      await engine.leaveChannel();
-    } finally {
-      await engine.release();
+      await engine.leaveChannel().timeout(_rtcCleanupTimeout);
+    } catch (error) {
+      debugPrint('[LiveAudioRtc] leave timeout/error: $error');
+    }
+    try {
+      await engine.release().timeout(_rtcCleanupTimeout);
+    } catch (error) {
+      debugPrint('[LiveAudioRtc] release timeout/error: $error');
     }
   }
 

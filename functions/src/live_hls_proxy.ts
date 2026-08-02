@@ -70,6 +70,37 @@ export function isSafeHlsObjectPath(
   );
 }
 
+export function finalizedHlsDurationMs(manifest: string): number | null {
+  if (
+    manifest.length === 0 ||
+    manifest.length > 2 * 1024 * 1024 ||
+    !manifest.split(/\r?\n/, 1)[0]?.trim().startsWith("#EXTM3U") ||
+    !/^#EXT-X-ENDLIST\s*$/m.test(manifest)
+  ) {
+    return null;
+  }
+  let totalSeconds = 0;
+  let segmentCount = 0;
+  for (const line of manifest.split(/\r?\n/)) {
+    const match = /^#EXTINF:([0-9]+(?:\.[0-9]+)?)(?:,.*)?$/.exec(
+      line.trim(),
+    );
+    if (!match) {
+      continue;
+    }
+    const seconds = Number(match[1]);
+    if (!Number.isFinite(seconds) || seconds < 0) {
+      return null;
+    }
+    totalSeconds += seconds;
+    segmentCount++;
+  }
+  const durationMs = Math.round(totalSeconds * 1000);
+  return segmentCount > 0 && Number.isSafeInteger(durationMs) && durationMs > 0 ?
+    durationMs :
+    null;
+}
+
 export function rewriteHlsManifest({
   manifest,
   manifestObjectPath,

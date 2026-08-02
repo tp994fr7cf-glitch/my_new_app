@@ -27,12 +27,15 @@ import {
   isCompleteCloudRecordingConfig,
 } from "./agora_cloud_recording";
 import {
+  adjustLiveArchiveBoardSet,
   firebaseStorageDownloadUrl,
   prepareLiveArchiveDraft,
+  resolveLiveArchiveDuration,
   selectManifestObject,
 } from "./live_archive_draft";
 import {
   createHlsAccessToken,
+  finalizedHlsDurationMs,
   isSafeHlsObjectPath,
   rewriteHlsManifest,
   verifyHlsAccessToken,
@@ -80,6 +83,7 @@ const archiveSecrets = [
 const db = getFirestore();
 const sessionCollection = "liveAudioProbeSessions";
 const archivePrefixRoot = "liveAudioProbeSessions";
+const liveArchiveTimingVersion = 2;
 const archiveConfigWarning =
   "録音の保存設定が未完了です。配信は続けられますが、録音は保存されません。";
 const archiveStartWarning =
@@ -104,6 +108,9 @@ export const createLiveAudioProbeSession = onCall(
     const participantReference = sessionReference
       .collection("participants")
       .doc(uid);
+    const archiveBaselineReference = sessionReference
+      .collection("archiveInternal")
+      .doc("baseline");
     const displayName = authenticatedDisplayName(request);
     const rtcUid = rtcUidForFirebaseUser(uid);
     const channelName = `probe_${sessionReference.id}`;
@@ -117,6 +124,7 @@ export const createLiveAudioProbeSession = onCall(
       state: "live",
       presenterUids: [],
       startedAtMs,
+      archiveTimingVersion: liveArchiveTimingVersion,
       archiveStatus: "starting",
       archiveError: null,
       archiveErrorCode: null,
@@ -196,6 +204,11 @@ export const createLiveAudioProbeSession = onCall(
       }
       transaction.create(sessionReference, sessionData);
       transaction.create(participantReference, participantData);
+      transaction.create(archiveBaselineReference, {
+        timingVersion: liveArchiveTimingVersion,
+        boardSet: input.initialBoardSet ?? null,
+        createdAt: now,
+      });
     });
 
     const archive = await startArchiveWithoutFailingLive({
@@ -844,6 +857,46 @@ export const closeLiveAudioProbeSession = onCall(
   },
 );
 
+export const closeOwnedLiveAudioProbeSessions = onCall(
+  {secrets: archiveSecrets, timeoutSeconds: 540},
+  async (request) => {
+    const uid = requireAuthenticatedUid(request);
+    const snapshots = await db
+      .collection(sessionCollection)
+      .where("ownerUid", "==", uid)
+      .get();
+    const activeReferences = snapshots.docs
+      .filter((snapshot) => {
+        return isLiveSessionState(storedSessionState(snapshot.data()));
+      })
+      .map((snapshot) => snapshot.ref);
+    const closedSessionIds: string[] = [];
+    const failedSessionIds: string[] = [];
+    for (const sessionReference of activeReferences) {
+      try {
+        const closing = await moveSessionToFinalizing(
+          sessionReference,
+          uid,
+          false,
+        );
+        if (!closing.alreadyClosed) {
+          await stopArchiveAndFinalize(sessionReference, closing.session);
+        }
+        closedSessionIds.push(sessionReference.id);
+      } catch (error) {
+        logArchiveError("close-owned-session", error);
+        failedSessionIds.push(sessionReference.id);
+      }
+    }
+    return {
+      closedCount: closedSessionIds.length,
+      failedCount: failedSessionIds.length,
+      closedSessionIds,
+      failedSessionIds,
+    };
+  },
+);
+
 export const retryLiveAudioProbeArchive = onCall(
   {secrets: archiveSecrets, timeoutSeconds: 120},
   async (request) => {
@@ -1024,10 +1077,13 @@ async function moveSessionToFinalizing(
       .doc(activePresenterUid);
     const activeParticipant = await transaction.get(activeParticipantReference);
     const now = FieldValue.serverTimestamp();
+    const archiveStopRequestedAtMs =
+      safeNonNegativeInteger(session.archiveStopRequestedAtMs) || Date.now();
     transaction.update(sessionReference, {
       status: "finalizing",
       state: "finalizing",
       archiveStatus: "finalizing",
+      archiveStopRequestedAtMs,
       activePresenterUid: ownerUid,
       presenterUids: [],
       updatedAt: now,
@@ -1044,6 +1100,7 @@ async function moveSessionToFinalizing(
         status: "finalizing",
         state: "finalizing",
         archiveStatus: "finalizing",
+        archiveStopRequestedAtMs,
       },
       alreadyClosed: false,
     };
@@ -1177,16 +1234,17 @@ function finalizeStoppedManifest({
       config,
     });
   }
-  return finalizeArchiveSuccess(sessionReference, session, manifest);
+  return finalizeArchiveSuccess(sessionReference, session, manifest, config);
 }
 
 async function finalizeArchiveSuccess(
   sessionReference: DocumentReference<DocumentData>,
   session: DocumentData,
   manifest: ArchiveManifest,
+  config: AgoraCloudRecordingConfig,
 ): Promise<Record<string, unknown>> {
   const finalizedAtMs = Date.now();
-  const duration = archiveDuration(session, finalizedAtMs);
+  const duration = await finalizedArchiveDuration(session, manifest, config);
   const hlsManifestObjectPath = selectManifestObject(
     manifest.files,
     ".m3u8",
@@ -1204,12 +1262,14 @@ async function finalizeArchiveSuccess(
       manifestFile: manifest.manifestFile,
     },
     archiveFinalizedAtMs: finalizedAtMs,
+    archiveDurationSource: duration.source,
     hlsManifestObjectPath,
     hlsAvailableDurationSec: duration.durationSec,
     draftReady: {
       linkedToLesson: false,
       finalizedAtMs,
       durationMs: duration.durationMs,
+      durationSource: duration.source,
     },
     endedAtMs: finalizedAtMs,
     endedAt: FieldValue.serverTimestamp(),
@@ -1284,7 +1344,7 @@ async function finalizeLinkedArchive({
     downloadToken,
   });
   const finalizedAtMs = Date.now();
-  const duration = archiveDuration(session, finalizedAtMs);
+  const duration = await finalizedArchiveDuration(session, manifest, config);
   const hlsManifestObjectPath = selectManifestObject(
     manifest.files,
     ".m3u8",
@@ -1301,6 +1361,7 @@ async function finalizeLinkedArchive({
       destinationObjectPath,
       durationSec: duration.durationSec,
       durationMs: duration.durationMs,
+      durationSource: duration.source,
       finalizedAtMs,
       hlsManifestObjectPath,
       manifest,
@@ -1376,6 +1437,7 @@ async function persistLinkedLessonDraft({
   destinationObjectPath,
   durationSec,
   durationMs,
+  durationSource,
   finalizedAtMs,
   hlsManifestObjectPath,
   manifest,
@@ -1389,6 +1451,7 @@ async function persistLinkedLessonDraft({
   destinationObjectPath: string;
   durationSec: number;
   durationMs: number;
+  durationSource: "hls" | "wallClock";
   finalizedAtMs: number;
   hlsManifestObjectPath: string | null;
   manifest: ArchiveManifest;
@@ -1398,11 +1461,17 @@ async function persistLinkedLessonDraft({
   const draftReference = courseReference
     .collection("lessonDrafts")
     .doc(lessonId);
+  const archiveBaselineReference = sessionReference
+    .collection("archiveInternal")
+    .doc("baseline");
   return db.runTransaction(async (transaction) => {
     const sessionSnapshot = await transaction.get(sessionReference);
     const courseSnapshot = await transaction.get(courseReference);
     const lessonSnapshot = await transaction.get(lessonReference);
     const draftSnapshot = await transaction.get(draftReference);
+    const archiveBaselineSnapshot = await transaction.get(
+      archiveBaselineReference,
+    );
     if (
       !sessionSnapshot.exists ||
       !courseSnapshot.exists ||
@@ -1446,6 +1515,47 @@ async function persistLinkedLessonDraft({
         "boardSetMissing",
       );
     }
+    let draftBoardSet = boardSet;
+    if (currentSession.archiveTimingVersion === liveArchiveTimingVersion) {
+      const baselineBoardSet = archiveBaselineSnapshot.data()?.boardSet;
+      const archiveStartedAtMs = safeNonNegativeInteger(
+        currentSession.archiveStartedAtMs,
+      );
+      const archiveStopRequestedAtMs = safeNonNegativeInteger(
+        currentSession.archiveStopRequestedAtMs,
+      );
+      const segmentStartSec =
+        typeof currentSession.segmentStartSec === "number" &&
+        isValidSegmentStartSec(currentSession.segmentStartSec) ?
+          currentSession.segmentStartSec :
+          -1;
+      const archiveTimelineOffsetSec =
+        typeof currentSession.archiveTimelineOffsetSec === "number" &&
+        Number.isFinite(currentSession.archiveTimelineOffsetSec) ?
+          Math.max(0, currentSession.archiveTimelineOffsetSec) :
+          -1;
+      const recordingWallDurationSec =
+        (archiveStopRequestedAtMs - archiveStartedAtMs) / 1000;
+      const adjustedBoardSet = adjustLiveArchiveBoardSet({
+        boardSet,
+        baselineBoardSet,
+        segmentStartSec,
+        archiveTimelineOffsetSec,
+        recordingWallDurationSec,
+        mediaDurationSec: durationMs / 1000,
+      });
+      if (
+        !isValidBoardSet(baselineBoardSet) ||
+        adjustedBoardSet === null ||
+        !isValidBoardSet(adjustedBoardSet)
+      ) {
+        throw new ArchiveFinalizationError(
+          archiveDraftWarning,
+          "archiveTimingInvalid",
+        );
+      }
+      draftBoardSet = adjustedBoardSet;
+    }
     const prepared = prepareLiveArchiveDraft({
       lesson,
       existingDraft: draftSnapshot.exists ? draftSnapshot.data() : null,
@@ -1470,11 +1580,12 @@ async function persistLinkedLessonDraft({
       storageObjectPath: destinationObjectPath,
       durationSec,
       durationMs,
+      durationSource,
       finalizedAtMs,
     };
     transaction.set(draftReference, {
       lessonId,
-      boardSet,
+      boardSet: draftBoardSet,
       mediaSegments: prepared.mediaSegments,
       baseLessonDocumentVersion: prepared.baseLessonDocumentVersion,
       draftRevision: prepared.draftRevision,
@@ -1494,6 +1605,7 @@ async function persistLinkedLessonDraft({
         manifestFile: manifest.manifestFile,
       },
       archiveFinalizedAtMs: finalizedAtMs,
+      archiveDurationSource: durationSource,
       hlsManifestObjectPath,
       hlsAvailableDurationSec: durationSec,
       draftReady,
@@ -1554,6 +1666,49 @@ async function queryAndUpdateArchiveStatus(
     logArchiveError("query", error);
     return safeArchiveStatus(session);
   }
+}
+
+async function finalizedArchiveDuration(
+  session: DocumentData,
+  manifest: ArchiveManifest,
+  config: AgoraCloudRecordingConfig,
+): Promise<{
+  durationMs: number;
+  durationSec: number;
+  source: "hls" | "wallClock";
+}> {
+  const timingVersion = safeNonNegativeInteger(session.archiveTimingVersion);
+  let hlsDurationMs: number | null = null;
+  const hlsManifestObjectPath = selectManifestObject(
+    manifest.files,
+    ".m3u8",
+    stringField(session.archivePrefix),
+  );
+  if (
+    timingVersion === liveArchiveTimingVersion &&
+    hlsManifestObjectPath
+  ) {
+    try {
+      const [contents] = await getStorage()
+        .bucket(config.gcsBucket)
+        .file(hlsManifestObjectPath)
+        .download();
+      hlsDurationMs = finalizedHlsDurationMs(contents.toString("utf8"));
+    } catch (error) {
+      logArchiveError("read-hls-duration", error);
+    }
+  }
+  return resolveLiveArchiveDuration({
+    timingVersion,
+    hlsDurationMs,
+    sessionStartedAtMs: safeNonNegativeInteger(session.startedAtMs),
+    archiveStartedAtMs: safeNonNegativeInteger(session.archiveStartedAtMs),
+    archiveStopRequestedAtMs: safeNonNegativeInteger(
+      session.archiveStopRequestedAtMs,
+    ),
+    archiveStoppedAtMs: safeNonNegativeInteger(session.archiveStoppedAtMs),
+    finalizedAtMs: Date.now(),
+  });
 }
 
 function archiveDuration(

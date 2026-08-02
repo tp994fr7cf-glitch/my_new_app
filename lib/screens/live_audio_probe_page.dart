@@ -10,14 +10,18 @@ import '../models/lesson_whiteboard_board_set.dart';
 import '../models/lesson_payload_size_validator.dart';
 import '../services/live_audio_board_state.dart';
 import '../services/live_audio_catchup_playback.dart';
+import '../services/live_audio_microphone_permission.dart';
 import '../services/live_audio_probe_message.dart';
 import '../services/live_audio_probe_rtc.dart';
 import '../services/live_audio_probe_service.dart';
+import '../services/live_audio_rtc_initialization_guard.dart';
+import '../services/live_audio_snapshot_tracker.dart';
+import '../services/live_audio_timeline_outbox.dart';
 import '../widgets/lesson_whiteboard_canvas.dart';
 
 const bool liveAudioProbeEnabled = bool.fromEnvironment(
   'ENABLE_LIVE_AUDIO',
-  defaultValue: bool.fromEnvironment('ENABLE_AGORA_PROBE', defaultValue: false),
+  defaultValue: bool.fromEnvironment('ENABLE_AGORA_PROBE', defaultValue: true),
 );
 
 class LiveAudioProbePage extends StatefulWidget {
@@ -57,7 +61,8 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   final _clock = Stopwatch();
   final Set<String> _presenterUpdates = {};
   final Set<String> _processedTimelineEvents = {};
-  final List<LiveAudioProbeMessage> _pendingTimelineMessages = [];
+  final LiveAudioTimelineOutbox _timelineOutbox = LiveAudioTimelineOutbox();
+  final LiveAudioSnapshotTracker _snapshotTracker = LiveAudioSnapshotTracker();
   LiveAudioBoardState _boardState = LiveAudioBoardState.initial();
   late final LiveAudioCatchupPlayback _catchup = LiveAudioCatchupPlayback();
 
@@ -81,10 +86,10 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   bool _followPresenter = true;
   int _viewportInteractionId = 0;
   DateTime? _lastViewportSentAt;
-  int _timelineSequence = 0;
   Timer? _timelineFlushTimer;
   Timer? _snapshotSaveTimer;
   Timer? _archiveRefreshTimer;
+  Future<void>? _snapshotSaveFuture;
   LiveAudioCatchupStatus _catchupStatus = const LiveAudioCatchupStatus(
     state: LiveAudioCatchupState.live,
   );
@@ -93,6 +98,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   bool _microphoneMuted = false;
   bool _applyingPermission = false;
   bool _leaving = false;
+  bool _closingSession = false;
   String? _message;
   String _participantHlsManifestUrl = '';
   double _archiveAvailableDurationSec = 0;
@@ -102,7 +108,8 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   bool get _isConnected =>
       _rtcState == LiveAudioProbeRtcState.connected ||
       _rtcState == LiveAudioProbeRtcState.reconnecting;
-  bool get _canPublish => _permission?.canPublish == true;
+  bool get _canPublish => _permission?.canPublish == true && !_closingSession;
+  bool get _canWriteBoard => _canPublish && _session?.isActive == true;
   String? get _sessionId => _session?.id;
   bool get _isCatchup =>
       _catchupStatus.state == LiveAudioCatchupState.catchup ||
@@ -175,6 +182,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
 
   Future<void> _createAndJoin() async {
     await _runBusy(() async {
+      await ensureLiveAudioMicrophonePermission();
       final sessionId = await _service.createSession(
         courseId: widget.courseId,
         lessonId: widget.lessonId,
@@ -184,7 +192,19 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       );
       _sessionCodeController.text = sessionId;
       widget.onSessionCreated?.call(sessionId);
-      await _connect(sessionId);
+      try {
+        await _connect(sessionId);
+      } on LiveAudioRtcInitializationException {
+        try {
+          await _service.closeSession(sessionId);
+        } catch (error) {
+          debugPrint(
+            '[LiveAudioRtc] failed to close session after initialization '
+            'timeout: $error',
+          );
+        }
+        rethrow;
+      }
     });
   }
 
@@ -227,11 +247,13 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       }
       setState(() {
         _session = session;
-        if (_pendingTimelineMessages.isEmpty &&
-            session.timelineNextSequence > _timelineSequence) {
-          _timelineSequence = session.timelineNextSequence;
-        }
-        if (session.boardSet.isNotEmpty) {
+        _timelineOutbox.observeServerSequence(session.timelineNextSequence);
+        final shouldApplyBoardSet = _snapshotTracker.shouldApplyServerSnapshot(
+          revision: session.boardSetRevision,
+          preserveUnsavedLocalChanges: _canPublish,
+        );
+        _snapshotTracker.observeServerRevision(session.boardSetRevision);
+        if (session.boardSet.isNotEmpty && shouldApplyBoardSet) {
           _rememberBoardSetTimelineEvents(session.boardSet);
           _boardState = _boardState.replaceSnapshot(session.boardSet);
         }
@@ -300,9 +322,25 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     _timelineFlushTimer?.cancel();
     _timelineFlushTimer = Timer.periodic(
       const Duration(seconds: 1),
-      (_) => unawaited(_flushTimelineMessages()),
+      (_) => unawaited(_flushTimelineMessages().then<void>((_) {})),
     );
-    await rtc.join(credentials);
+    try {
+      await rtc.join(credentials);
+    } catch (error) {
+      final wasCurrentConnection = _rtc == rtc;
+      if (wasCurrentConnection) {
+        await _leaveRtcOnly();
+      } else {
+        await rtc.dispose();
+      }
+      if (mounted && wasCurrentConnection && !_closingSession) {
+        setState(() => _rtcState = LiveAudioProbeRtcState.failed);
+      }
+      rethrow;
+    }
+    if (!mounted || _rtc != rtc || _sessionId != sessionId) {
+      return;
+    }
     _archiveRefreshTimer?.cancel();
     _archiveRefreshTimer = Timer.periodic(
       const Duration(seconds: 10),
@@ -334,7 +372,19 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
             ? '先生から発表を許可されました。マイクと板書を利用できます。'
             : '発表を終了し、視聴専用へ戻りました。';
         if (!credentials.permission.canPublish) {
+          _snapshotSaveTimer?.cancel();
+          _snapshotSaveTimer = null;
           _cancelLocalStroke();
+          final session = _session;
+          if (session?.boardSet.isNotEmpty == true &&
+              _snapshotTracker.shouldApplyServerSnapshot(
+                revision: session!.boardSetRevision,
+                preserveUnsavedLocalChanges: false,
+              )) {
+            _snapshotTracker.reset(serverRevision: session.boardSetRevision);
+            _rememberBoardSetTimelineEvents(session.boardSet);
+            _boardState = _boardState.replaceSnapshot(session.boardSet);
+          }
         }
       });
       if (credentials.permission.canPublish) {
@@ -424,7 +474,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       _catchupStatus.positionSec;
 
   void _startLocalStroke() {
-    if (!_canPublish || !_isConnected) {
+    if (!_canWriteBoard) {
       return;
     }
     final timestamp = _currentTimelineSec;
@@ -603,15 +653,14 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
 
   void _sendWhiteboardMessage(LiveAudioProbeMessage message) {
     final rtc = _rtc;
-    if (rtc == null) {
-      return;
+    if (rtc != null && _isConnected) {
+      unawaited(rtc.sendWhiteboardMessage(message).catchError(_showError));
     }
-    unawaited(rtc.sendWhiteboardMessage(message).catchError(_showError));
     if (message.kind == LiveAudioProbeMessageKind.boardCreate ||
         message.kind == LiveAudioProbeMessageKind.boardSwitch ||
         message.kind == LiveAudioProbeMessageKind.viewport) {
       _processedTimelineEvents.add(_timelineEventKey(message));
-      _pendingTimelineMessages.add(message);
+      _timelineOutbox.add(message);
     }
   }
 
@@ -643,50 +692,90 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     _scheduleSnapshotSave();
   }
 
-  Future<void> _flushTimelineMessages() async {
+  Future<bool> _flushTimelineMessages() async {
     final sessionId = _sessionId;
-    if (sessionId == null || _pendingTimelineMessages.isEmpty) {
-      return;
+    if (sessionId == null || !_timelineOutbox.hasMessages) {
+      return true;
     }
-    final messages = List<LiveAudioProbeMessage>.from(_pendingTimelineMessages);
-    _pendingTimelineMessages.removeRange(0, messages.length);
-    final firstSequence = _timelineSequence;
-    _timelineSequence += messages.length;
     try {
-      await _service.saveTimelineChunk(
-        sessionId: sessionId,
-        firstSequence: firstSequence,
-        messages: messages,
+      await _timelineOutbox.flushNext(
+        ({required firstSequence, required messages}) =>
+            _service.saveTimelineChunk(
+              sessionId: sessionId,
+              firstSequence: firstSequence,
+              messages: messages,
+            ),
       );
+      return true;
     } catch (error) {
-      _pendingTimelineMessages.insertAll(0, messages);
-      _timelineSequence = firstSequence;
+      if (error case FirebaseFunctionsException(:final code)) {
+        if (code == 'invalid-argument') {
+          _timelineOutbox.discardRetryBatch();
+          _showError(error);
+          return true;
+        }
+        if (code == 'aborted' || code == 'already-exists') {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          _timelineOutbox.rebaseRetryBatch(
+            _session?.timelineNextSequence ?? _timelineOutbox.nextSequence,
+          );
+        }
+      }
       _showError(error);
+      return false;
     }
   }
 
   void _scheduleSnapshotSave() {
+    _snapshotTracker.markChanged();
     _snapshotSaveTimer?.cancel();
     _snapshotSaveTimer = Timer(const Duration(seconds: 2), () {
-      final sessionId = _sessionId;
-      if (sessionId == null) {
-        return;
-      }
-      try {
-        validateBoardSetForPersistence(_boardState.boardSet);
-      } catch (error) {
-        _showError(error);
-        return;
-      }
-      unawaited(
-        _service
-            .saveBoardSnapshot(
-              sessionId: sessionId,
-              boardSet: _boardState.boardSet,
-            )
-            .catchError(_showError),
-      );
+      unawaited(_saveBoardSnapshotNow().catchError(_showError));
     });
+  }
+
+  Future<void> _saveBoardSnapshotNow() {
+    final active = _snapshotSaveFuture;
+    if (active != null) {
+      return active;
+    }
+    late final Future<void> tracked;
+    tracked = _saveDirtyBoardSnapshots().whenComplete(() {
+      if (identical(_snapshotSaveFuture, tracked)) {
+        _snapshotSaveFuture = null;
+      }
+    });
+    _snapshotSaveFuture = tracked;
+    return tracked;
+  }
+
+  Future<void> _saveDirtyBoardSnapshots() async {
+    final sessionId = _sessionId;
+    if (sessionId == null) {
+      return;
+    }
+    while (_snapshotTracker.hasUnsavedChanges) {
+      final generation = _snapshotTracker.changeGeneration;
+      final expectedRevision = _snapshotTracker.serverRevision;
+      final boardSet = _boardState.boardSet;
+      validateBoardSetForPersistence(boardSet);
+      try {
+        final revision = await _service.saveBoardSnapshot(
+          sessionId: sessionId,
+          boardSet: boardSet,
+          expectedRevision: expectedRevision,
+        );
+        _snapshotTracker.markSaved(generation: generation, revision: revision);
+      } on FirebaseFunctionsException catch (error) {
+        if (error.code != 'aborted') {
+          rethrow;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        if (_snapshotTracker.serverRevision == expectedRevision) {
+          rethrow;
+        }
+      }
+    }
   }
 
   void _addBoard() {
@@ -694,7 +783,10 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       return;
     }
     final boardId = LessonWhiteboardBoard.generateId();
-    final order = _boardState.boardSet.boards.length;
+    final order = _boardState.boardSet.boards.fold<int>(
+      0,
+      (next, board) => board.order >= next ? board.order + 1 : next,
+    );
     final timestamp = _currentTimelineSec;
     final createMessage = LiveAudioProbeMessage(
       kind: LiveAudioProbeMessageKind.boardCreate,
@@ -820,30 +912,129 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     }
   }
 
-  Future<void> _closeSession() async {
-    final sessionId = _sessionId;
-    if (sessionId == null) {
+  Future<void> _closeEnteredSessionWithoutAgora() async {
+    final sessionId = _sessionCodeController.text.trim();
+    if (!RegExp(r'^[A-Za-z0-9]{20}$').hasMatch(sessionId)) {
+      setState(() => _message = '終了する配信の20文字のコードを入力してください。');
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('この配信を終了しますか？'),
+        content: const Text('Agoraへ接続できない場合の緊急終了です。終了すると、この配信へは戻れません。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('配信を終了'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) {
       return;
     }
     var closed = false;
     await _runBusy(() async {
-      _timelineFlushTimer?.cancel();
-      _timelineFlushTimer = null;
-      _snapshotSaveTimer?.cancel();
-      _snapshotSaveTimer = null;
-      try {
-        await _flushTimelineMessages();
-        await _service.saveBoardSnapshot(
-          sessionId: sessionId,
-          boardSet: _boardState.boardSet,
-        );
-      } catch (error) {
-        _showError(error);
+      await _service.closeSession(sessionId);
+      closed = true;
+    });
+    if (closed && mounted && Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  Future<void> _closeAllOwnedSessions() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('残っている配信をすべて終了しますか？'),
+        content: const Text('自分が開始したまま残っている配信だけを終了します。ほかの先生の配信には影響しません。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('キャンセル'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('すべて終了'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+    var closedCount = 0;
+    await _runBusy(() async {
+      closedCount = await _service.closeOwnedActiveSessions();
+    });
+    if (!mounted) {
+      return;
+    }
+    if (closedCount == 0) {
+      setState(() => _message = '終了が必要な配信はありませんでした。');
+      return;
+    }
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  Future<bool> _flushAllTimelineMessages() async {
+    while (_timelineOutbox.hasMessages) {
+      if (!await _flushTimelineMessages()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  Future<void> _closeSession() async {
+    final sessionId = _sessionId;
+    if (sessionId == null || _closingSession) {
+      return;
+    }
+    var closed = false;
+    setState(() {
+      _closingSession = true;
+      _message = null;
+    });
+    _timelineFlushTimer?.cancel();
+    _timelineFlushTimer = null;
+    _snapshotSaveTimer?.cancel();
+    _snapshotSaveTimer = null;
+    try {
+      await _saveBoardSnapshotNow();
+      if (!await _flushAllTimelineMessages()) {
+        setState(() {
+          _message = '板書の保存が完了していません。通信を確認して、もう一度終了してください。';
+        });
+        return;
       }
       await _service.closeSession(sessionId);
       closed = true;
       await _leaveRtcOnly();
-    });
+    } catch (error) {
+      _showError(error);
+    } finally {
+      if (!closed && mounted) {
+        setState(() => _closingSession = false);
+        _timelineFlushTimer ??= Timer.periodic(
+          const Duration(seconds: 1),
+          (_) => unawaited(_flushTimelineMessages().then<void>((_) {})),
+        );
+        if (_snapshotTracker.hasUnsavedChanges) {
+          _snapshotSaveTimer ??= Timer(const Duration(seconds: 2), () {
+            unawaited(_saveBoardSnapshotNow().catchError(_showError));
+          });
+        }
+      }
+    }
     if (closed && mounted && Navigator.of(context).canPop()) {
       Navigator.of(context).pop();
     }
@@ -861,7 +1052,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     _snapshotSaveTimer = null;
     _archiveRefreshTimer?.cancel();
     _archiveRefreshTimer = null;
-    await _flushTimelineMessages();
+    await _flushAllTimelineMessages();
     await _cancelSubscriptions();
     await _catchup.returnToLive();
     final rtc = _rtc;
@@ -883,9 +1074,9 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         _viewerViewport = null;
         _followPresenter = true;
         _catchupSeekSec = null;
-        _pendingTimelineMessages.clear();
+        _timelineOutbox.clear();
+        _snapshotTracker.reset();
         _processedTimelineEvents.clear();
-        _timelineSequence = 0;
         _participantHlsManifestUrl = '';
         _archiveAvailableDurationSec = 0;
       });
@@ -986,6 +1177,20 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
           icon: const Icon(Icons.login),
           label: const Text('この配信へ参加'),
         ),
+        if (_isTeacher) ...[
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _busy ? null : _closeEnteredSessionWithoutAgora,
+            icon: const Icon(Icons.stop_circle_outlined),
+            label: const Text('接続せずにこの配信を終了'),
+          ),
+          const SizedBox(height: 8),
+          TextButton.icon(
+            onPressed: _busy ? null : _closeAllOwnedSessions,
+            icon: const Icon(Icons.power_settings_new),
+            label: const Text('自分の残っている配信をすべて終了'),
+          ),
+        ],
         if (_busy) ...[
           const SizedBox(height: 16),
           const LinearProgressIndicator(),
@@ -1142,7 +1347,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
           inProgressStroke: !_isCatchup && _localStrokeBoardId == board.id
               ? _localStroke
               : null,
-          drawingEnabled: _canPublish && _isConnected && !_isCatchup,
+          drawingEnabled: _canWriteBoard && !_isCatchup,
           onStrokeStart: _startLocalStroke,
           onStrokeUpdate: _updateLocalStroke,
           onStrokeEnd: _endLocalStroke,
@@ -1184,9 +1389,9 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
             ),
           const SizedBox(height: 12),
           OutlinedButton.icon(
-            onPressed: _busy ? null : _closeSession,
+            onPressed: _closingSession ? null : _closeSession,
             icon: const Icon(Icons.stop_circle),
-            label: const Text('配信を終了して下書きを作成'),
+            label: Text(_closingSession ? '配信を終了しています…' : '配信を終了して下書きを作成'),
           ),
         ] else ...[
           const SizedBox(height: 12),

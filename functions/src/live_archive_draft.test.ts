@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  adjustLiveArchiveBoardSet,
   firebaseStorageDownloadUrl,
   prepareLiveArchiveDraft,
+  resolveLiveArchiveDuration,
   selectManifestObject,
 } from "./live_archive_draft";
+import {isValidBoardSet} from "./live_audio_probe";
 
 const publishedSegments = [
   {
@@ -26,6 +29,160 @@ const publishedSegments = [
     liveSessionId: "",
   },
 ];
+
+test("uses HLS duration and excludes finalization time from fallback", () => {
+  assert.deepEqual(
+    resolveLiveArchiveDuration({
+      timingVersion: 2,
+      hlsDurationMs: 20500,
+      sessionStartedAtMs: 1000,
+      archiveStartedAtMs: 5000,
+      archiveStopRequestedAtMs: 25000,
+      archiveStoppedAtMs: 28000,
+      finalizedAtMs: 45000,
+    }),
+    {durationMs: 20500, durationSec: 20, source: "hls"},
+  );
+  assert.deepEqual(
+    resolveLiveArchiveDuration({
+      timingVersion: 2,
+      hlsDurationMs: null,
+      sessionStartedAtMs: 1000,
+      archiveStartedAtMs: 5000,
+      archiveStopRequestedAtMs: 25000,
+      archiveStoppedAtMs: 28000,
+      finalizedAtMs: 45000,
+    }),
+    {durationMs: 20000, durationSec: 20, source: "wallClock"},
+  );
+  assert.deepEqual(
+    resolveLiveArchiveDuration({
+      timingVersion: 1,
+      hlsDurationMs: 20500,
+      sessionStartedAtMs: 1000,
+      archiveStartedAtMs: 5000,
+      archiveStopRequestedAtMs: 25000,
+      archiveStoppedAtMs: 28000,
+      finalizedAtMs: 45000,
+    }),
+    {durationMs: 40000, durationSec: 40, source: "wallClock"},
+  );
+});
+
+test("adjusts only board data added during the live archive", () => {
+  const baselineBoardSet = {
+    boards: [
+      {
+        id: "default",
+        order: 0,
+        layers: [
+          {
+            id: "primary",
+            order: 0,
+            anchorType: "global",
+            strokes: [
+              {
+                id: "existing",
+                timestampSec: 36,
+                endTimestampSec: 50,
+                colorArgb: 4278190080,
+                strokeWidth: 3,
+                points: [
+                  {x: 0.1, y: 0.1, timestampSec: 36},
+                  {x: 0.2, y: 0.2, timestampSec: 50},
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    switchEvents: [
+      {boardId: "default", globalTimestampSec: 50, sequence: 0},
+    ],
+    viewportEvents: [
+      {
+        boardId: "default",
+        globalTimestampSec: 50,
+        sequence: 0,
+        interactionId: 0,
+        centerX: 0.5,
+        centerY: 0.5,
+        scale: 1,
+      },
+    ],
+  };
+  const boardSet = structuredClone(baselineBoardSet);
+  boardSet.boards[0].layers[0].strokes.push({
+    id: "live",
+    timestampSec: 45,
+    endTimestampSec: 55,
+    colorArgb: 4278190080,
+    strokeWidth: 3,
+    points: [
+      {x: 0.3, y: 0.3, timestampSec: 45},
+      {x: 0.4, y: 0.4, timestampSec: 55},
+    ],
+  });
+  boardSet.switchEvents.push({
+    boardId: "default",
+    globalTimestampSec: 45,
+    sequence: 1,
+  });
+  boardSet.viewportEvents.push({
+    boardId: "default",
+    globalTimestampSec: 55,
+    sequence: 1,
+    interactionId: 1,
+    centerX: 0.6,
+    centerY: 0.6,
+    scale: 2,
+  });
+
+  const adjusted = adjustLiveArchiveBoardSet({
+    boardSet,
+    baselineBoardSet,
+    segmentStartSec: 30,
+    archiveTimelineOffsetSec: 5,
+    recordingWallDurationSec: 20,
+    mediaDurationSec: 10,
+  });
+
+  assert.ok(adjusted);
+  assert.equal(isValidBoardSet(adjusted), true);
+  const boards = adjusted.boards as typeof boardSet.boards;
+  assert.deepEqual(
+    boards[0].layers[0].strokes[0],
+    baselineBoardSet.boards[0].layers[0].strokes[0],
+  );
+  assert.deepEqual(boards[0].layers[0].strokes[1], {
+    id: "live",
+    timestampSec: 35,
+    endTimestampSec: 40,
+    colorArgb: 4278190080,
+    strokeWidth: 3,
+    points: [
+      {x: 0.3, y: 0.3, timestampSec: 35},
+      {x: 0.4, y: 0.4, timestampSec: 40},
+    ],
+  });
+  assert.deepEqual(adjusted.switchEvents, [
+    {boardId: "default", globalTimestampSec: 50, sequence: 0},
+    {boardId: "default", globalTimestampSec: 35, sequence: 1},
+  ]);
+  assert.deepEqual(adjusted.viewportEvents, [
+    baselineBoardSet.viewportEvents[0],
+    {
+      boardId: "default",
+      globalTimestampSec: 40,
+      sequence: 1,
+      interactionId: 1,
+      centerX: 0.6,
+      centerY: 0.6,
+      scale: 2,
+    },
+  ]);
+});
 
 test("replaces only a reserved live placeholder", () => {
   const prepared = prepareLiveArchiveDraft({

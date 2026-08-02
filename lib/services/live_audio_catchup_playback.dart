@@ -4,6 +4,7 @@ import 'live_audio_catchup_backend_stub.dart'
     if (dart.library.io) 'live_audio_catchup_backend_io.dart'
     if (dart.library.js_interop) 'live_audio_catchup_backend_web.dart'
     as backend;
+import 'latest_async_request_runner.dart';
 
 enum LiveAudioCatchupState { live, loading, catchup, failed }
 
@@ -17,6 +18,15 @@ class LiveAudioCatchupStatus {
   final LiveAudioCatchupState state;
   final double positionSec;
   final String? message;
+}
+
+class LiveAudioCatchupPlaybackException implements Exception {
+  const LiveAudioCatchupPlaybackException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }
 
 class LiveAudioCatchupPlayback {
@@ -34,16 +44,26 @@ class LiveAudioCatchupPlayback {
       backend.LiveAudioCatchupBackend();
   final _statuses = StreamController<LiveAudioCatchupStatus>.broadcast();
   late final StreamSubscription<double> _positionSubscription;
+  final LatestAsyncRequestRunner<({String hlsUrl, double positionSec})>
+  _playRequests = LatestAsyncRequestRunner();
   LiveAudioCatchupState _state = LiveAudioCatchupState.live;
   String? _openedUrl;
 
   Stream<LiveAudioCatchupStatus> get statuses => _statuses.stream;
   LiveAudioCatchupState get state => _state;
 
-  Future<void> playFrom({
-    required String hlsUrl,
-    required double positionSec,
-  }) async {
+  Future<void> playFrom({required String hlsUrl, required double positionSec}) {
+    return _playRequests.run((
+      hlsUrl: hlsUrl,
+      positionSec: positionSec,
+    ), _playFromNow);
+  }
+
+  Future<void> _playFromNow(
+    ({String hlsUrl, double positionSec}) request,
+  ) async {
+    final hlsUrl = request.hlsUrl;
+    final positionSec = request.positionSec;
     if (hlsUrl.trim().isEmpty) {
       throw StateError('追っかけ再生用の音声がまだ準備されていません。');
     }
@@ -57,12 +77,13 @@ class LiveAudioCatchupPlayback {
       await _backend.play();
       _emit(LiveAudioCatchupState.catchup, positionSec: positionSec);
     } catch (error) {
+      final message = '追っかけ再生を開始できませんでした: $error';
       _emit(
         LiveAudioCatchupState.failed,
         positionSec: positionSec,
-        message: '追っかけ再生を開始できませんでした: $error',
+        message: message,
       );
-      rethrow;
+      throw LiveAudioCatchupPlaybackException(message);
     }
   }
 

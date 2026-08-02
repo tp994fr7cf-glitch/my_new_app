@@ -3,10 +3,40 @@ import test from "node:test";
 
 import {
   createHlsAccessToken,
+  finalizedHlsDurationMs,
   isSafeHlsObjectPath,
   rewriteHlsManifest,
   verifyHlsAccessToken,
 } from "./live_hls_proxy";
+
+test("reads exact duration from a finalized HLS media playlist", () => {
+  assert.equal(
+    finalizedHlsDurationMs(
+      "#EXTM3U\n" +
+      "#EXT-X-VERSION:3\n" +
+      "#EXTINF:9.984,\npart-1.ts\n" +
+      "#EXTINF:10,\npart-2.ts\n" +
+      "#EXTINF:0.516,\npart-3.ts\n" +
+      "#EXT-X-ENDLIST\n",
+    ),
+    20500,
+  );
+});
+
+test("rejects partial or duration-less HLS manifests", () => {
+  assert.equal(
+    finalizedHlsDurationMs("#EXTM3U\n#EXTINF:10,\npart-1.ts\n"),
+    null,
+  );
+  assert.equal(
+    finalizedHlsDurationMs(
+      "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=64000\nchild.m3u8\n" +
+      "#EXT-X-ENDLIST\n",
+    ),
+    null,
+  );
+  assert.equal(finalizedHlsDurationMs("not-a-manifest"), null);
+});
 
 test("signs expiring HLS access without exposing credentials", () => {
   const token = createHlsAccessToken(

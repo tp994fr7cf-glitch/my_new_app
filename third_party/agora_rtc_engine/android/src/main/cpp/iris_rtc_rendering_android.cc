@@ -1,0 +1,1025 @@
+#include "AgoraMediaBase.h"
+#include "iris_engine_base.h"
+#include "iris_rtc_rendering_c.h"
+#include "iris_rtc_rendering_cxx.h"
+#include "vm_util.h"
+#include <EGL/egl.h>
+#include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
+#include <android/log.h>
+#include <android/native_window_jni.h>
+#include <cmath>
+#include <jni.h>
+#include <memory>
+#include <vector>
+#include <cstring>
+#include <chrono>
+
+namespace agora {
+namespace iris {
+namespace rendering {
+#define LOG_TAG "IrisRendering"
+#define LOGCATE(...)                                                           \
+  __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+#define LOGCATD(...)                                                           \
+  __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+
+#define CHECK_GL_ERROR(...)                                                    \
+  {                                                                            \
+    int error = glGetError();                                                  \
+    if (error != 0)                                                            \
+      LOGCATE("CHECK_GL_ERROR %s glGetError = %d, line = %d, ", __FUNCTION__,  \
+              error, __LINE__);                                                \
+  }
+
+class GLContext {
+ public:
+  explicit GLContext(ANativeWindow *window)
+      : window_(window), display_(EGL_NO_DISPLAY), surface_(EGL_NO_SURFACE),
+        context_(EGL_NO_CONTEXT), share_context_(EGL_NO_CONTEXT),
+        is_setup_surface_(false) {}
+
+  ~GLContext() { Terminate(); }
+
+  bool SetupSurface(ANativeWindow *window) {
+    if (is_setup_surface_) { return is_setup_surface_; }
+
+    if (!window_) {
+      is_setup_surface_ = false;
+      return false;
+    }
+
+    if (window_ != window && display_ != EGL_NO_DISPLAY
+        && surface_ != EGL_NO_SURFACE) {
+      eglDestroySurface(display_, surface_);
+      CHECK_GL_ERROR()
+    }
+
+    window_ = window;
+
+    display_ = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    CHECK_GL_ERROR()
+
+    eglInitialize(display_, 0, 0);
+    CHECK_GL_ERROR()
+
+    const EGLint attribs[] = {EGL_RENDERABLE_TYPE,
+                              EGL_OPENGL_ES2_BIT,// Request opengl ES2.0
+                              EGL_SURFACE_TYPE,
+                              EGL_WINDOW_BIT,
+                              EGL_BLUE_SIZE,
+                              8,
+                              EGL_GREEN_SIZE,
+                              8,
+                              EGL_RED_SIZE,
+                              8,
+                              EGL_NONE};
+
+    EGLint num_configs = 0;
+    eglChooseConfig(display_, attribs, &config_, 1, &num_configs);
+    CHECK_GL_ERROR()
+
+    surface_ = eglCreateWindowSurface(display_, config_, window_, nullptr);
+    if (surface_ == EGL_NO_SURFACE) {
+      CHECK_GL_ERROR()
+      is_setup_surface_ = false;
+      return false;
+    }
+
+    is_setup_surface_ = true;
+
+    return is_setup_surface_;
+  }
+
+  bool GLContextMakeCurrent(const void *share_context) {
+    // Need recreate context
+    if (context_ != EGL_NO_CONTEXT && share_context_ != share_context) {
+      eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+      eglDestroyContext(display_, context_);
+      context_ = EGL_NO_CONTEXT;
+      share_context_ = EGL_NO_CONTEXT;
+    }
+
+    if (context_ == EGL_NO_CONTEXT) {
+      share_context_ = (EGLContext) share_context;
+      const EGLint context_attribs[] = {EGL_CONTEXT_CLIENT_VERSION,
+                                        2,// Request opengl ES2.0
+                                        EGL_NONE};
+      context_ =
+          eglCreateContext(display_, config_, share_context_, context_attribs);
+      if (context_ == EGL_NO_CONTEXT) {
+        CHECK_GL_ERROR()
+        return false;
+      }
+    }
+
+    const auto result =
+        EGLMakeCurrentIfNecessary(display_, surface_, surface_, context_)
+        == EGL_TRUE;
+    if (!result) { CHECK_GL_ERROR() }
+
+    return result;
+  }
+
+  void GLContextClearCurrent() {
+    if (context_ != EGL_NO_CONTEXT) {
+        eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    }
+  }
+
+  EGLint Swap() {
+    eglSwapBuffers(display_, surface_);
+    CHECK_GL_ERROR()
+
+    return EGL_SUCCESS;
+  }
+
+ private:
+  static EGLBoolean EGLMakeCurrentIfNecessary(EGLDisplay display,
+                                              EGLSurface draw, EGLSurface read,
+                                              EGLContext context) {
+    if (display != eglGetCurrentDisplay()
+        || draw != eglGetCurrentSurface(EGL_DRAW)
+        || read != eglGetCurrentSurface(EGL_READ)
+        || context != eglGetCurrentContext()) {
+      return eglMakeCurrent(display, draw, read, context);
+    }
+    // The specified context configuration is already current.
+    return EGL_TRUE;
+  }
+
+  void Terminate() {
+    if (display_ != EGL_NO_DISPLAY) {
+      eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+      if (context_ != EGL_NO_CONTEXT) { eglDestroyContext(display_, context_); }
+
+      if (surface_ != EGL_NO_SURFACE) { eglDestroySurface(display_, surface_); }
+      eglTerminate(display_);
+    }
+
+    display_ = EGL_NO_DISPLAY;
+    context_ = EGL_NO_CONTEXT;
+    share_context_ = EGL_NO_CONTEXT;
+    surface_ = EGL_NO_SURFACE;
+    window_ = nullptr;
+    is_setup_surface_ = false;
+  }
+
+ private:
+  // EGL configurations
+  ANativeWindow *window_;
+  EGLDisplay display_;
+  EGLSurface surface_;
+  EGLContext context_;
+  EGLContext share_context_{};
+  EGLConfig config_{};
+
+  bool is_setup_surface_;
+};
+
+class ScopedShader {
+
+ public:
+  ScopedShader(const char *vertexShader, const char *fragmentShader) {
+    this->vertex_shader_ = vertexShader;
+    this->fragment_shader_ = fragmentShader;
+
+    program_ = CreateProgram();
+  }
+
+  ~ScopedShader() { Release(); }
+
+  const GLuint &GetProgram() const { return program_; }
+
+ private:
+  GLuint program_;
+  const char *vertex_shader_;
+  const char *fragment_shader_;
+
+  static GLuint initShader(const char *source, int type) {
+    GLuint sh = glCreateShader(type);
+    if (sh == 0) {
+      LOGCATE("glCreateShader %d failed", type);
+
+      return 0;
+    }
+    glShaderSource(sh,
+                   1,
+                   &source, 0);
+    CHECK_GL_ERROR()
+
+    glCompileShader(sh);
+    CHECK_GL_ERROR()
+
+    GLint status;
+    glGetShaderiv(sh, GL_COMPILE_STATUS, &status);
+    if (status == 0) {
+      LOGCATE("glCompileShader %d failed", type);
+      LOGCATE("source %s", source);
+      auto *infoLog = new GLchar[2048];
+      GLsizei length;
+      glGetShaderInfoLog(sh, 2048, &length, infoLog);
+      LOGCATE("ERROR::SHADER::VERTEX::COMPILATION_FAILED %s", infoLog);
+
+      delete[] infoLog;
+      return 0;
+    }
+
+    return sh;
+  }
+
+  GLuint CreateProgram() {
+    GLuint vsh = initShader(vertex_shader_, GL_VERTEX_SHADER);
+    GLuint fsh = initShader(fragment_shader_, GL_FRAGMENT_SHADER);
+
+    GLuint program = glCreateProgram();
+    if (program == 0) {
+      LOGCATE("glCreateProgram failed");
+      return 0;
+    }
+
+    glAttachShader(program, vsh);
+    CHECK_GL_ERROR()
+    glAttachShader(program, fsh);
+    CHECK_GL_ERROR()
+
+    glLinkProgram(program);
+    CHECK_GL_ERROR()
+    GLint status = 0;
+    glGetProgramiv(program, GL_LINK_STATUS, &status);
+    CHECK_GL_ERROR()
+    if (status == 0) {
+      LOGCATE("glLinkProgram failed");
+      return 0;
+    }
+
+    glDeleteShader(vsh);
+    CHECK_GL_ERROR()
+    glDeleteShader(fsh);
+    CHECK_GL_ERROR()
+    glUseProgram(program);
+    CHECK_GL_ERROR()
+    return program;
+  }
+
+  void Release() const { glDeleteProgram(program_); }
+};
+
+class RenderingOp {
+ public:
+  explicit RenderingOp(std::shared_ptr<GLContext> &gl_context)
+      : gl_context_(gl_context) {}
+  virtual ~RenderingOp() = default;
+  virtual void Rendering(const agora::media::base::VideoFrame *video_frame) = 0;
+
+  virtual agora::media::base::VIDEO_PIXEL_FORMAT Format() = 0;
+
+ protected:
+  std::shared_ptr<GLContext> gl_context_;
+};
+
+class Texture2DRendering final : public RenderingOp {
+public:
+    explicit Texture2DRendering(std::shared_ptr<GLContext> &gl_context)
+            : RenderingOp(gl_context) {
+        LOGCATD("Rendering with Texture2DRendering");
+        shader_ = std::make_unique<ScopedShader>(vertex_shader_tex_2d_, frag_shader_tex_2d_);
+        GLuint program = shader_->GetProgram();
+
+        aPositionLoc_ = glGetAttribLocation(program, "a_Position");
+        texCoordLoc_ = glGetAttribLocation(program, "a_TexCoord");
+        texSamplerLoc_ = glGetUniformLocation(program, "s_texture");
+        texMatrixLoc_ = glGetUniformLocation(program, "u_texMatrix");
+    }
+    ~Texture2DRendering() override {
+        LOGCATD("Destroy Texture2DRendering");
+        shader_.reset();
+    }
+
+    void Rendering(const agora::media::base::VideoFrame *video_frame) final {
+        int textureId = video_frame->textureId;
+        const float *texMatrix = video_frame->matrix;
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+        CHECK_GL_ERROR()
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        CHECK_GL_ERROR()
+        glViewport(0, 0, video_frame->width, video_frame->height);
+        CHECK_GL_ERROR()
+
+        // Bind 2D texture
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, textureId);
+        glUniform1i(texSamplerLoc_, 0);
+
+        glVertexAttribPointer(aPositionLoc_, 2, GL_FLOAT, false, 0, vertices);
+        glEnableVertexAttribArray(aPositionLoc_);
+
+        glVertexAttribPointer(texCoordLoc_, 2, GL_FLOAT, false, 0, texCoords);
+        glEnableVertexAttribArray(texCoordLoc_);
+
+        // Copy the texture transformation matrix over.
+        glUniformMatrix4fv(texMatrixLoc_, 1, GL_FALSE, texMatrix);
+
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, indices);
+
+        gl_context_->Swap();
+
+        // Clean up
+        glDisableVertexAttribArray(aPositionLoc_);
+        glDisableVertexAttribArray(texCoordLoc_);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    agora::media::base::VIDEO_PIXEL_FORMAT Format() final {
+        return agora::media::base::VIDEO_PIXEL_FORMAT::VIDEO_TEXTURE_2D;
+    }
+
+private:
+    const GLchar *vertex_shader_tex_2d_ =
+            "attribute vec4 a_Position;\n"
+            "attribute vec2 a_TexCoord;\n"
+            "varying vec2 v_TexCoord;\n"
+            "uniform mat4 u_texMatrix;   \n"
+            "void main() {\n"
+            "  gl_Position = a_Position;\n"
+            "  vec2 tmpTexCoord = vec2(a_TexCoord.x, 1.0 - a_TexCoord.y);\n"
+            "  v_TexCoord = (u_texMatrix * vec4(tmpTexCoord, 0, 1)).xy; \n"
+            "}\n";
+
+    const GLchar *frag_shader_tex_2d_ =
+            "precision mediump float;\n"
+            "varying vec2 v_TexCoord;\n"
+            "uniform sampler2D s_texture;\n"
+            "void main() {\n"
+            "  gl_FragColor = texture2D(s_texture, v_TexCoord);\n"
+            "}\n";
+
+    // clang-format off
+    const GLfloat vertices[8] = {
+            -1.0f, 1.0f,
+            -1.0f, -1.0f,
+            1.0f,  -1.0f,
+            1.0f,  1.0f
+    };
+
+    const GLfloat texCoords[8] = {
+            0.0f, 0.0f,
+            0.0f, 1.0f,
+            1.0f, 1.0f,
+            1.0f, 0.0f
+    };
+
+    const GLushort indices[6] = {
+            0, 1, 2,
+            0, 2, 3
+    };// draw in this order: 0,1,2; 0,2,3
+
+    // clang-format on
+
+    GLint aPositionLoc_;
+    GLint texCoordLoc_;
+    GLint texMatrixLoc_;
+    GLint texSamplerLoc_;
+    std::unique_ptr<ScopedShader> shader_;
+};
+
+
+class OESTextureRendering final : public RenderingOp {
+public:
+    explicit OESTextureRendering(std::shared_ptr<GLContext> &gl_context)
+            : RenderingOp(gl_context) {
+        LOGCATE("Rendering with OESTextureRendering");
+        shader_ = std::make_unique<ScopedShader>(vertex_shader_tex_oes_,
+                                                 frag_shader_tex_oes_);
+        GLuint program = shader_->GetProgram();
+
+        aPositionLoc_ = glGetAttribLocation(program, "a_Position");
+        texCoordLoc_ = glGetAttribLocation(program, "a_TexCoord");
+        texSamplerLoc_ = glGetUniformLocation(program, "s_texture");
+        texMatrixLoc_ = glGetUniformLocation(program, "u_texMatrix");
+    }
+    ~OESTextureRendering() override {
+        LOGCATD("Destroy OESTextureRendering");
+        shader_.reset();
+    }
+
+    void Rendering(const agora::media::base::VideoFrame *video_frame) final {
+        int textureId = video_frame->textureId;
+        const float *texMatrix = video_frame->matrix;
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+        CHECK_GL_ERROR()
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        CHECK_GL_ERROR()
+        glViewport(0, 0, video_frame->width, video_frame->height);
+        CHECK_GL_ERROR()
+
+        // Bind external oes texture
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES, textureId);
+        glUniform1i(texSamplerLoc_, 0);
+
+        glVertexAttribPointer(aPositionLoc_, 2, GL_FLOAT, false, 0, vertices);
+        glEnableVertexAttribArray(aPositionLoc_);
+
+        glVertexAttribPointer(texCoordLoc_, 2, GL_FLOAT, false, 0, texCoords);
+        glEnableVertexAttribArray(texCoordLoc_);
+
+        // Copy the texture transformation matrix over.
+        glUniformMatrix4fv(texMatrixLoc_, 1, GL_FALSE, texMatrix);
+
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, indices);
+
+        gl_context_->Swap();
+
+        // Clean up
+        glDisableVertexAttribArray(aPositionLoc_);
+        glDisableVertexAttribArray(texCoordLoc_);
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+    }
+
+    agora::media::base::VIDEO_PIXEL_FORMAT Format() final {
+        return agora::media::base::VIDEO_PIXEL_FORMAT::VIDEO_TEXTURE_OES;
+    }
+
+private:
+    const GLchar *vertex_shader_tex_oes_ =
+            "attribute vec4 a_Position;\n"
+            "attribute vec2 a_TexCoord;\n"
+            "varying vec2 v_TexCoord;\n"
+            "uniform mat4 u_texMatrix;   \n"
+            "void main() {\n"
+            "  gl_Position = a_Position;\n"
+            "  vec2 tmpTexCoord = vec2(a_TexCoord.x, 1.0 - a_TexCoord.y);\n"
+            "  v_TexCoord = (u_texMatrix * vec4(tmpTexCoord, 0, 1)).xy; \n"
+            "}\n";
+
+    const GLchar *frag_shader_tex_oes_ =
+            "#extension GL_OES_EGL_image_external : require\n"
+            "precision mediump float;\n"
+            "varying vec2 v_TexCoord;\n"
+            "uniform samplerExternalOES s_texture;\n"
+            "void main() {\n"
+            "  gl_FragColor = texture2D(s_texture, v_TexCoord);\n"
+            "}\n";
+
+    // clang-format off
+    const GLfloat vertices[8] = {
+            -1.0f, 1.0f,
+            -1.0f, -1.0f,
+            1.0f,  -1.0f,
+            1.0f,  1.0f
+    };
+
+    const GLfloat texCoords[8] = {
+            0.0f, 0.0f,
+            0.0f, 1.0f,
+            1.0f, 1.0f,
+            1.0f, 0.0f
+    };
+
+    const GLushort indices[6] = {
+            0, 1, 2,
+            0, 2, 3
+    };// draw in this order: 0,1,2; 0,2,3
+
+    // clang-format on
+
+    GLint aPositionLoc_;
+    GLint texCoordLoc_;
+    GLint texMatrixLoc_;
+    GLint texSamplerLoc_;
+    std::unique_ptr<ScopedShader> shader_;
+};
+
+class YUVRendering final : public RenderingOp {
+
+ public:
+  explicit YUVRendering(std::shared_ptr<GLContext> &gl_context)
+      : RenderingOp(gl_context) {
+    LOGCATD("Rendering with YUVRendering");
+    shader_ =
+        std::make_unique<ScopedShader>(vertex_shader_yuv_, frag_shader_yuv_);
+    GLuint program = shader_->GetProgram();
+    aPositionLoc_ = glGetAttribLocation(program, "aPosition");
+    texCoordLoc_ = glGetAttribLocation(program, "aTextCoord");
+
+    yTextureLoc_ = glGetUniformLocation(program, "yTexture");
+    uTextureLoc_ = glGetUniformLocation(program, "uTexture");
+    vTextureLoc_ = glGetUniformLocation(program, "vTexture");
+
+    // Get locations for ColorSpace uniforms
+    colorMatrixLoc_ = glGetUniformLocation(program, "uColorMatrix");
+    rangeLoc_ = glGetUniformLocation(program, "uRange");
+
+    glGenTextures(3, texs_);
+    CHECK_GL_ERROR()
+  }
+  ~YUVRendering() override {
+    LOGCATD("Destroy YUVRendering");
+    shader_.reset();
+    glDeleteTextures(3, texs_);
+  }
+  void Rendering(const agora::media::base::VideoFrame *video_frame) final {
+    CHECK_GL_ERROR()
+
+    int width = video_frame->width;
+    int height = video_frame->height;
+    uint8_t *yBuffer = video_frame->yBuffer;
+    uint8_t *uBuffer = video_frame->uBuffer;
+    uint8_t *vBuffer = video_frame->vBuffer;
+    int yStride = video_frame->yStride;
+    int uStride = video_frame->uStride;
+    int vStride = video_frame->vStride;
+
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    CHECK_GL_ERROR()
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    CHECK_GL_ERROR()
+    glViewport(0, 0, width, height);
+    CHECK_GL_ERROR()
+
+    // Ensure that the unpack alignment is set to 1 byte to avoid any alignment issues with YUV data.
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    CHECK_GL_ERROR()
+
+    glEnableVertexAttribArray(aPositionLoc_);
+    CHECK_GL_ERROR()
+
+    glVertexAttribPointer(aPositionLoc_, 3, GL_FLOAT, GL_FALSE,
+                          3 * sizeof(float), vertices_);
+    CHECK_GL_ERROR()
+
+    // Adjust the tex coords to avoid green edge issue
+    float sFactor = 1.0f;
+    if (width != yStride) {
+      sFactor = (float) width / (float) yStride - 0.02f;
+    }
+
+    float fragment[] = {sFactor, 0.0f, 0.0f, 0.0f, sFactor, 1.0f, 0.0f, 1.0f};
+
+    glEnableVertexAttribArray(texCoordLoc_);
+    CHECK_GL_ERROR()
+
+    glVertexAttribPointer(texCoordLoc_, 2, GL_FLOAT, GL_FALSE,
+                          2 * sizeof(float), fragment);
+    CHECK_GL_ERROR()
+
+    // y buffer texture
+    glActiveTexture(GL_TEXTURE0);
+    CHECK_GL_ERROR()
+    glBindTexture(GL_TEXTURE_2D, texs_[0]);
+    CHECK_GL_ERROR()
+    glUniform1i(yTextureLoc_, 0);
+    CHECK_GL_ERROR()
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    CHECK_GL_ERROR()
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    CHECK_GL_ERROR()
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    CHECK_GL_ERROR()
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    CHECK_GL_ERROR()
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, yStride, height, 0,
+                 GL_LUMINANCE, GL_UNSIGNED_BYTE, yBuffer);
+    CHECK_GL_ERROR()
+
+    // u buffer texture
+    glActiveTexture(GL_TEXTURE1);
+    CHECK_GL_ERROR()
+    glBindTexture(GL_TEXTURE_2D, texs_[1]);
+    CHECK_GL_ERROR()
+    glUniform1i(uTextureLoc_, 1);
+    CHECK_GL_ERROR()
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    CHECK_GL_ERROR()
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    CHECK_GL_ERROR()
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    CHECK_GL_ERROR()
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    CHECK_GL_ERROR()
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, uStride, height / 2, 0,
+                 GL_LUMINANCE, GL_UNSIGNED_BYTE, uBuffer);
+    CHECK_GL_ERROR()
+
+    // v buffer texture
+    glActiveTexture(GL_TEXTURE2);
+    CHECK_GL_ERROR()
+    glBindTexture(GL_TEXTURE_2D, texs_[2]);
+    CHECK_GL_ERROR()
+    glUniform1i(vTextureLoc_, 2);
+    CHECK_GL_ERROR()
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    CHECK_GL_ERROR()
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    CHECK_GL_ERROR()
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    CHECK_GL_ERROR()
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    CHECK_GL_ERROR()
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, vStride, height / 2, 0,
+                 GL_LUMINANCE, GL_UNSIGNED_BYTE, vBuffer);
+    CHECK_GL_ERROR()
+
+    // Debug: Log entry into color space processing
+    int matrixId = (int)video_frame->colorSpace.matrix;
+    int rangeId = (int)video_frame->colorSpace.range;
+    LOGCATD("YUV Rendering - colorMatrixLoc_:%d, rangeLoc_:%d, matrix:%d, range:%d", 
+            colorMatrixLoc_, rangeLoc_, matrixId, rangeId);
+
+    // Production Logic: Default to Full Range if metadata is ambiguous (Unspecified or Invalid)
+    // to avoid destructive highlight/shadow clipping.
+    bool isFullRange = (rangeId == agora::media::base::ColorSpace::RANGEID_FULL) || 
+                       (rangeId == agora::media::base::ColorSpace::RANGEID_INVALID) ||
+                       (matrixId == agora::media::base::ColorSpace::MATRIXID_UNSPECIFIED);
+
+    if (colorMatrixLoc_ != -1) {
+      // BT.601 Full Range: R=Y+1.402*Cr, G=Y-0.344136*Cb-0.714136*Cr, B=Y+1.772*Cb
+      float bt601_full[9] = {
+          1.0f, 0.0f, 1.402f,                // R
+          1.0f, -0.344136f, -0.714136f,      // G
+          1.0f, 1.772f, 0.0f                 // B
+      };
+      
+      // BT.601 Limited Range: similar formula with 1.164 scaling
+      float bt601_limit[9] = {
+          1.164384f, 0.0f, 1.596027f,        // R
+          1.164384f, -0.391762f, -0.812968f, // G
+          1.164384f, 2.017232f, 0.0f         // B
+      };
+      
+      
+      // BT.709 Full Range: R=Y+1.5748*Cr, G=Y-0.187324*Cb-0.468124*Cr, B=Y+1.8556*Cb
+      float bt709_full[9] = {
+          1.0f, 0.0f, 1.5748f,               // R
+          1.0f, -0.187324f, -0.468124f,      // G
+          1.0f, 1.8556f, 0.0f                // B
+      };
+      
+      
+      // BT.709 Limited Range: similar with 1.164 scaling
+      float bt709_limit[9] = {
+          1.164384f, 0.0f, 1.792741f,        // R
+          1.164384f, -0.213249f, -0.532909f, // G
+          1.164384f, 2.112402f, 0.0f         // B
+      };
+      
+      
+      // BT.2020 Full Range
+      float bt2020_full[9] = {
+          1.0f, 0.0f, 1.4746f,               // R
+          1.0f, -0.164553f, -0.571353f,      // G
+          1.0f, 1.8814f, 0.0f                // B
+      };
+      
+      // BT.2020 Limited Range 
+      float bt2020_limit[9] = {
+          1.167808f, 1.167808f, 1.167808f,
+          0.0f, -0.187877f, 2.148072f,
+          1.683611f, -0.652337f, 0.0f
+      };
+
+      float mat[9];
+      
+      // Select matrix based on colorSpace.matrix and range 
+      switch (matrixId) {
+        case agora::media::base::ColorSpace::MATRIXID_SMPTE170M:
+        case agora::media::base::ColorSpace::MATRIXID_BT470BG:
+          memcpy(mat, isFullRange ? bt601_full : bt601_limit, sizeof(mat));
+          LOGCATD("Using BT.601 matrix - %s range", isFullRange ? "Full" : "Limited");
+          break;
+        case agora::media::base::ColorSpace::MATRIXID_BT709:
+          memcpy(mat, isFullRange ? bt709_full : bt709_limit, sizeof(mat));
+          LOGCATD("Using BT.709 matrix - %s range", isFullRange ? "Full" : "Limited");
+          break;
+        case agora::media::base::ColorSpace::MATRIXID_BT2020_NCL:
+        case agora::media::base::ColorSpace::MATRIXID_BT2020_CL:
+          memcpy(mat, isFullRange ? bt2020_full : bt2020_limit, sizeof(mat));
+          LOGCATD("Using BT.2020 matrix - %s range", isFullRange ? "Full" : "Limited");
+          break;
+        default:
+          memcpy(mat, isFullRange ? bt709_full : bt709_limit, sizeof(mat));
+          LOGCATD("Using default (BT.709) matrix - %s range", isFullRange ? "Full" : "Limited");
+          break;
+      }
+      
+      LOGCATD("Applying color matrix: [%.3f, %.3f, %.3f]", mat[0], mat[1], mat[2]);
+      glUniformMatrix3fv(colorMatrixLoc_, 1, GL_TRUE, mat);
+    } else {
+      LOGCATE("colorMatrixLoc_ is -1, COLOR SPACE MATRIX NOT APPLIED!");
+    }
+
+    if (rangeLoc_ != -1) {
+      // Use the same refined logic for consistency with matrix selection
+      int rangeVal = isFullRange ? 1 : 0;
+      glUniform1i(rangeLoc_, rangeVal);
+      LOGCATD("Set uRange uniform to %d (%s)", rangeVal, isFullRange ? "Full" : "Limited");
+    } else {
+      LOGCATE("rangeLoc_ is -1, RANGE UNIFORM NOT APPLIED!");
+    }
+
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    CHECK_GL_ERROR()
+
+    gl_context_->Swap();
+
+    glDisableVertexAttribArray(aPositionLoc_);
+    CHECK_GL_ERROR()
+    glDisableVertexAttribArray(texCoordLoc_);
+    CHECK_GL_ERROR()
+    glBindTexture(GL_TEXTURE_2D, 0);
+    CHECK_GL_ERROR()
+  }
+
+  agora::media::base::VIDEO_PIXEL_FORMAT Format() override {
+    return agora::media::base::VIDEO_PIXEL_FORMAT::VIDEO_PIXEL_I420;
+  }
+
+ private:
+  const char *vertex_shader_yuv_ =
+      "attribute vec4 aPosition;\n"
+      "attribute vec2 aTextCoord;\n"
+      "varying vec2 vTextCoord;\n"
+      "void main() {\n"
+      "  gl_Position = aPosition;\n"
+      "  vTextCoord = vec2(aTextCoord.x, 1.0 - aTextCoord.y);\n"
+      "}\n";
+
+  const char *frag_shader_yuv_ =
+      "precision highp float;\n"
+      "varying vec2 vTextCoord;\n"
+      "uniform sampler2D yTexture;\n"
+      "uniform sampler2D uTexture;\n"
+      "uniform sampler2D vTexture;\n"
+      "uniform mat3 uColorMatrix;\n"
+      "uniform int uRange;\n"
+      "\n"
+      "void main() {\n"
+      "  float y = texture2D(yTexture, vTextCoord).r;\n"
+      "  float u = texture2D(uTexture, vTextCoord).r;\n"
+      "  float v = texture2D(vTexture, vTextCoord).r;\n"
+      "\n"
+      "  vec3 yuv;\n"
+      "  if (uRange == 0) { // LIMITED\n"
+      "    yuv[0] = y - 16.0/255.0;\n"
+      "    yuv[1] = (u - 128.0/255.0) * 255.0/224.0;\n"
+      "    yuv[2] = (v - 128.0/255.0) * 255.0/224.0;\n"
+      "  } else { // FULL\n"
+      "    yuv[0] = y;\n"
+      "    yuv[1] = u - 0.5;\n"
+      "    yuv[2] = v - 0.5;\n"
+      "  }\n"
+      "\n"
+      "  // Matrix transposed via GL_TRUE, can multiply directly\n"
+      "  vec3 rgb = uColorMatrix * yuv;\n"
+      "\n"
+      "  // No clamp on final output to preserve subtle differences at extremes\n"
+      "  gl_FragColor = vec4(rgb, 1.0);\n"
+      "}\n";
+
+  // clang-format off
+  const float vertices_[12] = {
+          1.0f, -1.0f, 0.0f,
+          -1.0f, -1.0f, 0.0f,
+          1.0f, 1.0f,  0.0f,
+          -1.0f, 1.0f,  0.0f
+  };
+  // clang-format on
+
+  GLuint texs_[3] = {0};
+
+  GLint aPositionLoc_;
+  GLint texCoordLoc_;
+
+  GLint yTextureLoc_;
+  GLint uTextureLoc_;
+  GLint vTextureLoc_;
+  GLint colorMatrixLoc_ = -1;
+  GLint rangeLoc_ = -1;
+
+  std::unique_ptr<ScopedShader> shader_;
+};
+
+class NativeTextureRenderer final
+    : public agora::iris::VideoFrameObserverDelegate {
+ public:
+  explicit NativeTextureRenderer(
+      JNIEnv *env, jobject j_iris_renderer_obj, jobject surface_jni,
+      agora::iris::IrisRtcRendering *iris_rtc_rendering, unsigned int uid,
+      const char *channel_id, int video_source_type, int video_view_setup_mode)
+      : jvm_(nullptr), iris_rtc_rendering_(iris_rtc_rendering), uid_(uid), width_(0),
+        height_(0) {
+    env->GetJavaVM(&jvm_);
+    j_iris_renderer_obj_ = env->NewGlobalRef(j_iris_renderer_obj);
+    jclass j_caller_class = env->GetObjectClass(j_iris_renderer_obj_);
+    j_on_size_changed_method_ =
+        env->GetMethodID(j_caller_class, "onSizeChanged", "(II)V");
+    j_record_frame_received_method_ =
+        env->GetMethodID(j_caller_class, "recordFrameReceived", "()V");
+    j_record_frame_rendered_interval_method_ =
+        env->GetMethodID(j_caller_class, "recordFrameRenderedInterval", "()V");
+    j_record_render_draw_cost_method_ =
+        env->GetMethodID(j_caller_class, "recordRenderDrawCost", "(D)V");
+    env->DeleteLocalRef(j_caller_class);
+
+    native_windows_ = ANativeWindow_fromSurface(env, surface_jni);
+
+    IrisRtcVideoFrameConfig config;
+    config.uid = uid;
+    config.video_source_type = video_source_type;
+    config.video_frame_format =
+        agora::media::base::VIDEO_PIXEL_FORMAT::VIDEO_PIXEL_DEFAULT;
+    if (channel_id) {
+      strcpy(config.channelId, channel_id);
+    } else {
+      strcpy(config.channelId, "");
+    }
+    config.video_view_setup_mode = video_view_setup_mode;
+    config.observed_frame_position = agora::media::base::VIDEO_MODULE_POSITION::POSITION_POST_CAPTURER
+            | agora::media::base::VIDEO_MODULE_POSITION::POSITION_PRE_RENDERER;
+
+    if (iris_rtc_rendering_) {
+      delegate_id_ =
+          iris_rtc_rendering_->AddVideoFrameObserverDelegate(config, this);
+    }
+  }
+
+  ~NativeTextureRenderer() final {}
+
+  void OnVideoFrameReceived(const void *videoFrame,
+                            const IrisRtcVideoFrameConfig &config,
+                            bool resize) override {
+    if (!native_windows_) { return; }
+
+    const auto *video_frame =
+        static_cast<const agora::media::base::VideoFrame *>(videoFrame);
+
+    if (video_frame->width == 0 || video_frame->height == 0) { return; }
+
+    // Capture frame received timestamp locally to avoid race conditions
+    int64_t frame_received_time_micros = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    // Record frame received for FPS calculation
+    RecordFrameReceived();
+
+    if (width_ != video_frame->width || height_ != video_frame->height) {
+      NotifySizeChangeCallback(video_frame->width, video_frame->height);
+      width_ = video_frame->width;
+      height_ = video_frame->height;
+
+      rendering_op_.reset();
+      gl_context_.reset();
+    }
+
+    if (!gl_context_) {
+      gl_context_ = std::make_shared<GLContext>(native_windows_);
+    }
+
+    if (!gl_context_->SetupSurface(native_windows_)) {
+      LOGCATE("GLContext#SetupSurface failed ");
+      return;
+    }
+
+    if (!gl_context_->GLContextMakeCurrent(video_frame->sharedContext)) {
+      LOGCATE("GLContext#CreateContextAndMakeCurrent failed ");
+      return;
+    }
+
+    if (rendering_op_ && rendering_op_->Format() != video_frame->type) {
+      rendering_op_.reset();
+    }
+
+    if (!rendering_op_) {
+      if (video_frame->type == agora::media::base::VIDEO_PIXEL_FORMAT::VIDEO_TEXTURE_2D) {
+        rendering_op_ = std::make_unique<Texture2DRendering>(gl_context_);
+      } else if (video_frame->type
+          == agora::media::base::VIDEO_PIXEL_FORMAT::VIDEO_TEXTURE_OES) {
+        rendering_op_ = std::make_unique<OESTextureRendering>(gl_context_);
+      } else if (video_frame->type
+                 == agora::media::base::VIDEO_PIXEL_FORMAT::VIDEO_PIXEL_I420) {
+        rendering_op_ = std::make_unique<YUVRendering>(gl_context_);
+      } else {
+        // NOT SUPPORTED.
+        LOGCATE("NOT SUPPORTED format: %d", video_frame->type);
+        return;
+      }
+    }
+
+    // Record frame rendered interval before actual rendering
+    // This measures the time between consecutive textureFrameAvailable notifications
+    RecordFrameRenderedInterval();
+
+    rendering_op_->Rendering(video_frame);
+
+    gl_context_->GLContextClearCurrent();
+
+    // Calculate render draw cost using the locally captured timestamp
+    // Measured after GLContextClearCurrent() to include the complete rendering pipeline
+    int64_t now_micros = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    double draw_cost_ms = (now_micros - frame_received_time_micros) / 1000.0;
+
+    // Record render draw cost with the calculated value
+    RecordRenderDrawCostWithValue(draw_cost_ms);
+  }
+
+  void Dispose() {
+    if (iris_rtc_rendering_) {
+      iris_rtc_rendering_->RemoveVideoFrameObserverDelegate(delegate_id_);
+      iris_rtc_rendering_ = nullptr;
+    }
+
+    if (j_iris_renderer_obj_) {
+      ::iris::AttachThreadScoped ats(jvm_);
+      ats.env()->DeleteGlobalRef(j_iris_renderer_obj_);
+      j_iris_renderer_obj_ = nullptr;
+    }
+
+    if (native_windows_) {
+      ANativeWindow_release(native_windows_);
+      native_windows_ = nullptr;
+    }
+
+    rendering_op_.reset();
+    gl_context_.reset();
+  }
+
+  void NotifySizeChangeCallback(int width, int height) {
+    if (!j_iris_renderer_obj_) { return; }
+    ::iris::AttachThreadScoped ats(jvm_);
+    ats.env()->CallVoidMethod(j_iris_renderer_obj_, j_on_size_changed_method_,
+                              width, height);
+  }
+
+ private:
+  void RecordFrameReceived() {
+    if (!j_iris_renderer_obj_) { return; }
+    ::iris::AttachThreadScoped ats(jvm_);
+    ats.env()->CallVoidMethod(j_iris_renderer_obj_, j_record_frame_received_method_);
+  }
+
+  void RecordFrameRenderedInterval() {
+    if (!j_iris_renderer_obj_) { return; }
+    ::iris::AttachThreadScoped ats(jvm_);
+    ats.env()->CallVoidMethod(j_iris_renderer_obj_, j_record_frame_rendered_interval_method_);
+  }
+
+  void RecordRenderDrawCostWithValue(double draw_cost_ms) {
+    if (!j_iris_renderer_obj_) { return; }
+    ::iris::AttachThreadScoped ats(jvm_);
+    ats.env()->CallVoidMethod(j_iris_renderer_obj_, j_record_render_draw_cost_method_, draw_cost_ms);
+  }
+
+  JavaVM *jvm_;
+  jobject j_iris_renderer_obj_;
+  jmethodID j_on_size_changed_method_;
+  jmethodID j_record_frame_received_method_;
+  jmethodID j_record_frame_rendered_interval_method_;
+  jmethodID j_record_render_draw_cost_method_;
+
+  agora::iris::IrisRtcRendering *iris_rtc_rendering_;
+  ANativeWindow *native_windows_;
+  int width_;
+  int height_;
+  unsigned int uid_;
+
+  int delegate_id_;
+
+  std::shared_ptr<GLContext> gl_context_;
+  std::unique_ptr<RenderingOp> rendering_op_;
+};
+
+}// namespace rendering
+}// namespace iris
+}// namespace agora
+
+using namespace agora::iris::rendering;
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_io_agora_agora_1rtc_1ng_IrisRenderer_nativeStartRenderingToSurface(
+    JNIEnv *env, jobject thiz, jlong buffer_manager_int_ptr, jobject surface,
+    jlong uid, jstring channel_id, jint video_source_type,
+    jint video_view_setup_mode) {
+  auto *iris_rtc_rendering =
+      reinterpret_cast<agora::iris::IrisRtcRendering *>(buffer_manager_int_ptr);
+
+  auto *j_channel_id = env->GetStringUTFChars(channel_id, nullptr);
+  auto *renderer = new NativeTextureRenderer(
+      env, thiz, surface, iris_rtc_rendering, uid, j_channel_id,
+      video_source_type, video_view_setup_mode);
+  env->ReleaseStringUTFChars(channel_id, j_channel_id);
+  return reinterpret_cast<jlong>(renderer);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_agora_agora_1rtc_1ng_IrisRenderer_nativeStopRenderingToSurface(
+    JNIEnv *env, jobject thiz, jlong native_renderer_handle) {
+  auto *renderer =
+      reinterpret_cast<NativeTextureRenderer *>(native_renderer_handle);
+  renderer->Dispose();
+  delete renderer;
+}

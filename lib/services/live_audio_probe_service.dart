@@ -65,6 +65,7 @@ class LiveAudioProbeSession {
     this.lessonId = '',
     this.segmentId = '',
     this.timelineNextSequence = 0,
+    this.boardSetRevision = 0,
     this.segmentStartSec = 0,
     this.archiveTimelineOffsetSec = 0,
   });
@@ -84,6 +85,7 @@ class LiveAudioProbeSession {
   final String segmentId;
   final BoardSet boardSet;
   final int timelineNextSequence;
+  final int boardSetRevision;
   final double segmentStartSec;
   final double archiveTimelineOffsetSec;
 
@@ -125,6 +127,7 @@ class LiveAudioProbeSession {
           : const BoardSet(),
       timelineNextSequence:
           (data['timelineNextSequence'] as num?)?.toInt() ?? 0,
+      boardSetRevision: (data['boardSetRevision'] as num?)?.toInt() ?? 0,
       segmentStartSec: (data['segmentStartSec'] as num?)?.toDouble() ?? 0,
       archiveTimelineOffsetSec:
           (data['archiveTimelineOffsetSec'] as num?)?.toDouble() ?? 0,
@@ -271,32 +274,43 @@ class LiveAudioProbeService {
     });
   }
 
-  Future<void> saveBoardSnapshot({
+  Future<int> saveBoardSnapshot({
     required String sessionId,
     required BoardSet boardSet,
+    required int expectedRevision,
   }) async {
-    await _functions.httpsCallable('saveLiveAudioProbeBoardSet').call({
-      'sessionId': sessionId,
-      'boardSet': boardSet.toMap(),
-    });
+    final result = await _functions
+        .httpsCallable('saveLiveAudioProbeBoardSet')
+        .call({
+          'sessionId': sessionId,
+          'boardSet': boardSet.toMap(),
+          'expectedRevision': expectedRevision,
+        });
+    final data = _resultMap(result.data);
+    return (data['revision'] as num?)?.toInt() ?? expectedRevision + 1;
   }
 
-  Future<void> saveTimelineChunk({
+  Future<int> saveTimelineChunk({
     required String sessionId,
     required int firstSequence,
     required List<LiveAudioProbeMessage> messages,
   }) async {
     if (messages.isEmpty) {
-      return;
+      return firstSequence;
     }
-    await _functions.httpsCallable('appendLiveAudioProbeTimelineChunk').call({
-      'sessionId': sessionId,
-      'expectedNextSequence': firstSequence,
-      'chunkId': 'chunk-$firstSequence',
-      'events': messages
-          .map((message) => message.toTimelineStorageMap())
-          .toList(),
-    });
+    final result = await _functions
+        .httpsCallable('appendLiveAudioProbeTimelineChunk')
+        .call({
+          'sessionId': sessionId,
+          'expectedNextSequence': firstSequence,
+          'chunkId': 'chunk-$firstSequence',
+          'events': messages
+              .map((message) => message.toTimelineStorageMap())
+              .toList(),
+        });
+    final data = _resultMap(result.data);
+    return (data['nextSequence'] as num?)?.toInt() ??
+        firstSequence + messages.length;
   }
 
   Future<void> retryArchive(String sessionId) async {
@@ -325,6 +339,18 @@ class LiveAudioProbeService {
     await _functions.httpsCallable('closeLiveAudioProbeSession').call({
       'sessionId': sessionId,
     });
+  }
+
+  Future<int> closeOwnedActiveSessions() async {
+    final result = await _functions
+        .httpsCallable('closeOwnedLiveAudioProbeSessions')
+        .call();
+    final data = _resultMap(result.data);
+    final failedCount = (data['failedCount'] as num?)?.toInt() ?? 0;
+    if (failedCount > 0) {
+      throw StateError('$failedCount件の配信を終了できませんでした。もう一度お試しください。');
+    }
+    return (data['closedCount'] as num?)?.toInt() ?? 0;
   }
 
   Stream<LiveAudioProbeSession> watchSession(String sessionId) {

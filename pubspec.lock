@@ -12,10 +12,9 @@ packages:
   agora_rtc_engine:
     dependency: "direct main"
     description:
-      name: agora_rtc_engine
-      sha256: "2df8474afa84eef15bbb61cfa9c26979425249e8b136afe640fca279846a0471"
-      url: "https://pub.dev"
-    source: hosted
+      path: "third_party/agora_rtc_engine"
+      relative: true
+    source: path
     version: "6.6.3"
   args:
     dependency: transitive
