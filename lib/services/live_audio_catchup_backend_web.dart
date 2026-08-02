@@ -3,6 +3,8 @@ import 'dart:js_interop';
 
 import 'package:web/web.dart';
 
+import 'live_audio_catchup_backend.dart' as contract;
+
 @JS('Hls')
 extension type _Hls._(JSObject _) implements JSObject {
   external factory _Hls();
@@ -16,7 +18,7 @@ extension type _Hls._(JSObject _) implements JSObject {
   external void destroy();
 }
 
-class LiveAudioCatchupBackend {
+class LiveAudioCatchupBackend implements contract.LiveAudioCatchupBackend {
   LiveAudioCatchupBackend() {
     _audio = HTMLAudioElement()
       ..preload = 'auto'
@@ -35,8 +37,10 @@ class LiveAudioCatchupBackend {
   late final Timer _positionTimer;
   _Hls? _hls;
 
+  @override
   Stream<double> get positionStream => _positions.stream;
 
+  @override
   Future<void> open(String url) async {
     await stop();
     _hls?.destroy();
@@ -65,18 +69,22 @@ class LiveAudioCatchupBackend {
     await Future<void>.delayed(const Duration(milliseconds: 300));
   }
 
+  @override
   Future<void> seek(double positionSec) async {
     _audio.currentTime = positionSec < 0 ? 0 : positionSec;
   }
 
+  @override
   Future<void> play() async {
     await _audio.play().toDart;
   }
 
+  @override
   Future<void> stop() async {
     _audio.pause();
   }
 
+  @override
   Future<void> dispose() async {
     _positionTimer.cancel();
     _hls?.destroy();

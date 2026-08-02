@@ -4,6 +4,7 @@ import 'live_audio_catchup_backend_stub.dart'
     if (dart.library.io) 'live_audio_catchup_backend_io.dart'
     if (dart.library.js_interop) 'live_audio_catchup_backend_web.dart'
     as backend;
+import 'live_audio_catchup_backend.dart' as contract;
 import 'latest_async_request_runner.dart';
 
 enum LiveAudioCatchupState { live, loading, catchup, failed }
@@ -30,7 +31,8 @@ class LiveAudioCatchupPlaybackException implements Exception {
 }
 
 class LiveAudioCatchupPlayback {
-  LiveAudioCatchupPlayback() {
+  LiveAudioCatchupPlayback({contract.LiveAudioCatchupBackend? playbackBackend})
+    : _backend = playbackBackend ?? backend.LiveAudioCatchupBackend() {
     _positionSubscription = _backend.positionStream.listen((positionSec) {
       if (!_statuses.isClosed && _state == LiveAudioCatchupState.catchup) {
         _statuses.add(
@@ -40,19 +42,27 @@ class LiveAudioCatchupPlayback {
     });
   }
 
-  final backend.LiveAudioCatchupBackend _backend =
-      backend.LiveAudioCatchupBackend();
+  final contract.LiveAudioCatchupBackend _backend;
   final _statuses = StreamController<LiveAudioCatchupStatus>.broadcast();
   late final StreamSubscription<double> _positionSubscription;
   final LatestAsyncRequestRunner<({String hlsUrl, double positionSec})>
   _playRequests = LatestAsyncRequestRunner();
+  Future<void>? _returningToLive;
   LiveAudioCatchupState _state = LiveAudioCatchupState.live;
   String? _openedUrl;
 
   Stream<LiveAudioCatchupStatus> get statuses => _statuses.stream;
   LiveAudioCatchupState get state => _state;
 
-  Future<void> playFrom({required String hlsUrl, required double positionSec}) {
+  Future<void> playFrom({
+    required String hlsUrl,
+    required double positionSec,
+  }) async {
+    var returning = _returningToLive;
+    while (returning != null) {
+      await returning;
+      returning = _returningToLive;
+    }
     return _playRequests.run((
       hlsUrl: hlsUrl,
       positionSec: positionSec,
@@ -87,7 +97,19 @@ class LiveAudioCatchupPlayback {
     }
   }
 
-  Future<void> returnToLive() async {
+  Future<void> returnToLive() {
+    return _returningToLive ??= _returnToLiveNow().whenComplete(() {
+      _returningToLive = null;
+    });
+  }
+
+  Future<void> _returnToLiveNow() async {
+    try {
+      await _playRequests.whenIdle;
+    } catch (_) {
+      // Returning to live must still stop catch-up playback after a failed
+      // seek or load operation.
+    }
     await _backend.stop();
     _emit(LiveAudioCatchupState.live);
   }

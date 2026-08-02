@@ -43,6 +43,80 @@ void main() {
     expect(state.boardSet.switchEvents.single.globalTimestampSec, 2);
   });
 
+  test('follower adopts the latest switch from a server snapshot', () {
+    final current = LiveAudioBoardState.initial().applyMessage(
+      const LiveAudioProbeMessage(
+        kind: LiveAudioProbeMessageKind.boardCreate,
+        boardId: 'board-2',
+        boardOrder: 1,
+        timestampSec: 10,
+      ),
+    );
+    const snapshot = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+        ),
+        LessonWhiteboardBoard(id: 'board-2', order: 1),
+      ],
+      switchEvents: [
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 0,
+          sequence: 0,
+        ),
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: 'board-2',
+          globalTimestampSec: 10,
+          sequence: 1,
+        ),
+      ],
+    );
+
+    final restored = current.replaceSnapshot(
+      snapshot,
+      preserveSelectedBoard: false,
+    );
+
+    expect(current.selectedBoardId, LessonWhiteboardBoard.defaultBoardId);
+    expect(restored.selectedBoardId, 'board-2');
+  });
+
+  test('publisher keeps its selected board when applying a snapshot', () {
+    final current = LiveAudioBoardState.initial().applyMessage(
+      const LiveAudioProbeMessage(
+        kind: LiveAudioProbeMessageKind.boardCreate,
+        boardId: 'board-2',
+        boardOrder: 1,
+        timestampSec: 10,
+      ),
+    );
+    const snapshot = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+        ),
+        LessonWhiteboardBoard(id: 'board-2', order: 1),
+      ],
+      switchEvents: [
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: 'board-2',
+          globalTimestampSec: 10,
+          sequence: 0,
+        ),
+      ],
+    );
+
+    final restored = current.replaceSnapshot(
+      snapshot,
+      preserveSelectedBoard: true,
+    );
+
+    expect(restored.selectedBoardId, LessonWhiteboardBoard.defaultBoardId);
+  });
+
   test('stores a completed stroke on its board and rejects delayed pieces', () {
     var state = LiveAudioBoardState.initial();
     const start = LiveAudioProbeMessage(

@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
 import '../models/lesson_payload_size_validator.dart';
+import '../services/live_audio_board_selection.dart';
 import '../services/live_audio_board_state.dart';
 import '../services/live_audio_catchup_playback.dart';
 import '../services/live_audio_microphone_permission.dart';
@@ -16,6 +17,7 @@ import '../services/live_audio_probe_rtc.dart';
 import '../services/live_audio_probe_service.dart';
 import '../services/live_audio_rtc_initialization_guard.dart';
 import '../services/live_audio_snapshot_tracker.dart';
+import '../services/live_audio_stroke_persistence.dart';
 import '../services/live_audio_timeline_outbox.dart';
 import '../widgets/lesson_whiteboard_canvas.dart';
 
@@ -61,6 +63,8 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   final _clock = Stopwatch();
   final Set<String> _presenterUpdates = {};
   final Set<String> _processedTimelineEvents = {};
+  final Set<String> _timelineCreatedBoardIds = {};
+  final Set<String> _serverBoardIds = {};
   final LiveAudioTimelineOutbox _timelineOutbox = LiveAudioTimelineOutbox();
   final LiveAudioSnapshotTracker _snapshotTracker = LiveAudioSnapshotTracker();
   LiveAudioBoardState _boardState = LiveAudioBoardState.initial();
@@ -114,15 +118,27 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   bool get _isCatchup =>
       _catchupStatus.state == LiveAudioCatchupState.catchup ||
       _catchupStatus.state == LiveAudioCatchupState.loading;
-  String get _displayBoardId {
-    if (_isCatchup) {
-      return _boardState.boardSet.resolveBoardAt(_catchupTimelineSec)?.id ??
-          _boardState.selectedBoardId;
-    }
-    return _canPublish || _followPresenter
-        ? _boardState.selectedBoardId
-        : (_viewerBoardId ?? _boardState.selectedBoardId);
-  }
+  Set<String> get _boardsCreatedDuringSession => {
+    ...?_session?.timelineCreatedBoardIds,
+    ..._timelineCreatedBoardIds,
+  };
+  String get _displayBoardId => resolveLiveAudioDisplayBoardId(
+    boardSet: _boardState.boardSet,
+    presenterBoardId: _boardState.selectedBoardId,
+    isCatchup: _isCatchup,
+    followPresenter: _canPublish || _followPresenter,
+    viewerBoardId: _viewerBoardId,
+    catchupTimelineSec: _catchupTimelineSec,
+    boardsCreatedDuringSession: _boardsCreatedDuringSession,
+  );
+
+  List<LessonWhiteboardBoard> get _selectableBoards => _isCatchup
+      ? liveAudioBoardsAvailableAt(
+          boardSet: _boardState.boardSet,
+          globalTimestampSec: _catchupTimelineSec,
+          boardsCreatedDuringSession: _boardsCreatedDuringSession,
+        )
+      : _boardState.boardSet.orderedBoards;
 
   LessonWhiteboardBoard get _displayBoard =>
       _boardState.boardSet.boardById(_displayBoardId) ??
@@ -156,6 +172,21 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         _catchupStatus = status;
         if (status.state == LiveAudioCatchupState.catchup) {
           _catchupSeekSec = status.positionSec;
+        }
+        if (status.state == LiveAudioCatchupState.loading ||
+            status.state == LiveAudioCatchupState.catchup) {
+          final retainedViewerBoardId = retainLiveAudioViewerBoardAt(
+            boardSet: _boardState.boardSet,
+            viewerBoardId: _viewerBoardId,
+            globalTimestampSec: _catchupTimelineSecForPosition(
+              status.positionSec,
+            ),
+            boardsCreatedDuringSession: _boardsCreatedDuringSession,
+          );
+          if (retainedViewerBoardId != _viewerBoardId) {
+            _viewerBoardId = retainedViewerBoardId;
+            _viewerViewport = null;
+          }
         }
         if (status.message != null) {
           _message = status.message;
@@ -247,6 +278,9 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       }
       setState(() {
         _session = session;
+        _serverBoardIds.addAll(
+          session.boardSet.boards.map((board) => board.id),
+        );
         _timelineOutbox.observeServerSequence(session.timelineNextSequence);
         final shouldApplyBoardSet = _snapshotTracker.shouldApplyServerSnapshot(
           revision: session.boardSetRevision,
@@ -255,7 +289,10 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         _snapshotTracker.observeServerRevision(session.boardSetRevision);
         if (session.boardSet.isNotEmpty && shouldApplyBoardSet) {
           _rememberBoardSetTimelineEvents(session.boardSet);
-          _boardState = _boardState.replaceSnapshot(session.boardSet);
+          _boardState = _boardState.replaceSnapshot(
+            session.boardSet,
+            preserveSelectedBoard: _canPublish,
+          );
         }
         if (session.archiveError.isNotEmpty) {
           _message = session.archiveError;
@@ -383,7 +420,10 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
               )) {
             _snapshotTracker.reset(serverRevision: session.boardSetRevision);
             _rememberBoardSetTimelineEvents(session.boardSet);
-            _boardState = _boardState.replaceSnapshot(session.boardSet);
+            _boardState = _boardState.replaceSnapshot(
+              session.boardSet,
+              preserveSelectedBoard: _canPublish,
+            );
           }
         }
       });
@@ -469,9 +509,12 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   double get _currentTimelineSec => widget.segmentStartSec + _currentSessionSec;
 
   double get _catchupTimelineSec =>
+      _catchupTimelineSecForPosition(_catchupStatus.positionSec);
+
+  double _catchupTimelineSecForPosition(double positionSec) =>
       widget.segmentStartSec +
       (_session?.archiveTimelineOffsetSec ?? 0) +
-      _catchupStatus.positionSec;
+      positionSec;
 
   void _startLocalStroke() {
     if (!_canWriteBoard) {
@@ -578,16 +621,19 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     );
     final sessionId = _sessionId;
     if (sessionId != null) {
-      unawaited(
-        _service
-            .saveStroke(
-              sessionId: sessionId,
-              boardId: boardId,
-              stroke: completed,
-            )
-            .catchError(_showError),
-      );
+      final boardExistsOnServer = _serverBoardIds.contains(boardId);
       _scheduleSnapshotSave();
+      unawaited(
+        persistLiveAudioStrokeInOrder(
+          boardExistsOnServer: boardExistsOnServer,
+          saveBoardSnapshot: _saveBoardSnapshotNow,
+          saveStroke: () => _service.saveStroke(
+            sessionId: sessionId,
+            boardId: boardId,
+            stroke: completed,
+          ),
+        ).catchError(_showError),
+      );
     }
   }
 
@@ -611,6 +657,9 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       return;
     }
     setState(() {
+      if (message.kind == LiveAudioProbeMessageKind.boardCreate) {
+        _timelineCreatedBoardIds.add(message.boardId);
+      }
       _boardState = _boardState.applyMessage(
         message,
         localStrokeId: _localStroke?.id,
@@ -765,6 +814,9 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
           boardSet: boardSet,
           expectedRevision: expectedRevision,
         );
+        if (_sessionId == sessionId) {
+          _serverBoardIds.addAll(boardSet.boards.map((board) => board.id));
+        }
         _snapshotTracker.markSaved(generation: generation, revision: revision);
       } on FirebaseFunctionsException catch (error) {
         if (error.code != 'aborted') {
@@ -801,6 +853,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       timestampSec: timestamp,
     );
     setState(() {
+      _timelineCreatedBoardIds.add(boardId);
       _boardState = _boardState
           .applyMessage(createMessage)
           .applyMessage(switchMessage);
@@ -822,17 +875,26 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       _scheduleSnapshotSave();
       return;
     }
-    if (!_followPresenter) {
-      setState(() {
-        _viewerBoardId = boardId;
-        _viewerViewport = _boardState.boardSet.resolveViewportAt(
-          boardId: boardId,
-          globalTimestampSec: _isCatchup
-              ? _catchupTimelineSec
-              : double.infinity,
-        );
-      });
+    if (_boardState.boardSet.boardById(boardId) == null ||
+        (_isCatchup &&
+            !liveAudioBoardExistsAt(
+              boardSet: _boardState.boardSet,
+              boardId: boardId,
+              globalTimestampSec: _catchupTimelineSec,
+              boardsCreatedDuringSession: _boardsCreatedDuringSession,
+            ))) {
+      return;
     }
+    setState(() {
+      _followPresenter = false;
+      _viewerBoardId = boardId;
+      _viewerViewport = _isCatchup
+          ? null
+          : _boardState.boardSet.resolveViewportAt(
+              boardId: boardId,
+              globalTimestampSec: double.infinity,
+            );
+    });
   }
 
   void _handleViewportChanged(LessonWhiteboardViewportChange change) {
@@ -1077,6 +1139,8 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         _timelineOutbox.clear();
         _snapshotTracker.reset();
         _processedTimelineEvents.clear();
+        _timelineCreatedBoardIds.clear();
+        _serverBoardIds.clear();
         _participantHlsManifestUrl = '';
         _archiveAvailableDurationSec = 0;
       });
@@ -1263,7 +1327,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
           runSpacing: 8,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            for (final item in _boardState.boardSet.orderedBoards)
+            for (final item in _selectableBoards)
               ChoiceChip(
                 label: Text(
                   item.title.isEmpty ? 'ボード${item.order + 1}' : item.title,
@@ -1279,10 +1343,10 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
               ),
           ],
         ),
-        if (!_canPublish && !_isCatchup)
+        if (!_canPublish)
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text('発表者のボードと表示範囲を追従'),
+            title: Text(_isCatchup ? '録画時のボード切り替えを追従' : '発表者のボードと表示範囲を追従'),
             value: _followPresenter,
             onChanged: (value) {
               setState(() {

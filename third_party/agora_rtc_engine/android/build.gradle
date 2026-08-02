@@ -61,12 +61,12 @@ dependencies {
     api 'io.agora.rtc:iris-rtc:4.6.2-build.1'
     // iris dependencies end
 
-    // This app's live feature is audio-only. The upstream Flutter package uses
-    // the full video and screen-sharing SDK, which loads every optional
-    // extension before the RTC engine can initialize. On a cold Android process
-    // that bootstrap can hang inside CreateIrisApiEngine. The official Voice SDK
-    // keeps the same core RTC/data-stream API without those video extensions.
-    api 'io.agora.rtc:voice-sdk:4.6.2'
+    // This app uses only core RTC audio and data streams. Even Agora's
+    // voice-sdk aggregate pulls in optional AI noise suppression, audio beauty,
+    // spatial audio, and voice-drive extensions. Keep only the basic voice
+    // runtime. Android live audio bypasses Iris because dependency reduction
+    // alone did not resolve the CreateIrisApiEngine cold-start hang.
+    api 'io.agora.rtc:voice-rtc-basic:4.6.2'
   }
 }
 

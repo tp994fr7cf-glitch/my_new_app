@@ -65,6 +65,7 @@ class LiveAudioProbeSession {
     this.lessonId = '',
     this.segmentId = '',
     this.timelineNextSequence = 0,
+    this.timelineCreatedBoardIds = const {},
     this.boardSetRevision = 0,
     this.segmentStartSec = 0,
     this.archiveTimelineOffsetSec = 0,
@@ -85,6 +86,7 @@ class LiveAudioProbeSession {
   final String segmentId;
   final BoardSet boardSet;
   final int timelineNextSequence;
+  final Set<String> timelineCreatedBoardIds;
   final int boardSetRevision;
   final double segmentStartSec;
   final double archiveTimelineOffsetSec;
@@ -127,6 +129,11 @@ class LiveAudioProbeSession {
           : const BoardSet(),
       timelineNextSequence:
           (data['timelineNextSequence'] as num?)?.toInt() ?? 0,
+      timelineCreatedBoardIds: data['timelineCreatedBoardIds'] is List
+          ? (data['timelineCreatedBoardIds'] as List)
+                .whereType<String>()
+                .toSet()
+          : const {},
       boardSetRevision: (data['boardSetRevision'] as num?)?.toInt() ?? 0,
       segmentStartSec: (data['segmentStartSec'] as num?)?.toDouble() ?? 0,
       archiveTimelineOffsetSec:

@@ -73,11 +73,16 @@ class LiveAudioBoardState {
           .map((entry) => entry.value)
           .toList(growable: false);
 
-  LiveAudioBoardState replaceSnapshot(BoardSet snapshot) {
+  LiveAudioBoardState replaceSnapshot(
+    BoardSet snapshot, {
+    required bool preserveSelectedBoard,
+  }) {
     final restored = LiveAudioBoardState.fromBoardSet(snapshot);
     return LiveAudioBoardState(
       boardSet: restored.boardSet,
-      selectedBoardId: restored.boardSet.boardById(selectedBoardId) != null
+      selectedBoardId:
+          preserveSelectedBoard &&
+              restored.boardSet.boardById(selectedBoardId) != null
           ? selectedBoardId
           : restored.selectedBoardId,
       inProgressStrokes: inProgressStrokes,
