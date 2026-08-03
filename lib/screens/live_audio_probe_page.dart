@@ -18,6 +18,7 @@ import '../services/live_audio_probe_service.dart';
 import '../services/live_audio_rtc_initialization_guard.dart';
 import '../services/live_audio_snapshot_tracker.dart';
 import '../services/live_audio_stroke_persistence.dart';
+import '../services/live_audio_timeline_clock.dart';
 import '../services/live_audio_timeline_outbox.dart';
 import '../widgets/lesson_whiteboard_canvas.dart';
 
@@ -61,6 +62,8 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       widget.service ?? LiveAudioProbeService();
   final _sessionCodeController = TextEditingController();
   final _clock = Stopwatch();
+  int? _timelineClockAnchorMs;
+  int? _timelineClockAnchorElapsedUs;
   final Set<String> _presenterUpdates = {};
   final Set<String> _processedTimelineEvents = {};
   final Set<String> _timelineCreatedBoardIds = {};
@@ -93,7 +96,9 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   Timer? _timelineFlushTimer;
   Timer? _snapshotSaveTimer;
   Timer? _archiveRefreshTimer;
+  Timer? _durationLimitTimer;
   Future<void>? _snapshotSaveFuture;
+  Future<void>? _returnToLiveOperation;
   LiveAudioCatchupStatus _catchupStatus = const LiveAudioCatchupStatus(
     state: LiveAudioCatchupState.live,
   );
@@ -106,6 +111,9 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   String? _message;
   String _participantHlsManifestUrl = '';
   double _archiveAvailableDurationSec = 0;
+  double? _archiveMediaTimelineOffsetSec;
+  double? _archiveAudioPlaybackCompensationSec;
+  bool _suspendLiveRtcMessages = false;
 
   bool get _isTeacher => widget.activeRole == 'teacher';
   bool get _isOwner => _session?.ownerUid == widget.user.uid;
@@ -199,6 +207,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     _sessionCodeController.dispose();
     _timelineFlushTimer?.cancel();
     _snapshotSaveTimer?.cancel();
+    _durationLimitTimer?.cancel();
     _cancelSubscriptions();
     unawaited(_catchupSubscription?.cancel());
     unawaited(_catchup.dispose());
@@ -274,7 +283,12 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         }
       });
     });
-    _messageSubscription = rtc.messages.listen(_applyRemoteMessage);
+    _messageSubscription = rtc.messages.listen((message) {
+      if (_suspendLiveRtcMessages) {
+        return;
+      }
+      _applyRemoteMessage(message);
+    });
     _sessionSubscription = _service.watchSession(sessionId).listen((session) {
       if (!mounted) {
         return;
@@ -301,9 +315,12 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
           _message = session.archiveError;
         }
       });
+      _scheduleDurationLimit(session);
       if (!session.isActive) {
         setState(
-          () => _message = session.isFinalizing
+          () => _message = session.closeReason == 'maxDuration'
+              ? '配信時間が1時間に達したため、自動的に終了しました。'
+              : session.isFinalizing
               ? '配信は終了しました。アーカイブを確定しています。'
               : '先生が配信を終了しました。',
         );
@@ -359,6 +376,10 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     _clock
       ..reset()
       ..start();
+    if (credentials.serverNowMs > 0) {
+      _timelineClockAnchorMs = credentials.serverNowMs;
+      _timelineClockAnchorElapsedUs = _clock.elapsedMicroseconds;
+    }
     _timelineFlushTimer?.cancel();
     _timelineFlushTimer = Timer.periodic(
       const Duration(seconds: 1),
@@ -366,6 +387,17 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     );
     try {
       await rtc.join(credentials);
+      final ntpSampleStartedUs = _clock.elapsedMicroseconds;
+      final ntpWallTimeMs = await rtc.getNtpWallTimeInMs();
+      final ntpSampleFinishedUs = _clock.elapsedMicroseconds;
+      if (ntpWallTimeMs != null) {
+        _timelineClockAnchorMs = ntpWallTimeMs;
+        _timelineClockAnchorElapsedUs =
+            (ntpSampleStartedUs + ntpSampleFinishedUs) ~/ 2;
+      }
+      if (credentials.permission.canPublish) {
+        unawaited(_reportAudioCaptureStart(sessionId, rtc));
+      }
     } catch (error) {
       final wasCurrentConnection = _rtc == rtc;
       if (wasCurrentConnection) {
@@ -390,6 +422,27 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     if (mounted && credentials.permission.canPublish) {
       _announceCurrentBoardState();
     }
+  }
+
+  void _scheduleDurationLimit(LiveAudioProbeSession session) {
+    _durationLimitTimer?.cancel();
+    _durationLimitTimer = null;
+    if (!session.isActive ||
+        session.ownerUid != widget.user.uid ||
+        session.maximumEndsAtMs <= 0) {
+      return;
+    }
+    final remaining = Duration(
+      milliseconds:
+          session.maximumEndsAtMs - DateTime.now().millisecondsSinceEpoch,
+    );
+    if (remaining <= Duration.zero) {
+      unawaited(_closeSession(automaticDurationLimit: true));
+      return;
+    }
+    _durationLimitTimer = Timer(remaining, () {
+      unawaited(_closeSession(automaticDurationLimit: true));
+    });
   }
 
   Future<void> _applyPermissionChange(String sessionId) async {
@@ -431,6 +484,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         }
       });
       if (credentials.permission.canPublish) {
+        unawaited(_reportAudioCaptureStart(sessionId, rtc));
         _announceCurrentBoardState();
       }
     } catch (error) {
@@ -451,6 +505,11 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
           _participantHlsManifestUrl = status.hlsManifestUrl;
         }
         _archiveAvailableDurationSec = status.hlsAvailableDurationSec;
+        if (status.hlsMediaTimelineOffsetSec != null) {
+          _archiveMediaTimelineOffsetSec = status.hlsMediaTimelineOffsetSec;
+        }
+        _archiveAudioPlaybackCompensationSec =
+            status.audioPlaybackCompensationSec;
         if (status.archiveError.isNotEmpty) {
           _message = status.archiveError;
         }
@@ -501,23 +560,68 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   }
 
   double get _currentSessionSec {
-    final startedAtMs = _session?.startedAtMs ?? 0;
-    if (startedAtMs > 0) {
-      final elapsedMs = DateTime.now().millisecondsSinceEpoch - startedAtMs;
-      return elapsedMs <= 0 ? 0 : elapsedMs / 1000;
-    }
-    return _clock.elapsedMicroseconds / 1000000;
+    return resolveLiveAudioSessionElapsedSec(
+      sessionStartedAtMs: _session?.startedAtMs ?? 0,
+      localNowMs: DateTime.now().millisecondsSinceEpoch,
+      currentElapsedUs: _clock.elapsedMicroseconds,
+      synchronizedAnchorMs: _timelineClockAnchorMs,
+      synchronizedAnchorElapsedUs: _timelineClockAnchorElapsedUs,
+    );
   }
 
-  double get _currentTimelineSec => widget.segmentStartSec + _currentSessionSec;
+  double get _effectiveSegmentStartSec => resolveLiveAudioSegmentStartSec(
+    fallbackSegmentStartSec: widget.segmentStartSec,
+    sessionSegmentStartSec: _session?.segmentStartSec,
+  );
+
+  double get _currentTimelineSec =>
+      _effectiveSegmentStartSec + _currentSessionSec;
 
   double get _catchupTimelineSec =>
       _catchupTimelineSecForPosition(_catchupStatus.positionSec);
 
+  // Catch-up and finalized playback must use the same HLS origin and the same
+  // per-session compensation. See the matching version-gated subtraction in
+  // functions/src/index.ts before changing this calculation.
   double _catchupTimelineSecForPosition(double positionSec) =>
-      widget.segmentStartSec +
-      (_session?.archiveTimelineOffsetSec ?? 0) +
-      positionSec;
+      resolveLiveAudioCatchupTimelineSec(
+        fallbackSegmentStartSec: widget.segmentStartSec,
+        sessionSegmentStartSec: _session?.segmentStartSec,
+        archiveTimelineOffsetSec: _session?.archiveTimelineOffsetSec ?? 0,
+        hlsMediaTimelineOffsetSec:
+            _archiveMediaTimelineOffsetSec ??
+            _session?.hlsMediaTimelineOffsetSec,
+        audioPlaybackCompensationSec:
+            _archiveAudioPlaybackCompensationSec ??
+            _session?.audioPlaybackCompensationSec ??
+            0,
+        positionSec: positionSec,
+      );
+
+  Future<void> _reportAudioCaptureStart(
+    String sessionId,
+    LiveAudioProbeRtcController rtc,
+  ) async {
+    // Report the first outgoing Android audio frame, not the time this request
+    // runs. Functions compares it with the HLS audio-track origin to measure
+    // this session's recording-pipeline delay. Failure is non-fatal because the
+    // server has a documented fallback.
+    final timestamp = await rtc.waitForAudioCaptureStartNtpTimeInMs();
+    if (timestamp == null ||
+        !mounted ||
+        _rtc != rtc ||
+        _sessionId != sessionId) {
+      return;
+    }
+    try {
+      await _service.reportAudioCaptureStart(
+        sessionId: sessionId,
+        audioCaptureStartedAtMs: timestamp,
+      );
+    } catch (error) {
+      debugPrint('[LiveAudioProbe] audio capture time report failed: $error');
+    }
+  }
 
   void _startLocalStroke() {
     if (!_canWriteBoard) {
@@ -944,25 +1048,57 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       setState(() => _message = '追っかけ再生用の音声はまだ準備中です。');
       return;
     }
+    _suspendLiveRtcMessages = true;
     try {
       await rtc.setLiveAudioMuted(true);
       await _catchup.playFrom(hlsUrl: hlsUrl, positionSec: positionSec);
     } catch (error) {
+      _suspendLiveRtcMessages = false;
       await rtc.setLiveAudioMuted(false);
       _showError(error);
     }
   }
 
-  Future<void> _returnToLive() async {
-    await _catchup.returnToLive();
-    await _rtc?.setLiveAudioMuted(false);
-    if (mounted) {
-      setState(() {
-        _followPresenter = true;
-        _viewerBoardId = null;
-        _viewerViewport = null;
-        _catchupSeekSec = null;
-      });
+  Future<void> _returnToLive() {
+    return _returnToLiveOperation ??= _returnToLiveNow().whenComplete(() {
+      _returnToLiveOperation = null;
+    });
+  }
+
+  Future<void> _returnToLiveNow() async {
+    final rtc = _rtc;
+    if (rtc == null) {
+      return;
+    }
+    final connected = await rtc.waitUntilConnected();
+    if (!connected) {
+      if (mounted) {
+        setState(() {
+          _message = 'ライブ配信へ再接続しています。接続が戻ってから、もう一度お試しください。';
+        });
+      }
+      return;
+    }
+    try {
+      await rtc.setLiveAudioMuted(false);
+      try {
+        await _catchup.returnToLive();
+      } catch (_) {
+        await rtc.setLiveAudioMuted(true);
+        rethrow;
+      }
+      _suspendLiveRtcMessages = false;
+      if (mounted) {
+        setState(() {
+          _followPresenter = true;
+          _viewerBoardId = null;
+          _viewerViewport = null;
+          _catchupSeekSec = null;
+          _message = null;
+        });
+      }
+    } catch (error) {
+      _showError(error);
     }
   }
 
@@ -1060,7 +1196,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     return true;
   }
 
-  Future<void> _closeSession() async {
+  Future<void> _closeSession({bool automaticDurationLimit = false}) async {
     final sessionId = _sessionId;
     if (sessionId == null || _closingSession) {
       return;
@@ -1068,7 +1204,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     var closed = false;
     setState(() {
       _closingSession = true;
-      _message = null;
+      _message = automaticDurationLimit ? '配信時間が1時間に達したため、自動終了しています。' : null;
     });
     _timelineFlushTimer?.cancel();
     _timelineFlushTimer = null;
@@ -1118,6 +1254,9 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     _snapshotSaveTimer = null;
     _archiveRefreshTimer?.cancel();
     _archiveRefreshTimer = null;
+    _durationLimitTimer?.cancel();
+    _durationLimitTimer = null;
+    _suspendLiveRtcMessages = false;
     await _flushAllTimelineMessages();
     await _cancelSubscriptions();
     await _catchup.returnToLive();
@@ -1147,6 +1286,10 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         _serverBoardIds.clear();
         _participantHlsManifestUrl = '';
         _archiveAvailableDurationSec = 0;
+        _archiveMediaTimelineOffsetSec = null;
+        _archiveAudioPlaybackCompensationSec = null;
+        _timelineClockAnchorMs = null;
+        _timelineClockAnchorElapsedUs = null;
       });
     }
     _leaving = false;
@@ -1471,7 +1614,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
             ),
           const SizedBox(height: 12),
           OutlinedButton.icon(
-            onPressed: _closingSession ? null : _closeSession,
+            onPressed: _closingSession ? null : () => _closeSession(),
             icon: const Icon(Icons.stop_circle),
             label: Text(_closingSession ? '配信を終了しています…' : '配信を終了して下書きを作成'),
           ),

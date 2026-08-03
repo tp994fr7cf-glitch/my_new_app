@@ -23,6 +23,64 @@ void main() {
     ],
   );
 
+  test('uses the joined session start for later-part catch-up playback', () {
+    expect(
+      resolveLiveAudioCatchupTimelineSec(
+        fallbackSegmentStartSec: 0,
+        sessionSegmentStartSec: 70.888,
+        archiveTimelineOffsetSec: 1.558,
+        hlsMediaTimelineOffsetSec: 2.921,
+        positionSec: 4,
+      ),
+      closeTo(77.809, 0.000001),
+    );
+    expect(
+      resolveLiveAudioCatchupTimelineSec(
+        fallbackSegmentStartSec: 0,
+        sessionSegmentStartSec: 70.888,
+        archiveTimelineOffsetSec: 1.558,
+        hlsMediaTimelineOffsetSec: null,
+        positionSec: 4,
+      ),
+      closeTo(76.446, 0.000001),
+    );
+  });
+
+  test('delays future whiteboard playback by the measured audio delay', () {
+    expect(
+      resolveLiveAudioCatchupTimelineSec(
+        fallbackSegmentStartSec: 0,
+        sessionSegmentStartSec: 71.785,
+        archiveTimelineOffsetSec: 1.155,
+        hlsMediaTimelineOffsetSec: 1.87,
+        audioPlaybackCompensationSec: 1.34,
+        positionSec: 4,
+      ),
+      closeTo(76.315, 0.000001),
+    );
+    expect(
+      resolveLiveAudioCatchupTimelineSec(
+        fallbackSegmentStartSec: 0,
+        sessionSegmentStartSec: 0,
+        archiveTimelineOffsetSec: 0.5,
+        hlsMediaTimelineOffsetSec: 0.8,
+        audioPlaybackCompensationSec: 1.2,
+        positionSec: 4,
+      ),
+      4,
+    );
+  });
+
+  test('falls back to the route start before a session is loaded', () {
+    expect(
+      resolveLiveAudioSegmentStartSec(
+        fallbackSegmentStartSec: 30,
+        sessionSegmentStartSec: null,
+      ),
+      30,
+    );
+  });
+
   test('exposes only boards that existed at the catch-up position', () {
     expect(
       liveAudioBoardsAvailableAt(

@@ -97,7 +97,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   LessonMediaTimeline _timeline = const LessonMediaTimeline(segments: []);
   LessonMediaPlayback? _activePlayer;
   _MediaPlayerSlot? _activeSlot;
-  _MediaPlayerSlot? _audioSlot;
+  final List<_MediaPlayerSlot> _audioSlots = [];
   _MediaPlayerSlot? _videoSlot;
   StreamSubscription<Duration>? _positionSubscription;
   StreamSubscription<Duration?>? _durationSubscription;
@@ -214,17 +214,42 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     }
   }
 
-  _MediaPlayerSlot _slotForSegment(LessonMediaSegment segment) {
-    if (segment.isAudio) {
-      return _audioSlot ??= _MediaPlayerSlot(
+  _MediaPlayerSlot _slotForSegment(
+    int segmentIndex,
+    LessonMediaSegment segment,
+  ) {
+    if (!segment.isAudio) {
+      return _videoSlot ??= _MediaPlayerSlot(
+        isAudio: false,
+        createPlayer: () => _playbackFactory(isAudio: false),
+      );
+    }
+
+    final url = segment.url.trim();
+    for (final slot in _audioSlots) {
+      if (slot.loadedSegmentIndex == segmentIndex && slot.loadedUrl == url) {
+        return slot;
+      }
+    }
+    for (final slot in _audioSlots) {
+      if (!identical(slot, _activeSlot)) {
+        return slot;
+      }
+    }
+    if (_audioSlots.length < 2) {
+      final candidate = _MediaPlayerSlot(
         isAudio: true,
         createPlayer: () => _playbackFactory(isAudio: true),
       );
+      final duplicatePlayer = _audioSlots.any(
+        (slot) => identical(slot.player, candidate.player),
+      );
+      if (!duplicatePlayer) {
+        _audioSlots.add(candidate);
+        return candidate;
+      }
     }
-    return _videoSlot ??= _MediaPlayerSlot(
-      isAudio: false,
-      createPlayer: () => _playbackFactory(isAudio: false),
-    );
+    return _audioSlots.first;
   }
 
   Future<void> _prepareSegmentInSlot(
@@ -242,7 +267,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       return;
     }
 
-    final slot = _slotForSegment(segment);
+    final slot = _slotForSegment(segmentIndex, segment);
     final url = segment.url.trim();
     final targetLocalSec = localStartSec.clamp(0.0, segment.durationSecExact);
 
@@ -324,11 +349,11 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _logSwitch('_preloadNextSegment: segmentIndex=$segmentIndex');
     try {
       final segment = _timeline.orderedSegments[segmentIndex];
-      final targetSlot = _slotForSegment(segment);
+      final targetSlot = _slotForSegment(segmentIndex, segment);
       if (identical(targetSlot, _activeSlot)) {
-        // There is one player slot per media type. Opening an adjacent
-        // same-type segment in that slot would replace the media that is
-        // currently playing, so it cannot be safely preloaded.
+        // A custom playback factory may intentionally return one shared
+        // player. Never replace media that is currently playing when no
+        // separate preload slot is available.
         return;
       }
       // Only ensure the segment is open/buffered; don't reposition it. It
@@ -385,7 +410,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
 
       await _prepareSegmentInSlot(segmentIndex, localStartSec: localStartSec);
 
-      final slot = _slotForSegment(segment);
+      final slot = _slotForSegment(segmentIndex, segment);
       await _detachActiveSubscriptions();
 
       _activePlayer = slot.player;
@@ -956,10 +981,10 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
 
   Future<void> _disposeAllSlots() async {
     await _detachActiveSubscriptions();
-    if (_audioSlot != null) {
-      await _audioSlot!.player.disposePlayer();
-      _audioSlot = null;
+    for (final slot in _audioSlots) {
+      await slot.player.disposePlayer();
     }
+    _audioSlots.clear();
     if (_videoSlot != null) {
       await _videoSlot!.player.disposePlayer();
       _videoSlot = null;

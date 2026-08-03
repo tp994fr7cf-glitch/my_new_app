@@ -6,6 +6,7 @@ import {
   DocumentReference,
   FieldValue,
   getFirestore,
+  QueryDocumentSnapshot,
 } from "firebase-admin/firestore";
 import {getStorage} from "firebase-admin/storage";
 import {logger} from "firebase-functions/logger";
@@ -36,9 +37,12 @@ import {
   selectManifestObject,
 } from "./live_archive_draft";
 import {
+  availableHlsDurationMs,
   createHlsAccessToken,
   finalizedHlsDurationMs,
+  hlsMediaTimelineOffsetSec,
   isSafeHlsObjectPath,
+  resolveLiveAudioPlaybackCompensation,
   rewriteHlsManifest,
   verifyHlsAccessToken,
 } from "./live_hls_proxy";
@@ -52,13 +56,17 @@ import {
   isValidSegmentStartSec,
   isValidTimelineChunk,
   isValidWhiteboardStroke,
+  hasLiveAudioProbeExceededMaxDuration,
   liveAudioArchiveTokenLifetimeSec,
+  liveAudioProbeMaxDurationMs,
+  liveAudioProbeMaxDurationSec,
   liveAudioProbeTokenLifetimeSec,
   maxLiveAudioProbeStrokes,
   maxLiveAudioTimelineEvents,
   maximumAllowedGlobalTimestampSec,
   permissionForParticipant,
   resolveActivePresenterUid,
+  remainingLiveAudioProbeDurationSec,
   rtcUidForFirebaseUser,
   validateTimelineBoardReferences,
 } from "./live_audio_probe";
@@ -89,7 +97,14 @@ const db = getFirestore();
 const sessionCollection = "liveAudioProbeSessions";
 const joinCodeCollection = "liveAudioProbeJoinCodes";
 const archivePrefixRoot = "liveAudioProbeSessions";
-const liveArchiveTimingVersion = 2;
+// Timing v5 is the current device-verified baseline for live audio/board sync.
+// It ties together Agora NTP board timestamps, the HLS audio-track origin, and
+// per-session capture compensation. This is not an immutable design: change it
+// when a reproduced bug justifies doing so, but use a new timing version rather
+// than silently changing how already-created sessions are interpreted.
+const liveArchiveTimingVersion = 5;
+// Used only when the per-session Android audio-frame measurement is unavailable.
+const liveAudioPlaybackFallbackCompensationSec = 1.2;
 const archiveConfigWarning =
   "録音の保存設定が未完了です。配信は続けられますが、録音は保存されません。";
 const archiveStartWarning =
@@ -153,6 +168,92 @@ export const cleanupLiveAudioProbeRawArchives = onSchedule(
   },
 );
 
+export const enforceLiveAudioProbeDurationLimit = onSchedule(
+  {
+    schedule: "every 1 minutes",
+    timeZone: "Asia/Tokyo",
+    secrets: archiveSecrets,
+    timeoutSeconds: 540,
+    maxInstances: 1,
+    retryCount: 1,
+  },
+  async (event) => {
+    const collection = db.collection(sessionCollection);
+    const [activeByStatus, liveByState, finalizingByState] = await Promise.all([
+      collection.where("status", "==", "active").get(),
+      collection.where("state", "==", "live").get(),
+      collection.where("state", "==", "finalizing").get(),
+    ]);
+    const activeSessions = new Map<
+      string,
+      QueryDocumentSnapshot<DocumentData>
+    >();
+    for (const snapshot of [...activeByStatus.docs, ...liveByState.docs]) {
+      activeSessions.set(snapshot.id, snapshot);
+    }
+    const nowMs = Date.now();
+    const expiredSessions = [...activeSessions.values()].filter((snapshot) => {
+      return hasLiveAudioProbeExceededMaxDuration({
+        startedAtMs: snapshot.data().startedAtMs,
+        nowMs,
+      });
+    });
+    const pendingForcedFinalizations = finalizingByState.docs.filter(
+      (snapshot) => snapshot.data().closeReason === "maxDuration",
+    );
+    logger.info("live_audio_probe_duration_limit_checked", {
+      event: "duration_limit_checked",
+      scheduleTime: event.scheduleTime,
+      activeCount: activeSessions.size,
+      expiredCount: expiredSessions.length,
+      pendingFinalizationCount: pendingForcedFinalizations.length,
+    });
+
+    for (const snapshot of expiredSessions) {
+      const session = snapshot.data();
+      const ownerUid = stringField(session.ownerUid);
+      if (!ownerUid) {
+        logger.error("live_audio_probe_duration_limit_invalid_owner", {
+          event: "duration_limit_invalid_owner",
+          sessionId: snapshot.id,
+        });
+        continue;
+      }
+      try {
+        const closing = await moveSessionToFinalizing(
+          snapshot.ref,
+          ownerUid,
+          false,
+          "maxDuration",
+        );
+        if (!closing.alreadyClosed) {
+          await stopArchiveAndFinalize(snapshot.ref, closing.session);
+        }
+        logger.warn("live_audio_probe_duration_limit_enforced", {
+          event: "duration_limit_enforced",
+          sessionId: snapshot.id,
+          startedAtMs: safeNonNegativeInteger(session.startedAtMs),
+          enforcedAtMs: nowMs,
+        });
+      } catch (error) {
+        logArchiveError("duration-limit", error);
+      }
+    }
+
+    for (const snapshot of pendingForcedFinalizations) {
+      try {
+        await stopArchiveAndFinalize(snapshot.ref, snapshot.data());
+        logger.warn("live_audio_probe_duration_limit_finalization_retried", {
+          event: "duration_limit_finalization_retried",
+          sessionId: snapshot.id,
+        });
+      } catch (error) {
+        logArchiveError("duration-limit-finalization-retry", error);
+      }
+    }
+  },
+);
+
 export const createLiveAudioProbeSession = onCall(
   {secrets: archiveSecrets, timeoutSeconds: 120},
   async (request) => {
@@ -175,6 +276,7 @@ export const createLiveAudioProbeSession = onCall(
     const rtcUid = rtcUidForFirebaseUser(uid);
     const channelName = `probe_${sessionReference.id}`;
     const startedAtMs = Date.now();
+    const maximumEndsAtMs = startedAtMs + liveAudioProbeMaxDurationMs;
     const now = FieldValue.serverTimestamp();
     const sessionData = {
       ownerUid: uid,
@@ -185,7 +287,13 @@ export const createLiveAudioProbeSession = onCall(
       state: "live",
       presenterUids: [],
       startedAtMs,
+      maximumEndsAtMs,
+      maximumDurationSec: liveAudioProbeMaxDurationSec,
       archiveTimingVersion: liveArchiveTimingVersion,
+      timelineClockSource: "agoraNtp",
+      audioPlaybackCompensationSec:
+        liveAudioPlaybackFallbackCompensationSec,
+      audioPlaybackCompensationSource: "fallback",
       archiveStatus: "starting",
       archiveError: null,
       archiveErrorCode: null,
@@ -325,6 +433,16 @@ export const issueLiveAudioProbeToken = onCall(
     }
     const session = sessionSnapshot.data() ?? {};
     requireLiveSession(session);
+    const remainingDurationSec = remainingLiveAudioProbeDurationSec({
+      startedAtMs: session.startedAtMs,
+      nowMs: Date.now(),
+    });
+    if (remainingDurationSec <= 0) {
+      throw new HttpsError(
+        "failed-precondition",
+        "この配信は1時間の上限に達したため終了しました。",
+      );
+    }
     const ownerUid = stringField(session.ownerUid);
     const activePresenterUid = resolveActivePresenterUid({
       ownerUid,
@@ -362,16 +480,20 @@ export const issueLiveAudioProbeToken = onCall(
     }
     const canPublish = permission === "publisher";
     const channelName = stringField(session.channelName);
+    const tokenLifetimeSec = Math.min(
+      liveAudioProbeTokenLifetimeSec,
+      remainingDurationSec,
+    );
     const token = RtcTokenBuilder.buildTokenWithUidAndPrivilege(
       appId,
       appCertificate,
       channelName,
       rtcUid,
-      liveAudioProbeTokenLifetimeSec,
-      liveAudioProbeTokenLifetimeSec,
-      canPublish ? liveAudioProbeTokenLifetimeSec : 0,
+      tokenLifetimeSec,
+      tokenLifetimeSec,
+      canPublish ? tokenLifetimeSec : 0,
       0,
-      canPublish ? liveAudioProbeTokenLifetimeSec : 0,
+      canPublish ? tokenLifetimeSec : 0,
     );
     return {
       appId,
@@ -379,7 +501,12 @@ export const issueLiveAudioProbeToken = onCall(
       rtcUid,
       token,
       permission,
-      expiresInSec: liveAudioProbeTokenLifetimeSec,
+      expiresInSec: tokenLifetimeSec,
+      serverNowMs: Date.now(),
+      maximumEndsAtMs:
+        safeNonNegativeInteger(session.maximumEndsAtMs) ||
+        safeNonNegativeInteger(session.startedAtMs) +
+          liveAudioProbeMaxDurationMs,
     };
   },
 );
@@ -488,6 +615,60 @@ export const setLiveAudioProbePresenter = onCall(async (request) => {
     };
   });
 });
+
+export const reportLiveAudioProbeAudioCaptureStart = onCall(
+  async (request) => {
+    const uid = requireAuthenticatedUid(request);
+    const sessionId = requireSessionId(request.data?.sessionId);
+    const audioCaptureStartedAtMs = request.data?.audioCaptureStartedAtMs;
+    if (
+      typeof audioCaptureStartedAtMs !== "number" ||
+      !Number.isSafeInteger(audioCaptureStartedAtMs) ||
+      audioCaptureStartedAtMs <= 0
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "音声時刻の値が不正です。",
+      );
+    }
+    const sessionReference = db.collection(sessionCollection).doc(sessionId);
+    return db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(sessionReference);
+      if (!snapshot.exists) {
+        throw new HttpsError("not-found", "検証配信が見つかりません。");
+      }
+      const session = snapshot.data() ?? {};
+      requirePublisher(session, uid);
+      if (safeNonNegativeInteger(session.archiveTimingVersion) < 5) {
+        return {stored: false};
+      }
+      const existing = safeNonNegativeInteger(
+        session.audioCaptureStartedAtMs,
+      );
+      if (existing > 0) {
+        return {stored: false, audioCaptureStartedAtMs: existing};
+      }
+      const startedAtMs = safeNonNegativeInteger(session.startedAtMs);
+      const nowMs = Date.now();
+      if (
+        startedAtMs <= 0 ||
+        audioCaptureStartedAtMs < startedAtMs - 5000 ||
+        audioCaptureStartedAtMs > nowMs + 5000
+      ) {
+        throw new HttpsError(
+          "invalid-argument",
+          "音声時刻が配信時間の範囲外です。",
+        );
+      }
+      transaction.update(sessionReference, {
+        audioCaptureStartedAtMs,
+        audioCaptureClockSource: "agoraAudioFrame",
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return {stored: true, audioCaptureStartedAtMs};
+    });
+  },
+);
 
 export const saveLiveAudioProbeStroke = onCall(async (request) => {
   const uid = requireAuthenticatedUid(request);
@@ -1122,6 +1303,7 @@ async function moveSessionToFinalizing(
   sessionReference: DocumentReference<DocumentData>,
   ownerUid: string,
   allowRetry: boolean,
+  closeReason?: "maxDuration",
 ): Promise<{session: DocumentData; alreadyClosed: boolean}> {
   return db.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(sessionReference);
@@ -1175,6 +1357,13 @@ async function moveSessionToFinalizing(
     const now = FieldValue.serverTimestamp();
     const archiveStopRequestedAtMs =
       safeNonNegativeInteger(session.archiveStopRequestedAtMs) || Date.now();
+    const closeMetadata = closeReason === undefined ?
+      {} :
+      {
+        closeReason,
+        maximumDurationSec: liveAudioProbeMaxDurationSec,
+        durationLimitEnforcedAtMs: archiveStopRequestedAtMs,
+      };
     if (
       joinCodeReference !== null &&
       joinCodeSnapshot?.data()?.sessionId === sessionReference.id
@@ -1188,6 +1377,7 @@ async function moveSessionToFinalizing(
       archiveStopRequestedAtMs,
       activePresenterUid: ownerUid,
       presenterUids: [],
+      ...closeMetadata,
       updatedAt: now,
     });
     if (activeParticipant.exists) {
@@ -1203,6 +1393,7 @@ async function moveSessionToFinalizing(
         state: "finalizing",
         archiveStatus: "finalizing",
         archiveStopRequestedAtMs,
+        ...closeMetadata,
       },
       alreadyClosed: false,
     };
@@ -1367,6 +1558,14 @@ async function finalizeArchiveSuccess(
     archiveDurationSource: duration.source,
     hlsManifestObjectPath,
     hlsAvailableDurationSec: duration.durationSec,
+    ...(duration.hlsMediaStartedAtMs === null ?
+      {} :
+      {
+        hlsMediaStartedAtMs: duration.hlsMediaStartedAtMs,
+        hlsMediaTimelineOffsetSec: duration.hlsMediaTimelineOffsetSec,
+      }),
+    audioPlaybackCompensationSec: duration.audioPlaybackCompensationSec,
+    audioPlaybackCompensationSource: duration.audioPlaybackCompensationSource,
     draftReady: {
       linkedToLesson: false,
       finalizedAtMs,
@@ -1384,6 +1583,9 @@ async function finalizeArchiveSuccess(
     archiveManifest: manifest,
     hlsManifestObjectPath,
     hlsAvailableDurationSec: duration.durationSec,
+    hlsMediaTimelineOffsetSec: duration.hlsMediaTimelineOffsetSec,
+    audioPlaybackCompensationSec: duration.audioPlaybackCompensationSec,
+    audioPlaybackCompensationSource: duration.audioPlaybackCompensationSource,
   };
 }
 
@@ -1466,6 +1668,10 @@ async function finalizeLinkedArchive({
       durationSource: duration.source,
       finalizedAtMs,
       hlsManifestObjectPath,
+      hlsMediaStartedAtMs: duration.hlsMediaStartedAtMs,
+      hlsMediaTimelineOffsetSec: duration.hlsMediaTimelineOffsetSec,
+      audioPlaybackCompensationSec: duration.audioPlaybackCompensationSec,
+      audioPlaybackCompensationSource: duration.audioPlaybackCompensationSource,
       manifest,
     });
     return {
@@ -1475,6 +1681,9 @@ async function finalizeLinkedArchive({
       archivePlaybackUrl: playbackUrl,
       hlsManifestObjectPath,
       hlsAvailableDurationSec: duration.durationSec,
+      hlsMediaTimelineOffsetSec: duration.hlsMediaTimelineOffsetSec,
+      audioPlaybackCompensationSec: duration.audioPlaybackCompensationSec,
+      audioPlaybackCompensationSource: duration.audioPlaybackCompensationSource,
       draftReady: draftResult,
     };
   } catch (error) {
@@ -1542,6 +1751,10 @@ async function persistLinkedLessonDraft({
   durationSource,
   finalizedAtMs,
   hlsManifestObjectPath,
+  hlsMediaStartedAtMs,
+  hlsMediaTimelineOffsetSec,
+  audioPlaybackCompensationSec,
+  audioPlaybackCompensationSource,
   manifest,
 }: {
   sessionReference: DocumentReference<DocumentData>;
@@ -1556,6 +1769,10 @@ async function persistLinkedLessonDraft({
   durationSource: "hls" | "wallClock";
   finalizedAtMs: number;
   hlsManifestObjectPath: string | null;
+  hlsMediaStartedAtMs: number | null;
+  hlsMediaTimelineOffsetSec: number | null;
+  audioPlaybackCompensationSec: number;
+  audioPlaybackCompensationSource: string;
   manifest: ArchiveManifest;
 }): Promise<Record<string, unknown>> {
   const courseReference = db.collection("courses").doc(courseId);
@@ -1618,7 +1835,7 @@ async function persistLinkedLessonDraft({
       );
     }
     let draftBoardSet = boardSet;
-    if (currentSession.archiveTimingVersion === liveArchiveTimingVersion) {
+    if (safeNonNegativeInteger(currentSession.archiveTimingVersion) >= 2) {
       const baselineBoardSet = archiveBaselineSnapshot.data()?.boardSet;
       const archiveStartedAtMs = safeNonNegativeInteger(
         currentSession.archiveStartedAtMs,
@@ -1636,15 +1853,39 @@ async function persistLinkedLessonDraft({
         Number.isFinite(currentSession.archiveTimelineOffsetSec) ?
           Math.max(0, currentSession.archiveTimelineOffsetSec) :
           -1;
+      const useHlsMediaOrigin =
+        safeNonNegativeInteger(currentSession.archiveTimingVersion) >= 3 &&
+        hlsMediaTimelineOffsetSec !== null &&
+        Number.isFinite(hlsMediaTimelineOffsetSec) &&
+        hlsMediaTimelineOffsetSec >= 0;
+      // Keep this sign consistent with resolveLiveAudioCatchupTimelineSec.
+      // Subtracting the measured audio-pipeline delay from the media origin
+      // delays board visibility relative to playback in both catch-up and the
+      // finalized lesson. If evidence requires changing this relationship,
+      // verify both paths and introduce a new timing version for new sessions.
+      const timelineOffsetSec =
+        useHlsMediaOrigin && hlsMediaTimelineOffsetSec !== null ?
+          Math.max(
+            0,
+            hlsMediaTimelineOffsetSec -
+              (
+                safeNonNegativeInteger(currentSession.archiveTimingVersion) >=
+                  5 ?
+                  audioPlaybackCompensationSec :
+                  0
+              ),
+          ) :
+          archiveTimelineOffsetSec;
       const recordingWallDurationSec =
         (archiveStopRequestedAtMs - archiveStartedAtMs) / 1000;
       const adjustedBoardSet = adjustLiveArchiveBoardSet({
         boardSet,
         baselineBoardSet,
         segmentStartSec,
-        archiveTimelineOffsetSec,
+        archiveTimelineOffsetSec: timelineOffsetSec,
         recordingWallDurationSec,
         mediaDurationSec: durationMs / 1000,
+        preserveElapsedTime: useHlsMediaOrigin,
       });
       if (
         !isValidBoardSet(baselineBoardSet) ||
@@ -1710,6 +1951,14 @@ async function persistLinkedLessonDraft({
       archiveDurationSource: durationSource,
       hlsManifestObjectPath,
       hlsAvailableDurationSec: durationSec,
+      ...(hlsMediaStartedAtMs === null ?
+        {} :
+        {
+          hlsMediaStartedAtMs,
+          hlsMediaTimelineOffsetSec,
+        }),
+      audioPlaybackCompensationSec,
+      audioPlaybackCompensationSource,
       draftReady,
       endedAtMs: finalizedAtMs,
       endedAt: FieldValue.serverTimestamp(),
@@ -1738,7 +1987,6 @@ async function queryAndUpdateArchiveStatus(
       return safeArchiveStatus(session);
     }
     const nowMs = Date.now();
-    const duration = archiveDuration(session, nowMs);
     const hlsManifestObjectPath = selectManifestObject(
       queried.manifest.files,
       ".m3u8",
@@ -1750,12 +1998,56 @@ async function queryAndUpdateArchiveStatus(
         files: queried.manifest.files,
         manifestFile: queried.manifest.manifestFile,
       },
-      hlsAvailableDurationSec: duration.durationSec,
       archiveQueriedAtMs: nowMs,
       updatedAt: FieldValue.serverTimestamp(),
     };
     if (hlsManifestObjectPath) {
       updates.hlsManifestObjectPath = hlsManifestObjectPath;
+      try {
+        const [contents] = await getStorage()
+          .bucket(config.gcsBucket)
+          .file(hlsManifestObjectPath)
+          .download();
+        const manifestText = contents.toString("utf8");
+        const availableDurationMs = availableHlsDurationMs(
+          manifestText,
+        );
+        if (availableDurationMs !== null) {
+          updates.hlsAvailableDurationSec = Math.floor(
+            availableDurationMs / 1000,
+          );
+        }
+        if (safeNonNegativeInteger(session.archiveTimingVersion) >= 3) {
+          const sessionStartedAtMs = safeNonNegativeInteger(
+            session.startedAtMs,
+          );
+          const mediaTimelineOffsetSec = hlsMediaTimelineOffsetSec({
+            manifest: manifestText,
+            sessionStartedAtMs,
+          });
+          if (mediaTimelineOffsetSec !== null) {
+            const mediaStartedAtMs =
+              sessionStartedAtMs + Math.round(mediaTimelineOffsetSec * 1000);
+            const compensation = resolveLiveAudioPlaybackCompensation({
+              timingVersion: safeNonNegativeInteger(
+                session.archiveTimingVersion,
+              ),
+              hlsMediaStartedAtMs: mediaStartedAtMs,
+              audioCaptureStartedAtMs: safeNonNegativeInteger(
+                session.audioCaptureStartedAtMs,
+              ),
+              fallbackSec: liveAudioPlaybackFallbackCompensationSec,
+            });
+            updates.hlsMediaTimelineOffsetSec = mediaTimelineOffsetSec;
+            updates.hlsMediaStartedAtMs = mediaStartedAtMs;
+            updates.audioPlaybackCompensationSec =
+              compensation.compensationSec;
+            updates.audioPlaybackCompensationSource = compensation.source;
+          }
+        }
+      } catch (error) {
+        logArchiveError("read-live-hls-duration", error);
+      }
     }
     await sessionReference.update(updates);
     return safeArchiveStatus({
@@ -1778,16 +2070,22 @@ async function finalizedArchiveDuration(
   durationMs: number;
   durationSec: number;
   source: "hls" | "wallClock";
+  hlsMediaStartedAtMs: number | null;
+  hlsMediaTimelineOffsetSec: number | null;
+  audioPlaybackCompensationSec: number;
+  audioPlaybackCompensationSource: string;
 }> {
   const timingVersion = safeNonNegativeInteger(session.archiveTimingVersion);
   let hlsDurationMs: number | null = null;
+  let mediaTimelineOffsetSec: number | null = null;
+  const sessionStartedAtMs = safeNonNegativeInteger(session.startedAtMs);
   const hlsManifestObjectPath = selectManifestObject(
     manifest.files,
     ".m3u8",
     stringField(session.archivePrefix),
   );
   if (
-    timingVersion === liveArchiveTimingVersion &&
+    timingVersion >= 2 &&
     hlsManifestObjectPath
   ) {
     try {
@@ -1795,15 +2093,22 @@ async function finalizedArchiveDuration(
         .bucket(config.gcsBucket)
         .file(hlsManifestObjectPath)
         .download();
-      hlsDurationMs = finalizedHlsDurationMs(contents.toString("utf8"));
+      const manifestText = contents.toString("utf8");
+      hlsDurationMs = finalizedHlsDurationMs(manifestText);
+      if (timingVersion >= 3) {
+        mediaTimelineOffsetSec = hlsMediaTimelineOffsetSec({
+          manifest: manifestText,
+          sessionStartedAtMs,
+        });
+      }
     } catch (error) {
       logArchiveError("read-hls-duration", error);
     }
   }
-  return resolveLiveArchiveDuration({
+  const duration = resolveLiveArchiveDuration({
     timingVersion,
     hlsDurationMs,
-    sessionStartedAtMs: safeNonNegativeInteger(session.startedAtMs),
+    sessionStartedAtMs,
     archiveStartedAtMs: safeNonNegativeInteger(session.archiveStartedAtMs),
     archiveStopRequestedAtMs: safeNonNegativeInteger(
       session.archiveStopRequestedAtMs,
@@ -1811,6 +2116,24 @@ async function finalizedArchiveDuration(
     archiveStoppedAtMs: safeNonNegativeInteger(session.archiveStoppedAtMs),
     finalizedAtMs: Date.now(),
   });
+  const hlsMediaStartedAtMs = mediaTimelineOffsetSec === null ?
+    null :
+    sessionStartedAtMs + Math.round(mediaTimelineOffsetSec * 1000);
+  const compensation = resolveLiveAudioPlaybackCompensation({
+    timingVersion,
+    hlsMediaStartedAtMs,
+    audioCaptureStartedAtMs: safeNonNegativeInteger(
+      session.audioCaptureStartedAtMs,
+    ),
+    fallbackSec: liveAudioPlaybackFallbackCompensationSec,
+  });
+  return {
+    ...duration,
+    hlsMediaStartedAtMs,
+    hlsMediaTimelineOffsetSec: mediaTimelineOffsetSec,
+    audioPlaybackCompensationSec: compensation.compensationSec,
+    audioPlaybackCompensationSource: compensation.source,
+  };
 }
 
 function archiveDuration(
@@ -1959,6 +2282,20 @@ function safeArchiveStatus(session: DocumentData): Record<string, unknown> {
       Number.isFinite(session.archiveTimelineOffsetSec) ?
         Math.max(0, session.archiveTimelineOffsetSec) :
         0,
+    hlsMediaTimelineOffsetSec:
+      typeof session.hlsMediaTimelineOffsetSec === "number" &&
+      Number.isFinite(session.hlsMediaTimelineOffsetSec) ?
+        Math.max(0, session.hlsMediaTimelineOffsetSec) :
+        null,
+    audioPlaybackCompensationSec:
+      typeof session.audioPlaybackCompensationSec === "number" &&
+      Number.isFinite(session.audioPlaybackCompensationSec) ?
+        Math.max(0, session.audioPlaybackCompensationSec) :
+        0,
+    audioPlaybackCompensationSource:
+      typeof session.audioPlaybackCompensationSource === "string" ?
+        session.audioPlaybackCompensationSource :
+        null,
     archiveFinalizedAtMs: safeNonNegativeInteger(
       session.archiveFinalizedAtMs,
     ),

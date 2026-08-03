@@ -1,5 +1,45 @@
 import '../models/lesson_whiteboard_board_set.dart';
 
+double resolveLiveAudioSegmentStartSec({
+  required double fallbackSegmentStartSec,
+  required double? sessionSegmentStartSec,
+}) {
+  final sessionValue = sessionSegmentStartSec;
+  if (sessionValue != null && sessionValue.isFinite && sessionValue >= 0) {
+    return sessionValue;
+  }
+  return fallbackSegmentStartSec;
+}
+
+double resolveLiveAudioCatchupTimelineSec({
+  required double fallbackSegmentStartSec,
+  required double? sessionSegmentStartSec,
+  required double archiveTimelineOffsetSec,
+  required double? hlsMediaTimelineOffsetSec,
+  double audioPlaybackCompensationSec = 0,
+  required double positionSec,
+}) {
+  final timelineOffsetSec =
+      hlsMediaTimelineOffsetSec ?? archiveTimelineOffsetSec;
+  final safeCompensationSec =
+      audioPlaybackCompensationSec.isFinite && audioPlaybackCompensationSec >= 0
+      ? audioPlaybackCompensationSec
+      : 0;
+  // HLS audio begins after the session clock, and the measured capture-to-HLS
+  // delay is subtracted so board visibility is delayed to match that audio.
+  // The finalized-lesson path applies the same sign in Functions. If a
+  // reproduced bug requires adjustment, test catch-up and published playback
+  // together instead of changing only one side.
+  return resolveLiveAudioSegmentStartSec(
+        fallbackSegmentStartSec: fallbackSegmentStartSec,
+        sessionSegmentStartSec: sessionSegmentStartSec,
+      ) +
+      (timelineOffsetSec - safeCompensationSec)
+          .clamp(0.0, double.infinity)
+          .toDouble() +
+      positionSec;
+}
+
 String resolveLiveAudioDisplayBoardId({
   required BoardSet boardSet,
   required String presenterBoardId,

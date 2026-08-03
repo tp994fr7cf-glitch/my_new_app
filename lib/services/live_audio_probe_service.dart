@@ -34,6 +34,7 @@ class LiveAudioProbeCredentials {
     required this.token,
     required this.permission,
     required this.expiresInSec,
+    this.serverNowMs = 0,
     this.hlsManifestUrl = '',
   });
 
@@ -43,6 +44,7 @@ class LiveAudioProbeCredentials {
   final String token;
   final LiveAudioProbePermission permission;
   final int expiresInSec;
+  final int serverNowMs;
   final String hlsManifestUrl;
 
   factory LiveAudioProbeCredentials.fromMap(Map<Object?, Object?> data) {
@@ -53,6 +55,7 @@ class LiveAudioProbeCredentials {
       token: data['token'] as String? ?? '',
       permission: LiveAudioProbePermission.fromStorage(data['permission']),
       expiresInSec: (data['expiresInSec'] as num?)?.toInt() ?? 0,
+      serverNowMs: (data['serverNowMs'] as num?)?.toInt() ?? 0,
       hlsManifestUrl: data['hlsManifestUrl'] as String? ?? '',
     );
   }
@@ -80,6 +83,10 @@ class LiveAudioProbeSession {
     this.boardSetRevision = 0,
     this.segmentStartSec = 0,
     this.archiveTimelineOffsetSec = 0,
+    this.hlsMediaTimelineOffsetSec,
+    this.audioPlaybackCompensationSec = 0,
+    this.maximumEndsAtMs = 0,
+    this.closeReason = '',
   });
 
   final String id;
@@ -102,6 +109,10 @@ class LiveAudioProbeSession {
   final int boardSetRevision;
   final double segmentStartSec;
   final double archiveTimelineOffsetSec;
+  final double? hlsMediaTimelineOffsetSec;
+  final double audioPlaybackCompensationSec;
+  final int maximumEndsAtMs;
+  final String closeReason;
 
   bool get isActive => status == 'active' || status == 'live';
   bool get isFinalizing => status == 'finalizing';
@@ -151,6 +162,12 @@ class LiveAudioProbeSession {
       segmentStartSec: (data['segmentStartSec'] as num?)?.toDouble() ?? 0,
       archiveTimelineOffsetSec:
           (data['archiveTimelineOffsetSec'] as num?)?.toDouble() ?? 0,
+      hlsMediaTimelineOffsetSec: (data['hlsMediaTimelineOffsetSec'] as num?)
+          ?.toDouble(),
+      audioPlaybackCompensationSec:
+          (data['audioPlaybackCompensationSec'] as num?)?.toDouble() ?? 0,
+      maximumEndsAtMs: (data['maximumEndsAtMs'] as num?)?.toInt() ?? 0,
+      closeReason: data['closeReason'] as String? ?? '',
     );
   }
 }
@@ -179,12 +196,16 @@ class LiveAudioArchivePlaybackStatus {
     required this.archiveStatus,
     this.hlsManifestUrl = '',
     this.hlsAvailableDurationSec = 0,
+    this.hlsMediaTimelineOffsetSec,
+    this.audioPlaybackCompensationSec = 0,
     this.archiveError = '',
   });
 
   final String archiveStatus;
   final String hlsManifestUrl;
   final double hlsAvailableDurationSec;
+  final double? hlsMediaTimelineOffsetSec;
+  final double audioPlaybackCompensationSec;
   final String archiveError;
 }
 
@@ -298,6 +319,18 @@ class LiveAudioProbeService {
     });
   }
 
+  Future<void> reportAudioCaptureStart({
+    required String sessionId,
+    required int audioCaptureStartedAtMs,
+  }) async {
+    await _functions
+        .httpsCallable('reportLiveAudioProbeAudioCaptureStart')
+        .call({
+          'sessionId': sessionId,
+          'audioCaptureStartedAtMs': audioCaptureStartedAtMs,
+        });
+  }
+
   Future<void> saveStroke({
     required String sessionId,
     String boardId = LessonWhiteboardBoard.defaultBoardId,
@@ -367,6 +400,10 @@ class LiveAudioProbeService {
       hlsManifestUrl: data['hlsManifestUrl'] as String? ?? '',
       hlsAvailableDurationSec:
           (data['hlsAvailableDurationSec'] as num?)?.toDouble() ?? 0,
+      hlsMediaTimelineOffsetSec: (data['hlsMediaTimelineOffsetSec'] as num?)
+          ?.toDouble(),
+      audioPlaybackCompensationSec:
+          (data['audioPlaybackCompensationSec'] as num?)?.toDouble() ?? 0,
       archiveError: data['archiveError'] as String? ?? '',
     );
   }

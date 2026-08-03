@@ -1,12 +1,11 @@
 # 引き継ぎノート（my_new_app / Agora技術検証準備後）
 
-最終更新: 2026-07-29
+最終更新: 2026-08-04
 
-**2026-07-29、Agora音声＋ホワイトボード技術検証のコードを同じブランチへ追加しました。**
-**これは未コミット・未デプロイで、Agoraアカウント設定前のため実通信はまだ未確認です。**
-**App ID / App CertificateをFirebase Secret Managerへ登録し、FunctionsとFirestore Rulesを
-デプロイしてから、先生1人・受講者2人でAndroid/Web実機確認を行います。**
-**この最初の検証結果が出たら、完成版へ進まず必ずユーザーの次の指示を待ってください。**
+**2026-08-04、Agoraライブ音声＋板書の同期方式は本番反映・Android実機確認済みです。**
+**次のagentは最初に「0-B. ライブ配信の音声・板書同期」を読んでください。**
+**現在の方式は安易に単純化しない一方、再現可能な不具合が見つかった場合は、
+メモを変更禁止と解釈せず、証拠に基づいて必要な修正を行ってください。**
 
 **最新機能「録音しながら書く」は、Android実機でユーザー確認済みです。**
 **ホワイトボードの最大8倍ズーム・パン・ミニマップ・先生表示追従も、
@@ -21,6 +20,60 @@
 本番 Web: https://my-new-app-naona-20260523.web.app
 Firebase プロジェクト: my-new-app-naona-20260523
 Firebase Console: https://console.firebase.google.com/project/my-new-app-naona-20260523/overview
+
+---
+
+## 0-B. 2026-08-04 ライブ配信の音声・板書同期（現在の実機確認済み基準）
+
+ユーザーがAndroid実機で、同じレッスン内の単一・複数配信パートについて、
+追っかけ再生と公開後再生を確認した。以前の数秒～十数秒のずれと、
+複数パートでずれが増える問題は解消し、現在は配信開始直後に音声が約1秒遅れることがあるが、
+約10秒後にはずれが大幅に小さくなる状態である。約2分の確認では後半へずれが広がる兆候はない。
+ユーザーは、この状態を一旦「ずれ修正の完成形」として扱うことを希望している。
+
+ただし、これは**変更禁止を意味しない**。まだ見つかっていない不具合をユーザーが報告した場合は、
+実機データ・音声波形・ログで再現と原因を確認したうえで修正してよい。メモを理由に必要な修正を
+拒んだり、現行方式が常に正しいと決めつけたりしないこと。一方、根拠のない整理・単純化や、
+追っかけ再生／公開後再生の片方だけを変更することは避ける。
+
+現在の同期方式（`archiveTimingVersion = 5`）:
+
+1. 板書時刻はAgora NTPを基準にし、端末の単調時計でアンカーからの経過を進める。
+2. Cloud Recordingで`enableNTPtimestamp`を有効にし、HLSの音声トラック開始イベントを
+   セグメントファイル名より優先してメディア開始時刻に使う。
+3. Androidの最初の送信音声フレームをAgora NTPへ変換して保存し、
+   音声フレームからHLS音声トラックまでの遅延を配信ごとに測定する。
+4. 測定値を追っかけ再生と公開後再生の両方へ同じ向きで適用する。
+   測定できない場合だけ1.2秒を予備値として使う。
+5. v5より前の配信は再解釈せず、将来方式を変える場合も原則として新しい
+   `archiveTimingVersion`を追加して新規配信から適用する。
+
+重要な整合性:
+
+- `lib/services/live_audio_board_selection.dart`の追っかけ再生補正と、
+  `functions/src/index.ts`の公開用BoardSet補正は、同じ値・同じ符号で扱う。
+- `functions/src/live_hls_proxy.ts`は、HLS音声トラック開始とAndroid音声フレーム開始の差から
+  配信固有の補正値を求める。1.2秒は通常値ではなく測定失敗時のフォールバック。
+- `android/app/src/main/kotlin/com/example/my_new_app/MainActivity.kt`では、
+  コールバック到着時刻ではなく`renderTimeMs`をNTPへ対応付ける。到着時刻には可変遅延が含まれる。
+- 開始直後の遅延が数秒で小さくなる現象は、音声処理・録画・HLSの立ち上がりによる
+  時間変化する遅延と考えられる。現在の配信ごとの単一補正値では完全には表現できない既知の限界。
+  将来、再現可能な証拠がそろえば、開始区間だけの補正方式などを検討してよい。
+- 変更時は最低限、単一パート／同一レッスンの複数パート、追っかけ再生／公開後再生、
+  配信開始直後／10秒以降を実機で比較する。可能なら30分配信、再接続、バックグラウンド復帰も確認する。
+
+主な関連ファイル:
+
+- `lib/services/live_audio_timeline_clock.dart`
+- `lib/services/live_audio_board_selection.dart`
+- `lib/screens/live_audio_probe_page.dart`
+- `android/app/src/main/kotlin/com/example/my_new_app/MainActivity.kt`
+- `functions/src/agora_cloud_recording.ts`
+- `functions/src/live_hls_proxy.ts`
+- `functions/src/index.ts`
+- `test/live_audio_timeline_clock_test.dart`
+- `test/live_audio_board_selection_test.dart`
+- `functions/src/live_hls_proxy.test.ts`
 
 ---
 

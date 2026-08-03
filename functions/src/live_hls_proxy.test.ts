@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  availableHlsDurationMs,
   createHlsAccessToken,
   finalizedHlsDurationMs,
+  firstHlsAudioTrackStartedAtMs,
+  firstHlsSegmentStartedAtMs,
+  hlsMediaTimelineOffsetSec,
   isSafeHlsObjectPath,
+  resolveLiveAudioPlaybackCompensation,
   rewriteHlsManifest,
   verifyHlsAccessToken,
 } from "./live_hls_proxy";
@@ -36,6 +41,119 @@ test("rejects partial or duration-less HLS manifests", () => {
     null,
   );
   assert.equal(finalizedHlsDurationMs("not-a-manifest"), null);
+});
+
+test("reads only completed segments from an in-progress HLS playlist", () => {
+  assert.equal(
+    availableHlsDurationMs(
+      "#EXTM3U\n" +
+      "#EXT-X-TARGETDURATION:16\n" +
+      "#EXTINF:14.506,\npart-1.ts\n" +
+      "#EXTINF:5.494,\npart-2.ts\n",
+    ),
+    20000,
+  );
+  assert.equal(
+    availableHlsDurationMs(
+      "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=64000\nchild.m3u8\n",
+    ),
+    null,
+  );
+});
+
+test("reads the actual media start from Agora's first HLS segment", () => {
+  const manifest =
+    "#EXTM3U\n" +
+    "#EXT-X-TARGETDURATION:16\n" +
+    "#EXTINF:14.506,\n" +
+    "prefix_probe_session_20260803132012996.ts\n" +
+    "#EXTINF:5.494,\n" +
+    "prefix_probe_session_20260803132027502.ts\n";
+  assert.equal(
+    firstHlsSegmentStartedAtMs(manifest),
+    Date.UTC(2026, 7, 3, 13, 20, 12, 996),
+  );
+  assert.equal(
+    hlsMediaTimelineOffsetSec({
+      manifest,
+      sessionStartedAtMs: Date.UTC(2026, 7, 3, 13, 20, 10, 75),
+    }),
+    2.921,
+  );
+  assert.equal(
+    firstHlsSegmentStartedAtMs(
+      "#EXTM3U\n#EXTINF:10,\nsegment-without-time.ts\n",
+    ),
+    null,
+  );
+  assert.equal(
+    firstHlsSegmentStartedAtMs(
+      "#EXTM3U\n#EXTINF:10,\nprefix_20260230000000000.ts\n",
+    ),
+    null,
+  );
+});
+
+test("prefers Agora's NTP audio track start over the segment filename", () => {
+  const sessionStartedAtMs = Date.UTC(2026, 7, 3, 13, 20, 10, 75);
+  const audioStartedAtMs = Date.UTC(2026, 7, 3, 13, 20, 12, 855);
+  const manifest =
+    "#EXTM3U\n" +
+    "#EXT-X-AGORA-TRACK-EVENT:" +
+    "EVENT=START,TRACK_TYPE=AUDIO,TIME=20260803132012855\n" +
+    "#EXTINF:14.506,\n" +
+    "prefix_probe_session_20260803132012996.ts\n";
+  assert.equal(firstHlsAudioTrackStartedAtMs(manifest), audioStartedAtMs);
+  assert.equal(
+    hlsMediaTimelineOffsetSec({manifest, sessionStartedAtMs}),
+    2.78,
+  );
+  assert.equal(
+    firstHlsAudioTrackStartedAtMs(
+      "#EXTM3U\n" +
+      "#EXT-X-AGORA-TRACK-EVENT:" +
+      "EVENT=START,TRACK_TYPE=AUDIO,TIME=1785763212855\n",
+    ),
+    1785763212855,
+  );
+});
+
+test("measures future archive compensation from Agora audio frame time", () => {
+  assert.deepEqual(
+    resolveLiveAudioPlaybackCompensation({
+      timingVersion: 5,
+      hlsMediaStartedAtMs: 1785781298967,
+      audioCaptureStartedAtMs: 1785781297627,
+    }),
+    {compensationSec: 1.34, source: "agoraAudioFrame"},
+  );
+  assert.deepEqual(
+    resolveLiveAudioPlaybackCompensation({
+      timingVersion: 4,
+      hlsMediaStartedAtMs: 1785781298967,
+      audioCaptureStartedAtMs: 1785781297627,
+    }),
+    {compensationSec: 0, source: "legacy"},
+  );
+});
+
+test("falls back when an audio frame anchor cannot be trusted", () => {
+  assert.deepEqual(
+    resolveLiveAudioPlaybackCompensation({
+      timingVersion: 5,
+      hlsMediaStartedAtMs: 1785781305000,
+      audioCaptureStartedAtMs: 1785781297000,
+    }),
+    {compensationSec: 1.2, source: "fallback"},
+  );
+  assert.deepEqual(
+    resolveLiveAudioPlaybackCompensation({
+      timingVersion: 5,
+      hlsMediaStartedAtMs: null,
+      audioCaptureStartedAtMs: 0,
+    }),
+    {compensationSec: 1.2, source: "fallback"},
+  );
 });
 
 test("signs expiring HLS access without exposing credentials", () => {

@@ -63,6 +63,13 @@ bool shouldSuppressVideoPlayingUpdate({
   return !isPlaying && isBuffering;
 }
 
+bool shouldAdvanceAudioPosition({
+  required bool isPlaying,
+  required ProcessingState processingState,
+}) {
+  return isPlaying && processingState == ProcessingState.ready;
+}
+
 /// Tracks completion from the user's play/pause intent rather than a native
 /// player's momentary `isPlaying` value.
 ///
@@ -219,7 +226,10 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   Duration get position => _reportedPosition;
 
   Duration get _reportedPosition {
-    if (!_player.playing) {
+    if (!shouldAdvanceAudioPosition(
+      isPlaying: _player.playing,
+      processingState: _player.processingState,
+    )) {
       return _player.position;
     }
     _ensurePlaybackAnchor();
@@ -250,7 +260,10 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   }
 
   void _onPlayerPositionUpdate(Duration position) {
-    if (_player.playing) {
+    if (shouldAdvanceAudioPosition(
+      isPlaying: _player.playing,
+      processingState: _player.processingState,
+    )) {
       _ensurePlaybackAnchor();
       final driftMs =
           (position.inMilliseconds - _reportedPosition.inMilliseconds).abs();
@@ -260,6 +273,8 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
       }
       return;
     }
+    _anchorPosition = position;
+    _anchorWallTime = null;
     _emitPosition(position);
   }
 
@@ -279,7 +294,9 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
       _playingController.add(playing);
     }
     if (playing) {
-      _resetPlaybackAnchor(playing: true);
+      _resetPlaybackAnchor(
+        playing: _player.processingState == ProcessingState.ready,
+      );
       _startPositionRefresh();
     } else {
       _anchorWallTime = null;
@@ -289,6 +306,13 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
   }
 
   void _handleProcessingStateChanged(ProcessingState state) {
+    if (state == ProcessingState.ready && _player.playing) {
+      _resetPlaybackAnchor(position: _player.position, playing: true);
+      _publishCurrentPosition();
+    } else if (state != ProcessingState.ready) {
+      _resetPlaybackAnchor(position: _player.position, playing: false);
+      _publishCurrentPosition();
+    }
     if (state != ProcessingState.completed ||
         !_completionState.consumeNaturalCompletion() ||
         _completedController.isClosed) {

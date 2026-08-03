@@ -98,6 +98,12 @@ export function buildStartRequest({
         streamTypes: 0,
         maxIdleTime: 120,
         audioProfile: 1,
+        extensionParams: {
+          // Required for EXT-X-AGORA-TRACK-EVENT to use the same NTP time base
+          // as publisher board/audio-frame timestamps. Removing this makes the
+          // HLS audio origin less precise and can reintroduce sync drift.
+          enableNTPtimestamp: true,
+        },
       },
       recordingFileConfig: {
         avFileType: ["hls", "mp4"],

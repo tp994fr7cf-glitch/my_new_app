@@ -53,6 +53,24 @@ class LiveAudioAndroidRtcBackend implements LiveAudioRtcBackend {
   }
 
   @override
+  Future<int> getNtpWallTimeInMs() async {
+    final timestamp = await _channel.invokeMethod<int>('getNtpWallTimeInMs');
+    if (timestamp == null || timestamp <= 0) {
+      throw PlatformException(
+        code: 'agora_ntp_time_unavailable',
+        message: 'Agoraの同期時刻を取得できませんでした。',
+        details: timestamp,
+      );
+    }
+    return timestamp;
+  }
+
+  @override
+  Future<int?> getAudioCaptureStartNtpTimeInMs() {
+    return _channel.invokeMethod<int>('getAudioCaptureStartNtpTimeInMs');
+  }
+
+  @override
   Future<void> renewToken(String token) {
     return _invoke('renewToken', {'token': token});
   }
@@ -68,8 +86,8 @@ class LiveAudioAndroidRtcBackend implements LiveAudioRtcBackend {
   }
 
   @override
-  Future<void> muteAllRemoteAudioStreams(bool muted) {
-    return _invoke('muteAllRemoteAudioStreams', {'muted': muted});
+  Future<void> adjustPlaybackSignalVolume(int volume) {
+    return _invoke('adjustPlaybackSignalVolume', {'volume': volume});
   }
 
   @override

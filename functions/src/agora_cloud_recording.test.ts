@@ -43,6 +43,9 @@ test("builds live-broadcast audio HLS and MP4 payload for Google Cloud", () => {
         streamTypes: 0,
         maxIdleTime: 120,
         audioProfile: 1,
+        extensionParams: {
+          enableNTPtimestamp: true,
+        },
       },
       recordingFileConfig: {
         avFileType: ["hls", "mp4"],

@@ -5,17 +5,24 @@ import io.agora.rtc2.ChannelMediaOptions
 import io.agora.rtc2.ClientRoleOptions
 import io.agora.rtc2.Constants
 import io.agora.rtc2.DataStreamConfig
+import io.agora.rtc2.IAudioFrameObserver
 import io.agora.rtc2.IRtcEngineEventHandler
 import io.agora.rtc2.RtcEngine
 import io.agora.rtc2.RtcEngineConfig
+import io.agora.rtc2.audio.AudioParams
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.nio.ByteBuffer
 
 class MainActivity : FlutterActivity() {
     private var nativeRtcEngine: RtcEngine? = null
     private var nativeRtcAppId: String? = null
     private lateinit var liveAudioRtcChannel: MethodChannel
+    @Volatile
+    private var audioCaptureStartedAtNtpMs: Long? = null
+    @Volatile
+    private var awaitingAudioCaptureStart = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -90,6 +97,11 @@ class MainActivity : FlutterActivity() {
                         requireNotNull(call.argument<String>("channelName"))
                     val uid = requireNotNull(call.argument<Number>("uid")).toInt()
                     val canPublish = call.argument<Boolean>("canPublish") == true
+                    if (canPublish) {
+                        startAudioCaptureTimingObservation(it)
+                    } else {
+                        stopAudioCaptureTimingObservation(it)
+                    }
                     it.joinChannel(
                         token,
                         channelName,
@@ -106,14 +118,35 @@ class MainActivity : FlutterActivity() {
                     )
                 }
 
+                "getNtpWallTimeInMs" -> {
+                    val engine = nativeRtcEngine
+                    if (engine == null) {
+                        result.error(
+                            "rtc_not_initialized",
+                            "Agora engine is not initialized.",
+                            null,
+                        )
+                    } else {
+                        result.success(engine.ntpWallTimeInMs)
+                    }
+                }
+
+                "getAudioCaptureStartNtpTimeInMs" -> {
+                    result.success(audioCaptureStartedAtNtpMs)
+                }
+
                 "renewToken" -> withEngine(result, call.method) {
                     it.renewToken(requireNotNull(call.argument<String>("token")))
                 }
 
                 "updateMediaOptions" -> withEngine(result, call.method) {
-                    it.updateChannelMediaOptions(
-                        mediaOptions(call.argument<Boolean>("canPublish") == true),
-                    )
+                    val canPublish = call.argument<Boolean>("canPublish") == true
+                    if (canPublish && audioCaptureStartedAtNtpMs == null) {
+                        startAudioCaptureTimingObservation(it)
+                    } else if (!canPublish) {
+                        stopAudioCaptureTimingObservation(it)
+                    }
+                    it.updateChannelMediaOptions(mediaOptions(canPublish))
                 }
 
                 "muteLocalAudioStream" -> withEngine(result, call.method) {
@@ -122,9 +155,9 @@ class MainActivity : FlutterActivity() {
                     )
                 }
 
-                "muteAllRemoteAudioStreams" -> withEngine(result, call.method) {
-                    it.muteAllRemoteAudioStreams(
-                        call.argument<Boolean>("muted") == true,
+                "adjustPlaybackSignalVolume" -> withEngine(result, call.method) {
+                    it.adjustPlaybackSignalVolume(
+                        requireNotNull(call.argument<Number>("volume")).toInt(),
                     )
                 }
 
@@ -256,6 +289,143 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private val audioFrameObserver = object : IAudioFrameObserver {
+        override fun onRecordAudioFrame(
+            channelId: String?,
+            type: Int,
+            samplesPerChannel: Int,
+            bytesPerSample: Int,
+            channels: Int,
+            samplesPerSec: Int,
+            buffer: ByteBuffer?,
+            renderTimeMs: Long,
+            avsyncType: Int,
+        ): Boolean {
+            if (!awaitingAudioCaptureStart || renderTimeMs <= 0) {
+                return true
+            }
+            val engine = nativeRtcEngine ?: return true
+            val monotonicNowMs = engine.currentMonotonicTimeInMs
+            val ntpNowMs = engine.ntpWallTimeInMs
+            // renderTimeMs may already be a wall-clock value or may use Agora's
+            // monotonic clock, depending on SDK/platform behavior. Convert the
+            // latter to NTP and keep the first outgoing frame as the session's
+            // capture anchor. Do not replace this with callback arrival time:
+            // that includes variable thread/encoding delay. This baseline may
+            // still be revised if a reproduced device issue proves the SDK
+            // timestamp semantics differ.
+            val candidateNtpMs = when {
+                renderTimeMs >= 1_000_000_000_000L -> renderTimeMs
+                monotonicNowMs >= renderTimeMs && ntpNowMs > 0 ->
+                    ntpNowMs - (monotonicNowMs - renderTimeMs)
+                else -> return true
+            }
+            if (candidateNtpMs <= 0) {
+                return true
+            }
+            synchronized(this@MainActivity) {
+                if (awaitingAudioCaptureStart && audioCaptureStartedAtNtpMs == null) {
+                    audioCaptureStartedAtNtpMs = candidateNtpMs
+                    awaitingAudioCaptureStart = false
+                    Log.i(
+                        LOG_TAG,
+                        "Captured Agora audio timeline start at $candidateNtpMs.",
+                    )
+                    runOnUiThread {
+                        nativeRtcEngine?.registerAudioFrameObserver(null)
+                    }
+                }
+            }
+            return true
+        }
+
+        override fun onPlaybackAudioFrame(
+            channelId: String?,
+            type: Int,
+            samplesPerChannel: Int,
+            bytesPerSample: Int,
+            channels: Int,
+            samplesPerSec: Int,
+            buffer: ByteBuffer?,
+            renderTimeMs: Long,
+            avsyncType: Int,
+        ) = false
+
+        override fun onMixedAudioFrame(
+            channelId: String?,
+            type: Int,
+            samplesPerChannel: Int,
+            bytesPerSample: Int,
+            channels: Int,
+            samplesPerSec: Int,
+            buffer: ByteBuffer?,
+            renderTimeMs: Long,
+            avsyncType: Int,
+        ) = false
+
+        override fun onEarMonitoringAudioFrame(
+            type: Int,
+            samplesPerChannel: Int,
+            bytesPerSample: Int,
+            channels: Int,
+            samplesPerSec: Int,
+            buffer: ByteBuffer?,
+            renderTimeMs: Long,
+            avsyncType: Int,
+        ) = false
+
+        override fun onPlaybackAudioFrameBeforeMixing(
+            channelId: String?,
+            uid: Int,
+            type: Int,
+            samplesPerChannel: Int,
+            bytesPerSample: Int,
+            channels: Int,
+            samplesPerSec: Int,
+            buffer: ByteBuffer?,
+            renderTimeMs: Long,
+            avsyncType: Int,
+            rtpTimestamp: Int,
+            presentationMs: Long,
+        ) = false
+
+        override fun getObservedAudioFramePosition() = 0
+
+        override fun getRecordAudioParams(): AudioParams? = null
+
+        override fun getPlaybackAudioParams(): AudioParams? = null
+
+        override fun getMixedAudioParams(): AudioParams? = null
+
+        override fun getEarMonitoringAudioParams(): AudioParams? = null
+    }
+
+    private fun startAudioCaptureTimingObservation(engine: RtcEngine) {
+        audioCaptureStartedAtNtpMs = null
+        awaitingAudioCaptureStart = true
+        val observerResult = engine.registerAudioFrameObserver(audioFrameObserver)
+        val formatResult = engine.setRecordingAudioFrameParameters(
+            AUDIO_FRAME_SAMPLE_RATE,
+            AUDIO_FRAME_CHANNELS,
+            Constants.RAW_AUDIO_FRAME_OP_MODE_READ_ONLY,
+            AUDIO_FRAME_SAMPLES_PER_CALL,
+        )
+        if (observerResult < 0 || formatResult < 0) {
+            awaitingAudioCaptureStart = false
+            engine.registerAudioFrameObserver(null)
+            Log.w(
+                LOG_TAG,
+                "Audio timing observer unavailable: observer=$observerResult, " +
+                    "format=$formatResult",
+            )
+        }
+    }
+
+    private fun stopAudioCaptureTimingObservation(engine: RtcEngine) {
+        awaitingAudioCaptureStart = false
+        engine.registerAudioFrameObserver(null)
+    }
+
     private fun mediaOptions(canPublish: Boolean): ChannelMediaOptions {
         return ChannelMediaOptions().apply {
             channelProfile = Constants.CHANNEL_PROFILE_LIVE_BROADCASTING
@@ -343,9 +513,12 @@ class MainActivity : FlutterActivity() {
         }
 
         Log.i(LOG_TAG, "Destroying the direct native Agora engine.")
+        nativeRtcEngine?.registerAudioFrameObserver(null)
         RtcEngine.destroy()
         nativeRtcEngine = null
         nativeRtcAppId = null
+        audioCaptureStartedAtNtpMs = null
+        awaitingAudioCaptureStart = false
         Log.i(LOG_TAG, "Direct native Agora engine destroyed.")
     }
 
@@ -353,5 +526,8 @@ class MainActivity : FlutterActivity() {
         private const val LIVE_AUDIO_RTC_CHANNEL =
             "com.example.my_new_app/live_audio_native_rtc"
         private const val LOG_TAG = "LiveAudioNativeRtc"
+        private const val AUDIO_FRAME_SAMPLE_RATE = 48000
+        private const val AUDIO_FRAME_CHANNELS = 1
+        private const val AUDIO_FRAME_SAMPLES_PER_CALL = 480
     }
 }

@@ -162,3 +162,10 @@ flutter run --dart-define=ENABLE_LIVE_AUDIO=true
 追っかけ再生では、参加者認証後に有効期限付きの再生URLを発行し、Functionsが
 HLSマニフェスト内の各ファイルを同じ保護された経路へ書き換えます。
 GCSのオブジェクト名やHMAC秘密鍵をクライアントへ渡すことはありません。
+
+新規配信では、板書時刻にAgora NTP時計を使用し、Cloud Recordingでも
+`enableNTPtimestamp`を有効にします。追っかけ再生と公開後の板書は、
+HLSの`EXT-X-AGORA-TRACK-EVENT`に記録された音声開始時刻を基準に補正します。
+さらにAndroidでは、最初に送信したAgora音声フレームの同期時刻を記録し、
+音声トラックが録画へ到着するまでの遅延を配信ごとに測定します。今後の配信では、
+この測定値だけ板書再生を遅らせ、測定できない場合のみ1.2秒を予備値として使用します。

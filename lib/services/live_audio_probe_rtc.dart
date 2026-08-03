@@ -60,6 +60,7 @@ class LiveAudioProbeRtcController {
   bool _disposed = false;
   bool _tokenRefreshInProgress = false;
   int _dataStreamGeneration = 0;
+  LiveAudioProbeRtcState _state = LiveAudioProbeRtcState.idle;
 
   Stream<LiveAudioProbeRtcStatus> get statuses => _statusController.stream;
   Stream<LiveAudioProbeMessage> get messages => _messageController.stream;
@@ -115,10 +116,10 @@ class LiveAudioProbeRtcController {
           }
         },
         onStreamMessageError: (code, missed) {
-          _emitStatus(
-            LiveAudioProbeRtcState.connected,
-            message: '板書データを$missed件受信できませんでした（$code）。',
-          );
+          final message = missed > 0
+              ? '板書データを$missed件受信できませんでした（$code）。'
+              : '板書データの受信が遅れています（$code）。';
+          _emitStatus(_state, message: message);
         },
         onTokenRefreshRequired: () {
           unawaited(_refreshCurrentToken());
@@ -202,7 +203,76 @@ class LiveAudioProbeRtcController {
     if (backend == null) {
       return;
     }
-    await backend.muteAllRemoteAudioStreams(muted);
+    await backend.adjustPlaybackSignalVolume(muted ? 0 : 100);
+  }
+
+  Future<bool> waitUntilConnected({
+    Duration timeout = const Duration(seconds: 8),
+    Duration pollInterval = const Duration(milliseconds: 250),
+  }) async {
+    final backend = _backend;
+    if (backend == null || _disposed) {
+      return false;
+    }
+    final stopwatch = Stopwatch()..start();
+    while (!_disposed) {
+      try {
+        if (await backend.isConnected()) {
+          _emitStatus(LiveAudioProbeRtcState.connected);
+          return true;
+        }
+      } catch (_) {
+        // A transient native query failure is retried until the timeout.
+      }
+      if (stopwatch.elapsed >= timeout) {
+        return false;
+      }
+      await Future<void>.delayed(pollInterval);
+    }
+    return false;
+  }
+
+  Future<int?> getNtpWallTimeInMs() async {
+    final backend = _backend;
+    if (backend == null || _disposed) {
+      return null;
+    }
+    try {
+      final timestamp = await backend.getNtpWallTimeInMs().timeout(
+        const Duration(seconds: 2),
+      );
+      return timestamp > 0 ? timestamp : null;
+    } catch (error) {
+      debugPrint('[LiveAudioRtc] Agora NTP time unavailable: $error');
+      return null;
+    }
+  }
+
+  Future<int?> waitForAudioCaptureStartNtpTimeInMs({
+    Duration timeout = const Duration(seconds: 3),
+    Duration pollInterval = const Duration(milliseconds: 50),
+  }) async {
+    final backend = _backend;
+    if (backend == null || _disposed) {
+      return null;
+    }
+    final stopwatch = Stopwatch()..start();
+    while (!_disposed) {
+      try {
+        final timestamp = await backend.getAudioCaptureStartNtpTimeInMs();
+        if (timestamp != null && timestamp > 0) {
+          return timestamp;
+        }
+      } catch (error) {
+        debugPrint('[LiveAudioRtc] audio capture time unavailable: $error');
+        return null;
+      }
+      if (stopwatch.elapsed >= timeout) {
+        return null;
+      }
+      await Future<void>.delayed(pollInterval);
+    }
+    return null;
   }
 
   Future<void> sendWhiteboardMessage(LiveAudioProbeMessage message) async {
@@ -406,6 +476,7 @@ class LiveAudioProbeRtcController {
 
   void _emitStatus(LiveAudioProbeRtcState state, {String? message}) {
     if (!_disposed && !_statusController.isClosed) {
+      _state = state;
       _statusController.add(LiveAudioProbeRtcStatus(state, message: message));
     }
   }

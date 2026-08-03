@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   canTransitionSessionState,
+  hasLiveAudioProbeExceededMaxDuration,
   isValidBoardSet,
   isValidLiveAudioJoinCode,
   isValidOptionalLinkId,
@@ -13,6 +14,7 @@ import {
   maximumAllowedGlobalTimestampSec,
   permissionForParticipant,
   resolveActivePresenterUid,
+  remainingLiveAudioProbeDurationSec,
   rtcUidForFirebaseUser,
   validateTimelineBoardReferences,
 } from "./live_audio_probe";
@@ -247,6 +249,55 @@ test("checks global timestamps from the segment start", () => {
       graceSec: 60,
     }),
     160,
+  );
+});
+
+test("limits every live session to one hour from its server start", () => {
+  const startedAtMs = 1000;
+  assert.equal(
+    remainingLiveAudioProbeDurationSec({
+      startedAtMs,
+      nowMs: startedAtMs,
+    }),
+    3600,
+  );
+  assert.equal(
+    remainingLiveAudioProbeDurationSec({
+      startedAtMs,
+      nowMs: startedAtMs + 3599500,
+    }),
+    1,
+  );
+  assert.equal(
+    hasLiveAudioProbeExceededMaxDuration({
+      startedAtMs,
+      nowMs: startedAtMs + 3599999,
+    }),
+    false,
+  );
+  assert.equal(
+    hasLiveAudioProbeExceededMaxDuration({
+      startedAtMs,
+      nowMs: startedAtMs + 3600000,
+    }),
+    true,
+  );
+});
+
+test("rejects invalid session start times for duration tokens", () => {
+  assert.equal(
+    remainingLiveAudioProbeDurationSec({
+      startedAtMs: 0,
+      nowMs: Date.now(),
+    }),
+    0,
+  );
+  assert.equal(
+    hasLiveAudioProbeExceededMaxDuration({
+      startedAtMs: "invalid",
+      nowMs: Date.now(),
+    }),
+    false,
   );
 });
 

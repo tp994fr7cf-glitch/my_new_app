@@ -19,6 +19,8 @@ void main() {
           calls.add(call);
           return switch (call.method) {
             'isConnected' => true,
+            'getNtpWallTimeInMs' => 1785775079412,
+            'getAudioCaptureStartNtpTimeInMs' => 1785775078123,
             'createDataStream' => 7,
             _ => null,
           };
@@ -35,6 +37,9 @@ void main() {
       canPublish: true,
     );
     expect(await backend.isConnected(), isTrue);
+    expect(await backend.getNtpWallTimeInMs(), 1785775079412);
+    expect(await backend.getAudioCaptureStartNtpTimeInMs(), 1785775078123);
+    await backend.adjustPlaybackSignalVolume(0);
     expect(await backend.createDataStream(), 7);
     await backend.sendStreamMessage(7, Uint8List.fromList([1, 2, 3]));
     await backend.leave();
@@ -46,6 +51,9 @@ void main() {
       'setClientRole',
       'join',
       'isConnected',
+      'getNtpWallTimeInMs',
+      'getAudioCaptureStartNtpTimeInMs',
+      'adjustPlaybackSignalVolume',
       'createDataStream',
       'sendStreamMessage',
       'leave',
@@ -57,7 +65,8 @@ void main() {
       'uid': 0xffffffff,
       'canPublish': true,
     });
-    final sendArguments = Map<Object?, Object?>.from(calls[6].arguments as Map);
+    expect(calls[7].arguments, {'volume': 0});
+    final sendArguments = Map<Object?, Object?>.from(calls[9].arguments as Map);
     expect(sendArguments['streamId'], 7);
     expect(sendArguments['data'], [1, 2, 3]);
   });

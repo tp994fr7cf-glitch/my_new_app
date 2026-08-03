@@ -89,6 +89,45 @@ void main() {
     },
   );
 
+  test('preloads and advances through three adjacent audio segments', () async {
+    final firstAudioPlayer = FakeLessonMediaPlayback();
+    final secondAudioPlayer = FakeLessonMediaPlayback();
+    final playback = createTrackingPlaylistPlayback(
+      audioPlayers: [firstAudioPlayer, secondAudioPlayer],
+    );
+    final segments = List.generate(
+      3,
+      (index) => LessonMediaSegment(
+        id: 'audio-$index',
+        order: index,
+        mediaType: 'audio',
+        url: 'https://example.com/audio-$index.mp4',
+        durationSec: 10,
+      ),
+    );
+
+    await playback.openSegments(segments);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(firstAudioPlayer.openedUrls.single.path, '/audio-0.mp4');
+    expect(secondAudioPlayer.openedUrls.single.path, '/audio-1.mp4');
+
+    await playback.play();
+    await firstAudioPlayer.simulateNaturalCompletion(emitStoppedFirst: true);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(playback.currentSegmentIndex, 1);
+    expect(playback.isPlaying, isTrue);
+    expect(firstAudioPlayer.openedUrls.last.path, '/audio-2.mp4');
+
+    await secondAudioPlayer.simulateNaturalCompletion(emitStoppedFirst: true);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(playback.currentSegmentIndex, 2);
+    expect(playback.isPlaying, isTrue);
+    expect(firstAudioPlayer.isPlaying, isTrue);
+  });
+
   test(
     'openSegments preloads the next segment into the pooled player',
     () async {

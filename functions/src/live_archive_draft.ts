@@ -174,6 +174,7 @@ export function adjustLiveArchiveBoardSet({
   archiveTimelineOffsetSec,
   recordingWallDurationSec,
   mediaDurationSec,
+  preserveElapsedTime = false,
 }: {
   boardSet: unknown;
   baselineBoardSet: unknown;
@@ -181,6 +182,7 @@ export function adjustLiveArchiveBoardSet({
   archiveTimelineOffsetSec: number;
   recordingWallDurationSec: number;
   mediaDurationSec: number;
+  preserveElapsedTime?: boolean;
 }): Record<string, unknown> | null {
   if (
     !isRecord(boardSet) ||
@@ -213,14 +215,19 @@ export function adjustLiveArchiveBoardSet({
   ) {
     return null;
   }
-  const scale = mediaDurationSec / recordingWallDurationSec;
+  const scale = preserveElapsedTime ?
+    1 :
+    mediaDurationSec / recordingWallDurationSec;
+  const maximumLocalSec = preserveElapsedTime ?
+    mediaDurationSec :
+    recordingWallDurationSec;
   const liveStartSec = segmentStartSec + archiveTimelineOffsetSec;
   const adjustedTimestamp = (value: unknown): number | null => {
     if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
       return null;
     }
     const recordingLocalSec = Math.min(
-      recordingWallDurationSec,
+      maximumLocalSec,
       Math.max(0, value - liveStartSec),
     );
     return Number(

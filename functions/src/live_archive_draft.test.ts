@@ -182,6 +182,21 @@ test("adjusts only board data added during the live archive", () => {
       scale: 2,
     },
   ]);
+
+  const preservedElapsedTime = adjustLiveArchiveBoardSet({
+    boardSet,
+    baselineBoardSet,
+    segmentStartSec: 30,
+    archiveTimelineOffsetSec: 5,
+    recordingWallDurationSec: 20,
+    mediaDurationSec: 10,
+    preserveElapsedTime: true,
+  });
+  assert.ok(preservedElapsedTime);
+  const preservedBoards =
+    preservedElapsedTime.boards as typeof boardSet.boards;
+  assert.equal(preservedBoards[0].layers[0].strokes[1].timestampSec, 40);
+  assert.equal(preservedBoards[0].layers[0].strokes[1].endTimestampSec, 40);
 });
 
 test("replaces only a reserved live placeholder", () => {

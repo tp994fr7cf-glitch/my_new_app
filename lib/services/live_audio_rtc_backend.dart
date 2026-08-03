@@ -42,13 +42,17 @@ abstract interface class LiveAudioRtcBackend {
 
   Future<bool> isConnected();
 
+  Future<int> getNtpWallTimeInMs();
+
+  Future<int?> getAudioCaptureStartNtpTimeInMs();
+
   Future<void> renewToken(String token);
 
   Future<void> updateMediaOptions({required bool canPublish});
 
   Future<void> muteLocalAudioStream(bool muted);
 
-  Future<void> muteAllRemoteAudioStreams(bool muted);
+  Future<void> adjustPlaybackSignalVolume(int volume);
 
   Future<int> createDataStream();
 

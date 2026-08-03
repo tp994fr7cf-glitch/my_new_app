@@ -1,7 +1,11 @@
 import {createHash} from "node:crypto";
 
 export const liveAudioProbeTokenLifetimeSec = 15 * 60;
-export const liveAudioArchiveTokenLifetimeSec = 24 * 60 * 60;
+export const liveAudioProbeMaxDurationSec = 60 * 60;
+export const liveAudioProbeMaxDurationMs =
+  liveAudioProbeMaxDurationSec * 1000;
+export const liveAudioArchiveTokenLifetimeSec =
+  liveAudioProbeMaxDurationSec;
 export const maxLiveAudioProbeStrokes = 2000;
 export const maxLiveAudioProbePointsPerStroke = 600;
 export const maxLiveAudioBoardSetBytes = 750 * 1024;
@@ -58,6 +62,46 @@ export type WhiteboardStroke = {
   strokeWidth: number;
   points: Array<{x: number; y: number; timestampSec?: number}>;
 };
+
+export function remainingLiveAudioProbeDurationSec({
+  startedAtMs,
+  nowMs,
+}: {
+  startedAtMs: unknown;
+  nowMs: number;
+}): number {
+  if (
+    typeof startedAtMs !== "number" ||
+    !Number.isSafeInteger(startedAtMs) ||
+    startedAtMs <= 0 ||
+    !Number.isSafeInteger(nowMs) ||
+    nowMs < 0
+  ) {
+    return 0;
+  }
+  return Math.max(
+    0,
+    Math.ceil(
+      (startedAtMs + liveAudioProbeMaxDurationMs - nowMs) / 1000,
+    ),
+  );
+}
+
+export function hasLiveAudioProbeExceededMaxDuration({
+  startedAtMs,
+  nowMs,
+}: {
+  startedAtMs: unknown;
+  nowMs: number;
+}): boolean {
+  return (
+    typeof startedAtMs === "number" &&
+    Number.isSafeInteger(startedAtMs) &&
+    startedAtMs > 0 &&
+    Number.isSafeInteger(nowMs) &&
+    nowMs >= startedAtMs + liveAudioProbeMaxDurationMs
+  );
+}
 
 export function rtcUidForFirebaseUser(firebaseUid: string): number {
   const digest = createHash("sha256").update(firebaseUid).digest();

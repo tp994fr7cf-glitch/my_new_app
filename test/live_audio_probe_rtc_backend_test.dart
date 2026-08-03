@@ -108,6 +108,92 @@ void main() {
 
     await controller.dispose();
   });
+
+  test('silences playback without unsubscribing from remote audio', () async {
+    final backend = _FakeLiveAudioRtcBackend();
+    final controller = LiveAudioProbeRtcController(
+      refreshToken: () async => _credentials,
+      createBackend: () => backend,
+    );
+    await controller.join(_credentials);
+
+    await controller.setLiveAudioMuted(true);
+    await controller.setLiveAudioMuted(false);
+
+    expect(backend.playbackVolumes, [0, 100]);
+    await controller.dispose();
+  });
+
+  test('reads the Agora NTP wall clock from the active RTC engine', () async {
+    final backend = _FakeLiveAudioRtcBackend();
+    final controller = LiveAudioProbeRtcController(
+      refreshToken: () async => _credentials,
+      createBackend: () => backend,
+    );
+    await controller.join(_credentials);
+
+    expect(await controller.getNtpWallTimeInMs(), 1785775079412);
+    await controller.dispose();
+  });
+
+  test('waits for the first captured Agora audio frame time', () async {
+    final backend = _FakeLiveAudioRtcBackend();
+    final controller = LiveAudioProbeRtcController(
+      refreshToken: () async => _credentials,
+      createBackend: () => backend,
+    );
+    await controller.join(_credentials);
+
+    final timestamp = controller.waitForAudioCaptureStartNtpTimeInMs(
+      timeout: const Duration(milliseconds: 200),
+      pollInterval: const Duration(milliseconds: 10),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 25));
+    backend.audioCaptureStartNtpMs = 1785775078123;
+
+    expect(await timestamp, 1785775078123);
+    await controller.dispose();
+  });
+
+  test('waits for the existing RTC connection to recover', () async {
+    final backend = _FakeLiveAudioRtcBackend();
+    final controller = LiveAudioProbeRtcController(
+      refreshToken: () async => _credentials,
+      createBackend: () => backend,
+    );
+    await controller.join(_credentials);
+    backend.connected = false;
+
+    final recovered = controller.waitUntilConnected(
+      timeout: const Duration(milliseconds: 200),
+      pollInterval: const Duration(milliseconds: 10),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 25));
+    backend.connected = true;
+
+    expect(await recovered, isTrue);
+    await controller.dispose();
+  });
+
+  test('data timeout does not overwrite a reconnecting RTC state', () async {
+    final backend = _FakeLiveAudioRtcBackend();
+    final controller = LiveAudioProbeRtcController(
+      refreshToken: () async => _credentials,
+      createBackend: () => backend,
+    );
+    final statuses = <LiveAudioProbeRtcStatus>[];
+    final subscription = controller.statuses.listen(statuses.add);
+    await controller.join(_credentials);
+
+    backend.emitConnectionInterrupted();
+    backend.emitStreamMessageTimeout();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(statuses.last.state, LiveAudioProbeRtcState.reconnecting);
+    expect(statuses.last.message, contains('117'));
+    await subscription.cancel();
+    await controller.dispose();
+  });
 }
 
 const _credentials = LiveAudioProbeCredentials(
@@ -122,9 +208,12 @@ const _credentials = LiveAudioProbeCredentials(
 class _FakeLiveAudioRtcBackend implements LiveAudioRtcBackend {
   final calls = <String>[];
   final sentMessages = <Uint8List>[];
+  final playbackVolumes = <int>[];
   Completer<void>? nextSendGate;
   int concurrentSends = 0;
   int maximumConcurrentSends = 0;
+  bool connected = true;
+  int? audioCaptureStartNtpMs;
   LiveAudioRtcEventHandler _handler = const LiveAudioRtcEventHandler();
 
   @override
@@ -159,7 +248,14 @@ class _FakeLiveAudioRtcBackend implements LiveAudioRtcBackend {
   }
 
   @override
-  Future<bool> isConnected() async => true;
+  Future<bool> isConnected() async => connected;
+
+  @override
+  Future<int> getNtpWallTimeInMs() async => 1785775079412;
+
+  @override
+  Future<int?> getAudioCaptureStartNtpTimeInMs() async =>
+      audioCaptureStartNtpMs;
 
   @override
   Future<int> createDataStream() async {
@@ -177,7 +273,9 @@ class _FakeLiveAudioRtcBackend implements LiveAudioRtcBackend {
   Future<void> muteLocalAudioStream(bool muted) async {}
 
   @override
-  Future<void> muteAllRemoteAudioStreams(bool muted) async {}
+  Future<void> adjustPlaybackSignalVolume(int volume) async {
+    playbackVolumes.add(volume);
+  }
 
   @override
   Future<void> sendStreamMessage(int streamId, Uint8List data) async {
@@ -203,5 +301,14 @@ class _FakeLiveAudioRtcBackend implements LiveAudioRtcBackend {
   @override
   Future<void> release() async {
     calls.add('release');
+  }
+
+  void emitConnectionInterrupted() {
+    connected = false;
+    _handler.onConnectionInterrupted?.call();
+  }
+
+  void emitStreamMessageTimeout() {
+    _handler.onStreamMessageError?.call('117', 0);
   }
 }

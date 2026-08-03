@@ -99,6 +99,12 @@ class LiveAudioAgoraRtcBackend implements LiveAudioRtcBackend {
   }
 
   @override
+  Future<int> getNtpWallTimeInMs() => _activeEngine.getNtpWallTimeInMs();
+
+  @override
+  Future<int?> getAudioCaptureStartNtpTimeInMs() async => null;
+
+  @override
   Future<void> renewToken(String token) => _activeEngine.renewToken(token);
 
   @override
@@ -112,8 +118,8 @@ class LiveAudioAgoraRtcBackend implements LiveAudioRtcBackend {
   }
 
   @override
-  Future<void> muteAllRemoteAudioStreams(bool muted) {
-    return _activeEngine.muteAllRemoteAudioStreams(muted);
+  Future<void> adjustPlaybackSignalVolume(int volume) {
+    return _activeEngine.adjustPlaybackSignalVolume(volume);
   }
 
   @override
