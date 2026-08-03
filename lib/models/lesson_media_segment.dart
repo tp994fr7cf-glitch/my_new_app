@@ -2,6 +2,8 @@ import 'dart:math';
 
 import '../utils/firestore_parsing.dart';
 
+const String lessonMediaSourceLiveArchive = 'liveArchive';
+
 class LessonMediaSegment {
   const LessonMediaSegment({
     required this.id,
@@ -10,6 +12,9 @@ class LessonMediaSegment {
     this.mediaType = 'video',
     this.url = '',
     this.durationSec = 0,
+    this.durationMs = 0,
+    this.sourceKind = '',
+    this.liveSessionId = '',
   });
 
   final String id;
@@ -18,10 +23,17 @@ class LessonMediaSegment {
   final String mediaType;
   final String url;
   final int durationSec;
+  final int durationMs;
+  final String sourceKind;
+  final String liveSessionId;
 
   bool get hasUrl => url.trim().isNotEmpty;
   bool get isAudio => mediaType == 'audio';
   bool get isVideo => !isAudio;
+  bool get isLiveArchive => sourceKind == lessonMediaSourceLiveArchive;
+  bool get isLivePlaceholder => isLiveArchive && !hasUrl;
+  double get durationSecExact =>
+      durationMs > 0 ? durationMs / 1000 : durationSec.toDouble();
 
   factory LessonMediaSegment.fromMap(Map data) {
     return LessonMediaSegment(
@@ -31,6 +43,9 @@ class LessonMediaSegment {
       mediaType: parseStringField(data['mediaType'], fallback: 'video'),
       url: parseStringField(data['url']),
       durationSec: parseIntField(data['durationSec']),
+      durationMs: parseIntField(data['durationMs']),
+      sourceKind: parseStringField(data['sourceKind']),
+      liveSessionId: parseStringField(data['liveSessionId']),
     );
   }
 
@@ -42,6 +57,9 @@ class LessonMediaSegment {
       'mediaType': mediaType,
       'url': url,
       if (durationSec > 0) 'durationSec': durationSec,
+      if (durationMs > 0) 'durationMs': durationMs,
+      if (sourceKind.isNotEmpty) 'sourceKind': sourceKind,
+      if (liveSessionId.isNotEmpty) 'liveSessionId': liveSessionId,
     };
   }
 
@@ -52,6 +70,9 @@ class LessonMediaSegment {
     String? mediaType,
     String? url,
     int? durationSec,
+    int? durationMs,
+    String? sourceKind,
+    String? liveSessionId,
   }) {
     return LessonMediaSegment(
       id: id ?? this.id,
@@ -60,6 +81,9 @@ class LessonMediaSegment {
       mediaType: mediaType ?? this.mediaType,
       url: url ?? this.url,
       durationSec: durationSec ?? this.durationSec,
+      durationMs: durationMs ?? this.durationMs,
+      sourceKind: sourceKind ?? this.sourceKind,
+      liveSessionId: liveSessionId ?? this.liveSessionId,
     );
   }
 

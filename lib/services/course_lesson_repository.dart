@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../models/course.dart';
+import '../models/lesson_media_segment.dart';
 import '../models/lesson_payload_size_validator.dart';
 import '../models/lesson_whiteboard_board_set.dart';
 
@@ -228,10 +229,76 @@ class CourseLessonRepository {
         throw StateError(lessonDraftRevisionConflictMessage);
       }
       final nextDraftRevision = currentDraftRevision + 1;
+      final existingMediaSegments = draftSnapshot.data()?['mediaSegments'];
       transaction.set(draftReference, {
         'lessonId': lessonId,
         'boardSet': boardSet.toMap(),
+        if (existingMediaSegments is List)
+          'mediaSegments': existingMediaSegments,
         'baseLessonDocumentVersion': lesson.documentVersion,
+        'draftRevision': nextDraftRevision,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      return nextDraftRevision;
+    });
+  }
+
+  Future<int> saveLessonMediaDraft({
+    required String courseId,
+    required String lessonId,
+    required int expectedDocumentVersion,
+    required int expectedDraftRevision,
+    required List<LessonMediaSegment> mediaSegments,
+  }) async {
+    final courseReference = FirebaseFirestore.instance
+        .collection('courses')
+        .doc(courseId);
+    final lessonReference = courseReference.collection('lessons').doc(lessonId);
+    final draftReference = courseReference
+        .collection('lessonDrafts')
+        .doc(lessonId);
+    return FirebaseFirestore.instance.runTransaction<int>((transaction) async {
+      final lessonSnapshot = await transaction.get(lessonReference);
+      if (!lessonSnapshot.exists) {
+        throw StateError('レッスンが見つかりません。');
+      }
+      final lesson = CourseLesson.fromMap(
+        lessonSnapshot.data() ?? {},
+        id: lessonSnapshot.id,
+      );
+      if (lesson.documentVersion != expectedDocumentVersion) {
+        throw const LessonDocumentVersionConflict();
+      }
+      final draftSnapshot = await transaction.get(draftReference);
+      if (!draftSnapshot.exists) {
+        throw StateError('書き物の下書きが見つかりません。');
+      }
+      final draftData = draftSnapshot.data() ?? {};
+      final currentDraftRevision = _positiveInt(draftData['draftRevision']);
+      if (currentDraftRevision != expectedDraftRevision) {
+        throw StateError(lessonDraftRevisionConflictMessage);
+      }
+      if (draftData['baseLessonDocumentVersion'] != lesson.documentVersion ||
+          draftData['boardSet'] is! Map) {
+        throw const LessonDocumentVersionConflict();
+      }
+      final normalizedSegments = LessonMediaSegment.normalizeOrders(
+        mediaSegments,
+      );
+      if (normalizedSegments.length > 100 ||
+          normalizedSegments.any(
+            (segment) =>
+                segment.id.trim().isEmpty ||
+                segment.url.trim().isEmpty ||
+                segment.durationSec <= 0,
+          )) {
+        throw StateError('録音した音声の下書きデータが不正です。');
+      }
+      final nextDraftRevision = currentDraftRevision + 1;
+      transaction.update(draftReference, {
+        'mediaSegments': normalizedSegments
+            .map((segment) => segment.toMap())
+            .toList(),
         'draftRevision': nextDraftRevision,
         'updatedAt': FieldValue.serverTimestamp(),
       });

@@ -89,6 +89,45 @@ void main() {
     },
   );
 
+  test('preloads and advances through three adjacent audio segments', () async {
+    final firstAudioPlayer = FakeLessonMediaPlayback();
+    final secondAudioPlayer = FakeLessonMediaPlayback();
+    final playback = createTrackingPlaylistPlayback(
+      audioPlayers: [firstAudioPlayer, secondAudioPlayer],
+    );
+    final segments = List.generate(
+      3,
+      (index) => LessonMediaSegment(
+        id: 'audio-$index',
+        order: index,
+        mediaType: 'audio',
+        url: 'https://example.com/audio-$index.mp4',
+        durationSec: 10,
+      ),
+    );
+
+    await playback.openSegments(segments);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(firstAudioPlayer.openedUrls.single.path, '/audio-0.mp4');
+    expect(secondAudioPlayer.openedUrls.single.path, '/audio-1.mp4');
+
+    await playback.play();
+    await firstAudioPlayer.simulateNaturalCompletion(emitStoppedFirst: true);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(playback.currentSegmentIndex, 1);
+    expect(playback.isPlaying, isTrue);
+    expect(firstAudioPlayer.openedUrls.last.path, '/audio-2.mp4');
+
+    await secondAudioPlayer.simulateNaturalCompletion(emitStoppedFirst: true);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(playback.currentSegmentIndex, 2);
+    expect(playback.isPlaying, isTrue);
+    expect(firstAudioPlayer.isPlaying, isTrue);
+  });
+
   test(
     'openSegments preloads the next segment into the pooled player',
     () async {
@@ -304,6 +343,58 @@ void main() {
     expect(playback.currentSegmentIndex, 0);
     expect(playback.isPlaying, isFalse);
   });
+
+  test(
+    'natural completion keeps the exact millisecond timeline endpoint',
+    () async {
+      final audioPlayer = FakeLessonMediaPlayback(
+        totalDuration: const Duration(milliseconds: 7200),
+      );
+      final playback = createTrackingPlaylistPlayback(
+        audioPlayers: [audioPlayer],
+      );
+      await playback.openSegments([
+        const LessonMediaSegment(
+          id: 'recorded',
+          order: 0,
+          mediaType: 'audio',
+          url: 'https://example.com/recorded.m4a',
+          durationSec: 7,
+          durationMs: 7200,
+        ),
+      ]);
+      await playback.play();
+
+      await audioPlayer.simulateNaturalCompletion();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.totalDurationSec, 7);
+      expect(playback.globalPositionSec, closeTo(7.2, 0.0001));
+      expect(playback.isPlaying, isFalse);
+    },
+  );
+
+  test(
+    'overlapping and repeated pause requests pause the native player once',
+    () async {
+      final audioPlayer = FakeLessonMediaPlayback(
+        pauseDelay: const Duration(milliseconds: 30),
+        republishPositionOnPause: true,
+      );
+      final playback = createTrackingPlaylistPlayback(
+        audioPlayers: [audioPlayer],
+      );
+      await playback.openSegments(twoPartLessonSegments());
+      await Future<void>.delayed(Duration.zero);
+      await playback.play();
+
+      await Future.wait(List.generate(10, (_) => playback.pause()));
+      await playback.pause();
+
+      expect(audioPlayer.pauseCallCount, 1);
+      expect(playback.isPlaying, isFalse);
+    },
+  );
 
   test('small near-end seek does not auto-advance', () async {
     final audioPlayer = FakeLessonMediaPlayback(

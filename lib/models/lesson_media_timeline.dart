@@ -30,9 +30,17 @@ class LessonMediaTimeline {
   }
 
   int get totalDurationSec {
-    var total = 0;
+    final exact = totalDurationSecExact;
+    if (exact <= 0) {
+      return 0;
+    }
+    return exact.floor().clamp(1, 2147483647).toInt();
+  }
+
+  double get totalDurationSecExact {
+    var total = 0.0;
     for (final segment in orderedSegments) {
-      total += segment.durationSec;
+      total += segment.durationSecExact;
     }
     return total;
   }
@@ -63,7 +71,7 @@ class LessonMediaTimeline {
       if (index == segmentIndex) {
         return start;
       }
-      start += ordered[index].durationSec;
+      start += ordered[index].durationSecExact;
     }
     return start;
   }
@@ -85,7 +93,7 @@ class LessonMediaTimeline {
       return 0;
     }
     final start = startGlobalSecForSegmentId(segmentId);
-    final clampedLocal = localSec.clamp(0.0, segment.durationSec.toDouble());
+    final clampedLocal = localSec.clamp(0.0, segment.durationSecExact);
     return start + clampedLocal;
   }
 
@@ -98,7 +106,7 @@ class LessonMediaTimeline {
       return 0;
     }
     final segment = ordered[segmentIndex];
-    final clampedLocal = localSec.clamp(0.0, segment.durationSec.toDouble());
+    final clampedLocal = localSec.clamp(0.0, segment.durationSecExact);
     return startGlobalSecForSegmentIndex(segmentIndex) + clampedLocal;
   }
 
@@ -108,11 +116,11 @@ class LessonMediaTimeline {
       throw StateError('Cannot resolve position on an empty timeline.');
     }
 
-    final clampedGlobal = globalSec.clamp(0.0, totalDurationSec.toDouble());
+    final clampedGlobal = globalSec.clamp(0.0, totalDurationSecExact);
     var cursor = 0.0;
     for (var index = 0; index < ordered.length; index++) {
       final segment = ordered[index];
-      final segmentDuration = segment.durationSec.toDouble();
+      final segmentDuration = segment.durationSecExact;
       final segmentEnd = cursor + segmentDuration;
       final isLastSegment = index == ordered.length - 1;
       if (clampedGlobal < segmentEnd || isLastSegment) {
@@ -133,8 +141,8 @@ class LessonMediaTimeline {
     return LessonMediaPosition(
       segmentIndex: lastIndex,
       segmentId: lastSegment.id,
-      localSec: lastSegment.durationSec.toDouble(),
-      globalSec: totalDurationSec.toDouble(),
+      localSec: lastSegment.durationSecExact,
+      globalSec: totalDurationSecExact,
       segment: lastSegment,
     );
   }

@@ -32,6 +32,31 @@ void main() {
     expect(course.teacherListOrder, 4);
   });
 
+  test('Course parses permanent deletion state', () {
+    final deletedAt = Timestamp.fromDate(DateTime.utc(2026, 7, 28, 0, 30));
+    final course = Course.fromMap({
+      'id': 'deleted-course',
+      'title': '削除済み講座',
+      'status': courseStatusDeleted,
+      'deletedAt': deletedAt,
+    });
+
+    expect(course.status, courseStatusDeleted);
+    expect(course.deletedAt, deletedAt);
+    expect(course.isDeleted, isTrue);
+  });
+
+  test('Course recognizes in-progress deletion state', () {
+    final course = Course.fromMap({
+      'id': 'deleting-course',
+      'title': '削除処理中',
+      'status': courseStatusDeleting,
+    });
+
+    expect(course.isDeleting, isTrue);
+    expect(course.isDeleted, isFalse);
+  });
+
   test('teacher courses use saved order with title fallback', () {
     final courses = [
       _course(id: 'title-last', title: 'C'),
@@ -150,6 +175,76 @@ void main() {
     await tester.tap(find.widgetWithText(OutlinedButton, '再表示').first);
     await tester.pumpAndSettle();
     expect(updates.last.hidden, isFalse);
+  });
+
+  testWidgets('teacher permanently deletes a course after confirmation', (
+    tester,
+  ) async {
+    final deleted = <String?>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherCourseListPage(
+          user: _FakeUser(),
+          courseStream: Stream.value([
+            _course(id: 'course-to-delete', title: '削除対象'),
+            _course(
+              id: 'already-deleted',
+              title: '表示されない講座',
+              status: courseStatusDeleted,
+            ),
+          ]),
+          visibilityUpdater: (_, _) async {},
+          orderSaver: (_) async {},
+          deletionUpdater: (course) async {
+            deleted.add(course.id);
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('削除対象'), findsOneWidget);
+    expect(find.text('表示されない講座'), findsNothing);
+    await tester.tap(find.widgetWithText(OutlinedButton, '削除'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('この操作は取り消せず、再公開もできません。'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, '削除する'));
+    await tester.pumpAndSettle();
+
+    expect(deleted, ['course-to-delete']);
+    expect(find.text('講座を削除しました。'), findsOneWidget);
+  });
+
+  testWidgets('teacher can resume interrupted course deletion', (tester) async {
+    final retried = <String?>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherCourseListPage(
+          user: _FakeUser(),
+          courseStream: Stream.value([
+            _course(
+              id: 'deleting-course',
+              title: '削除途中の講座',
+              status: courseStatusDeleting,
+            ),
+          ]),
+          visibilityUpdater: (_, _) async {},
+          orderSaver: (_) async {},
+          deletionUpdater: (course) async {
+            retried.add(course.id);
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('削除処理中'), findsOneWidget);
+    expect(find.text('削除途中の講座'), findsOneWidget);
+    await tester.tap(find.widgetWithText(OutlinedButton, '削除処理を再開'));
+    await tester.pumpAndSettle();
+
+    expect(retried, ['deleting-course']);
+    expect(find.text('講座を削除'), findsNothing);
   });
 
   testWidgets('teacher course order is saved after reordering', (tester) async {
@@ -309,6 +404,7 @@ Course _course({
   bool teacherListHidden = false,
   Timestamp? createdAt,
   Timestamp? updatedAt,
+  String status = courseStatusPublished,
   List<CourseLesson> lessons = const [
     CourseLesson(title: 'レッスン1', duration: '10分'),
   ],
@@ -328,6 +424,7 @@ Course _course({
     lessons: lessons,
     createdAt: createdAt,
     updatedAt: updatedAt,
+    status: status,
     teacherListHidden: teacherListHidden,
     teacherListOrder: teacherListOrder,
   );

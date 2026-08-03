@@ -1,0 +1,76 @@
+group 'io.agora.agora_rtc_ng'
+version '1.0-SNAPSHOT'
+
+def safeExtGet(prop, fallback) {
+    rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+}
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+}
+
+rootProject.allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+apply plugin: 'com.android.library'
+
+android {
+    // Conditional for compatibility with AGP <4.2.
+    if (project.android.hasProperty("namespace")) {
+        namespace 'io.agora.agora_rtc_ng'
+    }
+    compileSdkVersion safeExtGet('compileSdkVersion', 31)
+
+    defaultConfig {
+        minSdkVersion safeExtGet('minSdkVersion', 21)
+
+        consumerProguardFiles 'consumer-rules.pro'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    sourceSets {
+        if (isDev(project)) {
+           main.jniLibs.srcDirs += 'libs'
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+        }
+    }
+}
+
+dependencies {
+  if (isDev(project)) {
+    api fileTree(dir: "libs", include: ["*.jar"])
+  } else {
+    // iris dependencies start
+    api 'io.agora.rtc:iris-rtc:4.6.2-build.1'
+    // iris dependencies end
+
+    // This app uses only core RTC audio and data streams. Even Agora's
+    // voice-sdk aggregate pulls in optional AI noise suppression, audio beauty,
+    // spatial audio, and voice-drive extensions. Keep only the basic voice
+    // runtime. Android live audio bypasses Iris because dependency reduction
+    // alone did not resolve the CreateIrisApiEngine cold-start hang.
+    api 'io.agora.rtc:voice-rtc-basic:4.6.2'
+  }
+}
+
+static boolean isDev(Project project) {
+  def devFile = project.file('.plugin_dev')
+  return devFile.exists()
+}

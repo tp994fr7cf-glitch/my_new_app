@@ -13,6 +13,9 @@ const String lessonContentVersionConflictMessage =
     'レッスン情報が更新されています。画面を再読み込みしてください。';
 const String lessonDraftRevisionConflictMessage =
     '書き物の下書きが更新されています。画面を再読み込みしてください。';
+const String courseStatusPublished = 'published';
+const String courseStatusDeleting = 'deleting';
+const String courseStatusDeleted = 'deleted';
 
 int logicalLessonContentVersion(Object? storedValue) {
   if (storedValue == null) {
@@ -84,6 +87,8 @@ class Course {
     this.lessonContentVersion = 0,
     this.createdAt,
     this.updatedAt,
+    this.status = courseStatusPublished,
+    this.deletedAt,
     this.teacherListHidden = false,
     this.teacherListOrder,
   });
@@ -105,10 +110,14 @@ class Course {
   final int lessonContentVersion;
   final Timestamp? createdAt;
   final Timestamp? updatedAt;
+  final String status;
+  final Timestamp? deletedAt;
   final bool teacherListHidden;
   final int? teacherListOrder;
 
   String get storageId => id ?? title.replaceAll('/', '_');
+  bool get isDeleting => status == courseStatusDeleting;
+  bool get isDeleted => status == courseStatusDeleted;
 
   factory Course.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     return Course.fromMap(doc.data() ?? {}, id: doc.id);
@@ -145,6 +154,8 @@ class Course {
       ),
       createdAt: data['createdAt'] as Timestamp?,
       updatedAt: data['updatedAt'] as Timestamp?,
+      status: data['status'] as String? ?? courseStatusPublished,
+      deletedAt: data['deletedAt'] as Timestamp?,
       teacherListHidden: data['teacherListHidden'] == true,
       teacherListOrder: _parseTeacherListOrder(data['teacherListOrder']),
       lessons: lessonsData is List
@@ -186,6 +197,7 @@ class Course {
     return {
       ...toSummaryMap(),
       'lessonSchemaVersion': 2,
+      'status': status,
       if (lessonContentVersion > 0)
         'lessonContentVersion': lessonContentVersion,
     };
@@ -226,6 +238,8 @@ class Course {
       lessonContentVersion: lessonContentVersion,
       createdAt: createdAt,
       updatedAt: updatedAt,
+      status: status,
+      deletedAt: deletedAt,
       teacherListHidden: teacherListHidden,
       teacherListOrder: teacherListOrder,
     );

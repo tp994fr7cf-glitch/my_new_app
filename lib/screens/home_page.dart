@@ -5,12 +5,14 @@ import 'package:flutter/material.dart';
 
 import '../models/course.dart';
 import '../models/public_user_profile.dart';
+import '../services/course_access_service.dart';
 import '../services/course_catalog_service.dart';
 import '../services/course_privacy_service.dart';
 import 'course_entry_gate.dart';
 import 'course_create_page.dart';
 import 'course_list_page.dart';
 import 'learning_records_page.dart';
+import 'live_audio_probe_page.dart';
 import 'public_user_profile_page.dart';
 import 'role_switch_page.dart';
 import 'teacher_application_page.dart';
@@ -99,6 +101,21 @@ class StudentHomePage extends StatelessWidget {
             const SizedBox(height: 24),
             _ProfileSummaryCard(user: user, profile: profile, roles: roles),
             const SizedBox(height: 16),
+            if (liveAudioProbeEnabled)
+              _HomeActionCard(
+                icon: Icons.podcasts,
+                title: 'ライブ音声・板書配信',
+                description: '先生から届いた配信コードを使い、ライブ音声とホワイトボードへ参加します。',
+                buttonText: '配信へ参加',
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          LiveAudioProbePage(user: user, activeRole: 'student'),
+                    ),
+                  );
+                },
+              ),
             _ResumeLearningCard(
               user: user,
               enrollmentRecordsStream: enrollmentRecordsStream,
@@ -203,6 +220,40 @@ Stream<List<_ResumeEnrollment>>? _providedEnrollmentRecordsStream(
   );
 }
 
+Stream<Set<String>?> _publishedCourseIdsStream() {
+  if (Firebase.apps.isEmpty) {
+    return Stream.value(null);
+  }
+  return FirebaseFirestore.instance
+      .collection('courses')
+      .where('status', isEqualTo: courseStatusPublished)
+      .snapshots()
+      .map((snapshot) => snapshot.docs.map((doc) => doc.id).toSet());
+}
+
+String _enrollmentCourseId(_ResumeEnrollment enrollment) {
+  final data = enrollment.data;
+  final courseData = data['course'];
+  return data['courseId'] as String? ??
+      (courseData is Map ? courseData['id'] as String? : null) ??
+      enrollment.id;
+}
+
+List<_ResumeEnrollment> _accessibleEnrollments(
+  List<_ResumeEnrollment> enrollments,
+  Set<String>? publishedCourseIds,
+) {
+  if (publishedCourseIds == null) {
+    return enrollments;
+  }
+  return enrollments
+      .where(
+        (enrollment) =>
+            publishedCourseIds.contains(_enrollmentCourseId(enrollment)),
+      )
+      .toList();
+}
+
 List<_ResumeEnrollment> _sortedEnrollments(List<_ResumeEnrollment> docs) {
   final sortedDocs = [...docs];
 
@@ -268,6 +319,19 @@ Future<void> _resumeLearningFromEnrollment(
   );
   final courseId =
       data['courseId'] as String? ?? fallbackCourse.id ?? enrollment.id;
+  final courseAccessible = await const CourseAccessService()
+      .isLearnerAccessible(courseId);
+  if (!context.mounted) {
+    return;
+  }
+  if (!courseAccessible) {
+    messenger
+      ?..clearSnackBars()
+      ..showSnackBar(
+        const SnackBar(content: Text('この講座は削除されているため開けません。学習記録は引き続き確認できます。')),
+      );
+    return;
+  }
   final activeCourse = await const CourseCatalogService().fetchCourse(
     courseId,
     fallback: fallbackCourse,
@@ -341,72 +405,83 @@ class _ResumeLearningCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<List<_ResumeEnrollment>>(
-      stream:
-          _providedEnrollmentRecordsStream(enrollmentRecordsStream) ??
-          _enrollmentRecordsStreamFor(user),
-      builder: (context, snapshot) {
-        final enrollments = snapshot.hasData
-            ? _sortedEnrollments(snapshot.data!)
-            : <_ResumeEnrollment>[];
-        final previewEnrollments = enrollments
-            .take(_resumeLearningPreviewLimit)
-            .toList();
+    return StreamBuilder<Set<String>?>(
+      stream: _publishedCourseIdsStream(),
+      builder: (context, courseSnapshot) {
+        return StreamBuilder<List<_ResumeEnrollment>>(
+          stream:
+              _providedEnrollmentRecordsStream(enrollmentRecordsStream) ??
+              _enrollmentRecordsStreamFor(user),
+          builder: (context, snapshot) {
+            final enrollments = snapshot.hasData
+                ? _accessibleEnrollments(
+                    _sortedEnrollments(snapshot.data!),
+                    courseSnapshot.data,
+                  )
+                : <_ResumeEnrollment>[];
+            final previewEnrollments = enrollments
+                .take(_resumeLearningPreviewLimit)
+                .toList();
 
-        return Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Icon(Icons.play_circle, size: 40),
-                const SizedBox(height: 12),
-                const Text(
-                  '学習中の講座',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                if (snapshot.connectionState == ConnectionState.waiting)
-                  const Text('学習状況を確認しています...')
-                else if (enrollments.isEmpty)
-                  const Text('受講中の講座や前回の続きは、ここに表示していきます。')
-                else ...[
-                  for (final enrollment in previewEnrollments) ...[
-                    _EnrollmentResumeTile(
-                      enrollment: enrollment,
-                      onResume: () async {
-                        await _resumeLearningFromEnrollment(
-                          context,
-                          user: user,
-                          enrollment: enrollment,
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 8),
-                  ],
-                  if (enrollments.length > _resumeLearningPreviewLimit)
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: OutlinedButton.icon(
-                        onPressed: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => _AllResumeLearningPage(
-                                user: user,
-                                enrollmentRecordsStream:
-                                    enrollmentRecordsStream,
-                              ),
-                            ),
-                          );
-                        },
-                        icon: const Icon(Icons.list),
-                        label: Text('もっと見る（全${enrollments.length}件）'),
+            return Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.play_circle, size: 40),
+                    const SizedBox(height: 12),
+                    const Text(
+                      '学習中の講座',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
-                ],
-              ],
-            ),
-          ),
+                    const SizedBox(height: 8),
+                    if (snapshot.connectionState == ConnectionState.waiting)
+                      const Text('学習状況を確認しています...')
+                    else if (enrollments.isEmpty)
+                      const Text('受講中の講座や前回の続きは、ここに表示していきます。')
+                    else ...[
+                      for (final enrollment in previewEnrollments) ...[
+                        _EnrollmentResumeTile(
+                          enrollment: enrollment,
+                          onResume: () async {
+                            await _resumeLearningFromEnrollment(
+                              context,
+                              user: user,
+                              enrollment: enrollment,
+                            );
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      if (enrollments.length > _resumeLearningPreviewLimit)
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: OutlinedButton.icon(
+                            onPressed: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => _AllResumeLearningPage(
+                                    user: user,
+                                    enrollmentRecordsStream:
+                                        enrollmentRecordsStream,
+                                  ),
+                                ),
+                              );
+                            },
+                            icon: const Icon(Icons.list),
+                            label: Text('もっと見る（全${enrollments.length}件）'),
+                          ),
+                        ),
+                    ],
+                  ],
+                ),
+              ),
+            );
+          },
         );
       },
     );
@@ -427,50 +502,61 @@ class _AllResumeLearningPage extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('学習中の講座')),
       body: SafeArea(
-        child: StreamBuilder<List<_ResumeEnrollment>>(
-          stream:
-              _providedEnrollmentRecordsStream(enrollmentRecordsStream) ??
-              _enrollmentRecordsStreamFor(user),
-          builder: (context, snapshot) {
-            final enrollments = snapshot.hasData
-                ? _sortedEnrollments(snapshot.data!)
-                : <_ResumeEnrollment>[];
+        child: StreamBuilder<Set<String>?>(
+          stream: _publishedCourseIdsStream(),
+          builder: (context, courseSnapshot) {
+            return StreamBuilder<List<_ResumeEnrollment>>(
+              stream:
+                  _providedEnrollmentRecordsStream(enrollmentRecordsStream) ??
+                  _enrollmentRecordsStreamFor(user),
+              builder: (context, snapshot) {
+                final enrollments = snapshot.hasData
+                    ? _accessibleEnrollments(
+                        _sortedEnrollments(snapshot.data!),
+                        courseSnapshot.data,
+                      )
+                    : <_ResumeEnrollment>[];
 
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
 
-            if (enrollments.isEmpty) {
-              return const Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('受講中の講座や前回の続きは、ここに表示していきます。'),
-              );
-            }
+                if (enrollments.isEmpty) {
+                  return const Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Text('受講中の講座や前回の続きは、ここに表示していきます。'),
+                  );
+                }
 
-            return ListView(
-              padding: const EdgeInsets.all(24),
-              children: [
-                const Text(
-                  'すべての学習中講座',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                Text('全${enrollments.length}件'),
-                const SizedBox(height: 16),
-                for (final enrollment in enrollments) ...[
-                  _EnrollmentResumeTile(
-                    enrollment: enrollment,
-                    onResume: () async {
-                      await _resumeLearningFromEnrollment(
-                        context,
-                        user: user,
+                return ListView(
+                  padding: const EdgeInsets.all(24),
+                  children: [
+                    const Text(
+                      'すべての学習中講座',
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text('全${enrollments.length}件'),
+                    const SizedBox(height: 16),
+                    for (final enrollment in enrollments) ...[
+                      _EnrollmentResumeTile(
                         enrollment: enrollment,
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                ],
-              ],
+                        onResume: () async {
+                          await _resumeLearningFromEnrollment(
+                            context,
+                            user: user,
+                            enrollment: enrollment,
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                  ],
+                );
+              },
             );
           },
         ),
@@ -555,6 +641,21 @@ class TeacherHomePage extends StatelessWidget {
           const SizedBox(height: 24),
           _ProfileSummaryCard(user: user, profile: profile, roles: roles),
           const SizedBox(height: 16),
+          if (liveAudioProbeEnabled)
+            _HomeActionCard(
+              icon: Icons.podcasts,
+              title: 'ライブ音声・板書配信',
+              description: '音声とホワイトボードを配信し、発表者の交代やアーカイブを管理します。',
+              buttonText: '配信画面を開く',
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        LiveAudioProbePage(user: user, activeRole: 'teacher'),
+                  ),
+                );
+              },
+            ),
           _HomeActionCard(
             icon: Icons.video_library,
             title: '自分の講座',

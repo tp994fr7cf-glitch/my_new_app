@@ -28,39 +28,39 @@ void main() {
     expect(restored.strokes.first.points.last.timestampSec, 11.0);
   });
 
-  test('visibleWhiteboardStrokes filters legacy strokes by stroke start time', () {
-    const strokes = [
-      WhiteboardStroke(
-        id: 'a',
-        timestampSec: 5,
-        points: [
-          WhiteboardPoint(x: 0, y: 0),
-          WhiteboardPoint(x: 1, y: 1),
-        ],
-      ),
-      WhiteboardStroke(
-        id: 'b',
-        timestampSec: 20,
-        points: [
-          WhiteboardPoint(x: 0.2, y: 0.2),
-          WhiteboardPoint(x: 0.8, y: 0.8),
-        ],
-      ),
-    ];
+  test(
+    'visibleWhiteboardStrokes filters legacy strokes by stroke start time',
+    () {
+      const strokes = [
+        WhiteboardStroke(
+          id: 'a',
+          timestampSec: 5,
+          points: [WhiteboardPoint(x: 0, y: 0), WhiteboardPoint(x: 1, y: 1)],
+        ),
+        WhiteboardStroke(
+          id: 'b',
+          timestampSec: 20,
+          points: [
+            WhiteboardPoint(x: 0.2, y: 0.2),
+            WhiteboardPoint(x: 0.8, y: 0.8),
+          ],
+        ),
+      ];
 
-    expect(
-      visibleWhiteboardStrokes(strokes: strokes, positionSec: 4.9),
-      isEmpty,
-    );
-    expect(
-      visibleWhiteboardStrokes(strokes: strokes, positionSec: 5),
-      hasLength(1),
-    );
-    expect(
-      visibleWhiteboardStrokes(strokes: strokes, positionSec: 30),
-      hasLength(2),
-    );
-  });
+      expect(
+        visibleWhiteboardStrokes(strokes: strokes, positionSec: 4.9),
+        isEmpty,
+      );
+      expect(
+        visibleWhiteboardStrokes(strokes: strokes, positionSec: 5),
+        hasLength(1),
+      );
+      expect(
+        visibleWhiteboardStrokes(strokes: strokes, positionSec: 30),
+        hasLength(2),
+      );
+    },
+  );
 
   test('visibleWhiteboardStrokes reveals timed points progressively', () {
     const stroke = WhiteboardStroke(
@@ -95,9 +95,7 @@ void main() {
   });
 
   test('shouldSampleWhiteboardPoint thins dense points', () {
-    const points = [
-      WhiteboardPoint(x: 0.1, y: 0.1, timestampSec: 1.0),
-    ];
+    const points = [WhiteboardPoint(x: 0.1, y: 0.1, timestampSec: 1.0)];
 
     expect(
       shouldSampleWhiteboardPoint(
@@ -158,101 +156,107 @@ void main() {
     expect(merged.strokes.single.id, 'draft');
   });
 
-  test('visibleWhiteboardStrokes uses exact seconds for fractional stroke starts', () {
-    const strokes = [
-      WhiteboardStroke(
-        id: 'a',
-        timestampSec: 1.3,
-        points: [
-          WhiteboardPoint(x: 0, y: 0, timestampSec: 1.3),
-          WhiteboardPoint(x: 1, y: 1, timestampSec: 1.8),
+  test(
+    'visibleWhiteboardStrokes uses exact seconds for fractional stroke starts',
+    () {
+      const strokes = [
+        WhiteboardStroke(
+          id: 'a',
+          timestampSec: 1.3,
+          points: [
+            WhiteboardPoint(x: 0, y: 0, timestampSec: 1.3),
+            WhiteboardPoint(x: 1, y: 1, timestampSec: 1.8),
+          ],
+        ),
+        WhiteboardStroke(
+          id: 'b',
+          timestampSec: 2.1,
+          points: [
+            WhiteboardPoint(x: 0.2, y: 0.2, timestampSec: 2.1),
+            WhiteboardPoint(x: 0.8, y: 0.8, timestampSec: 2.4),
+          ],
+        ),
+      ];
+
+      expect(
+        visibleWhiteboardStrokes(strokes: strokes, positionSec: 1),
+        isEmpty,
+      );
+      expect(
+        visibleWhiteboardStrokes(strokes: strokes, positionSec: 1.3),
+        isEmpty,
+      );
+      expect(
+        visibleWhiteboardStrokes(strokes: strokes, positionSec: 1.8),
+        hasLength(1),
+      );
+      expect(
+        visibleWhiteboardStrokes(strokes: strokes, positionSec: 2.09),
+        hasLength(1),
+      );
+      expect(
+        visibleWhiteboardStrokes(strokes: strokes, positionSec: 2.4),
+        hasLength(2),
+      );
+    },
+  );
+
+  test(
+    'resolveWhiteboardForLessonPublish prefers saved draft over working copy',
+    () {
+      const published = LessonWhiteboard(
+        strokes: [
+          WhiteboardStroke(
+            id: 'published',
+            timestampSec: 0,
+            points: [
+              WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
+              WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
+            ],
+          ),
         ],
-      ),
-      WhiteboardStroke(
-        id: 'b',
-        timestampSec: 2.1,
-        points: [
-          WhiteboardPoint(x: 0.2, y: 0.2, timestampSec: 2.1),
-          WhiteboardPoint(x: 0.8, y: 0.8, timestampSec: 2.4),
+      );
+      const draft = LessonWhiteboard(
+        strokes: [
+          WhiteboardStroke(
+            id: 'draft',
+            timestampSec: 0,
+            points: [
+              WhiteboardPoint(x: 0.2, y: 0.2, timestampSec: 0),
+              WhiteboardPoint(x: 0.8, y: 0.8, timestampSec: 10),
+            ],
+          ),
         ],
-      ),
-    ];
+      );
+      const unsavedWorking = LessonWhiteboard(
+        strokes: [
+          WhiteboardStroke(
+            id: 'unsaved',
+            timestampSec: 0,
+            points: [
+              WhiteboardPoint(x: 0.0, y: 0.0, timestampSec: 0),
+              WhiteboardPoint(x: 1.0, y: 1.0, timestampSec: 10),
+            ],
+          ),
+        ],
+      );
 
-    expect(
-      visibleWhiteboardStrokes(strokes: strokes, positionSec: 1),
-      isEmpty,
-    );
-    expect(
-      visibleWhiteboardStrokes(strokes: strokes, positionSec: 1.3),
-      isEmpty,
-    );
-    expect(
-      visibleWhiteboardStrokes(strokes: strokes, positionSec: 1.8),
-      hasLength(1),
-    );
-    expect(
-      visibleWhiteboardStrokes(strokes: strokes, positionSec: 2.09),
-      hasLength(1),
-    );
-    expect(
-      visibleWhiteboardStrokes(strokes: strokes, positionSec: 2.4),
-      hasLength(2),
-    );
-  });
-
-  test('resolveWhiteboardForLessonPublish prefers saved draft over working copy', () {
-    const published = LessonWhiteboard(
-      strokes: [
-        WhiteboardStroke(
-          id: 'published',
-          timestampSec: 0,
-          points: [
-            WhiteboardPoint(x: 0.1, y: 0.5, timestampSec: 0),
-            WhiteboardPoint(x: 0.9, y: 0.5, timestampSec: 10),
-          ],
+      expect(
+        resolveWhiteboardForLessonPublish(
+          publishedWhiteboard: published,
+          draftWhiteboard: draft,
+          workingWhiteboard: unsavedWorking,
         ),
-      ],
-    );
-    const draft = LessonWhiteboard(
-      strokes: [
-        WhiteboardStroke(
-          id: 'draft',
-          timestampSec: 0,
-          points: [
-            WhiteboardPoint(x: 0.2, y: 0.2, timestampSec: 0),
-            WhiteboardPoint(x: 0.8, y: 0.8, timestampSec: 10),
-          ],
+        draft,
+      );
+      expect(
+        resolveWhiteboardForLessonPublish(
+          publishedWhiteboard: published,
+          draftWhiteboard: null,
+          workingWhiteboard: unsavedWorking,
         ),
-      ],
-    );
-    const unsavedWorking = LessonWhiteboard(
-      strokes: [
-        WhiteboardStroke(
-          id: 'unsaved',
-          timestampSec: 0,
-          points: [
-            WhiteboardPoint(x: 0.0, y: 0.0, timestampSec: 0),
-            WhiteboardPoint(x: 1.0, y: 1.0, timestampSec: 10),
-          ],
-        ),
-      ],
-    );
-
-    expect(
-      resolveWhiteboardForLessonPublish(
-        publishedWhiteboard: published,
-        draftWhiteboard: draft,
-        workingWhiteboard: unsavedWorking,
-      ),
-      draft,
-    );
-    expect(
-      resolveWhiteboardForLessonPublish(
-        publishedWhiteboard: published,
-        draftWhiteboard: null,
-        workingWhiteboard: unsavedWorking,
-      ),
-      published,
-    );
-  });
+        published,
+      );
+    },
+  );
 }

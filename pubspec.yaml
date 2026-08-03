@@ -44,6 +44,16 @@ dependencies:
   just_audio: ^0.10.5
   video_player: ^2.10.1
   web: ^1.1.1
+  record: ^7.1.1
+  path_provider: ^2.1.6
+  agora_rtc_engine:
+    path: third_party/agora_rtc_engine
+  cloud_functions: ^6.3.5
+
+dependency_overrides:
+  # Agora 6.6.3 incorrectly restricts ffi to 1.x although its generated
+  # bindings are compatible with the 2.x version required by path_provider.
+  ffi: ^2.2.0
 
 dev_dependencies:
   flutter_test:

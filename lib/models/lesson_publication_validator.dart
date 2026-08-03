@@ -4,7 +4,7 @@ import 'lesson_media_segment.dart';
 
 const String lessonPlaybackModeLockedError = '公開済みのパートがあるため、再生モードは変更できません。';
 const String lessonPublishedSegmentsLockedError =
-    '公開済みのパートはタイトル以外の内容や順序を変更・削除できません。新しいパートは末尾に追加してください。';
+    '公開済みのパートと予約済みの配信パートは、タイトル以外の内容や順序を変更・削除できません。';
 const String lessonInvalidSegmentIdError = 'パートIDが空欄または重複しているため保存できません。';
 const String lessonInvalidPublishedSegmentIdsError =
     '公開対象のパートIDが空欄、重複、または存在しないため保存できません。';
@@ -133,28 +133,36 @@ String? validateAppendOnlyLessonPublication({
 
   final previousOrdered = _orderedWithoutNormalizing(previous.mediaSegments);
   final nextOrdered = _orderedWithoutNormalizing(next.mediaSegments);
-  final previousLocked = previousOrdered
-      .where((segment) => previousLockedIds.contains(segment.id))
-      .toList();
 
-  if (previousLocked.length != previousLockedIds.length ||
-      !_isLockedPrefix(previousOrdered, previousLockedIds)) {
+  if (!_hasValidPublishedLayout(previousOrdered, previousLockedIds)) {
     return lessonPublishedSegmentsLockedError;
   }
 
-  if (nextOrdered.length < previousLocked.length) {
+  final protectedIndexes = <int>[
+    for (var index = 0; index < previousOrdered.length; index++)
+      if (previousLockedIds.contains(previousOrdered[index].id) ||
+          previousOrdered[index].isLivePlaceholder)
+        index,
+  ];
+  if (protectedIndexes.isNotEmpty &&
+      nextOrdered.length <= protectedIndexes.last) {
     return lessonPublishedSegmentsLockedError;
   }
 
-  for (var index = 0; index < previousLocked.length; index++) {
-    if (!_lockedFieldsMatch(previousLocked[index], nextOrdered[index])) {
+  for (final index in protectedIndexes) {
+    final previousSegment = previousOrdered[index];
+    final nextSegment = nextOrdered[index];
+    final fieldsMatch = previousLockedIds.contains(previousSegment.id)
+        ? _lockedFieldsMatch(previousSegment, nextSegment)
+        : _reservedLiveFieldsMatch(previousSegment, nextSegment);
+    if (!fieldsMatch) {
       return lessonPublishedSegmentsLockedError;
     }
   }
 
   if (!nextLockedIds.containsAll(previousLockedIds) ||
       nextLockedIds.length > nextOrdered.length ||
-      !_isLockedPrefix(nextOrdered, nextLockedIds)) {
+      !_hasValidPublishedLayout(nextOrdered, nextLockedIds)) {
     return lessonPublishedSegmentsLockedError;
   }
 
@@ -175,14 +183,21 @@ List<LessonMediaSegment> _orderedWithoutNormalizing(
     ..sort((a, b) => a.order.compareTo(b.order));
 }
 
-bool _isLockedPrefix(List<LessonMediaSegment> ordered, Set<String> lockedIds) {
+bool _hasValidPublishedLayout(
+  List<LessonMediaSegment> ordered,
+  Set<String> lockedIds,
+) {
   if (lockedIds.length > ordered.length) {
     return false;
   }
-  for (var index = 0; index < ordered.length; index++) {
-    final shouldBeLocked = index < lockedIds.length;
-    if (lockedIds.contains(ordered[index].id) != shouldBeLocked) {
+  var reachedEditableTail = false;
+  for (final segment in ordered) {
+    final isLocked = lockedIds.contains(segment.id);
+    if (isLocked && reachedEditableTail) {
       return false;
+    }
+    if (!isLocked && !segment.isLiveArchive) {
+      reachedEditableTail = true;
     }
   }
   return true;
@@ -193,7 +208,23 @@ bool _lockedFieldsMatch(LessonMediaSegment previous, LessonMediaSegment next) {
       previous.mediaType == next.mediaType &&
       previous.url == next.url &&
       previous.durationSec == next.durationSec &&
+      previous.durationMs == next.durationMs &&
+      previous.sourceKind == next.sourceKind &&
+      previous.liveSessionId == next.liveSessionId &&
       previous.order == next.order;
+}
+
+bool _reservedLiveFieldsMatch(
+  LessonMediaSegment previous,
+  LessonMediaSegment next,
+) {
+  return previous.isLivePlaceholder &&
+      previous.id == next.id &&
+      previous.mediaType == next.mediaType &&
+      previous.sourceKind == next.sourceKind &&
+      previous.order == next.order &&
+      (previous.liveSessionId.isEmpty ||
+          previous.liveSessionId == next.liveSessionId);
 }
 
 bool _hasValidUniqueSegmentIds(List<LessonMediaSegment> segments) {

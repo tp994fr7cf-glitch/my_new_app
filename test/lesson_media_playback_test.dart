@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:my_new_app/services/lesson_media_playback.dart';
 
 void main() {
@@ -96,6 +97,33 @@ void main() {
       );
       expect(
         shouldSuppressVideoPlayingUpdate(isPlaying: true, isBuffering: false),
+        isFalse,
+      );
+    });
+  });
+
+  group('shouldAdvanceAudioPosition', () {
+    test('advances only while audio is actually ready and playing', () {
+      expect(
+        shouldAdvanceAudioPosition(
+          isPlaying: true,
+          processingState: ProcessingState.ready,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldAdvanceAudioPosition(
+          isPlaying: true,
+          processingState: ProcessingState.buffering,
+        ),
+        isFalse,
+        reason: '板書時刻は音声のバッファリング中に先行してはいけません。',
+      );
+      expect(
+        shouldAdvanceAudioPosition(
+          isPlaying: false,
+          processingState: ProcessingState.ready,
+        ),
         isFalse,
       );
     });

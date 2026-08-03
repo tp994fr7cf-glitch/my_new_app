@@ -406,6 +406,109 @@ void main() {
     expect(find.text('回答コメントはまだありません。'), findsOneWidget);
   });
 
+  testWidgets(
+    'Deleted course records keep content but block comment navigation',
+    (WidgetTester tester) async {
+      final now = Timestamp.fromDate(DateTime(2026, 7, 28, 0, 40));
+      final question = LessonQuestion(
+        id: 'deleted-course-question',
+        authorId: 'user-a',
+        authorName: '学習者',
+        courseId: 'deleted-course',
+        courseTitle: '削除済み講座',
+        lessonNumber: 1,
+        lessonTitle: '保存されたレッスン',
+        title: '',
+        body: '削除後も残る質問本文です。',
+        visibility: LessonQuestionVisibility.teacherOnly,
+        target: LessonQuestionTarget.teacher,
+        attachmentTypes: const [],
+        updatedAt: now,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LearningRecordsPage(
+            user: _FakeUser(),
+            lessonViewSegmentsStream: const Stream.empty(),
+            learningEventsStream: const Stream.empty(),
+            quizAttemptsStream: const Stream.empty(),
+            lessonNotesStream: const Stream.empty(),
+            lessonQuestionsStream: Stream.value([question]),
+            lessonQuestionAnswersStream: const Stream.empty(),
+            courseAccessResolver: (_) async => false,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('質問・回答コメントを見る'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('削除後も残る質問本文です。'), findsOneWidget);
+      final questionBody = find.text('削除後も残る質問本文です。');
+      await tester.ensureVisible(questionBody);
+      await tester.pumpAndSettle();
+      await tester.tap(questionBody);
+      await tester.pumpAndSettle();
+
+      expect(find.text('質問詳細'), findsNothing);
+      expect(
+        find.text('この講座は削除されているため、コメント欄は開けません。学習記録の内容は引き続き確認できます。'),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('Deleted course notes open in standalone edit screen', (
+    WidgetTester tester,
+  ) async {
+    final note = LessonNote(
+      id: 'deleted-course-note',
+      authorId: 'user-a',
+      authorName: '学習者',
+      courseId: 'deleted-course',
+      courseTitle: '削除済み講座',
+      lessonNumber: 1,
+      lessonTitle: '保存されたレッスン',
+      title: '残したメモ',
+      body: '削除後も編集できる本文',
+      folderId: '',
+      folderName: '',
+      visibility: LessonNoteVisibility.public,
+      tags: const [],
+      attachmentTypes: const [],
+      hasAudioAttachment: false,
+      isCopied: false,
+      canPublish: true,
+      updatedAt: Timestamp.fromDate(DateTime(2026, 7, 28, 0, 45)),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LearningRecordsPage(
+          user: _FakeUser(),
+          lessonViewSegmentsStream: const Stream.empty(),
+          learningEventsStream: const Stream.empty(),
+          quizAttemptsStream: const Stream.empty(),
+          lessonNotesStream: Stream.value([note]),
+          lessonQuestionsStream: const Stream.empty(),
+          lessonQuestionAnswersStream: const Stream.empty(),
+          courseAccessResolver: (_) async => false,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('レッスンメモ'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('メモを開いて編集'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('学習記録のメモ'), findsOneWidget);
+    expect(find.text('残したメモ'), findsOneWidget);
+    expect(find.text('削除後も編集できる本文'), findsOneWidget);
+    expect(find.textContaining('再公開はできません'), findsOneWidget);
+  });
+
   testWidgets('Learning records show only student comments in student mode', (
     WidgetTester tester,
   ) async {

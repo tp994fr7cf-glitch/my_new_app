@@ -1,15 +1,315 @@
-# 引き継ぎノート（my_new_app / レッスン再生・ホワイトボード修正後）
+# 引き継ぎノート（my_new_app / Agora技術検証準備後）
 
-最終更新: 2026-07-09
+最終更新: 2026-08-04
 
-**⚠️ 現在の状態: 音声⇄動画の切り替え不具合の修正は、ユーザーの判断でいったん保留中です。**
-**次の agent は、ユーザーから明示的に「この続きをやってほしい」と言われない限り、
-この不具合を自発的に直そうとしないでください。** 詳細は本ファイル末尾「8. 引き継ぎ用
-コピペブロック」を参照。
+**2026-08-04、Agoraライブ音声＋板書の同期方式は本番反映・Android実機確認済みです。**
+**次のagentは最初に「0-B. ライブ配信の音声・板書同期」を読んでください。**
+**現在の方式は安易に単純化しない一方、再現可能な不具合が見つかった場合は、
+メモを変更禁止と解釈せず、証拠に基づいて必要な修正を行ってください。**
+
+**最新機能「録音しながら書く」は、Android実機でユーザー確認済みです。**
+**ホワイトボードの最大8倍ズーム・パン・ミニマップ・先生表示追従も、
+2026-07-27にAndroid実機でユーザーが「全て成功しているように見える」と確認済みです。**
+**実装ブランチ `cursor/android-audio-whiteboard-recording-c48f` はGitHubへpush済みですが、
+まだmainへマージされていません。**
+
+**以前発生していた音声⇄動画の切り替え不具合は、2026-07-23時点でユーザーが修正済みと確認しています。**
+本書後半のPR #60〜#64に関する記述は過去の経緯・回帰防止資料であり、
+現在の未解決事項として扱わないでください。
 対象リポジトリ: https://github.com/tp994fr7cf-glitch/my_new_app
 本番 Web: https://my-new-app-naona-20260523.web.app
 Firebase プロジェクト: my-new-app-naona-20260523
 Firebase Console: https://console.firebase.google.com/project/my-new-app-naona-20260523/overview
+
+---
+
+## 0-B. 2026-08-04 ライブ配信の音声・板書同期（現在の実機確認済み基準）
+
+ユーザーがAndroid実機で、同じレッスン内の単一・複数配信パートについて、
+追っかけ再生と公開後再生を確認した。以前の数秒～十数秒のずれと、
+複数パートでずれが増える問題は解消し、現在は配信開始直後に音声が約1秒遅れることがあるが、
+約10秒後にはずれが大幅に小さくなる状態である。約2分の確認では後半へずれが広がる兆候はない。
+ユーザーは、この状態を一旦「ずれ修正の完成形」として扱うことを希望している。
+
+ただし、これは**変更禁止を意味しない**。まだ見つかっていない不具合をユーザーが報告した場合は、
+実機データ・音声波形・ログで再現と原因を確認したうえで修正してよい。メモを理由に必要な修正を
+拒んだり、現行方式が常に正しいと決めつけたりしないこと。一方、根拠のない整理・単純化や、
+追っかけ再生／公開後再生の片方だけを変更することは避ける。
+
+現在の同期方式（`archiveTimingVersion = 5`）:
+
+1. 板書時刻はAgora NTPを基準にし、端末の単調時計でアンカーからの経過を進める。
+2. Cloud Recordingで`enableNTPtimestamp`を有効にし、HLSの音声トラック開始イベントを
+   セグメントファイル名より優先してメディア開始時刻に使う。
+3. Androidの最初の送信音声フレームをAgora NTPへ変換して保存し、
+   音声フレームからHLS音声トラックまでの遅延を配信ごとに測定する。
+4. 測定値を追っかけ再生と公開後再生の両方へ同じ向きで適用する。
+   測定できない場合だけ1.2秒を予備値として使う。
+5. v5より前の配信は再解釈せず、将来方式を変える場合も原則として新しい
+   `archiveTimingVersion`を追加して新規配信から適用する。
+
+重要な整合性:
+
+- `lib/services/live_audio_board_selection.dart`の追っかけ再生補正と、
+  `functions/src/index.ts`の公開用BoardSet補正は、同じ値・同じ符号で扱う。
+- `functions/src/live_hls_proxy.ts`は、HLS音声トラック開始とAndroid音声フレーム開始の差から
+  配信固有の補正値を求める。1.2秒は通常値ではなく測定失敗時のフォールバック。
+- `android/app/src/main/kotlin/com/example/my_new_app/MainActivity.kt`では、
+  コールバック到着時刻ではなく`renderTimeMs`をNTPへ対応付ける。到着時刻には可変遅延が含まれる。
+- 開始直後の遅延が数秒で小さくなる現象は、音声処理・録画・HLSの立ち上がりによる
+  時間変化する遅延と考えられる。現在の配信ごとの単一補正値では完全には表現できない既知の限界。
+  将来、再現可能な証拠がそろえば、開始区間だけの補正方式などを検討してよい。
+- 変更時は最低限、単一パート／同一レッスンの複数パート、追っかけ再生／公開後再生、
+  配信開始直後／10秒以降を実機で比較する。可能なら30分配信、再接続、バックグラウンド復帰も確認する。
+
+主な関連ファイル:
+
+- `lib/services/live_audio_timeline_clock.dart`
+- `lib/services/live_audio_board_selection.dart`
+- `lib/screens/live_audio_probe_page.dart`
+- `android/app/src/main/kotlin/com/example/my_new_app/MainActivity.kt`
+- `functions/src/agora_cloud_recording.ts`
+- `functions/src/live_hls_proxy.ts`
+- `functions/src/index.ts`
+- `test/live_audio_timeline_clock_test.dart`
+- `test/live_audio_board_selection_test.dart`
+- `functions/src/live_hls_proxy.test.ts`
+
+---
+
+## 0-A. 2026-07-29 Agora音声・板書技術検証（実装済み・実通信待ち）
+
+- 通常画面から分離し、`ENABLE_AGORA_PROBE=true` のときだけ先生・学習者ホームに入口を表示
+- Firebase Callable Functionsが15分のAgora RTC Tokenを発行
+- App CertificateはFlutterへ渡さず、Firebase Secret Managerだけで保持
+- 先生は常に配信可能。受講者は先生が許可した場合だけ音声・板書を送信可能
+- 動画送信権限は発行しない
+- Agora data streamの `syncWithAudio: true` で板書差分を送信
+- 完了した線だけFirestoreへ保存し、途中参加・再接続時に復元
+- Firestore Rulesは参加済みユーザーの読み取りだけを許可し、クライアント書き込みを全面禁止
+- Web release build成功、Android debug APK build成功
+- 新規Dartテスト3件、Functionsテスト4件、関連回帰テストを含む64件成功
+- `flutter analyze` の新規指摘なし。全体では既存25件のみ
+- AndroidのAGP 9対応として、Agora公式AARの重複namespaceへ
+  `android.uniquePackageNames=false` を一時適用
+- Agora 6.6.3の誤った`ffi` 1.x制約を、既存依存と同じ`ffi` 2.2.0でoverride
+- 詳細な設定・実機確認手順: `docs/agora-live-audio-probe.md`
+- 未実施: Agoraプロジェクト作成、Secret登録、Functions/Rulesデプロイ、3人実通信
+
+---
+
+## 0. 2026-07-28 最新引き継ぎ（最初に読むこと）
+
+### 2026-07-28 講座の永久削除機能（実装済み・本番反映済み）
+
+同じブランチ `cursor/android-audio-whiteboard-recording-c48f` で、
+先生が作成した講座を取り消し不能で削除する機能を実装した。
+この変更は現時点では未コミット・未pushだが、本番HostingとFirebase Rulesには反映済み。
+
+削除処理:
+
+1. 講座を `published` から `deleting` に変更し、受講・コメント・メディア追加を即時遮断
+2. Firebase Storage の `courseMedia/{courseId}` 配下を再帰的に全削除
+3. 完了後に `deleted` へ変更し、再公開をRulesで禁止
+4. 途中失敗時は `deleting` で残し、先生画面の「削除処理を再開」から冪等に再試行
+
+削除後:
+
+- 先生・受講者の講座一覧、学習再開一覧から除外
+- 講座・レッスン・動画・音声・公開コメント欄は利用不可
+- 開いたままの受講画面も講座状態を監視し、削除開始時に再生停止
+- 視聴記録、クイズ記録、質問・回答本文、自分用メモなどの学習記録は保持
+- 質問・回答は学習記録で本文確認のみ可能。元コメント欄への遷移は禁止
+- 削除済み講座の自分用メモは専用画面でタイトル・本文のみ編集可能。再公開不可
+- 過去形式の講座も `teacherListHidden` / `teacherListOrder` だけは更新可能
+
+主な変更:
+
+- `lib/services/teacher_course_list_service.dart`
+- `lib/services/course_access_service.dart`
+- `lib/screens/teacher_course_list_page.dart`
+- `lib/screens/course_entry_gate.dart`
+- `lib/screens/home_page.dart`
+- `lib/screens/learning_records_page.dart`
+- `lib/screens/video_lesson_page.dart`
+- `firestore.rules`
+- `storage.rules`
+
+確認:
+
+- 関連テスト26件成功
+- 削除済み学習記録のWidgetテスト2件成功
+- 変更対象の `flutter analyze` 成功
+- Web release build成功
+- Android debug APK build成功
+- `firebase deploy --only firestore:rules,storage --dry-run` 成功
+- 全 `test/widget_test.dart` では既存の
+  `Video lesson completes cycle after threshold` だけ失敗。今回の変更とは無関係
+
+重要:
+
+- 2026-07-28、未コミットのローカル変更から
+  Hosting・Firestore Rules・Storage Rulesを本番へ手動デプロイ済み
+- 本番URL: `https://my-new-app-naona-20260523.web.app`
+- 2026-07-28、Google Cloud ShellのFirestore managed bulk deleteで
+  講座・レッスン・受講・学習記録・メモ・質問/回答・講座設定の
+  現行テストデータを一括削除済み（operationState: `SUCCESSFUL`）
+- Storageの `courseMedia` も60ファイルすべて削除し、
+  再確認で `One or more URLs matched no objects` を確認済み
+- Firebase Authentication、`users` 本体、`publicUserProfiles` は削除対象外で保持
+- Rules単独では、悪意ある先生がFirebaseへ直接アクセスして
+  `deleting → deleted` だけを行うことまでは防げない。
+  通常アプリ操作・偶発競合・途中失敗は二段階削除と再開処理で対策済み。
+  この直接操作まで完全防止する場合はCloud Functions等の信頼済みバックエンドが必要
+
+### 2026-07-27 音声録音・ホワイトボード機能の引き継ぎ
+
+### Gitの現在地
+
+- main / origin/main: `fd28776`
+- 実装ブランチ: `cursor/android-audio-whiteboard-recording-c48f`
+- 音声録音＋同時板書コミット: `729030a Add synchronized audio whiteboard recording`
+- 録音中のボード追加コミット: `fb02216 Allow adding boards during audio recording`
+- 拡大・パン・追従コミット: `67e3215 Add synchronized whiteboard zoom and pan`
+- ブランチは `origin/cursor/android-audio-whiteboard-recording-c48f` へpush済み
+- **mainには未マージ**。次のagentはmainから作業を始めると今回の機能を失うため、
+  まず現在のブランチと `git log` を確認すること
+- Android/Flutterの大量のビルドキャッシュが未追跡ファイルとして残る場合がある。
+  `.dart_tool/`、`build/`、`android/.gradle/` 等を誤ってコミットしないこと
+
+### 今回追加した機能
+
+先生がAndroid端末で**音声を録音しながら、同時にホワイトボードへ書ける機能**を追加した。
+これは既存の「音声・動画を先にアップロードしてから板書・編集する機能」を置き換えるものではなく、
+追加機能である。既存のアップロード後編集は残っている。
+
+仕様:
+
+- 初期リリースは音声のみ。動画同時撮影は未実装
+- 1パート約6分は目安であり、6分で自動停止しない
+- 録音中の一時停止・再開に対応
+- 電話着信、画面ロック、別アプリ移動時は自動停止し、端末内ファイルを保持
+- 録音中は端末へ保存し、終了後に先生が再生確認して
+  「この音声を使用」を押した場合だけFirebase Storageへアップロード
+- 「録り直す」場合は、その録音と同時に作った板書を削除して最初からやり直す
+- 公開後の音声は変更不可。公開後もホワイトボードは既存機能で編集可能
+- 録音中の板書点は最大20点/秒
+- Firestore用板書データは約700KBで警告、850KBで追加描画を停止
+- メディア上限は50MBから100MBへ変更（アプリ・Storage rulesの両方）
+- Webでは録音機能を提供しないstub実装。主対象はAndroid実機・エミュレータ
+- 録音URLと時間は非公開のlesson draftにも保存し、公開前のアプリ終了による紛失を防止
+
+主な新規ファイル:
+
+- `lib/widgets/lesson_audio_whiteboard_recorder_panel.dart`
+- `lib/services/lesson_audio_recording_service.dart`
+- `lib/services/lesson_audio_recording_service_io.dart`
+- `lib/services/lesson_audio_recording_service_stub.dart`
+- `lib/services/lesson_audio_recording_types.dart`
+- `lib/models/lesson_recording_timeline.dart`
+- `test/lesson_audio_whiteboard_recorder_panel_test.dart`
+- `test/lesson_recording_timeline_test.dart`
+
+統合・保存の中心:
+
+- `lib/screens/teacher_lesson_manage_page.dart`
+- `lib/services/course_lesson_repository.dart`
+- `lib/widgets/lesson_whiteboard_editor_panel.dart`
+- `lib/models/lesson_media_segment.dart`
+- `lib/models/lesson_media_timeline.dart`
+
+### 実機で見つかった再生不具合と修正
+
+ユーザーがAndroid実機で確認し、次の3件はすべて修正後に「直った」と確認済み。
+
+1. **先生プレビューが音声終端でフリーズする**
+   - 原因: 終了位置通知 → `pause()` → pauseによる位置再通知 → 再度`pause()`という循環
+   - ログでは `_pauseInternal` と `AudioLessonMediaPlayback.pause` が連続していた
+   - Androidの `signal 3` / tombstoned は、この処理集中でANRになった結果
+   - 修正: 位置通知から終端pauseを繰り返す処理を撤去し、playlist側のpauseを多重実行しないよう防御
+
+2. **受講者側が92%地点で意図的に一時停止する**
+   - ユーザーが不要と判断したため、92%完了判定を完全撤去
+   - 現在は最終パートのjust_audio自然終了イベントで完了待ち状態へ移る
+   - Firestoreの既存キー `completionThresholdSec` は互換性のため残すが、値は100%終端
+
+3. **「録音しながら書く」の音声だけ、表示上の残り1秒で終了する**
+   - 原因: 録音実長7.2秒などを `ceil()` して8秒として保存していた一方、
+     just_audioは実ファイル終端7.2秒で自然終了していた
+   - 修正: 表示・従来互換用の `durationSec` は通常アップロードと同じ整数秒（切り捨て）、
+     正確な同期用に `durationMs` を追加
+   - `LessonMediaTimeline` は `durationMs` があればミリ秒精度の `durationSecExact` を使い、
+     なければ従来の `durationSec` へフォールバック
+   - 板書タイムスタンプ、パート開始位置、自然終了判定は正確な実時間を使う
+   - 公開後は `durationMs` もロックされ、音声時間を変更できない
+   - **この二層構造を単純なfloor/ceilだけへ戻さないこと**。板書終端や次パート境界がずれる
+
+### 実機確認結果（2026-07-23）
+
+ユーザー確認済み:
+
+- 録音しながら板書できる
+- 先生プレビュー終端のフリーズは解消
+- 受講者側の92%一時停止は解消
+- 新しく録音したパートの「残り1秒」表示も解消
+
+今回の機能について、現時点でユーザーから報告されている未解決不具合はない。
+
+### 2026-07-27 ホワイトボード拡大・追従機能（実装・実機確認済み）
+
+同じブランチで、次の機能を追加した。
+
+- 全画面でホワイトボードを4:3へ統一
+- 1〜8倍のズーム、パン、`＋`・`－`・元に戻すボタン
+- 操作中と操作終了後2秒だけ右下へ表示するミニマップ
+- 拡大中は線も同じ倍率で太く表示し、描画座標は元の0〜1正規化座標へ変換
+- 先生の表示範囲を約10Hzの `viewportEvents` として時刻付き保存し、再生時に補間
+- 録音・再生の一時停止中は途中の動きを保存せず、再開時の最終位置だけ反映
+- 受講者は初期状態で先生のボードと表示範囲へ追従し、手動操作すると一時解除。
+  スイッチで追従へ戻せる
+- Android録音停止直後の端末内プレビューでも、ボード切替と表示範囲を再現
+
+関連テスト、変更対象の静的解析、Web release buildは成功。
+全テストの失敗は従来からのheadless環境固有テストのみで、今回の関連テストは成功している。
+2026-07-27、ユーザーがAndroid実機で確認し「全て成功しているように見える」と報告した。
+この機能を未解決・確認待ちとして扱わないこと。
+
+### Firebase rules
+
+今回変更した `firestore.rules` と `storage.rules` は、ユーザーが次のコマンドで本番へ手動デプロイ済み:
+
+```powershell
+firebase deploy --only firestore:rules,storage
+```
+
+デプロイは成功。Firestore compilerの既存warningは出たが、rulesは正常にreleaseされた。
+さらに `viewportEvents` 追加後、ユーザーが次のコマンドを再実行し、
+Firestore rulesのコンパイル・アップロード・releaseがすべて成功した。
+
+```powershell
+firebase deploy --only firestore:rules
+```
+
+したがって、現時点ではrulesの再デプロイは不要。今後rulesを変更した場合だけ再デプロイする。
+
+### 確認済みコマンド
+
+- 録音・タイムライン・再生・公開ロック・先生管理画面・Firestore静的テストを個別実行し成功
+- ホワイトボード拡大・追従の関連テスト54件成功
+- `flutter build web --release` 成功
+- `flutter build apk --debug --no-pub` 成功
+- `flutter analyze`: 今回の新規errorなし。既存のwarning/infoが26件残る
+- 全テストには以前からheadless環境固有の失敗があるため、下記の旧引き継ぎ内容も参照
+
+### 次のagentへの注意
+
+- 今回の音声録音＋同時板書機能はユーザー実機確認済み。新しい依頼がない限り追加改修しない
+- 最大8倍ズーム・パン・ミニマップ・先生表示追従も実機確認済み。
+  新しい不具合報告がない限り、確認待ちとして再調査しない
+- 既存アップロード後板書・編集機能を削除しない
+- `durationMs` と `durationSecExact` を消さない
+- `[LessonMediaSwitchDebug]` ログは既存方針どおり無害な診断ログとして残す
+- 過去の音声⇄動画切り替え不具合は修正済み。未解決・保留中と誤認しない
 
 ---
 
@@ -51,12 +351,15 @@ cd C:\Users\naona\StudioProjects\my_new_app
 
 ---
 
-## 3. 現在の main の状態（2026-07-09）
+## 3. 現在のGit状態（2026-07-23）
 
-**main 先端: PR #64 マージ済み（コミット cda4b50 以降。詳細は `git log` で確認）**
+**main / origin/main: `fd28776`**
 
-**⚠️ 音声⇄動画パートの切り替え不具合は、ユーザーの判断で調査・修正をいったん保留中。
-次の agent が自発的に着手しないこと。詳細は本ファイル末尾のコピペブロックを参照。**
+**今回の機能ブランチ: `cursor/android-audio-whiteboard-recording-c48f`**
+（機能実装コミット `729030a`、GitHubへpush済み、mainへ未マージ）
+
+**音声⇄動画パートの切り替え不具合は修正済みであり、ユーザー確認済み。
+以下の詳細は過去の修正経緯として残している。**
 
 ### ユーザー確認済み — 直っていること（回帰なし）
 
@@ -69,7 +372,7 @@ cd C:\Users\naona\StudioProjects\my_new_app
 | 音声パートのホワイトボード（録画し直した後） | **滑らかになった**（#59） |
 | 一時停止 → シーク → 再生 | 問題なさそう |
 
-### PR #60 は「1回目のスライド」しか直っていなかった → PR #61 で根本原因に対応（要ユーザー確認）
+### 音声⇄動画切り替え修正の過去経緯（現在はユーザー確認済み・解決済み）
 
 PR #60 で「音声再生中に動画へスライドしても反映されない」を直したはずだったが、ユーザーが
 2026-07-08 に確認したところ、**1回目のスライドは直ったが、そこから音声⇄動画を往復すると
@@ -107,7 +410,7 @@ PR #60 で「音声再生中に動画へスライドしても反映されない�
 - 音声の位置通知を **1秒に1回** に制限（時間表示の安定化）
 - その結果、ホワイトボードも1秒刻みに見えるようになった
 
-### ホワイトボード修正の試行（未解決）
+### ホワイトボード修正の試行（当時未解決・後に#59で解決）
 
 | PR | 内容 | 結果 |
 |----|------|------|
@@ -217,7 +520,7 @@ PR #59 のホワイトボード修正をユーザーが確認した際に発見�
   - 「動画の読み込みが失敗しても、その後のシークがブロックされずに動くこと」
   - **修正前のコードに戻すとこの2つのテストがどちらも失敗する**ことを確認済み（原因の裏付けになる）
 
-**まだ確認できていないこと**:
+**当時まだ確認できていなかったこと（現在は後続修正後にユーザー確認済み）**:
 - 実機・エミュレータでの動作確認はできていない（この Cloud Agent 環境には端末がない）。
   ユーザーに `git pull` → `flutter run` の上で、同じ操作（音声再生中に動画へスライド）を
   試してもらい、直っているか確認してもらう必要がある
@@ -299,7 +602,7 @@ audio(0)→video(1) に切り替えた直後は、次の `segmentIndex+1=2` が�
   - バッファリングしていない `isPlaying=false`（本当の一時停止・終了）は握りつぶさないこと
   - `isPlaying=true` は常にそのまま通知されること
 
-**まだ確認できていないこと**:
+**当時まだ確認できていなかったこと（現在は後続修正後にユーザー確認済み）**:
 - 実機・エミュレータでの動作確認はできていない（この Cloud Agent 環境には端末がない）。
   ユーザーに、今回報告してもらった手順（音声⇄動画を何度も往復する、動画終盤で再生・巻き戻しする）
   で確認してもらう必要がある
@@ -446,7 +749,8 @@ PR #61 のロジック自体は正しいはずなのに実機で直っていな�
 - **PR #63 のコード（保留方式）に戻すとこのテストが失敗する**ことを確認済み（このテストが
   今後同じ種類の後退を検知する）
 
-**まだ確認できていないこと**: この修正後、実機・Web でユーザーに再確認してもらう必要がある。
+**当時の確認状況**: この時点では実機・Webで未確認だったが、
+後続修正を含む現在のコードではユーザーが解決済みと確認している。
 
 ---
 
@@ -469,8 +773,7 @@ PR #61 のロジック自体は正しいはずなのに実機で直っていな�
 | #61 | 往復スライド不具合の根本修正＋動画終盤の自動一時停止修正（マージ済みだが実機で再発と報告） |
 | #62 | 調査用デバッグログ追加（[LessonMediaSwitchDebug]、現在も残存・無害） |
 | #63 | 実機ログから判明した wasPlaying 陳腐化を「保留方式」で修正 → 新たな不具合（一時停止無反応）を生んだ |
-| #64 | 保留方式を撤回し世代カウンター方式に変更。一時停止無反応は解消。他の不具合は残存とユーザー報告 →
-       **ユーザー判断でこの先の調査・修正を保留中** |
+| #64 | 保留方式を撤回し世代カウンター方式に変更。一時停止無反応を解消。当時は他症状の報告もあったが、後続修正後の現在は音声⇄動画切り替え問題全体が解決済みとユーザー確認済み |
 
 ---
 
@@ -521,15 +824,24 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 **以下を1つのブロックとしてそのままコピーすること。ブロックを分割しないこと。**
 
 ```
-【引き継ぎ】my_new_app Flutter/Firebase 学習アプリ（2026-07-09・音声⇄動画切り替え不具合はユーザー判断で保留中）
+【引き継ぎ】my_new_app Flutter/Firebase 学習アプリ（2026-07-27・ホワイトボード拡大追従まで実機確認済み）
 
 ■ 最重要・最初に読むこと
-ユーザーは「音声⇄動画パートの切り替え不具合」に何度も修正を試みたが直りきらず、
-2026-07-09 に「一旦諦める。しばらくこのバグは直さない」と明言した。
-→ このバグについて、次の agent は自発的に調査・修正を始めないこと。
-   ユーザーから明示的に「この続きをやって」「音声⇄動画の不具合を直して」等の
-   指示があった場合のみ、下記「■ 未解決の音声⇄動画切り替え不具合」から読んで着手する。
-   それ以外の新しい依頼であれば、このバグには触れずに新しい依頼だけに対応してよい。
+2026-07-23、先生がAndroid端末で「録音しながらホワイトボードへ書く」機能を追加し、
+ユーザーが実機で正常動作を確認済み。
+続けて、4:3・最大8倍ズーム・パン・ミニマップ・先生表示の時刻付き再現・
+受講者の追従切替を追加し、2026-07-27にユーザーがAndroid実機で
+「全て成功しているように見える」と確認済み。
+実装ブランチ `cursor/android-audio-whiteboard-recording-c48f` はGitHubへpush済みだが、
+mainには未マージ。mainから新規ブランチを作ると今回の機能を失うため、必ず最初に
+現在ブランチとgit logを確認すること。
+
+過去に何度も調査した「音声⇄動画パートの切り替え不具合」は、
+2026-07-23時点でユーザーが「既に修正済み」と明確に確認している。
+→ 未解決・保留中の問題として扱わないこと。
+   下記のPR #60〜#64の内容は、同種の回帰を防ぐための過去資料としてのみ参照する。
+   正確にどの後続コミットで最終解決したかは、このセッションでは特定していないため、
+   推測でPR番号へ帰属させないこと。
 
 ■ リポジトリ / 環境
 - GitHub: https://github.com/tp994fr7cf-glitch/my_new_app
@@ -537,8 +849,12 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 - ローカル: C:\Users\naona\StudioProjects\my_new_app（Windows、PowerShell 使用可）
 - Firebase: my-new-app-naona-20260523
 - 本番 Web: https://my-new-app-naona-20260523.web.app
-- main 先端: PR #64 マージ済み（コミット cda4b50 のあとに続く最新コミットを git log で確認すること）
-- ブランチ名ルール（Cloud Agent）: cursor/<名前>-c0b7（このセッションで使用中のサフィックス。
+- main / origin/main: fd28776
+- 実装ブランチ: cursor/android-audio-whiteboard-recording-c48f
+- 音声録音＋同時板書: 729030a Add synchronized audio whiteboard recording
+- 録音中のボード追加: fb02216 Allow adding boards during audio recording
+- 拡大・パン・追従: 67e3215 Add synchronized whiteboard zoom and pan
+- ブランチ名ルール（Cloud Agent）: cursor/<名前>-c48f（このセッションで使用中のサフィックス。
   セッションが変わるとサフィックスも変わるので、実際の指示に従うこと）
 
 ■ ユーザー preferences（必読）
@@ -556,6 +872,12 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 - テストレッスン構成: 音声パート90秒 → 動画パート90秒 = 合計180秒
 
 ■ いま直っていること（ユーザー確認済み・回帰なし）
+- Android実機で音声を録音しながらホワイトボードへ書ける
+- 録音停止後、端末内で再生確認してから手動アップロードできる
+- 録音の一時停止・再開、アプリ離脱時の自動停止・端末保存
+- 先生プレビューの音声終端フリーズ（pause位置通知ループ）は解消
+- 92%地点で意図的に一時停止する旧仕様は撤去済み
+- 録音パートだけ「残り1秒」で終了する表示不整合は、durationMsによる正確な同期で解消
 - 動画再生中に音声へ巻き戻しても時間表示が止まらない（#54）
 - 時間表示・スライダーのガタつきなし（#55）
 - 視聴完了後のレッスン開き直し表示（#55）
@@ -563,19 +885,52 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 - 音声パートのホワイトボードも、録画し直した後は滑らかになった（#59・ユーザー確認済み）
 - 一時停止ボタンが常に即座に反応する（#64・ユーザー確認済み。以前は音声⇄動画の切り替え中に
   一時停止すると反応しなくなるバグが#63で新たに入り込んだが、これは直った）
+- ホワイトボードは全画面4:3、1〜8倍のズーム・パン・操作ボタンに対応
+- 操作中と終了後2秒だけ右下へミニマップを表示
+- 先生の表示範囲を `viewportEvents` へ時刻付き保存し、先生プレビュー・受講者で再現
+- 受講者は初期状態で先生のボードと表示範囲へ追従し、手動操作で一時解除、
+  スイッチで追従へ戻せる
+- 一時停止中の表示操作は途中経過を再現せず、再開時の最終位置だけ反映
 
-■ 未解決の音声⇄動画切り替え不具合（ユーザーの判断で 2026-07-09 に一旦保留・要着手判断）
+■ 2026-07-23 音声録音＋同時板書の重要技術メモ
+- 既存のアップロード後板書・編集機能は残す。今回機能は追加であり置換ではない
+- 表示・互換用 `LessonMediaSegment.durationSec` は整数秒
+- 正確な録音実長は `LessonMediaSegment.durationMs` に保存
+- `durationSecExact` / `LessonMediaTimeline.totalDurationSecExact` が板書同期とパート境界を担当
+- durationMsのない旧データはdurationSecへフォールバック
+- durationSecだけをceil/floorしてdurationMsを消すと、板書終端・次パート開始がずれるので禁止
+- 録音中の板書は最大20点/秒、700KB警告、850KB停止
+- メディア上限100MB
+- rulesはユーザーが本番へ手動デプロイ済み
+- `viewportEvents` 対応後の `firebase deploy --only firestore:rules` も成功済み
+- Android debug APK・Web releaseビルド成功。拡大追従関連54テスト成功。
+  analyzeは新規errorなし（既存26指摘）
+- 主な新規ファイル:
+  lesson_audio_whiteboard_recorder_panel.dart /
+  lesson_audio_recording_service*.dart /
+  lesson_recording_timeline.dart
 
-**症状（最新確認時点、PR #64 マージ後）**:
+■ 2026-07-27 ホワイトボード拡大・追従の重要技術メモ
+- `LessonWhiteboardViewport` は中心座標と倍率を正規化して保存。倍率は1〜8
+- `LessonWhiteboardViewportEvent` はboardId・globalTimestampSec・sequence・interactionId・
+  centerX・centerY・scaleを保持し、同じinteractionId内だけ補間する
+- `LessonWhiteboardCanvas` は1本指描画、2本指ズーム・パン、Web用ボタン、ミニマップを担当
+- 閲覧時の1倍表示では親画面を1本指スクロールでき、拡大時の実際のパンだけ追従解除する
+- `LessonPlaybackSyncedWhiteboard` は整数durationSecではなく
+  `LessonMediaTimeline.totalDurationSecExact` を同期上限に使う。末尾の小数秒を切り捨てない
+- Firestore上限はviewportEvents 2000件。約10Hzで間引く
+- Android録音停止直後の端末内プレビューでも、再生位置に応じて未来の板書を隠す
+- 実装コミット `67e3215` はoriginへpush済み、Firestore rulesも本番へrelease済み
+
+■ 過去の音声⇄動画切り替え不具合（現在は修正済み・回帰防止用の履歴）
+
+**過去に発生していた症状（PR #64マージ直後の当時の記録）**:
 - 音声パートから動画パートへスライダーで移動 → その後また音声パートへ移動 →
   その直後から一時停止ボタンが反応しなくなる（この特定の症状は #64 で直ったとユーザー確認済み）
-- しかし「それ以外のバグは残っている」とユーザーは明言（具体的な残存症状の詳細な切り分けは
-  まだできていない。次に着手する agent は、まずユーザーに「今、具体的にどう操作したら、
-  どうなるか」を改めて聞き直すことを強く推奨する。過去のセッションでの「音声⇄動画を
-  何度も往復すると2回目以降のスライドが効かない」という症状（下記「過去に判明した原因」参照）
-  が完全に直っているかどうかは、このセッションでは最終確認が取れていない）
+- 当時は「それ以外のバグは残っている」と報告されたが、2026-07-23にユーザーが
+  音声⇄動画切り替え問題は既に修正済みであると明確に確認した
 
-**これまでの修正の歴史（同じ轍を踏まないための必読メモ）**:
+**これまでの修正の歴史（回帰時に同じ轍を踏まないための参考資料）**:
 - PR #60: 音声→動画スライドが反映されない不具合を修正 → 1回目のスライドだけ直り、
   2回目以降は再発。原因は別にあった
 - PR #61: 「次パートの先読み処理が既に開いてるプレイヤーを0秒に巻き戻していた」ことが
@@ -596,7 +951,7 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 - PR #64: 「保留」方式を撤回し、play()/pause() は常にその場で即座に実行する方式に変更。
   代わりに _playbackIntentGeneration という世代カウンターで「切り替え中に操作されたか」を
   検知し、あった場合は切り替え後に最新の状態を再適用する設計に変更。
-  ユーザー確認 → 一時停止ボタンの反応しないバグは直ったが、「それ以外のバグは残っている」
+  PR #64直後には他症状の報告もあったが、現在は問題全体が解決済みとユーザー確認済み
 
 **重要な教訓（絶対に忘れないこと）**:
 1. 「ユーザーの操作を即座に反映せず、後で反映する（保留する）」という設計は非常に危険。
@@ -641,8 +996,8 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 #61 往復スライド不具合の根本修正＋動画終盤の自動一時停止修正（実機で再発と報告） /
 #62 診断用ログ追加 /
 #63 実機ログから判明した wasPlaying 陳腐化を保留方式で修正（新たな不具合を生んだ） /
-#64 保留方式を撤回し世代カウンター方式に変更（一時停止の反応しない不具合は解消・ユーザー確認済み。
-それ以外の不具合は残存とユーザー報告、詳細未切り分け）
+#64 保留方式を撤回し世代カウンター方式に変更（一時停止無反応を解消。当時は他症状の報告も
+あったが、後続修正後の現在は音声⇄動画切り替え問題全体が解決済みとユーザー確認済み）
 
 ■ 開発スタイル
 - 最小 diff、過剰設計しない、既存意図を壊さない
@@ -652,10 +1007,13 @@ firebase deploy --only storage,firestore:rules --project my-new-app-naona-202605
 
 ■ ローカル確認（ユーザー PC）
 cd C:\Users\naona\StudioProjects\my_new_app
-git pull origin main
+git fetch origin
+git switch cursor/android-audio-whiteboard-recording-c48f
+git pull --ff-only
 flutter pub get
 flutter test
 flutter run
+（今回ブランチがmainへマージされた後は、mainへ戻ってgit pull origin mainでよい）
 
 ■ Firebase rules（変更時のみ・手動）
 cd C:\Users\naona\StudioProjects\my_new_app

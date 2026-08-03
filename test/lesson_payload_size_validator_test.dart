@@ -107,6 +107,40 @@ void main() {
     );
   });
 
+  test('rejects duplicate switch sequences', () {
+    const boardSet = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+        ),
+      ],
+      switchEvents: [
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 1,
+          sequence: 0,
+        ),
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 2,
+          sequence: 0,
+        ),
+      ],
+    );
+
+    expect(
+      () => validateBoardSetForPersistence(boardSet),
+      throwsA(
+        isA<LessonPayloadValidationException>().having(
+          (error) => error.message,
+          'message',
+          lessonBoardSwitchDataInvalidMessage,
+        ),
+      ),
+    );
+  });
+
   test('rejects more than 10000 board switch events before Firestore', () {
     final boardSet = BoardSet(
       boards: const [
@@ -132,6 +166,69 @@ void main() {
           (error) => error.message,
           'message',
           lessonBoardSwitchEventLimitMessage,
+        ),
+      ),
+    );
+  });
+
+  test('rejects invalid viewport events before save', () {
+    const boardSet = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+        ),
+      ],
+      viewportEvents: [
+        LessonWhiteboardViewportEvent(
+          boardId: 'deleted-board',
+          globalTimestampSec: 3,
+          sequence: 0,
+          interactionId: 0,
+          viewport: LessonWhiteboardViewport.full,
+        ),
+      ],
+    );
+
+    expect(
+      () => validateBoardSetForPersistence(boardSet),
+      throwsA(
+        isA<LessonPayloadValidationException>().having(
+          (error) => error.message,
+          'message',
+          lessonViewportDataInvalidMessage,
+        ),
+      ),
+    );
+  });
+
+  test('rejects more than 2000 viewport events before Firestore', () {
+    final boardSet = BoardSet(
+      boards: const [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+        ),
+      ],
+      viewportEvents: [
+        for (var index = 0; index <= maxLessonViewportEvents; index++)
+          LessonWhiteboardViewportEvent(
+            boardId: LessonWhiteboardBoard.defaultBoardId,
+            globalTimestampSec: index / 10,
+            sequence: index,
+            interactionId: index ~/ 10,
+            viewport: LessonWhiteboardViewport.full,
+          ),
+      ],
+    );
+
+    expect(
+      () => validateBoardSetForPersistence(boardSet),
+      throwsA(
+        isA<LessonPayloadValidationException>().having(
+          (error) => error.message,
+          'message',
+          lessonViewportEventLimitMessage,
         ),
       ),
     );

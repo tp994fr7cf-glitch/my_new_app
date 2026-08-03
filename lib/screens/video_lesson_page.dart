@@ -21,6 +21,7 @@ import '../models/lesson_segment_boundary.dart';
 import '../models/course_privacy_consent.dart';
 import '../models/quiz_answer_key.dart';
 import '../models/watched_range.dart';
+import '../services/course_access_service.dart';
 import '../services/course_privacy_service.dart';
 import '../services/lesson_media_playback.dart';
 import '../services/lesson_media_playlist_playback.dart';
@@ -60,7 +61,6 @@ class VideoLessonPage extends StatefulWidget {
 
 class _VideoLessonPageState extends State<VideoLessonPage>
     with WidgetsBindingObserver {
-  static const double _completionRate = 0.92;
   static const double _resumeSeekDriftToleranceSec = 1.0;
   static const Duration _postSeekDisplaySyncInterval = Duration(
     milliseconds: 250,
@@ -98,6 +98,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   Timer? _activeLearningHeartbeatTimer;
   Timer? _postSeekDisplaySyncTimer;
   StreamSubscription<CourseEntryRequirement>? _entryRequirementSubscription;
+  StreamSubscription<bool>? _courseAccessSubscription;
   String? _sessionId;
   String? _segmentId;
   bool _hasActiveLearningLock = false;
@@ -127,6 +128,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   int? _pendingAutoAdvanceIntentGeneration;
   int _userPlaybackIntentGeneration = 0;
   bool _userWantsPlayback = false;
+  bool _courseDeleted = false;
   final Map<String, double> _mediaSegmentResumePositionsSec = {};
   final Set<String> _completedMediaSegmentIds = {};
 
@@ -168,13 +170,13 @@ class _VideoLessonPageState extends State<VideoLessonPage>
             _mediaTimeline.startGlobalSecForSegmentIndex(
               _currentMediaSegmentIndex,
             ))
-        .clamp(0.0, segment.durationSec.toDouble())
+        .clamp(0.0, segment.durationSecExact)
         .toDouble();
   }
 
   int get _displayedLocalPositionSec {
     final dragPosition = _sliderDragPositionSec;
-    return (dragPosition ?? _currentLocalPositionSecExact).round();
+    return (dragPosition ?? _currentLocalPositionSecExact).floor();
   }
 
   LessonPartProgress get _partProgress => LessonPartProgress.reconcile(
@@ -197,21 +199,17 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   bool get _isTeacherPreview => widget.isTeacherPreview;
   bool get _hasMediaSource =>
       lessonHasPlayableMedia(mediaSegments: _publishedMediaSegments);
-  int get _completionThresholdSec => calculateCompletionThresholdSec(
-    totalDurationSec: _totalDurationSec,
-    completionRate: _completionRate,
-  );
   bool get _isAtEnd {
     if (_isIndependentPlayback) {
       final segment = _activeMediaSegment;
       return segment != null &&
           isLessonPlaybackAtEnd(
-            totalDurationSec: segment.durationSec,
+            totalDurationSec: segment.durationSecExact,
             positionSecExact: _currentLocalPositionSecExact,
           );
     }
     return isLessonPlaybackAtEnd(
-      totalDurationSec: _totalDurationSec,
+      totalDurationSec: _mediaTimeline.totalDurationSecExact,
       positionSecExact: _currentPositionSecExact,
     );
   }
@@ -272,6 +270,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     WidgetsBinding.instance.addObserver(this);
     _isLoadingLearningState = Firebase.apps.isNotEmpty && !_isTeacherPreview;
     _listenEntryRequirement();
+    _listenCourseAccess();
     if (_hasMediaSource) {
       _isLoadingMedia = true;
       unawaited(_initializeMediaPlayer());
@@ -288,6 +287,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _activeLearningHeartbeatTimer?.cancel();
     _postSeekDisplaySyncTimer?.cancel();
     _entryRequirementSubscription?.cancel();
+    _courseAccessSubscription?.cancel();
     _positionSubscription?.cancel();
     _durationSubscription?.cancel();
     _playingSubscription?.cancel();
@@ -304,6 +304,29 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       unawaited(_releaseActiveLearningLock());
     }
     super.dispose();
+  }
+
+  void _listenCourseAccess() {
+    if (Firebase.apps.isEmpty || _isTeacherPreview) {
+      return;
+    }
+    _courseAccessSubscription = const CourseAccessService()
+        .watchLearnerAccessible(course.storageId)
+        .listen((accessible) {
+          if (accessible || !mounted || _courseDeleted) {
+            return;
+          }
+          _playbackTimer?.cancel();
+          _studyTimer?.cancel();
+          _activeLearningHeartbeatTimer?.cancel();
+          unawaited(_playlistPlayback?.pause());
+          setState(() {
+            _courseDeleted = true;
+            _isPlaying = false;
+            _isLessonNotesOpen = false;
+            _isLessonQuestionsOpen = false;
+          });
+        });
   }
 
   @override
@@ -397,7 +420,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
     if (_isTeacherPreview &&
         isLessonPlaybackAtEnd(
-          totalDurationSec: _totalDurationSec,
+          totalDurationSec: _mediaTimeline.totalDurationSecExact,
           positionSecExact: _currentPositionSecExact,
         )) {
       if (isPlaying) {
@@ -416,10 +439,22 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   void _handleMediaSegmentCompleted(int segmentIndex) {
     if (!mounted ||
-        !_isIndependentPlayback ||
         _isExplicitPlaybackReposition ||
         segmentIndex < 0 ||
         segmentIndex >= _publishedMediaSegments.length) {
+      return;
+    }
+    if (!_isIndependentPlayback) {
+      final isLastSegment = segmentIndex == _publishedMediaSegments.length - 1;
+      if (!_isTeacherPreview && isLastSegment && !_pendingCompletion) {
+        setState(() {
+          _syncPlaybackEndPosition();
+          _isPlaying = false;
+          _pendingCompletion = true;
+          _message = '音声・動画を最後まで再生しました。画面を離れた時刻を終了日時として記録します。';
+        });
+        unawaited(_persistSessionProgress());
+      }
       return;
     }
     _markIndependentPartCompleted(_publishedMediaSegments[segmentIndex].id);
@@ -529,7 +564,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
     final clampedPosition = nextPositionSec.clamp(0, _totalDurationSec);
     final clampedExact = positionSecExact
-        .clamp(0.0, _totalDurationSec.toDouble())
+        .clamp(0.0, _mediaTimeline.totalDurationSecExact)
         .toDouble();
     final pendingRepositionTarget = _pendingExplicitRepositionGlobalSec;
     final isExplicitRepositionUpdate =
@@ -549,7 +584,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                   _mediaTimeline.startGlobalSecForSegmentIndex(
                     progressSegmentIndex,
                   ))
-              .clamp(0.0, progressSegment.durationSec.toDouble())
+              .clamp(0.0, progressSegment.durationSecExact)
               .toDouble()
         : resolvedMediaPosition.localSec;
     if (_isIndependentPlayback &&
@@ -572,8 +607,6 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
-    var shouldPersistPending = false;
-    var shouldPauseTeacherPreviewAtEnd = false;
     setState(() {
       _currentPositionSecExact = clampedExact;
       final previousPositionSec = _currentPositionSec;
@@ -591,35 +624,15 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         }
         _lastWatchProgressSegmentIndex = progressSegmentIndex;
       }
-      if (_isTeacherPreview &&
-          isLessonPlaybackAtEnd(
-            totalDurationSec: _totalDurationSec,
-            positionSecExact: clampedExact,
-          )) {
-        _syncPlaybackEndPosition();
-        _isPlaying = false;
-        shouldPauseTeacherPreviewAtEnd = true;
-      }
-      if (!_isTeacherPreview &&
-          !_isIndependentPlayback &&
-          !isExplicitRepositionUpdate &&
-          _currentPositionSec >= _completionThresholdSec &&
-          !_pendingCompletion) {
-        _setCompletionPendingState();
-        shouldPersistPending = true;
-      }
     });
-    if (shouldPauseTeacherPreviewAtEnd) {
-      unawaited(_playlistPlayback?.pause());
-    }
-    if (shouldPersistPending && !_isTeacherPreview) {
-      unawaited(_persistSessionProgress());
-    }
   }
 
   void _syncPlaybackEndPosition() {
     _currentPositionSec = _totalDurationSec;
-    _currentPositionSecExact = _totalDurationSec.toDouble();
+    _currentPositionSecExact = _mediaTimeline.totalDurationSecExact;
+    if (_cycleMaxWatchedPositionSec < _totalDurationSec) {
+      _cycleMaxWatchedPositionSec = _totalDurationSec;
+    }
   }
 
   void _updateResolvedDuration({Duration? playerDuration}) {
@@ -694,9 +707,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
     final savedPositionSec = _currentPositionSec;
     final finishedPriorAttempt =
-        _pendingCompletion ||
-        savedPositionSec >= _completionThresholdSec ||
-        savedPositionSec >= _totalDurationSec - 1;
+        _pendingCompletion || savedPositionSec >= _totalDurationSec - 1;
 
     if (finishedPriorAttempt) {
       if (mounted) {
@@ -928,7 +939,10 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   }
 
   void _applyDisplayPositionFromGlobalSec(double globalSec) {
-    final clampedGlobal = globalSec.clamp(0.0, _totalDurationSec.toDouble());
+    final clampedGlobal = globalSec.clamp(
+      0.0,
+      _mediaTimeline.totalDurationSecExact,
+    );
     setState(() {
       _currentPositionSec = _flooredDisplaySecForGlobal(clampedGlobal);
       _currentPositionSecExact = clampedGlobal;
@@ -961,7 +975,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
       final globalSec = playback.liveGlobalPositionSec.clamp(
         0.0,
-        _totalDurationSec.toDouble(),
+        _mediaTimeline.totalDurationSecExact,
       );
       final nextSec = _flooredDisplaySecForGlobal(globalSec);
       if (nextSec == _currentPositionSec) {
@@ -1054,7 +1068,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       _message = null;
       if (!_isIndependentPlayback &&
           _pendingCompletion &&
-          nextPosition < _completionThresholdSec) {
+          nextPosition < _totalDurationSec) {
         _pendingCompletion = false;
       }
     });
@@ -1753,7 +1767,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       'lastActivityAt': startedAt,
       'maxWatchedPositionSec': 0,
       'totalDurationSec': _totalDurationSec,
-      'completionThresholdSec': _completionThresholdSec,
+      // 過去バージョンとのデータ互換性のためキー名は維持する。
+      // 92%判定は廃止し、実際の再生終了地点を保存する。
+      'completionThresholdSec': _totalDurationSec,
       'answeredQuizEventIds': [],
       'watchedRanges': [],
       ..._partProgressSessionFields(),
@@ -2067,17 +2083,6 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     );
 
     await batch.commit();
-  }
-
-  void _setCompletionPendingState() {
-    _playbackTimer?.cancel();
-    _isPlaying = false;
-    unawaited(_playlistPlayback?.pause());
-    _currentPositionSec = _currentPositionSec
-        .clamp(_completionThresholdSec, _totalDurationSec)
-        .toInt();
-    _pendingCompletion = true;
-    _message = '視聴終了地点に到達しました。画面を離れた時刻を終了日時として記録します。';
   }
 
   Future<void> _completeCurrentSegment({bool updateUi = true}) async {
@@ -2646,6 +2651,22 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   @override
   Widget build(BuildContext context) {
+    if (_courseDeleted) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('レッスン視聴')),
+        body: const SafeArea(
+          child: Center(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Text(
+                'この講座は削除されたため、レッスンを視聴できません。\n学習記録は引き続き確認できます。',
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     final statusMessage =
         _message ??
         (_pendingCompletion
@@ -2942,7 +2963,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                 _isIndependentPlayback
                     ? 'パート完了: ${_requiredMediaSegmentIds.where(_completedMediaSegmentIds.contains).length}'
                           ' / ${_requiredMediaSegmentIds.length}'
-                    : '視聴終了判定: $_completionThresholdSec秒到達',
+                    : '視聴終了判定: 最終パートの自然再生終了',
               ),
             ],
             if (canControlPlayback && kDebugMode) ...[

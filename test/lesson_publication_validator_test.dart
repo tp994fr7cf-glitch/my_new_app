@@ -131,6 +131,7 @@ void main() {
       locked.copyWith(mediaType: 'audio'),
       locked.copyWith(url: 'https://example.com/other.mp4'),
       locked.copyWith(durationSec: 31),
+      locked.copyWith(durationMs: 30001),
       locked.copyWith(order: 1),
     ];
 
@@ -174,6 +175,73 @@ void main() {
 
     expect(validate(unpublished), lessonPublishedSegmentsLockedError);
     expect(validate(invalidGap), lessonPublishedSegmentsLockedError);
+  });
+
+  test('reserves a live archive slot between published parts', () {
+    const livePlaceholder = LessonMediaSegment(
+      id: 'live',
+      order: 1,
+      title: 'Live class',
+      mediaType: 'audio',
+      sourceKind: lessonMediaSourceLiveArchive,
+      liveSessionId: 'session-1',
+    );
+    const laterPublished = LessonMediaSegment(
+      id: 'later',
+      order: 2,
+      mediaType: 'audio',
+      url: 'https://example.com/later.m4a',
+      durationSec: 10,
+    );
+    final previous = previousLesson().copyWith(
+      mediaSegments: const [locked, livePlaceholder, laterPublished],
+      publishedSegmentIds: const ['locked', 'later'],
+    );
+
+    expect(
+      LessonPublicationValidator.validate(previous: previous, next: previous),
+      isNull,
+    );
+
+    final archived = livePlaceholder.copyWith(
+      url: 'https://example.com/live.m4a',
+      durationSec: 45,
+      durationMs: 45250,
+    );
+    final published = LessonPublicationValidator.prepareForPublication(
+      previous: previous,
+      next: previous.copyWith(
+        mediaSegments: [locked, archived, laterPublished],
+      ),
+    );
+
+    expect(published.publishedSegmentIds, ['locked', 'live', 'later']);
+    expect(published.effectivePublishedMediaSegments[1].isLiveArchive, isTrue);
+  });
+
+  test('rejects moving or replacing a reserved live archive slot', () {
+    const livePlaceholder = LessonMediaSegment(
+      id: 'live',
+      order: 1,
+      mediaType: 'audio',
+      sourceKind: lessonMediaSourceLiveArchive,
+    );
+    final previous = previousLesson().copyWith(
+      mediaSegments: const [locked, livePlaceholder],
+    );
+
+    expect(
+      LessonPublicationValidator.validate(
+        previous: previous,
+        next: previous.copyWith(
+          mediaSegments: [
+            locked,
+            livePlaceholder.copyWith(id: 'replacement'),
+          ],
+        ),
+      ),
+      lessonPublishedSegmentsLockedError,
+    );
   });
 
   test('rejects blank and duplicate segment IDs', () {

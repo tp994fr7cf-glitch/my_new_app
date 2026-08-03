@@ -7,11 +7,13 @@ import '../models/course.dart';
 import '../models/course_participant_identity.dart';
 import '../models/course_privacy_consent.dart';
 import '../models/public_user_profile.dart';
+import '../services/course_access_service.dart';
 import '../services/course_identity_service.dart';
 import '../services/course_privacy_service.dart';
 
 const _courseEntryPrivacyService = CoursePrivacyService();
 const _courseEntryIdentityService = CourseIdentityService();
+const _courseEntryAccessService = CourseAccessService();
 
 Future<bool> _hasExistingEnrollment({
   required String userId,
@@ -48,6 +50,19 @@ Future<bool> ensureCourseEntryAccess(
       ScaffoldMessenger.of(context)
         ..clearSnackBars()
         ..showSnackBar(const SnackBar(content: Text('講座情報の読み込みに失敗しました。')));
+    }
+    return false;
+  }
+  final courseAccessible = await _courseEntryAccessService.isLearnerAccessible(
+    courseId,
+  );
+  if (!courseAccessible) {
+    if (showBlockedMessage && context.mounted) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          const SnackBar(content: Text('この講座は削除されているため開けません。学習記録は引き続き確認できます。')),
+        );
     }
     return false;
   }

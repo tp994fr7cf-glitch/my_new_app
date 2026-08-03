@@ -35,6 +35,8 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
     this.onBoardSetDraftSaved,
     this.onWhiteboardChanged,
     this.onBoardSetChanged,
+    this.publishedTimelineDurationSec = 0,
+    this.enabled = true,
     this.playlistPlaybackFactory = createLessonMediaPlaylistPlayback,
   }) : assert(
          onDraftSaved != null || onBoardSetDraftSaved != null,
@@ -53,6 +55,8 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
   final WhiteboardBoardSetDraftSaveCallback? onBoardSetDraftSaved;
   final ValueChanged<LessonWhiteboard>? onWhiteboardChanged;
   final ValueChanged<BoardSet>? onBoardSetChanged;
+  final double publishedTimelineDurationSec;
+  final bool enabled;
   final LessonMediaPlaylistPlaybackFactory playlistPlaybackFactory;
 
   @override
@@ -68,6 +72,7 @@ class _LessonWhiteboardEditorPanelState
   StreamSubscription<double>? _positionSubscription;
   StreamSubscription<int>? _durationSubscription;
   StreamSubscription<bool>? _playingSubscription;
+  Timer? _viewportRefreshTimer;
 
   List<WhiteboardStroke> _strokes = [];
   BoardSet _boardSet = const BoardSet();
@@ -86,6 +91,18 @@ class _LessonWhiteboardEditorPanelState
   double _currentPositionSecExact = 0;
   double? _sliderDragPositionSec;
   double? _strokeStartSec;
+  int? _activeViewportInteractionId;
+  double? _lastViewportEventSec;
+  LessonWhiteboardViewport? _pendingPausedViewport;
+  final Map<String, LessonWhiteboardViewport> _editorViewports = {};
+  bool _screenShareOverrideEnabled = false;
+  BoardSet? _screenShareOverrideBaseline;
+  double? _screenShareOverrideStartSec;
+  final List<LessonWhiteboardBoardSwitchEvent> _overrideSwitchEvents = [];
+  final List<LessonWhiteboardViewportEvent> _overrideViewportEvents = [];
+  int _nextOverrideSwitchSequence = 0;
+  int _nextOverrideViewportSequence = 0;
+  int _nextOverrideInteractionId = 0;
 
   bool get _isDraggingSlider => _sliderDragPositionSec != null;
 
@@ -102,16 +119,30 @@ class _LessonWhiteboardEditorPanelState
   double get _recordingPositionSec {
     final playback = _playback;
     if (_isPlaying && playback != null && _totalDurationSec > 0) {
-      return playback.liveGlobalPositionSec.clamp(
-        0.0,
-        _totalDurationSec.toDouble(),
-      );
+      final exactTimelineDuration = _timeline.totalDurationSecExact;
+      final maxPositionSec = exactTimelineDuration > 0
+          ? exactTimelineDuration
+          : _totalDurationSec.toDouble();
+      return playback.liveGlobalPositionSec.clamp(0.0, maxPositionSec);
     }
     return _currentPositionSecExact;
   }
 
-  bool get _drawingEnabled => _isPlaying;
+  bool get _drawingEnabled => _isPlaying && widget.enabled;
   bool get _hasPublishedWhiteboard => _publishedBoardSet.isNotEmpty;
+  bool get _isInPublishedTimeline {
+    final publishedEnd = widget.publishedTimelineDurationSec;
+    return _hasPublishedWhiteboard &&
+        publishedEnd > 0 &&
+        _recordingPositionSec < publishedEnd;
+  }
+
+  LessonWhiteboardViewport get _selectedEditorViewport =>
+      _editorViewports[_selectedBoardId] ??
+      _boardSet.resolveViewportAt(
+        boardId: _selectedBoardId,
+        globalTimestampSec: _recordingPositionSec,
+      );
 
   bool get _hasUnpublishedDraft {
     return _draftBoardSet.isNotEmpty;
@@ -187,6 +218,9 @@ class _LessonWhiteboardEditorPanelState
     if (!_segmentsEqual(oldWidget.mediaSegments, widget.mediaSegments)) {
       unawaited(_reloadMediaPlayer());
     }
+    if (oldWidget.enabled && !widget.enabled) {
+      unawaited(_pauseRecording());
+    }
     if (oldWidget.draftWhiteboard != widget.draftWhiteboard ||
         oldWidget.publishedWhiteboard != widget.publishedWhiteboard ||
         oldWidget.draftBoardSet != widget.draftBoardSet ||
@@ -230,6 +264,16 @@ class _LessonWhiteboardEditorPanelState
     _strokes = List<WhiteboardStroke>.from(
       _selectedBoard.layerBundle.primaryLayer?.strokes ?? const [],
     );
+    _pendingPausedViewport = null;
+    _activeViewportInteractionId = null;
+    _lastViewportEventSec = null;
+    _editorViewports
+      ..clear()
+      ..[_selectedBoardId] = _boardSet.resolveViewportAt(
+        boardId: _selectedBoardId,
+        globalTimestampSec: _recordingPositionSec,
+      );
+    _clearScreenShareOverride();
   }
 
   bool _segmentsEqual(
@@ -251,6 +295,7 @@ class _LessonWhiteboardEditorPanelState
 
   @override
   void dispose() {
+    _viewportRefreshTimer?.cancel();
     _positionSubscription?.cancel();
     _durationSubscription?.cancel();
     _playingSubscription?.cancel();
@@ -294,6 +339,12 @@ class _LessonWhiteboardEditorPanelState
         if (!mounted) {
           return;
         }
+        if (_screenShareOverrideEnabled &&
+            position >= widget.publishedTimelineDurationSec) {
+          _finishScreenShareOverride(
+            endGlobalSec: widget.publishedTimelineDurationSec,
+          );
+        }
         if (_isDraggingSlider) {
           _currentPositionSecExact = position;
           return;
@@ -313,6 +364,7 @@ class _LessonWhiteboardEditorPanelState
         setState(() {
           _isPlaying = isPlaying;
         });
+        _syncViewportRefreshTimer();
       });
 
       _applyResolvedPlaybackState(playback);
@@ -380,6 +432,23 @@ class _LessonWhiteboardEditorPanelState
       _totalDurationSec > 0 &&
       (_playback?.isReady ?? false);
 
+  void _syncViewportRefreshTimer() {
+    if (_isPlaying) {
+      _viewportRefreshTimer ??= Timer.periodic(
+        const Duration(milliseconds: 50),
+        (_) {
+          if (mounted && _isPlaying) {
+            _finishOverrideAtPublishedBoundaryIfNeeded();
+            setState(() {});
+          }
+        },
+      );
+      return;
+    }
+    _viewportRefreshTimer?.cancel();
+    _viewportRefreshTimer = null;
+  }
+
   Future<void> _startRecording() async {
     if (!_canControlPlayback) {
       return;
@@ -390,7 +459,9 @@ class _LessonWhiteboardEditorPanelState
     });
 
     try {
+      final resumePositionSec = _currentPositionSecExact;
       await _playback?.play();
+      _flushPendingViewport(timestampSec: resumePositionSec);
     } catch (error) {
       if (mounted) {
         setState(() {
@@ -401,13 +472,133 @@ class _LessonWhiteboardEditorPanelState
   }
 
   Future<void> _pauseRecording() async {
+    final pausedPositionSec = _recordingPositionSec;
     await _playback?.pause();
+    if (mounted) {
+      setState(() {
+        _currentPositionSecExact = pausedPositionSec;
+        _currentPositionSec = pausedPositionSec.floor();
+      });
+    }
     _finishInProgressStroke();
+  }
+
+  void _handleViewportChanged(LessonWhiteboardViewportChange change) {
+    _finishOverrideAtPublishedBoundaryIfNeeded();
+    _editorViewports[_selectedBoardId] = change.viewport;
+    if (!_shouldRecordSelectedViewport()) {
+      _pendingPausedViewport = null;
+      return;
+    }
+    if (!_isPlaying) {
+      _pendingPausedViewport = change.viewport;
+      return;
+    }
+    switch (change.phase) {
+      case LessonWhiteboardViewportChangePhase.start:
+        _activeViewportInteractionId = _allocateViewportInteractionId();
+        _lastViewportEventSec = null;
+        _appendViewportEvent(change.viewport, force: true);
+        return;
+      case LessonWhiteboardViewportChangePhase.update:
+        _activeViewportInteractionId ??= _allocateViewportInteractionId();
+        _appendViewportEvent(change.viewport, force: false);
+        return;
+      case LessonWhiteboardViewportChangePhase.end:
+        _activeViewportInteractionId ??= _allocateViewportInteractionId();
+        _appendViewportEvent(change.viewport, force: true);
+        _activeViewportInteractionId = null;
+        _lastViewportEventSec = null;
+        return;
+    }
+  }
+
+  void _flushPendingViewport({double? timestampSec}) {
+    final viewport = _pendingPausedViewport;
+    if (viewport == null) {
+      return;
+    }
+    if (_shouldRecordSelectedViewport()) {
+      _activeViewportInteractionId = _allocateViewportInteractionId();
+      _appendViewportEvent(viewport, force: true, timestampSec: timestampSec);
+    }
+    _activeViewportInteractionId = null;
+    _lastViewportEventSec = null;
+    _pendingPausedViewport = null;
+  }
+
+  bool _appendViewportEvent(
+    LessonWhiteboardViewport viewport, {
+    required bool force,
+    double? timestampSec,
+  }) {
+    if (_boardSet.viewportEvents.length + _overrideViewportEvents.length >=
+        maxLessonViewportEvents) {
+      if (mounted) {
+        if (_screenShareOverrideEnabled) {
+          _cancelScreenShareOverrideDueToLimit();
+        } else {
+          setState(() => _message = lessonViewportEventLimitMessage);
+        }
+      }
+      return false;
+    }
+    final resolvedTimestampSec = timestampSec ?? _recordingPositionSec;
+    final previousSec = _lastViewportEventSec;
+    if (!force &&
+        previousSec != null &&
+        resolvedTimestampSec - previousSec < 0.095) {
+      return false;
+    }
+    final interactionId =
+        _activeViewportInteractionId ?? _allocateViewportInteractionId();
+    final event = LessonWhiteboardViewportEvent(
+      boardId: _selectedBoardId,
+      globalTimestampSec: resolvedTimestampSec,
+      sequence: _screenShareOverrideEnabled
+          ? _nextOverrideViewportSequence++
+          : _boardSet.nextViewportSequence,
+      interactionId: interactionId,
+      viewport: viewport,
+    );
+    if (_screenShareOverrideEnabled) {
+      _overrideViewportEvents.add(event);
+    } else {
+      setState(() {
+        _boardSet = _boardSet.copyWith(
+          viewportEvents: [..._boardSet.viewportEvents, event],
+        );
+      });
+      widget.onBoardSetChanged?.call(_boardSet);
+    }
+    _lastViewportEventSec = resolvedTimestampSec;
+    return true;
+  }
+
+  bool _shouldRecordSelectedViewport() {
+    if (_screenShareOverrideEnabled && _isInPublishedTimeline) {
+      return true;
+    }
+    if (_isInPublishedTimeline) {
+      return false;
+    }
+    return _boardSet.resolveBoardAt(_recordingPositionSec)?.id ==
+        _selectedBoardId;
+  }
+
+  int _allocateViewportInteractionId() {
+    if (_screenShareOverrideEnabled) {
+      return _nextOverrideInteractionId++;
+    }
+    return _boardSet.nextViewportInteractionId;
   }
 
   Future<void> _seekPlaybackPosition(int positionSec) async {
     if (_totalDurationSec <= 0) {
       return;
+    }
+    if (_screenShareOverrideEnabled) {
+      _finishScreenShareOverride(endGlobalSec: _recordingPositionSec);
     }
     final nextPosition = positionSec.clamp(0, _totalDurationSec);
     await _playback?.seekGlobal(nextPosition.toDouble());
@@ -560,10 +751,11 @@ class _LessonWhiteboardEditorPanelState
   }
 
   void _notifyWhiteboardChanged() {
-    if (_editSessionKind == WhiteboardEditSessionKind.fresh) {
-      widget.onWhiteboardChanged?.call(_buildCurrentWhiteboard());
-      widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
-    }
+    // Keep the parent working copy current even before Firestore draft save.
+    // This lets a newly-added recording session start from every visible
+    // stroke without publishing those edits prematurely.
+    widget.onWhiteboardChanged?.call(_buildCurrentWhiteboard());
+    widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
   }
 
   void _syncWorkingWhiteboardAfterDraftSave() {
@@ -572,6 +764,9 @@ class _LessonWhiteboardEditorPanelState
   }
 
   Future<void> _saveDraft() async {
+    if (_screenShareOverrideEnabled) {
+      _finishScreenShareOverride(endGlobalSec: _recordingPositionSec);
+    }
     setState(() {
       _isSavingDraft = true;
       _message = null;
@@ -608,31 +803,193 @@ class _LessonWhiteboardEditorPanelState
     }
   }
 
+  void _setScreenShareOverride(bool enabled) {
+    if (enabled) {
+      if (!_isInPublishedTimeline || _screenShareOverrideEnabled) {
+        return;
+      }
+      _commitSelectedBoard();
+      _screenShareOverrideBaseline = _boardSet;
+      _screenShareOverrideStartSec = _recordingPositionSec;
+      _overrideSwitchEvents.clear();
+      _overrideViewportEvents.clear();
+      _nextOverrideSwitchSequence = _boardSet.nextSwitchSequence;
+      _nextOverrideViewportSequence = _boardSet.nextViewportSequence;
+      _nextOverrideInteractionId = _boardSet.nextViewportInteractionId;
+      setState(() {
+        _screenShareOverrideEnabled = true;
+        _message = 'この時点から、受講者に見せる画面を上書きしています。';
+      });
+      _recordSharedBoardSelection();
+      return;
+    }
+    _finishScreenShareOverride(endGlobalSec: _recordingPositionSec);
+  }
+
+  void _finishScreenShareOverride({required double endGlobalSec}) {
+    if (!_screenShareOverrideEnabled) {
+      return;
+    }
+    final baseline = _screenShareOverrideBaseline;
+    final startGlobalSec = _screenShareOverrideStartSec;
+    if (baseline == null || startGlobalSec == null) {
+      _clearScreenShareOverride();
+      return;
+    }
+    final boundedEnd = endGlobalSec
+        .clamp(startGlobalSec, widget.publishedTimelineDurationSec)
+        .toDouble();
+    if (_pendingPausedViewport != null) {
+      _flushPendingViewport(timestampSec: boundedEnd);
+    }
+    if (!_screenShareOverrideEnabled) {
+      return;
+    }
+    _commitSelectedBoard();
+    final merged = _boardSet.replaceScreenShareTimelineInterval(
+      baseline: baseline,
+      startGlobalSec: startGlobalSec,
+      endGlobalSec: boundedEnd,
+      replacementSwitchEvents: List.of(_overrideSwitchEvents),
+      replacementViewportEvents: List.of(_overrideViewportEvents),
+    );
+    if (merged.switchEvents.length > maxLessonBoardSwitchEvents ||
+        merged.viewportEvents.length > maxLessonViewportEvents) {
+      setState(() {
+        _clearScreenShareOverride();
+        _message = '操作履歴が保存上限に達したため、今回の画面共有上書きは反映されませんでした。';
+      });
+      return;
+    }
+    setState(() {
+      _boardSet = merged;
+      _clearScreenShareOverride();
+      _message = '画面共有の上書きを終了しました。この先は元の共有内容を引き継ぎます。';
+    });
+    widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
+  }
+
+  void _finishOverrideAtPublishedBoundaryIfNeeded() {
+    if (_screenShareOverrideEnabled &&
+        _recordingPositionSec >= widget.publishedTimelineDurationSec) {
+      _finishScreenShareOverride(
+        endGlobalSec: widget.publishedTimelineDurationSec,
+      );
+    }
+  }
+
+  void _clearScreenShareOverride() {
+    _screenShareOverrideEnabled = false;
+    _screenShareOverrideBaseline = null;
+    _screenShareOverrideStartSec = null;
+    _overrideSwitchEvents.clear();
+    _overrideViewportEvents.clear();
+    _activeViewportInteractionId = null;
+    _lastViewportEventSec = null;
+  }
+
+  void _cancelScreenShareOverrideDueToLimit() {
+    setState(() {
+      _clearScreenShareOverride();
+      _message = '操作履歴が保存上限に達したため、今回の画面共有上書きは反映されませんでした。';
+    });
+  }
+
   void _switchBoard(String boardId) {
     if (boardId == _selectedBoardId || _boardSet.boardById(boardId) == null) {
       return;
     }
+    _finishOverrideAtPublishedBoundaryIfNeeded();
     _finishInProgressStroke();
+    if (_pendingPausedViewport != null) {
+      _flushPendingViewport(timestampSec: _recordingPositionSec);
+    }
     _commitSelectedBoard();
-    final nextSequence = _boardSet.nextSwitchSequence;
     setState(() {
-      _boardSet = _boardSet.copyWith(
-        switchEvents: [
-          ..._boardSet.switchEvents,
-          LessonWhiteboardBoardSwitchEvent(
-            boardId: boardId,
-            globalTimestampSec: _recordingPositionSec,
-            sequence: nextSequence,
-          ),
-        ],
-      );
       _selectedBoardId = boardId;
       _strokes = List<WhiteboardStroke>.from(
         _selectedBoard.layerBundle.primaryLayer?.strokes ?? const [],
       );
+      _editorViewports.putIfAbsent(
+        boardId,
+        () => _boardSet.resolveViewportAt(
+          boardId: boardId,
+          globalTimestampSec: _recordingPositionSec,
+        ),
+      );
       _message = null;
     });
-    widget.onBoardSetChanged?.call(_boardSet);
+    if (_screenShareOverrideEnabled && _isInPublishedTimeline) {
+      _recordSharedBoardSelection();
+    }
+  }
+
+  void _shareBoard(String boardId) {
+    _finishOverrideAtPublishedBoundaryIfNeeded();
+    if (_boardSet.boardById(boardId) == null || _isInPublishedTimeline) {
+      return;
+    }
+    if (boardId != _selectedBoardId) {
+      _switchBoard(boardId);
+    }
+    if (_recordSharedBoardSelection()) {
+      setState(() {
+        _message = 'この時点から「${_selectedBoard.title}」を受講者に共有します。';
+      });
+    }
+  }
+
+  bool _recordSharedBoardSelection() {
+    if (_boardSet.switchEvents.length + _overrideSwitchEvents.length >=
+        maxLessonBoardSwitchEvents) {
+      if (_screenShareOverrideEnabled) {
+        _cancelScreenShareOverrideDueToLimit();
+      } else {
+        setState(() => _message = lessonBoardSwitchEventLimitMessage);
+      }
+      return false;
+    }
+    if (_boardSet.viewportEvents.length + _overrideViewportEvents.length >=
+        maxLessonViewportEvents) {
+      if (_screenShareOverrideEnabled) {
+        _cancelScreenShareOverrideDueToLimit();
+      } else {
+        setState(() => _message = lessonViewportEventLimitMessage);
+      }
+      return false;
+    }
+    final timestampSec = _recordingPositionSec;
+    final switchEvent = LessonWhiteboardBoardSwitchEvent(
+      boardId: _selectedBoardId,
+      globalTimestampSec: timestampSec,
+      sequence: _screenShareOverrideEnabled
+          ? _nextOverrideSwitchSequence++
+          : _boardSet.nextSwitchSequence,
+    );
+    if (_screenShareOverrideEnabled) {
+      _overrideSwitchEvents.add(switchEvent);
+    } else {
+      _boardSet = _boardSet.copyWith(
+        switchEvents: [..._boardSet.switchEvents, switchEvent],
+      );
+    }
+
+    _activeViewportInteractionId = _allocateViewportInteractionId();
+    _lastViewportEventSec = null;
+    final viewportRecorded = _appendViewportEvent(
+      _selectedEditorViewport,
+      force: true,
+      timestampSec: timestampSec,
+    );
+    _activeViewportInteractionId = null;
+    _lastViewportEventSec = null;
+    if (!viewportRecorded) {
+      return false;
+    }
+    if (!_screenShareOverrideEnabled) {
+      widget.onBoardSetChanged?.call(_boardSet);
+    }
+    return true;
   }
 
   void _addBoard() {
@@ -720,6 +1077,7 @@ class _LessonWhiteboardEditorPanelState
       return;
     }
     _finishInProgressStroke();
+    _pendingPausedViewport = null;
     final removedId = _selectedBoardId;
     final remaining = _boardSet.orderedBoards
         .where((board) => board.id != removedId)
@@ -735,26 +1093,27 @@ class _LessonWhiteboardEditorPanelState
           for (final event in _boardSet.switchEvents)
             if (event.boardId != removedId) event,
         ],
+        viewportEvents: [
+          for (final event in _boardSet.viewportEvents)
+            if (event.boardId != removedId) event,
+        ],
       );
       _selectedBoardId = nextId;
+      _editorViewports.remove(removedId);
+      _editorViewports.putIfAbsent(
+        nextId,
+        () => _boardSet.resolveViewportAt(
+          boardId: nextId,
+          globalTimestampSec: _recordingPositionSec,
+        ),
+      );
       _strokes = List<WhiteboardStroke>.from(
         _selectedBoard.layerBundle.primaryLayer?.strokes ?? const [],
       );
     });
-    // Deleting the active board necessarily selects another board.
-    final sequence = _boardSet.nextSwitchSequence;
-    setState(() {
-      _boardSet = _boardSet.copyWith(
-        switchEvents: [
-          ..._boardSet.switchEvents,
-          LessonWhiteboardBoardSwitchEvent(
-            boardId: nextId,
-            globalTimestampSec: _recordingPositionSec,
-            sequence: sequence,
-          ),
-        ],
-      );
-    });
+    if (_screenShareOverrideEnabled && _isInPublishedTimeline) {
+      _recordSharedBoardSelection();
+    }
     widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
   }
 
@@ -898,196 +1257,289 @@ class _LessonWhiteboardEditorPanelState
     await _seekPlaybackPosition(0);
   }
 
+  String _boardLabel(int index, LessonWhiteboardBoard board) {
+    return board.title.isEmpty
+        ? 'ボード${index + 1}'
+        : '${index + 1}. ${board.title}';
+  }
+
+  Widget? _buildScreenShareButton(BuildContext context) {
+    if (!_shouldShowEditingCanvas || _isInPublishedTimeline) {
+      return null;
+    }
+    final isShared =
+        _boardSet.resolveBoardAt(_recordingPositionSec)?.id == _selectedBoardId;
+    final colorScheme = Theme.of(context).colorScheme;
+    return FilledButton.icon(
+      key: const ValueKey('whiteboard-share-current-board'),
+      onPressed: () => _shareBoard(_selectedBoardId),
+      style: FilledButton.styleFrom(
+        minimumSize: Size.zero,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+        backgroundColor: isShared
+            ? Colors.red.shade700
+            : colorScheme.surfaceContainerHighest.withValues(alpha: 0.92),
+        foregroundColor: isShared ? Colors.white : colorScheme.onSurface,
+      ),
+      icon: const Icon(Icons.screen_share_outlined, size: 17),
+      label: const Text('画面共有'),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final sliderMax = _totalDurationSec > 0
         ? _totalDurationSec.toDouble()
         : 1.0;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('メディアプレビュー', style: Theme.of(context).textTheme.titleSmall),
-        const SizedBox(height: 8),
-        if (_isLoadingMedia) ...[
-          const LinearProgressIndicator(),
-          const SizedBox(height: 8),
-          const Text('音声を読み込み中…'),
-        ] else if (_mediaLoadError != null) ...[
-          Text(
-            _mediaLoadError!,
-            style: TextStyle(color: Theme.of(context).colorScheme.error),
-          ),
-        ] else if (_canControlPlayback) ...[
-          Text(
-            '${formatLessonTime(_displayedPositionSec)} / ${formatLessonTime(_totalDurationSec)}',
-            style: const TextStyle(fontWeight: FontWeight.bold),
-          ),
-          Slider(
-            value: (_sliderDragPositionSec ?? _currentPositionSec.toDouble())
-                .clamp(0, _totalDurationSec)
-                .toDouble(),
-            min: 0,
-            max: sliderMax,
-            divisions: _totalDurationSec > 0 ? _totalDurationSec : null,
-            label: formatLessonTime(_displayedPositionSec),
-            onChangeStart: _isPlaying
-                ? null
-                : (_) {
-                    setState(() {
-                      _sliderDragPositionSec = _currentPositionSec.toDouble();
-                    });
-                  },
-            onChanged: _isPlaying
-                ? null
-                : (value) {
-                    setState(() {
-                      _sliderDragPositionSec = value;
-                    });
-                  },
-            onChangeEnd: _isPlaying
-                ? null
-                : (value) {
-                    final targetSec = value.round();
-                    setState(() {
-                      _sliderDragPositionSec = null;
-                    });
-                    unawaited(_seekPlaybackPosition(targetSec));
-                  },
-          ),
-        ],
-        const SizedBox(height: 16),
-        Text('ホワイトボード', style: Theme.of(context).textTheme.titleSmall),
-        const SizedBox(height: 4),
-        Text(
-          _isPlaying ? '再生中はペンで書けます。' : 'スタートを押すとメディアが流れ、同時に書けるようになります。',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        const SizedBox(height: 8),
-        Wrap(
-          key: const ValueKey('whiteboard-board-selector'),
-          spacing: 6,
-          runSpacing: 6,
-          crossAxisAlignment: WrapCrossAlignment.center,
+    return IgnorePointer(
+      ignoring: !widget.enabled,
+      child: Opacity(
+        opacity: widget.enabled ? 1 : 0.55,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            for (final entry in _boardSet.orderedBoards.indexed)
-              ChoiceChip(
-                key: ValueKey('whiteboard-board-${entry.$2.id}'),
-                selected: entry.$2.id == _selectedBoardId,
-                label: Text(
-                  entry.$2.title.isEmpty
-                      ? '${entry.$1 + 1}'
-                      : '${entry.$1 + 1}. ${entry.$2.title}',
-                ),
-                onSelected: (_) => _switchBoard(entry.$2.id),
-              ),
-            if (_shouldShowEditingCanvas)
-              OutlinedButton.icon(
-                key: const ValueKey('whiteboard-add-board'),
-                onPressed: _boardSet.canAddBoard ? _addBoard : null,
-                icon: const Icon(Icons.add),
-                label: const Text('ボードを追加'),
-              ),
-          ],
-        ),
-        if (_shouldShowEditingCanvas) ...[
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextButton.icon(
-                onPressed: () => unawaited(_renameSelectedBoard()),
-                icon: const Icon(Icons.drive_file_rename_outline),
-                label: const Text('名前を変更'),
-              ),
-              TextButton.icon(
-                key: const ValueKey('whiteboard-delete-board'),
-                onPressed: _boardSet.boards.length > 1
-                    ? () => unawaited(_deleteSelectedBoard())
-                    : null,
-                icon: const Icon(Icons.delete_outline),
-                label: const Text('ボードを削除'),
-              ),
-              Text('${_boardSet.boards.length}/$maxLessonWhiteboardBoards'),
+            if (!widget.enabled) ...[
+              const Text('録音パートの作業中は、こちらの既存編集機能を一時停止しています。'),
+              const SizedBox(height: 8),
             ],
-          ),
-        ],
-        const SizedBox(height: 8),
-        if (_hasPublishedWhiteboard && !_shouldShowEditingCanvas) ...[
-          SizedBox(
-            height: 220,
-            child: LessonWhiteboardCanvas(
-              strokes: [
-                for (final layer in _selectedBoard.layerBundle.orderedLayers)
-                  ...layer.strokes,
+            Text('メディアプレビュー', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 8),
+            if (_isLoadingMedia) ...[
+              const LinearProgressIndicator(),
+              const SizedBox(height: 8),
+              const Text('音声を読み込み中…'),
+            ] else if (_mediaLoadError != null) ...[
+              Text(
+                _mediaLoadError!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ] else if (_canControlPlayback) ...[
+              Text(
+                '${formatLessonTime(_displayedPositionSec)} / ${formatLessonTime(_totalDurationSec)}',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              Slider(
+                value:
+                    (_sliderDragPositionSec ?? _currentPositionSec.toDouble())
+                        .clamp(0, _totalDurationSec)
+                        .toDouble(),
+                min: 0,
+                max: sliderMax,
+                divisions: _totalDurationSec > 0 ? _totalDurationSec : null,
+                label: formatLessonTime(_displayedPositionSec),
+                onChangeStart: _isPlaying
+                    ? null
+                    : (_) {
+                        setState(() {
+                          _sliderDragPositionSec = _currentPositionSec
+                              .toDouble();
+                        });
+                      },
+                onChanged: _isPlaying
+                    ? null
+                    : (value) {
+                        setState(() {
+                          _sliderDragPositionSec = value;
+                        });
+                      },
+                onChangeEnd: _isPlaying
+                    ? null
+                    : (value) {
+                        final targetSec = value.round();
+                        setState(() {
+                          _sliderDragPositionSec = null;
+                        });
+                        unawaited(_seekPlaybackPosition(targetSec));
+                      },
+              ),
+            ],
+            const SizedBox(height: 16),
+            Text('ホワイトボード', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 4),
+            Text(
+              _isPlaying ? '再生中はペンで書けます。' : 'スタートを押すとメディアが流れ、同時に書けるようになります。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            Row(
+              key: const ValueKey('whiteboard-board-selector'),
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    key: ValueKey(
+                      'whiteboard-board-dropdown-$_selectedBoardId',
+                    ),
+                    initialValue: _selectedBoardId,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      labelText: '表示するボード',
+                      isDense: true,
+                    ),
+                    items: [
+                      for (final entry in _boardSet.orderedBoards.indexed)
+                        DropdownMenuItem(
+                          value: entry.$2.id,
+                          child: Text(
+                            _boardLabel(entry.$1, entry.$2),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                    ],
+                    onChanged: (boardId) {
+                      if (boardId != null) {
+                        _switchBoard(boardId);
+                      }
+                    },
+                  ),
+                ),
+                if (_shouldShowEditingCanvas) ...[
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    key: const ValueKey('whiteboard-add-board'),
+                    onPressed: _boardSet.canAddBoard ? _addBoard : null,
+                    icon: const Icon(Icons.add),
+                    label: const Text('追加'),
+                  ),
+                ],
               ],
-              drawingEnabled: false,
             ),
-          ),
-          const SizedBox(height: 8),
-          OutlinedButton.icon(
-            onPressed: _isSavingDraft
-                ? null
-                : () => unawaited(_showEditOptions()),
-            icon: const Icon(Icons.edit_outlined),
-            label: const Text('書き物を描き直す'),
-          ),
-        ] else ...[
-          SizedBox(
-            height: 220,
-            child: LessonWhiteboardCanvas(
-              strokes: _visibleStrokes,
-              inProgressStroke: _inProgressStroke,
-              drawingEnabled: _drawingEnabled,
-              onStrokeStart: _handleStrokeStart,
-              onStrokeUpdate: _handleStrokeUpdate,
-              onStrokeEnd: _handleStrokeEnd,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              FilledButton.icon(
-                onPressed: !_canControlPlayback || _isPlaying
-                    ? null
-                    : () => unawaited(_startRecording()),
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('スタート'),
+            if (_shouldShowEditingCanvas) ...[
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextButton.icon(
+                    onPressed: () => unawaited(_renameSelectedBoard()),
+                    icon: const Icon(Icons.drive_file_rename_outline),
+                    label: const Text('名前を変更'),
+                  ),
+                  TextButton.icon(
+                    key: const ValueKey('whiteboard-delete-board'),
+                    onPressed: _boardSet.boards.length > 1
+                        ? () => unawaited(_deleteSelectedBoard())
+                        : null,
+                    icon: const Icon(Icons.delete_outline),
+                    label: const Text('ボードを削除'),
+                  ),
+                  Text('${_boardSet.boards.length}/$maxLessonWhiteboardBoards'),
+                ],
               ),
-              OutlinedButton.icon(
-                onPressed: !_isPlaying
-                    ? null
-                    : () => unawaited(_pauseRecording()),
-                icon: const Icon(Icons.pause),
-                label: const Text('一時停止'),
+            ],
+            if (_shouldShowEditingCanvas &&
+                _hasPublishedWhiteboard &&
+                _isInPublishedTimeline) ...[
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  child: CheckboxListTile(
+                    key: const ValueKey('screen-share-override-checkbox'),
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    dense: true,
+                    title: const Text('画面共有を上書き'),
+                    subtitle: Text(
+                      _screenShareOverrideEnabled
+                          ? '先生が開くボードとズームを受講者向けに記録しています。'
+                          : 'オフの間は、公開済みの画面共有を変更しません。',
+                    ),
+                    value: _screenShareOverrideEnabled,
+                    onChanged: (value) =>
+                        _setScreenShareOverride(value ?? false),
+                  ),
+                ),
               ),
-              OutlinedButton.icon(
-                onPressed: _isSavingDraft
-                    ? null
-                    : () => unawaited(_saveDraft()),
-                icon: const Icon(Icons.save_outlined),
-                label: const Text('書き物を一時保存'),
+            ],
+            const SizedBox(height: 8),
+            if (_hasPublishedWhiteboard && !_shouldShowEditingCanvas) ...[
+              LessonWhiteboardCanvas(
+                key: ValueKey('published-canvas-$_selectedBoardId'),
+                strokes: [
+                  for (final layer in _selectedBoard.layerBundle.orderedLayers)
+                    ...layer.strokes,
+                ],
+                drawingEnabled: false,
+                maxWidth: lessonWhiteboardCompactMaxWidth,
+                showViewportControls: false,
               ),
-              OutlinedButton.icon(
-                onPressed: _isSavingDraft
-                    ? null
-                    : () => unawaited(_resetWhiteboard()),
-                icon: const Icon(Icons.delete_outline),
-                label: const Text('リセット'),
-              ),
+              const SizedBox(height: 8),
               OutlinedButton.icon(
                 onPressed: _isSavingDraft
                     ? null
                     : () => unawaited(_showEditOptions()),
                 icon: const Icon(Icons.edit_outlined),
-                label: const Text('編集の選び直し'),
+                label: const Text('書き物を描き直す'),
+              ),
+            ] else ...[
+              LessonWhiteboardCanvas(
+                key: ValueKey('editor-canvas-$_selectedBoardId'),
+                strokes: _visibleStrokes,
+                inProgressStroke: _inProgressStroke,
+                drawingEnabled: _drawingEnabled,
+                onStrokeStart: _handleStrokeStart,
+                onStrokeUpdate: _handleStrokeUpdate,
+                onStrokeEnd: _handleStrokeEnd,
+                onStrokeCancel: _clearInProgressStroke,
+                maxWidth: lessonWhiteboardCompactMaxWidth,
+                viewport: _selectedEditorViewport,
+                onViewportChanged: _handleViewportChanged,
+                showViewportControls: false,
+                bottomLeftOverlay: _buildScreenShareButton(context),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilledButton.icon(
+                    onPressed: !_canControlPlayback || _isPlaying
+                        ? null
+                        : () => unawaited(_startRecording()),
+                    icon: const Icon(Icons.play_arrow),
+                    label: const Text('スタート'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: !_isPlaying
+                        ? null
+                        : () => unawaited(_pauseRecording()),
+                    icon: const Icon(Icons.pause),
+                    label: const Text('一時停止'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _isSavingDraft
+                        ? null
+                        : () => unawaited(_saveDraft()),
+                    icon: const Icon(Icons.save_outlined),
+                    label: const Text('書き物を一時保存'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _isSavingDraft
+                        ? null
+                        : () => unawaited(_resetWhiteboard()),
+                    icon: const Icon(Icons.delete_outline),
+                    label: const Text('リセット'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _isSavingDraft
+                        ? null
+                        : () => unawaited(_showEditOptions()),
+                    icon: const Icon(Icons.edit_outlined),
+                    label: const Text('編集の選び直し'),
+                  ),
+                ],
               ),
             ],
-          ),
-        ],
-        if (_message != null) ...[const SizedBox(height: 8), Text(_message!)],
-      ],
+            if (_message != null) ...[
+              const SizedBox(height: 8),
+              Text(_message!),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }

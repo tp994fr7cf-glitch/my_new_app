@@ -6,7 +6,7 @@ void main() {
   late String rules;
 
   setUpAll(() {
-    rules = File('storage.rules').readAsStringSync();
+    rules = File('storage.rules').readAsStringSync().replaceAll('\r\n', '\n');
   });
 
   test('lesson uploads use at most two distinct Firestore documents', () {
@@ -24,17 +24,36 @@ void main() {
   test('lesson media keeps owner, lesson, type, and size checks', () {
     expect(rules, contains('request.auth.uid'));
     expect(rules, contains('lessonExists(courseId, lessonId)'));
+    expect(
+      rules,
+      contains(
+        'allow create, update: if isCourseInstructor(courseId)\n'
+        '        && courseIsPublished(courseId)',
+      ),
+    );
     expect(rules, contains("request.resource.contentType.matches('video/.*')"));
-    expect(rules, contains('request.resource.size <= 50 * 1024 * 1024'));
+    expect(rules, contains('request.resource.size <= 100 * 1024 * 1024'));
   });
 
-  test('enrolled learners remain eligible to read course media', () {
+  test('only published courses allow enrolled learners to read media', () {
     expect(rules, contains('userHasCourseEnrollment(courseId)'));
+    expect(rules, contains('courseIsPublished(courseId)'));
+    expect(
+      rules,
+      contains(
+        'courseIsPublished(courseId) && userHasCourseEnrollment(courseId)',
+      ),
+    );
     expect(
       rules,
       contains(
         '/documents/users/\$(request.auth.uid)/enrollments/\$(courseId)',
       ),
     );
+  });
+
+  test('course instructors can list media for recursive deletion', () {
+    expect(rules, contains('match /courseMedia/{courseId}/{allPaths=**}'));
+    expect(rules, contains('allow list: if isCourseInstructor(courseId);'));
   });
 }

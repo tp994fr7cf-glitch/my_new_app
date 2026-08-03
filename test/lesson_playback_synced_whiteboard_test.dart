@@ -82,6 +82,82 @@ void main() {
     },
   );
 
+  testWidgets('exact media duration keeps final fractional events visible', (
+    tester,
+  ) async {
+    const finalStroke = WhiteboardStroke(
+      id: 'fractional-end',
+      timestampSec: 7.05,
+      endTimestampSec: 7.1,
+      points: [
+        WhiteboardPoint(x: 0.2, y: 0.5, timestampSec: 7.05),
+        WhiteboardPoint(x: 0.8, y: 0.5, timestampSec: 7.1),
+      ],
+    );
+    const boardSet = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+          layerBundle: LessonWhiteboardLayerBundle(
+            layers: [
+              LessonWhiteboardLayer(
+                id: LessonWhiteboardLayer.primaryLayerId,
+                order: 0,
+                strokes: [finalStroke],
+              ),
+            ],
+          ),
+        ),
+      ],
+      viewportEvents: [
+        LessonWhiteboardViewportEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 7.1,
+          sequence: 0,
+          interactionId: 0,
+          viewport: LessonWhiteboardViewport(
+            centerX: 0.5,
+            centerY: 0.5,
+            scale: 2,
+          ),
+        ),
+      ],
+    );
+    final timeline = LessonMediaTimeline(
+      segments: const [
+        LessonMediaSegment(
+          id: 'audio',
+          order: 0,
+          mediaType: 'audio',
+          durationSec: 7,
+          durationMs: 7200,
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonPlaybackSyncedWhiteboard(
+            boardSet: boardSet,
+            timeline: timeline,
+            playback: null,
+            isPlaying: false,
+            positionSecExact: 7.15,
+            totalDurationSec: 7,
+          ),
+        ),
+      ),
+    );
+
+    final canvas = tester.widget<LessonWhiteboardCanvas>(
+      find.byType(LessonWhiteboardCanvas),
+    );
+    expect(canvas.strokes.single.id, 'fractional-end');
+    expect(canvas.viewport?.scale, 2);
+  });
+
   testWidgets('follow, manual selection, and backward seeks select one board', (
     tester,
   ) async {
@@ -219,6 +295,95 @@ void main() {
     canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
     expect(canvas.strokes.single.id, 'default-now');
     expect(find.byType(LessonWhiteboardCanvas), findsOneWidget);
+  });
+
+  testWidgets('manual zoom pauses viewport following and switch restores it', (
+    tester,
+  ) async {
+    const boardSet = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+        ),
+      ],
+      viewportEvents: [
+        LessonWhiteboardViewportEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 1,
+          sequence: 0,
+          interactionId: 0,
+          viewport: LessonWhiteboardViewport.full,
+        ),
+        LessonWhiteboardViewportEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 2,
+          sequence: 1,
+          interactionId: 0,
+          viewport: LessonWhiteboardViewport(
+            centerX: 0.5,
+            centerY: 0.5,
+            scale: 2,
+          ),
+        ),
+      ],
+    );
+
+    Future<void> pumpAt(double positionSec) {
+      return tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LessonPlaybackSyncedWhiteboard(
+              boardSet: boardSet,
+              timeline: LessonMediaTimeline(segments: const []),
+              playback: null,
+              isPlaying: false,
+              positionSecExact: positionSec,
+              totalDurationSec: 10,
+            ),
+          ),
+        ),
+      );
+    }
+
+    await pumpAt(1.5);
+    var canvas = tester.widget<LessonWhiteboardCanvas>(
+      find.byType(LessonWhiteboardCanvas),
+    );
+    expect(canvas.viewport?.scale, 1.5);
+
+    canvas.onViewportChanged!(
+      const LessonWhiteboardViewportChange(
+        viewport: LessonWhiteboardViewport(
+          centerX: 0.5,
+          centerY: 0.5,
+          scale: 3,
+        ),
+        phase: LessonWhiteboardViewportChangePhase.start,
+      ),
+    );
+    await tester.pump();
+    expect(
+      tester
+          .widget<Switch>(
+            find.byKey(const ValueKey('learner-whiteboard-follow-switch')),
+          )
+          .value,
+      isFalse,
+    );
+
+    await pumpAt(2);
+    canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+    expect(canvas.viewport, isNull);
+
+    tester
+        .widget<Switch>(
+          find.byKey(const ValueKey('learner-whiteboard-follow-switch')),
+        )
+        .onChanged!(true);
+    await tester.pump();
+    canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+    expect(canvas.viewport?.scale, 2);
   });
 }
 
