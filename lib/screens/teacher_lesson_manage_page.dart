@@ -968,6 +968,9 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                       mediaType: item.mediaType,
                       url: result.downloadUrl,
                       durationSec: resolvedDurationSec,
+                      whiteboardStartCorrectionMs:
+                          item.whiteboardStartCorrectionMs,
+                      whiteboardEndCorrectionMs: item.whiteboardEndCorrectionMs,
                     )
                   : item.toSegment(fallbackDurationSec: fallbackDurationSec),
         ]);
@@ -1126,6 +1129,9 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                     url: result.downloadUrl,
                     durationSec: durationSec,
                     durationMs: durationMs,
+                    whiteboardStartCorrectionMs:
+                        item.whiteboardStartCorrectionMs,
+                    whiteboardEndCorrectionMs: item.whiteboardEndCorrectionMs,
                   )
                 : item.toSegment(fallbackDurationSec: fallbackDurationSec),
       ]);
@@ -1470,6 +1476,8 @@ class _MediaSegmentEditorState {
     this.isLocked = false,
     this.durationSec = 0,
     this.durationMs = 0,
+    this.whiteboardStartCorrectionMs = 0,
+    this.whiteboardEndCorrectionMs = 0,
     this.sourceKind = '',
     this.liveSessionId = '',
     this.isAudioRecordingDraft = false,
@@ -1492,6 +1500,8 @@ class _MediaSegmentEditorState {
       isLocked: isLocked,
       durationSec: segment.durationSec,
       durationMs: segment.durationMs,
+      whiteboardStartCorrectionMs: segment.whiteboardStartCorrectionMs,
+      whiteboardEndCorrectionMs: segment.whiteboardEndCorrectionMs,
       sourceKind: segment.sourceKind,
       liveSessionId: segment.liveSessionId,
       isAudioRecordingBusy: false,
@@ -1507,6 +1517,8 @@ class _MediaSegmentEditorState {
   bool isLocked;
   int durationSec;
   int durationMs;
+  int whiteboardStartCorrectionMs;
+  int whiteboardEndCorrectionMs;
   String sourceKind;
   String liveSessionId;
   bool isAudioRecordingDraft;
@@ -1535,6 +1547,8 @@ class _MediaSegmentEditorState {
       url: urlController.text.trim(),
       durationSec: hasUrl ? duration : 0,
       durationMs: hasUrl ? durationMs : 0,
+      whiteboardStartCorrectionMs: hasUrl ? whiteboardStartCorrectionMs : 0,
+      whiteboardEndCorrectionMs: hasUrl ? whiteboardEndCorrectionMs : 0,
       sourceKind: sourceKind,
       liveSessionId: liveSessionId,
     );
@@ -1728,8 +1742,18 @@ class _LessonEditorState {
     workingWhiteboardLayers = lesson.publishedWhiteboardBundle;
     workingBoardSet = lesson.publishedBoardSet;
     final lockedIds = lesson.lockedSegmentIds;
+    final savedSegmentsById = {
+      for (final segment in lesson.mediaSegments) segment.id: segment,
+    };
     for (final segment in segments) {
       segment.isLocked = lockedIds.contains(segment.id);
+      final savedSegment = savedSegmentsById[segment.id];
+      if (savedSegment != null) {
+        segment.whiteboardStartCorrectionMs =
+            savedSegment.whiteboardStartCorrectionMs;
+        segment.whiteboardEndCorrectionMs =
+            savedSegment.whiteboardEndCorrectionMs;
+      }
       if (segment.isLocked) {
         segment.isAudioRecordingDraft = false;
         segment.isAudioRecordingBusy = false;
@@ -2427,6 +2451,8 @@ class _SegmentEditorTile extends StatelessWidget {
     final allowedExtensions = mediaStorageService.allowedExtensionsForMediaType(
       segment.mediaType,
     );
+    final timingCorrectionEnabled =
+        !segment.isUploading && !lessonHasActiveRecording;
 
     return Card(
       margin: EdgeInsets.zero,
@@ -2444,7 +2470,7 @@ class _SegmentEditorTile extends StatelessWidget {
             ),
             if (segment.isLocked)
               Text(
-                '公開済み（タイトルのみ変更できます）',
+                '公開済み（タイトルと板書タイミング補正を変更できます）',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             const SizedBox(height: 8),
@@ -2515,6 +2541,12 @@ class _SegmentEditorTile extends StatelessWidget {
                 style: Theme.of(context).textTheme.bodySmall,
               ),
               if (segment.durationSec > 0) Text('長さ: ${segment.durationSec}秒'),
+              const SizedBox(height: 8),
+              _WhiteboardTimingCorrectionEditor(
+                segment: segment,
+                enabled: timingCorrectionEnabled,
+                onChanged: onChanged,
+              ),
             ],
             const SizedBox(height: 8),
             Wrap(
@@ -2536,6 +2568,153 @@ class _SegmentEditorTile extends StatelessWidget {
                   icon: const Icon(Icons.delete_outline),
                 ),
               ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WhiteboardTimingCorrectionEditor extends StatelessWidget {
+  const _WhiteboardTimingCorrectionEditor({
+    required this.segment,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final _MediaSegmentEditorState segment;
+  final bool enabled;
+  final VoidCallback onChanged;
+
+  int _sliderMs(double seconds) {
+    return ((seconds * 10).round() * 100).clamp(
+      -maxLessonWhiteboardTimingCorrectionMs,
+      maxLessonWhiteboardTimingCorrectionMs,
+    );
+  }
+
+  String _description(int milliseconds) {
+    if (milliseconds == 0) {
+      return '補正なし';
+    }
+    final seconds = (milliseconds.abs() / 1000).toStringAsFixed(1);
+    return milliseconds > 0 ? '$seconds秒早める' : '$seconds秒遅らせる';
+  }
+
+  Widget _slider({
+    required Key key,
+    required String label,
+    required int valueMs,
+    required ValueChanged<int> onChanged,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('$label: ${_description(valueMs)}'),
+        Slider(
+          key: key,
+          value: (valueMs / 1000).clamp(-5.0, 5.0),
+          min: -5,
+          max: 5,
+          divisions: 100,
+          label: _description(valueMs),
+          onChanged: enabled ? (value) => onChanged(_sliderMs(value)) : null,
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isUniform =
+        segment.whiteboardStartCorrectionMs ==
+        segment.whiteboardEndCorrectionMs;
+    final uniformValueMs = isUniform ? segment.whiteboardStartCorrectionMs : 0;
+    return Card(
+      margin: EdgeInsets.zero,
+      color: Theme.of(context).colorScheme.surface,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '音声・動画に対する板書タイミング補正',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '右へ動かすと板書を早め、左へ動かすと遅らせます。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            Text(
+              '結果は「レッスン情報を保存」後、先生プレビューで確認できます。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            _slider(
+              key: ValueKey('segment-${segment.id}-uniform-correction'),
+              label: 'パート全体を同じ秒数で補正',
+              valueMs: uniformValueMs,
+              onChanged: (milliseconds) {
+                segment.whiteboardStartCorrectionMs = milliseconds;
+                segment.whiteboardEndCorrectionMs = milliseconds;
+                onChanged();
+              },
+            ),
+            if (!isUniform)
+              Text(
+                '現在は2点補正中です。このスライダーを動かすと開始・終了を同じ値に戻します。',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ExpansionTile(
+              key: ValueKey('segment-${segment.id}-two-point-correction'),
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: EdgeInsets.zero,
+              initiallyExpanded: !isUniform,
+              title: const Text('開始・終了を別々に補正（2点補正）'),
+              subtitle: Text(
+                '開始: ${_description(segment.whiteboardStartCorrectionMs)} / '
+                '終了: ${_description(segment.whiteboardEndCorrectionMs)}',
+              ),
+              children: [
+                _slider(
+                  key: ValueKey('segment-${segment.id}-start-correction'),
+                  label: '開始時',
+                  valueMs: segment.whiteboardStartCorrectionMs,
+                  onChanged: (milliseconds) {
+                    segment.whiteboardStartCorrectionMs = milliseconds;
+                    onChanged();
+                  },
+                ),
+                _slider(
+                  key: ValueKey('segment-${segment.id}-end-correction'),
+                  label: '終了時',
+                  valueMs: segment.whiteboardEndCorrectionMs,
+                  onChanged: (milliseconds) {
+                    segment.whiteboardEndCorrectionMs = milliseconds;
+                    onChanged();
+                  },
+                ),
+              ],
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                key: ValueKey('segment-${segment.id}-correction-reset'),
+                onPressed:
+                    !enabled ||
+                        (segment.whiteboardStartCorrectionMs == 0 &&
+                            segment.whiteboardEndCorrectionMs == 0)
+                    ? null
+                    : () {
+                        segment.whiteboardStartCorrectionMs = 0;
+                        segment.whiteboardEndCorrectionMs = 0;
+                        onChanged();
+                      },
+                icon: const Icon(Icons.refresh),
+                label: const Text('補正を0に戻す'),
+              ),
             ),
           ],
         ),

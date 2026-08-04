@@ -3,6 +3,7 @@ import 'dart:math';
 import '../utils/firestore_parsing.dart';
 
 const String lessonMediaSourceLiveArchive = 'liveArchive';
+const int maxLessonWhiteboardTimingCorrectionMs = 5000;
 
 class LessonMediaSegment {
   const LessonMediaSegment({
@@ -13,6 +14,8 @@ class LessonMediaSegment {
     this.url = '',
     this.durationSec = 0,
     this.durationMs = 0,
+    this.whiteboardStartCorrectionMs = 0,
+    this.whiteboardEndCorrectionMs = 0,
     this.sourceKind = '',
     this.liveSessionId = '',
   });
@@ -24,6 +27,8 @@ class LessonMediaSegment {
   final String url;
   final int durationSec;
   final int durationMs;
+  final int whiteboardStartCorrectionMs;
+  final int whiteboardEndCorrectionMs;
   final String sourceKind;
   final String liveSessionId;
 
@@ -44,6 +49,12 @@ class LessonMediaSegment {
       url: parseStringField(data['url']),
       durationSec: parseIntField(data['durationSec']),
       durationMs: parseIntField(data['durationMs']),
+      whiteboardStartCorrectionMs: parseIntField(
+        data['whiteboardStartCorrectionMs'],
+      ),
+      whiteboardEndCorrectionMs: parseIntField(
+        data['whiteboardEndCorrectionMs'],
+      ),
       sourceKind: parseStringField(data['sourceKind']),
       liveSessionId: parseStringField(data['liveSessionId']),
     );
@@ -58,6 +69,10 @@ class LessonMediaSegment {
       'url': url,
       if (durationSec > 0) 'durationSec': durationSec,
       if (durationMs > 0) 'durationMs': durationMs,
+      if (whiteboardStartCorrectionMs != 0)
+        'whiteboardStartCorrectionMs': whiteboardStartCorrectionMs,
+      if (whiteboardEndCorrectionMs != 0)
+        'whiteboardEndCorrectionMs': whiteboardEndCorrectionMs,
       if (sourceKind.isNotEmpty) 'sourceKind': sourceKind,
       if (liveSessionId.isNotEmpty) 'liveSessionId': liveSessionId,
     };
@@ -71,6 +86,8 @@ class LessonMediaSegment {
     String? url,
     int? durationSec,
     int? durationMs,
+    int? whiteboardStartCorrectionMs,
+    int? whiteboardEndCorrectionMs,
     String? sourceKind,
     String? liveSessionId,
   }) {
@@ -82,6 +99,10 @@ class LessonMediaSegment {
       url: url ?? this.url,
       durationSec: durationSec ?? this.durationSec,
       durationMs: durationMs ?? this.durationMs,
+      whiteboardStartCorrectionMs:
+          whiteboardStartCorrectionMs ?? this.whiteboardStartCorrectionMs,
+      whiteboardEndCorrectionMs:
+          whiteboardEndCorrectionMs ?? this.whiteboardEndCorrectionMs,
       sourceKind: sourceKind ?? this.sourceKind,
       liveSessionId: liveSessionId ?? this.liveSessionId,
     );

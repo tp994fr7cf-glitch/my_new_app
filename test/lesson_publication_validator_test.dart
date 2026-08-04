@@ -153,6 +153,38 @@ void main() {
     expect(published.contentRevision, 7);
   });
 
+  test('allows timing correction changes on a published part', () {
+    final next = previousLesson().copyWith(
+      mediaSegments: [
+        locked.copyWith(
+          whiteboardStartCorrectionMs: 500,
+          whiteboardEndCorrectionMs: 1500,
+        ),
+      ],
+    );
+
+    expect(validate(next), isNull);
+  });
+
+  test('rejects out-of-range or reversing timing corrections', () {
+    final outOfRange = previousLesson().copyWith(
+      mediaSegments: [locked.copyWith(whiteboardStartCorrectionMs: 5100)],
+    );
+    final reversing = previousLesson().copyWith(
+      mediaSegments: [
+        locked
+            .copyWith(durationSec: 5)
+            .copyWith(
+              whiteboardStartCorrectionMs: 5000,
+              whiteboardEndCorrectionMs: -5000,
+            ),
+      ],
+    );
+
+    expect(validate(outOfRange), lessonWhiteboardTimingCorrectionInvalidError);
+    expect(validate(reversing), lessonWhiteboardTimingCorrectionInvalidError);
+  });
+
   test('allows changing mode before any part has been published', () {
     final previous = previousLesson().copyWith(
       publishedSegmentIds: const [],

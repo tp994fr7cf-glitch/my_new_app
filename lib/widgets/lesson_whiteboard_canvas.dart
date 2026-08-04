@@ -17,8 +17,47 @@ const double lessonWhiteboardCompactMaxWidth =
 typedef LessonWhiteboardMaterialUrlResolver =
     Future<String> Function(String storagePath);
 
-Future<String> _defaultMaterialUrlResolver(String storagePath) {
-  return FirebaseStorage.instance.ref(storagePath).getDownloadURL();
+const int _maxCachedLessonMaterialUrls = 64;
+final Map<String, Future<String>> _lessonMaterialUrlCache = {};
+
+Future<String> resolveLessonWhiteboardMaterialUrl(String storagePath) {
+  final cached = _lessonMaterialUrlCache.remove(storagePath);
+  if (cached != null) {
+    _lessonMaterialUrlCache[storagePath] = cached;
+    return cached;
+  }
+
+  final completer = Completer<String>();
+  final future = completer.future;
+  _lessonMaterialUrlCache[storagePath] = future;
+  while (_lessonMaterialUrlCache.length > _maxCachedLessonMaterialUrls) {
+    _lessonMaterialUrlCache.remove(_lessonMaterialUrlCache.keys.first);
+  }
+  unawaited(
+    _loadLessonWhiteboardMaterialUrl(
+      storagePath: storagePath,
+      cachedFuture: future,
+      completer: completer,
+    ),
+  );
+  return future;
+}
+
+Future<void> _loadLessonWhiteboardMaterialUrl({
+  required String storagePath,
+  required Future<String> cachedFuture,
+  required Completer<String> completer,
+}) async {
+  try {
+    completer.complete(
+      await FirebaseStorage.instance.ref(storagePath).getDownloadURL(),
+    );
+  } catch (error, stackTrace) {
+    if (identical(_lessonMaterialUrlCache[storagePath], cachedFuture)) {
+      _lessonMaterialUrlCache.remove(storagePath);
+    }
+    completer.completeError(error, stackTrace);
+  }
 }
 
 enum LessonWhiteboardViewportChangePhase { start, update, end }
@@ -52,7 +91,7 @@ class LessonWhiteboardCanvas extends StatefulWidget {
     this.backgroundColor = Colors.white,
     this.background,
     this.aspectRatio = lessonWhiteboardAspectRatio,
-    this.materialUrlResolver = _defaultMaterialUrlResolver,
+    this.materialUrlResolver = resolveLessonWhiteboardMaterialUrl,
   });
 
   final List<WhiteboardStroke> strokes;
@@ -75,6 +114,121 @@ class LessonWhiteboardCanvas extends StatefulWidget {
 
   @override
   State<LessonWhiteboardCanvas> createState() => _LessonWhiteboardCanvasState();
+}
+
+class LessonWhiteboardBackgroundPreloader extends StatelessWidget {
+  const LessonWhiteboardBackgroundPreloader({
+    super.key,
+    required this.backgrounds,
+    this.materialUrlResolver = resolveLessonWhiteboardMaterialUrl,
+  });
+
+  final List<LessonWhiteboardBoardBackground> backgrounds;
+  final LessonWhiteboardMaterialUrlResolver materialUrlResolver;
+
+  @override
+  Widget build(BuildContext context) {
+    final uniqueBackgrounds = <LessonWhiteboardBoardBackground>[];
+    final storagePaths = <String>{};
+    for (final background in backgrounds) {
+      if (storagePaths.add(background.storagePath)) {
+        uniqueBackgrounds.add(background);
+      }
+    }
+    if (uniqueBackgrounds.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Offstage(
+      offstage: true,
+      child: SizedBox(
+        width: 1,
+        height: 1,
+        child: Stack(
+          children: [
+            for (final background in uniqueBackgrounds)
+              _LessonWhiteboardBackgroundPreload(
+                key: ValueKey(
+                  'whiteboard-background-preload-${background.storagePath}',
+                ),
+                background: background,
+                urlResolver: materialUrlResolver,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LessonWhiteboardBackgroundPreload extends StatefulWidget {
+  const _LessonWhiteboardBackgroundPreload({
+    super.key,
+    required this.background,
+    required this.urlResolver,
+  });
+
+  final LessonWhiteboardBoardBackground background;
+  final LessonWhiteboardMaterialUrlResolver urlResolver;
+
+  @override
+  State<_LessonWhiteboardBackgroundPreload> createState() =>
+      _LessonWhiteboardBackgroundPreloadState();
+}
+
+class _LessonWhiteboardBackgroundPreloadState
+    extends State<_LessonWhiteboardBackgroundPreload> {
+  late Future<String> _urlFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveUrl();
+  }
+
+  @override
+  void didUpdateWidget(covariant _LessonWhiteboardBackgroundPreload oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.background.storagePath != widget.background.storagePath ||
+        oldWidget.urlResolver != widget.urlResolver) {
+      _resolveUrl();
+    }
+  }
+
+  void _resolveUrl() {
+    _urlFuture = Future<String>.sync(
+      () => widget.urlResolver(widget.background.storagePath),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<String>(
+      future: _urlFuture,
+      builder: (context, snapshot) {
+        final url = snapshot.data;
+        if (url == null || url.isEmpty) {
+          return const SizedBox.shrink();
+        }
+        if (widget.background.isImage) {
+          return Image.network(
+            url,
+            width: 1,
+            height: 1,
+            cacheWidth: 1024,
+            errorBuilder: (context, error, stackTrace) =>
+                const SizedBox.shrink(),
+          );
+        }
+        return PdfDocumentViewBuilder.uri(
+          Uri.parse(url),
+          useProgressiveLoading: true,
+          builder: (context, document) => const SizedBox.shrink(),
+          loadingBuilder: (context) => const SizedBox.shrink(),
+          errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+        );
+      },
+    );
+  }
 }
 
 class _LessonWhiteboardBackgroundView extends StatefulWidget {

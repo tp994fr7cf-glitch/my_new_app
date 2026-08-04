@@ -17,6 +17,8 @@ const String lessonContentRevisionLimitError =
     'コンテンツリビジョンの上限に達したため、新しいパートを公開できません。';
 const String lessonPublishedMaterialBoardsLockedError =
     '公開済みのPDF・画像ボードは、背景の変更や削除ができません。新しいボードとして追加してください。';
+const String lessonWhiteboardTimingCorrectionInvalidError =
+    '板書タイミング補正は±5秒以内で、時間が逆戻りしない値にしてください。';
 const int maxLessonContentRevision = 2147483647;
 
 class LessonPublicationValidator {
@@ -110,6 +112,9 @@ String? validateAppendOnlyLessonPublication({
   if (!_hasUniqueOrders(previous.mediaSegments) ||
       !_hasUniqueOrders(next.mediaSegments)) {
     return lessonDuplicateSegmentOrderError;
+  }
+  if (!next.mediaSegments.every(_hasValidWhiteboardTimingCorrection)) {
+    return lessonWhiteboardTimingCorrectionInvalidError;
   }
 
   final previousLockedIds = previous.lockedSegmentIds;
@@ -255,6 +260,20 @@ bool _hasValidUniquePublishedIds(CourseLesson lesson) {
 bool _hasUniqueOrders(List<LessonMediaSegment> segments) {
   final orders = <int>{};
   return segments.every((segment) => orders.add(segment.order));
+}
+
+bool _hasValidWhiteboardTimingCorrection(LessonMediaSegment segment) {
+  final startMs = segment.whiteboardStartCorrectionMs;
+  final endMs = segment.whiteboardEndCorrectionMs;
+  if (startMs.abs() > maxLessonWhiteboardTimingCorrectionMs ||
+      endMs.abs() > maxLessonWhiteboardTimingCorrectionMs) {
+    return false;
+  }
+  if (startMs == 0 && endMs == 0) {
+    return true;
+  }
+  final durationMs = (segment.durationSecExact * 1000).round();
+  return durationMs > 0 && durationMs + endMs - startMs > 0;
 }
 
 bool _publishedMaterialBoardsRemainLocked(BoardSet previous, BoardSet next) {

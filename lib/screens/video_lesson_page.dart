@@ -2910,6 +2910,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                 isPlaying: _isPlaying,
                 positionSecExact: _currentPositionSecExact,
                 totalDurationSec: _totalDurationSec,
+                enableSubPlayback:
+                    lesson.playbackMode == LessonPlaybackMode.continuous,
               ),
             ],
             const SizedBox(height: 24),

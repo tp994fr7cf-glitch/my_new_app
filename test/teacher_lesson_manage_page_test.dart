@@ -408,7 +408,7 @@ void main() {
     );
     expect(mode.onChanged, isNull);
     expect(find.text('公開済みのパートがあるため、再生モードは変更できません。'), findsOneWidget);
-    expect(find.text('公開済み（タイトルのみ変更できます）'), findsOneWidget);
+    expect(find.text('公開済み（タイトルと板書タイミング補正を変更できます）'), findsOneWidget);
     expect(
       tester
           .widget<DropdownButtonFormField<String>>(
@@ -465,6 +465,57 @@ void main() {
     final upButtons = find.widgetWithIcon(IconButton, Icons.arrow_upward);
     expect(tester.widget<IconButton>(downButtons.at(0)).onPressed, isNull);
     expect(tester.widget<IconButton>(upButtons.at(1)).onPressed, isNull);
+  });
+
+  testWidgets('一定補正と2点補正をパートへ保存する', (tester) async {
+    final course = _courseWithLesson(
+      const CourseLesson(
+        title: '補正',
+        duration: '30秒',
+        mediaSegments: [_lockedSegment],
+        publishedSegmentIds: ['locked'],
+      ),
+    );
+    CourseLesson? saved;
+    await tester.binding.setSurfaceSize(const Size(800, 2200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonManagePage(
+          course: course,
+          onSaveOverride: (lessons) async {
+            saved = lessons.single;
+          },
+        ),
+      ),
+    );
+
+    final uniformFinder = find.byKey(
+      const ValueKey('segment-locked-uniform-correction'),
+    );
+    await tester.ensureVisible(uniformFinder);
+    tester.widget<Slider>(uniformFinder).onChanged!(0.5);
+    await tester.pump();
+
+    await tester.tap(find.text('開始・終了を別々に補正（2点補正）'));
+    await tester.pumpAndSettle();
+    final endFinder = find.byKey(
+      const ValueKey('segment-locked-end-correction'),
+    );
+    await tester.ensureVisible(endFinder);
+    tester.widget<Slider>(endFinder).onChanged!(1.5);
+    await tester.pump();
+
+    await tester.scrollUntilVisible(
+      find.text('レッスン情報を保存'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('レッスン情報を保存'));
+    await tester.pumpAndSettle();
+
+    expect(saved?.mediaSegments.single.whiteboardStartCorrectionMs, 500);
+    expect(saved?.mediaSegments.single.whiteboardEndCorrectionMs, 1500);
   });
 
   testWidgets('保存時に新しいURL付き末尾パートをロックしリビジョンを一度だけ増やす', (tester) async {
