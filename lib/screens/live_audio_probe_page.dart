@@ -64,6 +64,10 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   final _clock = Stopwatch();
   int? _timelineClockAnchorMs;
   int? _timelineClockAnchorElapsedUs;
+  Future<bool>? _timelineClockSyncOperation;
+  bool _timelineClockConfirmed = false;
+  bool _timelineClockSyncing = false;
+  bool _currentBoardStateAnnounced = false;
   final Set<String> _presenterUpdates = {};
   final Set<String> _processedTimelineEvents = {};
   final Set<String> _timelineCreatedBoardIds = {};
@@ -121,7 +125,17 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       _rtcState == LiveAudioProbeRtcState.connected ||
       _rtcState == LiveAudioProbeRtcState.reconnecting;
   bool get _canPublish => _permission?.canPublish == true && !_closingSession;
-  bool get _canWriteBoard => _canPublish && _session?.isActive == true;
+  // This is intentionally the single gate for every teacher action written to
+  // the shared timeline: strokes, viewport zoom/pan, board/PDF page switching,
+  // board creation, and the initial board announcement. Do not narrow it to
+  // drawing alone. Viewer-only board and viewport changes stay local and must
+  // remain available without an NTP-confirmed publishing clock.
+  bool get _canUseSharedTimeline => canEmitLiveAudioTimelineEvents(
+    canPublish: _canPublish,
+    sessionIsActive: _session?.isActive == true,
+    ntpClockConfirmed: _timelineClockConfirmed,
+  );
+  bool get _canWriteBoard => _canUseSharedTimeline;
   String? get _sessionId => _session?.id;
   bool get _isCatchup =>
       _catchupStatus.state == LiveAudioCatchupState.catchup ||
@@ -316,6 +330,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         }
       });
       _scheduleDurationLimit(session);
+      _announceCurrentBoardStateIfReady();
       if (!session.isActive) {
         setState(
           () => _message = session.closeReason == 'maxDuration'
@@ -387,17 +402,10 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     );
     try {
       await rtc.join(credentials);
-      final ntpSampleStartedUs = _clock.elapsedMicroseconds;
-      final ntpWallTimeMs = await rtc.getNtpWallTimeInMs();
-      final ntpSampleFinishedUs = _clock.elapsedMicroseconds;
-      if (ntpWallTimeMs != null) {
-        _timelineClockAnchorMs = ntpWallTimeMs;
-        _timelineClockAnchorElapsedUs =
-            (ntpSampleStartedUs + ntpSampleFinishedUs) ~/ 2;
-      }
       if (credentials.permission.canPublish) {
         unawaited(_reportAudioCaptureStart(sessionId, rtc));
       }
+      await _synchronizeTimelineClock(sessionId, rtc);
     } catch (error) {
       final wasCurrentConnection = _rtc == rtc;
       if (wasCurrentConnection) {
@@ -419,9 +427,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       (_) => unawaited(_refreshArchiveStatus(sessionId)),
     );
     unawaited(_refreshArchiveStatus(sessionId));
-    if (mounted && credentials.permission.canPublish) {
-      _announceCurrentBoardState();
-    }
+    _announceCurrentBoardStateIfReady();
   }
 
   void _scheduleDurationLimit(LiveAudioProbeSession session) {
@@ -461,8 +467,9 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         _permission = credentials.permission;
         _participantHlsManifestUrl = credentials.hlsManifestUrl;
         _microphoneMuted = false;
+        _currentBoardStateAnnounced = false;
         _message = credentials.permission.canPublish
-            ? '先生から発表を許可されました。マイクと板書を利用できます。'
+            ? '先生から発表を許可されました。配信時計の同期後に共有操作を利用できます。'
             : '発表を終了し、視聴専用へ戻りました。';
         if (!credentials.permission.canPublish) {
           _snapshotSaveTimer?.cancel();
@@ -485,7 +492,8 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       });
       if (credentials.permission.canPublish) {
         unawaited(_reportAudioCaptureStart(sessionId, rtc));
-        _announceCurrentBoardState();
+        await _synchronizeTimelineClock(sessionId, rtc);
+        _announceCurrentBoardStateIfReady();
       }
     } catch (error) {
       _showError(error);
@@ -557,6 +565,85 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     } catch (error) {
       _showError(error);
     }
+  }
+
+  // Never unlock shared timeline input by silently keeping the Functions clock
+  // after NTP confirmation fails. Its request latency caused the intermittent
+  // first-part offset documented in confirmLiveAudioNtpClock. The UI remains
+  // locked and offers an explicit retry instead.
+  Future<bool> _synchronizeTimelineClock(
+    String sessionId,
+    LiveAudioProbeRtcController rtc,
+  ) {
+    if (_timelineClockConfirmed) {
+      return Future<bool>.value(true);
+    }
+    final existing = _timelineClockSyncOperation;
+    if (existing != null) {
+      return existing;
+    }
+    late final Future<bool> operation;
+    operation = _synchronizeTimelineClockNow(sessionId, rtc).whenComplete(() {
+      if (identical(_timelineClockSyncOperation, operation)) {
+        _timelineClockSyncOperation = null;
+      }
+    });
+    _timelineClockSyncOperation = operation;
+    return operation;
+  }
+
+  Future<bool> _synchronizeTimelineClockNow(
+    String sessionId,
+    LiveAudioProbeRtcController rtc,
+  ) async {
+    final trustedAnchorMs = _timelineClockAnchorMs;
+    final trustedAnchorElapsedUs = _timelineClockAnchorElapsedUs;
+    if (trustedAnchorMs == null || trustedAnchorElapsedUs == null) {
+      return false;
+    }
+    if (mounted && _rtc == rtc) {
+      setState(() => _timelineClockSyncing = true);
+    }
+    final result = await confirmLiveAudioNtpClock(
+      sampleNtpWallTimeMs: rtc.getNtpWallTimeInMs,
+      currentElapsedUs: () => _clock.elapsedMicroseconds,
+      trustedAnchorMs: trustedAnchorMs,
+      trustedAnchorElapsedUs: trustedAnchorElapsedUs,
+      isCancelled: () => !mounted || _rtc != rtc,
+    );
+    if (!mounted || _rtc != rtc) {
+      return false;
+    }
+    if (result.confirmed) {
+      setState(() {
+        _timelineClockAnchorMs = result.anchorMs;
+        _timelineClockAnchorElapsedUs = result.anchorElapsedUs;
+        _timelineClockConfirmed = true;
+        _timelineClockSyncing = false;
+      });
+      debugPrint(
+        '[LiveAudioTimeline] Agora NTP confirmed for $sessionId after '
+        '${result.attempts} samples (${result.rejectedSamples} rejected).',
+      );
+      return true;
+    }
+    setState(() => _timelineClockSyncing = false);
+    debugPrint(
+      '[LiveAudioTimeline] Agora NTP confirmation timed out for $sessionId '
+      'after ${result.attempts} samples '
+      '(${result.rejectedSamples} rejected).',
+    );
+    return false;
+  }
+
+  Future<void> _retryTimelineClockSync() async {
+    final rtc = _rtc;
+    final sessionId = _sessionId;
+    if (rtc == null || sessionId == null || _timelineClockSyncing) {
+      return;
+    }
+    await _synchronizeTimelineClock(sessionId, rtc);
+    _announceCurrentBoardStateIfReady();
   }
 
   double get _currentSessionSec {
@@ -650,7 +737,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
 
   void _updateLocalStroke(WhiteboardPoint point) {
     final stroke = _localStroke;
-    if (stroke == null || !_canPublish) {
+    if (stroke == null || !_canUseSharedTimeline) {
       return;
     }
     final timestamp = _currentTimelineSec;
@@ -682,7 +769,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
 
   void _endLocalStroke(WhiteboardPoint point) {
     final stroke = _localStroke;
-    if (stroke == null || !_canPublish) {
+    if (stroke == null || !_canUseSharedTimeline) {
       return;
     }
     final timestamp = _currentTimelineSec;
@@ -808,6 +895,9 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   }
 
   void _sendWhiteboardMessage(LiveAudioProbeMessage message) {
+    if (!_canUseSharedTimeline) {
+      return;
+    }
     final rtc = _rtc;
     if (rtc != null && _isConnected) {
       unawaited(rtc.sendWhiteboardMessage(message).catchError(_showError));
@@ -820,7 +910,11 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     }
   }
 
-  void _announceCurrentBoardState() {
+  void _announceCurrentBoardStateIfReady() {
+    if (!_canUseSharedTimeline || _currentBoardStateAnnounced) {
+      return;
+    }
+    _currentBoardStateAnnounced = true;
     final boardId = _boardState.selectedBoardId;
     final timestamp = _currentTimelineSec;
     final switchMessage = LiveAudioProbeMessage(
@@ -938,7 +1032,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   }
 
   void _addBoard() {
-    if (!_canPublish || !_boardState.boardSet.canAddBoard) {
+    if (!_canUseSharedTimeline || !_boardState.boardSet.canAddBoard) {
       return;
     }
     final boardId = LessonWhiteboardBoard.generateId();
@@ -972,6 +1066,9 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
 
   void _selectBoard(String boardId) {
     if (_canPublish) {
+      if (!_canUseSharedTimeline) {
+        return;
+      }
       final message = LiveAudioProbeMessage(
         kind: LiveAudioProbeMessageKind.boardSwitch,
         boardId: boardId,
@@ -1010,6 +1107,9 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         setState(() => _followPresenter = false);
       }
       setState(() => _viewerViewport = change.viewport);
+      return;
+    }
+    if (!_canUseSharedTimeline) {
       return;
     }
     if (change.phase == LessonWhiteboardViewportChangePhase.start) {
@@ -1262,6 +1362,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     await _catchup.returnToLive();
     final rtc = _rtc;
     _rtc = null;
+    _timelineClockSyncOperation = null;
     if (rtc != null) {
       await rtc.dispose();
     }
@@ -1290,6 +1391,9 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         _archiveAudioPlaybackCompensationSec = null;
         _timelineClockAnchorMs = null;
         _timelineClockAnchorElapsedUs = null;
+        _timelineClockConfirmed = false;
+        _timelineClockSyncing = false;
+        _currentBoardStateAnnounced = false;
       });
     }
     _leaving = false;
@@ -1470,6 +1574,40 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         Text('接続状態: ${_rtcStateLabel(_rtcState)}'),
         Text('現在の権限: ${_canPublish ? '発表者' : '視聴専用'}'),
         Text('アーカイブ: ${_archiveStatusLabel(session.archiveStatus)}'),
+        if (_canPublish && !_timelineClockConfirmed)
+          Card(
+            color: Theme.of(context).colorScheme.tertiaryContainer,
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _timelineClockSyncing
+                        ? '配信時計を同期しています…'
+                        : '配信時計を確認できませんでした。',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    '同期が終わるまで、書き込み、拡大・縮小、表示移動、'
+                    'ボードやPDFページの切り替えは利用できません。',
+                  ),
+                  if (_timelineClockSyncing) ...[
+                    const SizedBox(height: 10),
+                    const LinearProgressIndicator(),
+                  ] else ...[
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: _retryTimelineClockSync,
+                      icon: const Icon(Icons.sync),
+                      label: const Text('時計同期を再試行'),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
         if (_message != null) _MessageCard(message: _message!),
         if (_isOwner && session.archiveFailed)
           Padding(
@@ -1494,9 +1632,11 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
                   item.title.isEmpty ? 'ボード${item.order + 1}' : item.title,
                 ),
                 selected: item.id == board.id,
-                onSelected: (_) => _selectBoard(item.id),
+                onSelected: _canPublish && !_canUseSharedTimeline
+                    ? null
+                    : (_) => _selectBoard(item.id),
               ),
-            if (_canPublish && _boardState.boardSet.canAddBoard)
+            if (_canUseSharedTimeline && _boardState.boardSet.canAddBoard)
               ActionChip(
                 avatar: const Icon(Icons.add, size: 18),
                 label: const Text('ボード追加'),
@@ -1579,7 +1719,8 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
           onStrokeCancel: () => setState(_cancelLocalStroke),
           viewport: _displayViewport,
           onViewportChanged: _isCatchup ? null : _handleViewportChanged,
-          viewportInteractionEnabled: !_isCatchup,
+          viewportInteractionEnabled:
+              !_isCatchup && (!_canPublish || _canUseSharedTimeline),
           showViewportControls: !_isCatchup,
           background: board.background,
           aspectRatio: board.aspectRatio,

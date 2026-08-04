@@ -1,5 +1,6 @@
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:pdfrx/pdfrx.dart';
 
 import 'firebase_options.dart';
 import 'screens/auth_gate.dart';
@@ -7,6 +8,7 @@ import 'screens/firebase_setup_page.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await pdfrxFlutterInitialize();
 
   Object? firebaseError;
   try {

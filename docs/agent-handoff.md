@@ -23,6 +23,88 @@ Firebase Console: https://console.firebase.google.com/project/my-new-app-naona-2
 
 ---
 
+## 0-E. 2026-08-04 AndroidでPDF追加が無期限に停止する不具合
+
+Android実機で、PDF選択後に「PDFを読み込んでいます…」のまま進まない事象を確認した。
+実機のアプリキャッシュを調査すると、選択した約212KBのPDFは
+`file_picker`の一時領域へ完全にコピー済みで、Storageへのアップロード前に停止していた。
+同じPDFで成功する場合もあるため、PDF本体や容量ではなく、端末からDartへの受け渡し、
+またはPDFiumの初期化・解析待ちが完了しない問題と判断した。
+
+コード上では、直接 `PdfDocument.openData` を使う一方、
+`pdfrx 2.4.7`が直接API利用時に要求する `pdfrxFlutterInitialize()` を
+アプリ起動時に呼んでいなかった。また、Androidで `file_picker` の `withData: true` と
+Dart側の読み込みを重ね、各非同期処理にタイムアウトも段階ログもなかった。
+
+修正:
+
+- `main.dart`でFirebase初期化より前に `pdfrxFlutterInitialize()` を完了させる。
+- PDF選択は `withData: false` とし、Androidネイティブ側で同じPDFを二重にメモリへ載せない。
+- ファイル選択後のネイティブ処理、Dartへのバイト読み込み、PDFium解析を段階別にログ出力する。
+- 各処理を20秒で監視し、停止時は無期限表示にせず、アプリを開き直して再試行する案内を表示する。
+- タイムアウト後に遅れてPDFが開いた場合は、その文書を破棄してリソースを残さない。
+
+確認:
+
+- PDF資料追加の関連Flutterテスト20件成功
+- PDFサービスの新規テスト2件で、`withData: false` と2種類のタイムアウトを確認
+- 変更3ファイルの `flutter analyze` 成功
+- Android debug APKとWeb release build成功
+- PDF追加修正版WebをFirebase Hostingへ反映済み
+- Android実機 `FCG02` とAndroidエミュレーターへ、アプリデータを保持する
+  `adb install -r` でdebug APKを上書き済み
+
+---
+
+## 0-D. 2026-08-04 初回ライブ板書が0秒へ固定される不具合
+
+Android実機で、同じレッスンのライブ配信パート1だけ板書が開始時から完成形になり、
+viewport操作も再現されず、パート2は正常になる事象を確認した。
+本番Firestoreを読み取り調査し、パート1の元 `whiteboardStrokes`、スナップショット、
+公開BoardSetですべてのストローク・点・53件のviewport時刻が0秒だったことを確認した。
+パート2の元データは正常なグローバル時刻だった。
+
+原因は、初回RTC接続直後にAgoraが返す「正の値だが未同期」のNTP値を、
+有効なepoch時刻としてFunctionsサーバー時計へ上書きしていたこと。
+`lib/services/live_audio_timeline_clock.dart` にNTP妥当性検証を追加し、
+Functionsの信頼済み時計から10秒を超えてずれるNTP値は採用せず、
+既存の単調時計でFunctions時刻を進め続けるよう修正した。
+正常なNTP、HLSメディア原点、音声遅延補正、Cloud Functionsの確定処理は変更していない。
+
+確認:
+
+- 時計・RTC・板書保存・ボード選択の関連Flutterテスト37件成功
+- 変更ファイルの `flutter analyze` 成功
+- Android debug APKとWeb release build成功
+- 修正版WebをFirebase Hostingへ反映済み
+- すでに全時刻が0秒で保存された過去パートは正しい時刻を復元できないため、修正対象は今後の配信
+
+同日の修正後実機確認で、パート1だけ板書に対して音声が約1秒遅く見える場合があった。
+本番の3配信を比較すると、パート1の板書時計だけAgora音声時計より約0.58秒遅く、
+パート2・3は同じAgora NTP時計へ同期していた。初回の異常NTPを破棄した後に再取得せず、
+通信遅延を含むFunctions時刻を使い続けたことが原因と判断した。
+
+追加修正:
+
+- 接続直後のNTPを1回で採用せず、最大5秒間、250ms間隔で取得する。
+- Functions時刻から10秒以内で、単調時計へ投影したNTPアンカーの差が100ms以内となる
+  3回連続のサンプルを確認してからAgora NTPを採用する。
+- 同期完了までは、線、拡大・縮小、表示移動、ボード／PDFページ切り替え、
+  ボード追加、初期ボード状態通知を共通ゲートで停止する。
+- 同期できない場合はFunctions時刻で共有操作を自動開始せず、操作をロックしたまま
+  「時計同期を再試行」を表示する。受講者だけのローカル表示操作は停止しない。
+
+追加修正の確認:
+
+- ライブ配信関連Flutterテスト62件成功
+- 変更3ファイルの `flutter analyze` 成功
+- Android debug APKとWeb release build成功
+- クライアント変更だけのため、Functions・Rulesの変更はなし
+- 追加修正版WebをFirebase Hostingへ反映済み
+- Android実機 `FCG02` とAndroidエミュレーターへdebug APKをインストール済み
+
+---
+
 ## 0-C. 2026-08-04 PDF・画像付き板書（Phase 1実装、本番Web反映済み）
 
 ブランチ `cursor/pdf-image-whiteboard-c48f` で、先生が事前準備したPDF・画像を

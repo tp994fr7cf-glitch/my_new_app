@@ -1,9 +1,10 @@
-import 'dart:typed_data';
+import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as image_lib;
 import 'package:image_picker/image_picker.dart';
 import 'package:pdfrx/pdfrx.dart';
@@ -57,32 +58,101 @@ class LessonMaterialUploadResult {
   final List<String> titles;
 }
 
+typedef LessonPdfDocumentOpener =
+    Future<PdfDocument> Function(Uint8List bytes, String sourceName);
+
 class LessonMaterialStorageService {
-  const LessonMaterialStorageService();
+  const LessonMaterialStorageService({
+    this.filePicker,
+    this.pdfDocumentOpener,
+    this.pdfPickerProcessingTimeout = const Duration(seconds: 20),
+    this.pdfBytesReadTimeout = const Duration(seconds: 20),
+    this.pdfDocumentOpenTimeout = const Duration(seconds: 20),
+  });
 
   static const int maxBytes = 50 * 1024 * 1024;
   static const List<String> imageExtensions = ['jpg', 'jpeg', 'png', 'webp'];
   static int _assetSequence = 0;
 
+  final FilePicker? filePicker;
+  final LessonPdfDocumentOpener? pdfDocumentOpener;
+  final Duration pdfPickerProcessingTimeout;
+  final Duration pdfBytesReadTimeout;
+  final Duration pdfDocumentOpenTimeout;
+
   Future<PickedLessonPdf?> pickPdf() async {
-    final result = await FilePicker.platform.pickFiles(
+    debugPrint('[LessonMaterialPdf] Opening the system file picker.');
+    final processingStarted = Completer<void>();
+    final resultFuture = (filePicker ?? FilePicker.platform).pickFiles(
       type: FileType.custom,
       allowedExtensions: const ['pdf'],
       allowMultiple: false,
-      withData: true,
+      withData: false,
+      onFileLoading: (status) {
+        debugPrint('[LessonMaterialPdf] File picker status: ${status.name}.');
+        if (status == FilePickerStatus.picking &&
+            !processingStarted.isCompleted) {
+          processingStarted.complete();
+        }
+      },
     );
+    final result = !kIsWeb && defaultTargetPlatform == TargetPlatform.android
+        ? await Future.any<FilePickerResult?>([
+            resultFuture,
+            processingStarted.future.then<FilePickerResult?>(
+              (_) => Future<FilePickerResult?>.delayed(
+                pdfPickerProcessingTimeout,
+                () => throw const LessonMaterialStorageException(
+                  'PDFの受け取りに時間がかかっています。'
+                  'アプリを開き直してから、もう一度お試しください。',
+                ),
+              ),
+            ),
+          ])
+        : await resultFuture;
     if (result == null || result.files.isEmpty) {
       return null;
     }
     final file = result.files.single;
     _validateSize(file.size);
-    final bytes = await _readPlatformFile(file);
+    debugPrint(
+      '[LessonMaterialPdf] File picker completed (${file.size} bytes).',
+    );
+    final bytes = await _readPlatformFile(file).timeout(
+      pdfBytesReadTimeout,
+      onTimeout: () => throw const LessonMaterialStorageException(
+        '端末からPDFを読み込めませんでした。'
+        'アプリを開き直してから、もう一度お試しください。',
+      ),
+    );
+    debugPrint('[LessonMaterialPdf] PDF bytes loaded (${bytes.length} bytes).');
     try {
-      final document = await PdfDocument.openData(bytes, sourceName: file.name);
+      debugPrint('[LessonMaterialPdf] Opening the PDF document.');
+      final opening =
+          pdfDocumentOpener?.call(bytes, file.name) ??
+          PdfDocument.openData(bytes, sourceName: file.name);
+      late final PdfDocument document;
+      try {
+        document = await opening.timeout(pdfDocumentOpenTimeout);
+      } on TimeoutException {
+        unawaited(
+          opening
+              .then<void>((lateDocument) => lateDocument.dispose())
+              .catchError((_) {}),
+        );
+        throw const LessonMaterialStorageException(
+          'PDFの解析に時間がかかりすぎています。'
+          'アプリを開き直してから、もう一度お試しください。',
+        );
+      }
       if (document.pages.isEmpty) {
         await document.dispose();
         throw const LessonMaterialStorageException('ページがないPDFは追加できません。');
       }
+      debugPrint(
+        '[LessonMaterialPdf] PDF document opened '
+        '(${document.pages.length} pages).',
+      );
       return PickedLessonPdf(
         fileName: file.name,
         bytes: bytes,
