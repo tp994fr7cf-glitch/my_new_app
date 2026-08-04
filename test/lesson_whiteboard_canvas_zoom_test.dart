@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:my_new_app/models/lesson_whiteboard.dart';
@@ -5,6 +7,38 @@ import 'package:my_new_app/models/lesson_whiteboard_board_set.dart';
 import 'package:my_new_app/widgets/lesson_whiteboard_canvas.dart';
 
 void main() {
+  testWidgets('uses a material page aspect ratio while its background loads', (
+    tester,
+  ) async {
+    final unresolvedUrl = Completer<String>();
+    const background = LessonWhiteboardBoardBackground(
+      assetId: 'image-asset',
+      storagePath: 'courseMedia/course/lessons/lesson/materials/page.webp',
+      mediaType: lessonWhiteboardBackgroundImage,
+      aspectRatio: 16 / 9,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LessonWhiteboardCanvas(
+            strokes: const [],
+            background: background,
+            aspectRatio: background.aspectRatio,
+            materialUrlResolver: (_) => unresolvedUrl.future,
+          ),
+        ),
+      ),
+    );
+
+    final aspectFinder = find.byKey(const ValueKey('whiteboard-aspect-ratio'));
+    final size = tester.getSize(aspectFinder);
+    expect(size.width / size.height, closeTo(16 / 9, 0.001));
+    expect(
+      find.byKey(const ValueKey('whiteboard-background-loading')),
+      findsWidgets,
+    );
+  });
+
   testWidgets('uses 4:3, zooms to 8x, pans, and hides the minimap', (
     tester,
   ) async {

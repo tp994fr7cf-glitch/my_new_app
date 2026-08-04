@@ -5,6 +5,71 @@ const int maxLessonBoardSwitchEvents = 10000;
 const int maxLessonViewportEvents = 2000;
 const double minLessonWhiteboardViewportScale = 1;
 const double maxLessonWhiteboardViewportScale = 8;
+const String lessonWhiteboardBackgroundPdf = 'pdf';
+const String lessonWhiteboardBackgroundImage = 'image';
+
+class LessonWhiteboardBoardBackground {
+  const LessonWhiteboardBoardBackground({
+    required this.assetId,
+    required this.storagePath,
+    required this.mediaType,
+    required this.aspectRatio,
+    this.pageNumber = 1,
+  });
+
+  final String assetId;
+  final String storagePath;
+  final String mediaType;
+  final int pageNumber;
+  final double aspectRatio;
+
+  bool get isPdf => mediaType == lessonWhiteboardBackgroundPdf;
+  bool get isImage => mediaType == lessonWhiteboardBackgroundImage;
+
+  static LessonWhiteboardBoardBackground? tryFromMap(Object? value) {
+    if (value is! Map) {
+      return null;
+    }
+    final assetId = value['assetId'];
+    final storagePath = value['storagePath'];
+    final mediaType = value['mediaType'];
+    final rawAspectRatio = value['aspectRatio'];
+    final rawPageNumber = value['pageNumber'];
+    if (assetId is! String ||
+        assetId.trim().isEmpty ||
+        storagePath is! String ||
+        storagePath.trim().isEmpty ||
+        mediaType is! String ||
+        (mediaType != lessonWhiteboardBackgroundPdf &&
+            mediaType != lessonWhiteboardBackgroundImage) ||
+        rawAspectRatio is! num ||
+        !rawAspectRatio.toDouble().isFinite ||
+        rawAspectRatio <= 0) {
+      return null;
+    }
+    final pageNumber = rawPageNumber is num ? rawPageNumber.toInt() : 1;
+    if (pageNumber < 1) {
+      return null;
+    }
+    return LessonWhiteboardBoardBackground(
+      assetId: assetId.trim(),
+      storagePath: storagePath.trim(),
+      mediaType: mediaType,
+      pageNumber: pageNumber,
+      aspectRatio: rawAspectRatio.toDouble(),
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'assetId': assetId,
+      'storagePath': storagePath,
+      'mediaType': mediaType,
+      'pageNumber': pageNumber,
+      'aspectRatio': aspectRatio,
+    };
+  }
+}
 
 class LessonWhiteboardBoard {
   const LessonWhiteboardBoard({
@@ -12,6 +77,7 @@ class LessonWhiteboardBoard {
     required this.order,
     this.title = '',
     this.layerBundle = const LessonWhiteboardLayerBundle(),
+    this.background,
   });
 
   static const String defaultBoardId = 'default';
@@ -27,6 +93,9 @@ class LessonWhiteboardBoard {
   final int order;
   final String title;
   final LessonWhiteboardLayerBundle layerBundle;
+  final LessonWhiteboardBoardBackground? background;
+
+  double get aspectRatio => background?.aspectRatio ?? 4 / 3;
 
   factory LessonWhiteboardBoard.fromMap(Map data) {
     return LessonWhiteboardBoard(
@@ -34,6 +103,9 @@ class LessonWhiteboardBoard {
       order: data['order'] is num ? (data['order'] as num).toInt() : 0,
       title: data['title'] is String ? data['title'] as String : '',
       layerBundle: LessonWhiteboardLayerBundle.fromMap(data['layers']),
+      background: LessonWhiteboardBoardBackground.tryFromMap(
+        data['background'],
+      ),
     );
   }
 
@@ -43,6 +115,7 @@ class LessonWhiteboardBoard {
       'order': order,
       if (title.isNotEmpty) 'title': title,
       'layers': layerBundle.toMapList(),
+      if (background != null) 'background': background!.toMap(),
     };
   }
 
@@ -51,12 +124,15 @@ class LessonWhiteboardBoard {
     int? order,
     String? title,
     LessonWhiteboardLayerBundle? layerBundle,
+    LessonWhiteboardBoardBackground? background,
+    bool clearBackground = false,
   }) {
     return LessonWhiteboardBoard(
       id: id ?? this.id,
       order: order ?? this.order,
       title: title ?? this.title,
       layerBundle: layerBundle ?? this.layerBundle,
+      background: clearBackground ? null : background ?? this.background,
     );
   }
 }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -7,6 +8,7 @@ import 'package:my_new_app/models/lesson_media_segment.dart';
 import 'package:my_new_app/models/lesson_whiteboard.dart';
 import 'package:my_new_app/models/lesson_whiteboard_board_set.dart';
 import 'package:my_new_app/services/lesson_media_playlist_playback.dart';
+import 'package:my_new_app/services/lesson_material_storage_service.dart';
 import 'package:my_new_app/widgets/lesson_whiteboard_canvas.dart';
 import 'package:my_new_app/widgets/lesson_whiteboard_editor_panel.dart';
 
@@ -1131,6 +1133,54 @@ void main() {
     expect(addButton.onPressed, isNull);
     expect(find.text('20/20'), findsOneWidget);
   });
+
+  testWidgets('adds a selected image as a material board', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    BoardSet? workingBoardSet;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonId: 'lesson-1',
+              lessonNumber: 1,
+              mediaSegments: testMediaSegments(),
+              durationLabel: '1分30秒',
+              draftBoardSet: const BoardSet(
+                boards: [
+                  LessonWhiteboardBoard(
+                    id: LessonWhiteboardBoard.defaultBoardId,
+                    order: 0,
+                  ),
+                ],
+              ),
+              onBoardSetDraftSaved: (_) async {},
+              onBoardSetChanged: (boardSet) => workingBoardSet = boardSet,
+              materialStorageService: const _FakeMaterialStorageService(),
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const ValueKey('whiteboard-add-material-menu')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('画像ファイルを追加'));
+    await tester.pumpAndSettle();
+
+    expect(workingBoardSet?.boards, hasLength(2));
+    final materialBoard = workingBoardSet!.orderedBoards.last;
+    expect(materialBoard.background?.isImage, isTrue);
+    expect(materialBoard.background?.aspectRatio, 1.5);
+    expect(find.text('2/20'), findsOneWidget);
+  });
 }
 
 Future<void> _selectBoard(WidgetTester tester, String label) async {
@@ -1145,6 +1195,45 @@ Color? _screenShareButtonColor(WidgetTester tester) {
     find.byKey(const ValueKey('whiteboard-share-current-board')),
   );
   return button.style?.backgroundColor?.resolve({});
+}
+
+class _FakeMaterialStorageService extends LessonMaterialStorageService {
+  const _FakeMaterialStorageService();
+
+  @override
+  Future<List<PickedLessonImage>> pickImageFiles({
+    required int maximumCount,
+  }) async {
+    return [
+      PickedLessonImage(
+        fileName: 'diagram.png',
+        bytes: Uint8List.fromList([1, 2, 3]),
+        contentType: 'image/png',
+        aspectRatio: 1.5,
+      ),
+    ];
+  }
+
+  @override
+  Future<LessonMaterialUploadResult> uploadImages({
+    required String courseId,
+    required String lessonId,
+    required List<PickedLessonImage> images,
+  }) async {
+    return const LessonMaterialUploadResult(
+      backgrounds: [
+        LessonWhiteboardBoardBackground(
+          assetId: 'material-1',
+          storagePath:
+              'courseMedia/course-1/lessons/lesson-1/materials/'
+              'material-1/shared/image.png',
+          mediaType: lessonWhiteboardBackgroundImage,
+          aspectRatio: 1.5,
+        ),
+      ],
+      titles: ['diagram.png'],
+    );
+  }
 }
 
 /// A fake playlist controller whose [globalPositionStream] only ticks in

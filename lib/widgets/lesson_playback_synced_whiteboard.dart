@@ -240,6 +240,8 @@ class _LessonPlaybackSyncedWhiteboardState
           drawingEnabled: false,
           viewport: _followsTeacher ? teacherViewport : null,
           onViewportChanged: _handleManualViewportChange,
+          background: activeBoard?.background,
+          aspectRatio: activeBoard?.aspectRatio ?? lessonWhiteboardAspectRatio,
         ),
       ],
     );

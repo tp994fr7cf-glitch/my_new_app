@@ -1,0 +1,426 @@
+import 'dart:typed_data';
+
+import 'package:file_picker/file_picker.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:image/image.dart' as image_lib;
+import 'package:image_picker/image_picker.dart';
+import 'package:pdfrx/pdfrx.dart';
+
+import '../models/lesson_whiteboard_board_set.dart';
+
+class LessonMaterialStorageException implements Exception {
+  const LessonMaterialStorageException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class PickedLessonPdf {
+  PickedLessonPdf({
+    required this.fileName,
+    required this.bytes,
+    required this.document,
+  });
+
+  final String fileName;
+  final Uint8List bytes;
+  final PdfDocument document;
+
+  Future<void> dispose() => document.dispose();
+}
+
+class PickedLessonImage {
+  const PickedLessonImage({
+    required this.fileName,
+    required this.bytes,
+    required this.contentType,
+    required this.aspectRatio,
+  });
+
+  final String fileName;
+  final Uint8List bytes;
+  final String contentType;
+  final double aspectRatio;
+}
+
+class LessonMaterialUploadResult {
+  const LessonMaterialUploadResult({
+    required this.backgrounds,
+    required this.titles,
+  });
+
+  final List<LessonWhiteboardBoardBackground> backgrounds;
+  final List<String> titles;
+}
+
+class LessonMaterialStorageService {
+  const LessonMaterialStorageService();
+
+  static const int maxBytes = 50 * 1024 * 1024;
+  static const List<String> imageExtensions = ['jpg', 'jpeg', 'png', 'webp'];
+  static int _assetSequence = 0;
+
+  Future<PickedLessonPdf?> pickPdf() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['pdf'],
+      allowMultiple: false,
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) {
+      return null;
+    }
+    final file = result.files.single;
+    _validateSize(file.size);
+    final bytes = await _readPlatformFile(file);
+    try {
+      final document = await PdfDocument.openData(bytes, sourceName: file.name);
+      if (document.pages.isEmpty) {
+        await document.dispose();
+        throw const LessonMaterialStorageException('ページがないPDFは追加できません。');
+      }
+      return PickedLessonPdf(
+        fileName: file.name,
+        bytes: bytes,
+        document: document,
+      );
+    } catch (error) {
+      if (error is LessonMaterialStorageException) {
+        rethrow;
+      }
+      throw const LessonMaterialStorageException(
+        'PDFを開けませんでした。パスワード付きPDFや破損したPDFは追加できません。',
+      );
+    }
+  }
+
+  Future<List<PickedLessonImage>> pickImageFiles({
+    required int maximumCount,
+  }) async {
+    if (maximumCount <= 0) {
+      return const [];
+    }
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: imageExtensions,
+      allowMultiple: true,
+      withData: true,
+    );
+    if (result == null) {
+      return const [];
+    }
+    if (result.files.length > maximumCount) {
+      throw LessonMaterialStorageException('追加できる画像は残り$maximumCount枚です。');
+    }
+    return Future.wait(result.files.map(_platformFileToImage));
+  }
+
+  Future<List<PickedLessonImage>> pickGalleryImages({
+    required int maximumCount,
+  }) async {
+    if (maximumCount <= 0) {
+      return const [];
+    }
+    final files = await ImagePicker().pickMultiImage(
+      limit: maximumCount,
+      requestFullMetadata: false,
+    );
+    return Future.wait(
+      files.map((file) async {
+        final bytes = await file.readAsBytes();
+        _validateSize(bytes.length);
+        return _imageFromBytes(file.name, bytes);
+      }),
+    );
+  }
+
+  Future<LessonMaterialUploadResult> uploadSelectedPdfPages({
+    required String courseId,
+    required String lessonId,
+    required PickedLessonPdf pickedPdf,
+    required List<int> selectedPageNumbers,
+  }) async {
+    _validateUploadContext(courseId: courseId, lessonId: lessonId);
+    final pages = selectedPageNumbers.toSet().toList()..sort();
+    if (pages.isEmpty) {
+      throw const LessonMaterialStorageException('共有するページを選んでください。');
+    }
+    if (pages.length > maxLessonWhiteboardBoards ||
+        pages.any(
+          (pageNumber) =>
+              pageNumber < 1 || pageNumber > pickedPdf.document.pages.length,
+        )) {
+      throw const LessonMaterialStorageException('PDFのページ選択が不正です。');
+    }
+
+    final assetId = _newAssetId();
+    final sharedDocument = await PdfDocument.createNew(
+      sourceName: '$assetId-selected.pdf',
+    );
+    Uint8List sharedBytes;
+    try {
+      sharedDocument.pages = [
+        for (final pageNumber in pages)
+          pickedPdf.document.pages[pageNumber - 1],
+      ];
+      sharedBytes = await sharedDocument.encodePdf();
+    } finally {
+      await sharedDocument.dispose();
+    }
+    _validateSize(sharedBytes.length);
+
+    final sourcePath = _materialPath(
+      courseId: courseId,
+      lessonId: lessonId,
+      assetId: assetId,
+      relativePath: 'source/original.pdf',
+    );
+    final sharedPath = _materialPath(
+      courseId: courseId,
+      lessonId: lessonId,
+      assetId: assetId,
+      relativePath: 'shared/selected.pdf',
+    );
+    await _uploadSourceAndShared(
+      sourcePath: sourcePath,
+      sourceBytes: pickedPdf.bytes,
+      sourceContentType: 'application/pdf',
+      sharedPath: sharedPath,
+      sharedBytes: sharedBytes,
+      sharedContentType: 'application/pdf',
+      metadata: {
+        'courseId': courseId,
+        'lessonId': lessonId,
+        'assetId': assetId,
+        'originalFileName': pickedPdf.fileName,
+        'selectedPages': pages.join(','),
+      },
+    );
+
+    return LessonMaterialUploadResult(
+      backgrounds: [
+        for (final entry in pages.indexed)
+          LessonWhiteboardBoardBackground(
+            assetId: assetId,
+            storagePath: sharedPath,
+            mediaType: lessonWhiteboardBackgroundPdf,
+            pageNumber: entry.$1 + 1,
+            aspectRatio: _pdfPageAspectRatio(
+              pickedPdf.document.pages[entry.$2 - 1],
+            ),
+          ),
+      ],
+      titles: [for (final pageNumber in pages) 'PDF $pageNumberページ'],
+    );
+  }
+
+  Future<LessonMaterialUploadResult> uploadImages({
+    required String courseId,
+    required String lessonId,
+    required List<PickedLessonImage> images,
+  }) async {
+    _validateUploadContext(courseId: courseId, lessonId: lessonId);
+    if (images.isEmpty) {
+      return const LessonMaterialUploadResult(backgrounds: [], titles: []);
+    }
+    final backgrounds = <LessonWhiteboardBoardBackground>[];
+    final titles = <String>[];
+    for (final pickedImage in images) {
+      final assetId = _newAssetId();
+      final extension = _extensionForContentType(pickedImage.contentType);
+      final sourcePath = _materialPath(
+        courseId: courseId,
+        lessonId: lessonId,
+        assetId: assetId,
+        relativePath: 'source/original.$extension',
+      );
+      final sharedPath = _materialPath(
+        courseId: courseId,
+        lessonId: lessonId,
+        assetId: assetId,
+        relativePath: 'shared/image.$extension',
+      );
+      await _uploadSourceAndShared(
+        sourcePath: sourcePath,
+        sourceBytes: pickedImage.bytes,
+        sourceContentType: pickedImage.contentType,
+        sharedPath: sharedPath,
+        sharedBytes: pickedImage.bytes,
+        sharedContentType: pickedImage.contentType,
+        metadata: {
+          'courseId': courseId,
+          'lessonId': lessonId,
+          'assetId': assetId,
+          'originalFileName': pickedImage.fileName,
+        },
+      );
+      backgrounds.add(
+        LessonWhiteboardBoardBackground(
+          assetId: assetId,
+          storagePath: sharedPath,
+          mediaType: lessonWhiteboardBackgroundImage,
+          aspectRatio: pickedImage.aspectRatio,
+        ),
+      );
+      titles.add(pickedImage.fileName);
+    }
+    return LessonMaterialUploadResult(backgrounds: backgrounds, titles: titles);
+  }
+
+  Future<void> deleteMaterialAsset(
+    LessonWhiteboardBoardBackground background,
+  ) async {
+    final marker = '/materials/${background.assetId}/';
+    final markerIndex = background.storagePath.indexOf(marker);
+    if (!background.storagePath.startsWith('courseMedia/') || markerIndex < 0) {
+      return;
+    }
+    final assetRoot = background.storagePath.substring(
+      0,
+      markerIndex + marker.length,
+    );
+    final result = await FirebaseStorage.instance.ref(assetRoot).listAll();
+    await Future.wait(result.items.map((item) => item.delete()));
+    for (final prefix in result.prefixes) {
+      final nested = await prefix.listAll();
+      await Future.wait(nested.items.map((item) => item.delete()));
+    }
+  }
+
+  Future<PickedLessonImage> _platformFileToImage(PlatformFile file) async {
+    _validateSize(file.size);
+    return _imageFromBytes(file.name, await _readPlatformFile(file));
+  }
+
+  PickedLessonImage _imageFromBytes(String fileName, Uint8List bytes) {
+    final decoded = image_lib.decodeImage(bytes);
+    if (decoded == null || decoded.width <= 0 || decoded.height <= 0) {
+      throw const LessonMaterialStorageException('画像を読み込めませんでした。');
+    }
+    final contentType = switch (_fileExtension(fileName)) {
+      'jpg' || 'jpeg' => 'image/jpeg',
+      'png' => 'image/png',
+      'webp' => 'image/webp',
+      _ => throw const LessonMaterialStorageException(
+        'JPG・PNG・WebP画像を選んでください。',
+      ),
+    };
+    return PickedLessonImage(
+      fileName: fileName,
+      bytes: bytes,
+      contentType: contentType,
+      aspectRatio: decoded.width / decoded.height,
+    );
+  }
+
+  Future<Uint8List> _readPlatformFile(PlatformFile file) async {
+    final bytes = file.bytes ?? await file.xFile.readAsBytes();
+    _validateSize(bytes.length);
+    return bytes;
+  }
+
+  Future<void> _uploadSourceAndShared({
+    required String sourcePath,
+    required Uint8List sourceBytes,
+    required String sourceContentType,
+    required String sharedPath,
+    required Uint8List sharedBytes,
+    required String sharedContentType,
+    required Map<String, String> metadata,
+  }) async {
+    final sourceRef = FirebaseStorage.instance.ref(sourcePath);
+    final sharedRef = FirebaseStorage.instance.ref(sharedPath);
+    try {
+      await sourceRef.putData(
+        sourceBytes,
+        SettableMetadata(
+          contentType: sourceContentType,
+          customMetadata: {...metadata, 'visibility': 'teacher'},
+        ),
+      );
+      await sharedRef.putData(
+        sharedBytes,
+        SettableMetadata(
+          contentType: sharedContentType,
+          customMetadata: {...metadata, 'visibility': 'learners'},
+        ),
+      );
+    } catch (_) {
+      await Future.wait([
+        sourceRef.delete().catchError((_) {}),
+        sharedRef.delete().catchError((_) {}),
+      ]);
+      rethrow;
+    }
+  }
+
+  void _validateUploadContext({
+    required String courseId,
+    required String lessonId,
+  }) {
+    if (Firebase.apps.isEmpty) {
+      throw const LessonMaterialStorageException('Firebase が初期化されていません。');
+    }
+    if (FirebaseAuth.instance.currentUser == null) {
+      throw const LessonMaterialStorageException('ログインが必要です。');
+    }
+    if (courseId.trim().isEmpty ||
+        courseId.contains('/') ||
+        lessonId.trim().isEmpty ||
+        lessonId.contains('/')) {
+      throw const LessonMaterialStorageException('講座またはレッスンのIDが不正です。');
+    }
+  }
+
+  void _validateSize(int size) {
+    if (size <= 0) {
+      throw const LessonMaterialStorageException('空のファイルは追加できません。');
+    }
+    if (size > maxBytes) {
+      throw const LessonMaterialStorageException('PDF・画像は1ファイル50MB以下にしてください。');
+    }
+  }
+
+  double _pdfPageAspectRatio(PdfPage page) {
+    final rotated = page.rotation.index.isOdd;
+    final width = rotated ? page.height : page.width;
+    final height = rotated ? page.width : page.height;
+    return width / height;
+  }
+
+  String _materialPath({
+    required String courseId,
+    required String lessonId,
+    required String assetId,
+    required String relativePath,
+  }) {
+    return 'courseMedia/$courseId/lessons/$lessonId/materials/'
+        '$assetId/$relativePath';
+  }
+
+  String _newAssetId() {
+    final micros = DateTime.now().microsecondsSinceEpoch;
+    return 'material-$micros-${_assetSequence++}';
+  }
+
+  String _extensionForContentType(String contentType) {
+    return switch (contentType) {
+      'image/jpeg' => 'jpg',
+      'image/png' => 'png',
+      'image/webp' => 'webp',
+      _ => throw const LessonMaterialStorageException('画像形式が不正です。'),
+    };
+  }
+
+  String _fileExtension(String fileName) {
+    final dot = fileName.lastIndexOf('.');
+    if (dot < 0 || dot == fileName.length - 1) {
+      return '';
+    }
+    return fileName.substring(dot + 1).toLowerCase();
+  }
+}

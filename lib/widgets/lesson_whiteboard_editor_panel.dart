@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:pdfrx/pdfrx.dart';
 
 import '../models/course.dart';
 import '../models/lesson_duration_parser.dart';
@@ -9,10 +10,12 @@ import '../models/lesson_media_segment.dart';
 import '../models/lesson_media_timeline.dart';
 import '../models/lesson_payload_size_validator.dart';
 import '../models/lesson_player_view_state.dart';
+import '../models/lesson_publication_validator.dart';
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
 import '../services/lesson_media_playback.dart';
 import '../services/lesson_media_playlist_playback.dart';
+import '../services/lesson_material_storage_service.dart';
 import 'lesson_whiteboard_canvas.dart';
 
 typedef WhiteboardDraftSaveCallback =
@@ -25,6 +28,7 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
     super.key,
     required this.courseId,
     required this.lessonNumber,
+    this.lessonId,
     required this.mediaSegments,
     required this.durationLabel,
     this.publishedWhiteboard,
@@ -38,6 +42,7 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
     this.publishedTimelineDurationSec = 0,
     this.enabled = true,
     this.playlistPlaybackFactory = createLessonMediaPlaylistPlayback,
+    this.materialStorageService = const LessonMaterialStorageService(),
   }) : assert(
          onDraftSaved != null || onBoardSetDraftSaved != null,
          'A whiteboard draft callback is required.',
@@ -45,6 +50,7 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
 
   final String courseId;
   final int lessonNumber;
+  final String? lessonId;
   final List<LessonMediaSegment> mediaSegments;
   final String durationLabel;
   final LessonWhiteboard? publishedWhiteboard;
@@ -58,6 +64,7 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
   final double publishedTimelineDurationSec;
   final bool enabled;
   final LessonMediaPlaylistPlaybackFactory playlistPlaybackFactory;
+  final LessonMaterialStorageService materialStorageService;
 
   @override
   State<LessonWhiteboardEditorPanel> createState() =>
@@ -84,6 +91,7 @@ class _LessonWhiteboardEditorPanelState
   bool _isLoadingMedia = false;
   bool _isPlaying = false;
   bool _isSavingDraft = false;
+  bool _isUploadingMaterial = false;
   String? _mediaLoadError;
   String? _message;
   int _currentPositionSec = 0;
@@ -178,6 +186,9 @@ class _LessonWhiteboardEditorPanelState
       _boardSet.boardById(_selectedBoardId) ??
       _boardSet.defaultBoard ??
       _boardSet.ensureEditable().defaultBoard!;
+
+  bool get _selectedMaterialBoardIsPublished =>
+      _publishedBoardSet.boardById(_selectedBoardId)?.background != null;
 
   bool get _shouldShowEditingCanvas =>
       _editSessionKind != WhiteboardEditSessionKind.none;
@@ -992,6 +1003,284 @@ class _LessonWhiteboardEditorPanelState
     return true;
   }
 
+  Future<void> _addPdfMaterial() async {
+    final lessonId = widget.lessonId?.trim() ?? '';
+    final remaining = maxLessonWhiteboardBoards - _boardSet.boards.length;
+    if (lessonId.isEmpty || remaining <= 0 || _isUploadingMaterial) {
+      setState(() {
+        _message = lessonId.isEmpty
+            ? 'PDF・画像を追加するには、先にレッスンを保存してください。'
+            : lessonBoardLimitMessage;
+      });
+      return;
+    }
+    setState(() {
+      _isUploadingMaterial = true;
+      _message = 'PDFを読み込んでいます…';
+    });
+    PickedLessonPdf? pickedPdf;
+    try {
+      pickedPdf = await widget.materialStorageService.pickPdf();
+      if (pickedPdf == null || !mounted) {
+        return;
+      }
+      final selectedPages = await _selectPdfPages(
+        pickedPdf,
+        maximumCount: remaining,
+      );
+      if (selectedPages == null || selectedPages.isEmpty || !mounted) {
+        return;
+      }
+      setState(() => _message = '選択したPDFページを安全な共有用ファイルにしています…');
+      final result = await widget.materialStorageService.uploadSelectedPdfPages(
+        courseId: widget.courseId,
+        lessonId: lessonId,
+        pickedPdf: pickedPdf,
+        selectedPageNumbers: selectedPages,
+      );
+      if (!mounted) {
+        return;
+      }
+      _appendMaterialBoards(result);
+    } on LessonMaterialStorageException catch (error) {
+      if (mounted) {
+        setState(() => _message = error.message);
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _message = 'PDFの追加に失敗しました。時間をおいて再度お試しください。');
+      }
+    } finally {
+      await pickedPdf?.dispose();
+      if (mounted) {
+        setState(() => _isUploadingMaterial = false);
+      }
+    }
+  }
+
+  Future<List<int>?> _selectPdfPages(
+    PickedLessonPdf pickedPdf, {
+    required int maximumCount,
+  }) {
+    final selected = <int>{};
+    return showDialog<List<int>>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('共有するPDFページを選択'),
+          content: SizedBox(
+            width: 620,
+            height: 500,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '選択したページだけを共有します。'
+                  ' 残り$maximumCount枚まで追加できます。',
+                ),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: GridView.builder(
+                    gridDelegate:
+                        const SliverGridDelegateWithMaxCrossAxisExtent(
+                          maxCrossAxisExtent: 150,
+                          mainAxisSpacing: 8,
+                          crossAxisSpacing: 8,
+                          childAspectRatio: 0.75,
+                        ),
+                    itemCount: pickedPdf.document.pages.length,
+                    itemBuilder: (context, index) {
+                      final pageNumber = index + 1;
+                      final isSelected = selected.contains(pageNumber);
+                      final enabled =
+                          isSelected || selected.length < maximumCount;
+                      return InkWell(
+                        key: ValueKey('material-pdf-page-$pageNumber'),
+                        onTap: enabled
+                            ? () {
+                                setDialogState(() {
+                                  if (!selected.add(pageNumber)) {
+                                    selected.remove(pageNumber);
+                                  }
+                                });
+                              }
+                            : null,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                              width: isSelected ? 3 : 1,
+                              color: isSelected
+                                  ? Theme.of(context).colorScheme.primary
+                                  : Theme.of(context).colorScheme.outline,
+                            ),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.all(6),
+                                child: PdfPageView(
+                                  document: pickedPdf.document,
+                                  pageNumber: pageNumber,
+                                  maximumDpi: 96,
+                                  decoration: const BoxDecoration(
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                              Align(
+                                alignment: Alignment.topRight,
+                                child: Checkbox(
+                                  value: isSelected,
+                                  onChanged: enabled
+                                      ? (_) {
+                                          setDialogState(() {
+                                            if (!selected.add(pageNumber)) {
+                                              selected.remove(pageNumber);
+                                            }
+                                          });
+                                        }
+                                      : null,
+                                ),
+                              ),
+                              Align(
+                                alignment: Alignment.bottomCenter,
+                                child: ColoredBox(
+                                  color: Colors.black54,
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 3,
+                                    ),
+                                    child: Text(
+                                      '$pageNumber',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('キャンセル'),
+            ),
+            FilledButton(
+              key: const ValueKey('material-pdf-pages-confirm'),
+              onPressed: selected.isEmpty
+                  ? null
+                  : () {
+                      final pages = selected.toList()..sort();
+                      Navigator.of(dialogContext).pop(pages);
+                    },
+              child: Text('${selected.length}ページを追加'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _addImageMaterials({required bool fromGallery}) async {
+    final lessonId = widget.lessonId?.trim() ?? '';
+    final remaining = maxLessonWhiteboardBoards - _boardSet.boards.length;
+    if (lessonId.isEmpty || remaining <= 0 || _isUploadingMaterial) {
+      setState(() {
+        _message = lessonId.isEmpty
+            ? 'PDF・画像を追加するには、先にレッスンを保存してください。'
+            : lessonBoardLimitMessage;
+      });
+      return;
+    }
+    setState(() {
+      _isUploadingMaterial = true;
+      _message = '画像を読み込んでいます…';
+    });
+    try {
+      final images = fromGallery
+          ? await widget.materialStorageService.pickGalleryImages(
+              maximumCount: remaining,
+            )
+          : await widget.materialStorageService.pickImageFiles(
+              maximumCount: remaining,
+            );
+      if (images.isEmpty || !mounted) {
+        return;
+      }
+      setState(() => _message = '画像をアップロードしています…');
+      final result = await widget.materialStorageService.uploadImages(
+        courseId: widget.courseId,
+        lessonId: lessonId,
+        images: images,
+      );
+      if (mounted) {
+        _appendMaterialBoards(result);
+      }
+    } on LessonMaterialStorageException catch (error) {
+      if (mounted) {
+        setState(() => _message = error.message);
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _message = '画像の追加に失敗しました。時間をおいて再度お試しください。');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isUploadingMaterial = false);
+      }
+    }
+  }
+
+  void _appendMaterialBoards(LessonMaterialUploadResult result) {
+    if (result.backgrounds.isEmpty) {
+      return;
+    }
+    _finishInProgressStroke();
+    _commitSelectedBoard();
+    final firstOrder = _boardSet.boards.length;
+    final newBoards = <LessonWhiteboardBoard>[];
+    for (final entry in result.backgrounds.indexed) {
+      var id = LessonWhiteboardBoard.generateId();
+      while (_boardSet.boardById(id) != null ||
+          newBoards.any((board) => board.id == id)) {
+        id = LessonWhiteboardBoard.generateId();
+      }
+      newBoards.add(
+        LessonWhiteboardBoard(
+          id: id,
+          order: firstOrder + entry.$1,
+          title: result.titles[entry.$1],
+          background: entry.$2,
+        ),
+      );
+    }
+    final selectedId = newBoards.first.id;
+    setState(() {
+      _boardSet = _boardSet.copyWith(
+        boards: [..._boardSet.orderedBoards, ...newBoards],
+      );
+      _selectedBoardId = selectedId;
+      _strokes = [];
+      _editorViewports[selectedId] = LessonWhiteboardViewport.full;
+      _message =
+          '${newBoards.length}枚の資料ボードを追加しました。'
+          '「下書きを保存」で確定してください。';
+    });
+    widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
+  }
+
   void _addBoard() {
     if (!_boardSet.canAddBoard) {
       return;
@@ -1056,6 +1345,13 @@ class _LessonWhiteboardEditorPanelState
     if (_boardSet.boards.length <= 1) {
       return;
     }
+    if (_selectedMaterialBoardIsPublished) {
+      setState(() {
+        _message = lessonPublishedMaterialBoardsLockedError;
+      });
+      return;
+    }
+    final removedBackground = _selectedBoard.background;
     final shouldDelete = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -1115,6 +1411,19 @@ class _LessonWhiteboardEditorPanelState
       _recordSharedBoardSelection();
     }
     widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
+    if (removedBackground != null) {
+      unawaited(_deleteMaterialBestEffort(removedBackground));
+    }
+  }
+
+  Future<void> _deleteMaterialBestEffort(
+    LessonWhiteboardBoardBackground background,
+  ) async {
+    try {
+      await widget.materialStorageService.deleteMaterialAsset(background);
+    } catch (_) {
+      // Orphan cleanup must not revert the already-confirmed board deletion.
+    }
   }
 
   Future<void> _resetWhiteboard() async {
@@ -1418,15 +1727,46 @@ class _LessonWhiteboardEditorPanelState
                   ),
                   TextButton.icon(
                     key: const ValueKey('whiteboard-delete-board'),
-                    onPressed: _boardSet.boards.length > 1
+                    onPressed:
+                        _boardSet.boards.length > 1 &&
+                            !_selectedMaterialBoardIsPublished
                         ? () => unawaited(_deleteSelectedBoard())
                         : null,
                     icon: const Icon(Icons.delete_outline),
                     label: const Text('ボードを削除'),
                   ),
+                  PopupMenuButton<String>(
+                    key: const ValueKey('whiteboard-add-material-menu'),
+                    enabled: !_isUploadingMaterial && _boardSet.canAddBoard,
+                    tooltip: 'PDF・画像を追加',
+                    icon: const Icon(Icons.note_add_outlined),
+                    onSelected: (value) {
+                      if (value == 'pdf') {
+                        unawaited(_addPdfMaterial());
+                      } else {
+                        unawaited(
+                          _addImageMaterials(fromGallery: value == 'gallery'),
+                        );
+                      }
+                    },
+                    itemBuilder: (context) => const [
+                      PopupMenuItem(value: 'pdf', child: Text('PDFを追加')),
+                      PopupMenuItem(
+                        value: 'image-file',
+                        child: Text('画像ファイルを追加'),
+                      ),
+                      PopupMenuItem(value: 'gallery', child: Text('写真から追加')),
+                    ],
+                  ),
                   Text('${_boardSet.boards.length}/$maxLessonWhiteboardBoards'),
                 ],
               ),
+              if (_isUploadingMaterial) ...[
+                const SizedBox(height: 8),
+                const LinearProgressIndicator(
+                  key: ValueKey('whiteboard-material-upload-progress'),
+                ),
+              ],
             ],
             if (_shouldShowEditingCanvas &&
                 _hasPublishedWhiteboard &&
@@ -1465,6 +1805,8 @@ class _LessonWhiteboardEditorPanelState
                 drawingEnabled: false,
                 maxWidth: lessonWhiteboardCompactMaxWidth,
                 showViewportControls: false,
+                background: _selectedBoard.background,
+                aspectRatio: _selectedBoard.aspectRatio,
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
@@ -1489,6 +1831,8 @@ class _LessonWhiteboardEditorPanelState
                 onViewportChanged: _handleViewportChanged,
                 showViewportControls: false,
                 bottomLeftOverlay: _buildScreenShareButton(context),
+                background: _selectedBoard.background,
+                aspectRatio: _selectedBoard.aspectRatio,
               ),
               const SizedBox(height: 8),
               Wrap(

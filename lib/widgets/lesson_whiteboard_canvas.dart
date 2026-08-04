@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:pdfrx/pdfrx.dart';
 
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
@@ -11,6 +13,13 @@ const double lessonWhiteboardAspectRatio = 4 / 3;
 const double lessonWhiteboardMaxWidth = 640;
 const double lessonWhiteboardCompactMaxWidth =
     220 * lessonWhiteboardAspectRatio;
+
+typedef LessonWhiteboardMaterialUrlResolver =
+    Future<String> Function(String storagePath);
+
+Future<String> _defaultMaterialUrlResolver(String storagePath) {
+  return FirebaseStorage.instance.ref(storagePath).getDownloadURL();
+}
 
 enum LessonWhiteboardViewportChangePhase { start, update, end }
 
@@ -41,6 +50,9 @@ class LessonWhiteboardCanvas extends StatefulWidget {
     this.bottomLeftOverlay,
     this.maxWidth = lessonWhiteboardMaxWidth,
     this.backgroundColor = Colors.white,
+    this.background,
+    this.aspectRatio = lessonWhiteboardAspectRatio,
+    this.materialUrlResolver = _defaultMaterialUrlResolver,
   });
 
   final List<WhiteboardStroke> strokes;
@@ -57,9 +69,118 @@ class LessonWhiteboardCanvas extends StatefulWidget {
   final Widget? bottomLeftOverlay;
   final double maxWidth;
   final Color backgroundColor;
+  final LessonWhiteboardBoardBackground? background;
+  final double aspectRatio;
+  final LessonWhiteboardMaterialUrlResolver materialUrlResolver;
 
   @override
   State<LessonWhiteboardCanvas> createState() => _LessonWhiteboardCanvasState();
+}
+
+class _LessonWhiteboardBackgroundView extends StatefulWidget {
+  const _LessonWhiteboardBackgroundView({
+    super.key,
+    required this.background,
+    required this.urlResolver,
+    required this.maximumDpi,
+  });
+
+  final LessonWhiteboardBoardBackground background;
+  final LessonWhiteboardMaterialUrlResolver urlResolver;
+  final double maximumDpi;
+
+  @override
+  State<_LessonWhiteboardBackgroundView> createState() =>
+      _LessonWhiteboardBackgroundViewState();
+}
+
+class _LessonWhiteboardBackgroundViewState
+    extends State<_LessonWhiteboardBackgroundView> {
+  late Future<String> _urlFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveUrl();
+  }
+
+  @override
+  void didUpdateWidget(covariant _LessonWhiteboardBackgroundView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.background.storagePath != widget.background.storagePath ||
+        oldWidget.urlResolver != widget.urlResolver) {
+      _resolveUrl();
+    }
+  }
+
+  void _resolveUrl() {
+    _urlFuture = Future<String>.sync(
+      () => widget.urlResolver(widget.background.storagePath),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<String>(
+      future: _urlFuture,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return const ColoredBox(
+            color: Color(0xfff5f5f5),
+            child: Center(
+              child: Icon(
+                Icons.broken_image_outlined,
+                key: ValueKey('whiteboard-background-error'),
+              ),
+            ),
+          );
+        }
+        final url = snapshot.data;
+        if (url == null || url.isEmpty) {
+          return const ColoredBox(
+            color: Colors.white,
+            child: Center(
+              child: CircularProgressIndicator(
+                key: ValueKey('whiteboard-background-loading'),
+              ),
+            ),
+          );
+        }
+        if (widget.background.isImage) {
+          return Image.network(
+            url,
+            key: const ValueKey('whiteboard-image-background'),
+            fit: BoxFit.fill,
+            filterQuality: FilterQuality.high,
+            errorBuilder: (context, error, stackTrace) => const ColoredBox(
+              color: Color(0xfff5f5f5),
+              child: Center(child: Icon(Icons.broken_image_outlined)),
+            ),
+          );
+        }
+        return PdfDocumentViewBuilder.uri(
+          Uri.parse(url),
+          key: ValueKey('whiteboard-pdf-${widget.background.assetId}'),
+          useProgressiveLoading: true,
+          builder: (context, document) => PdfPageView(
+            document: document,
+            pageNumber: widget.background.pageNumber,
+            maximumDpi: widget.maximumDpi,
+            decoration: const BoxDecoration(color: Colors.white),
+            backgroundColor: Colors.white,
+          ),
+          loadingBuilder: (context) => const ColoredBox(
+            color: Colors.white,
+            child: Center(child: CircularProgressIndicator()),
+          ),
+          errorBuilder: (context, error, stackTrace) => const ColoredBox(
+            color: Color(0xfff5f5f5),
+            child: Center(child: Icon(Icons.broken_image_outlined)),
+          ),
+        );
+      },
+    );
+  }
 }
 
 class _LessonWhiteboardCanvasState extends State<LessonWhiteboardCanvas> {
@@ -477,25 +598,53 @@ class _LessonWhiteboardCanvasState extends State<LessonWhiteboardCanvas> {
     );
   }
 
+  Widget _buildBackground(Size size, {bool minimap = false}) {
+    final background = widget.background;
+    if (background == null) {
+      return const SizedBox.shrink();
+    }
+    final viewport = minimap ? LessonWhiteboardViewport.full : _viewport;
+    final scale = viewport.scale;
+    return Positioned(
+      left: -viewport.left * size.width * scale,
+      top: -viewport.top * size.height * scale,
+      width: size.width * scale,
+      height: size.height * scale,
+      child: IgnorePointer(
+        child: _LessonWhiteboardBackgroundView(
+          key: ValueKey(
+            'whiteboard-background-${background.assetId}-${background.pageNumber}',
+          ),
+          background: background,
+          urlResolver: widget.materialUrlResolver,
+          maximumDpi: minimap ? 96 : 300,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final allStrokes = [
       ...widget.strokes,
       if (widget.inProgressStroke != null) widget.inProgressStroke!,
     ];
+    final aspectRatio = widget.aspectRatio.isFinite && widget.aspectRatio > 0
+        ? widget.aspectRatio
+        : lessonWhiteboardAspectRatio;
     return Center(
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: widget.maxWidth),
         child: AspectRatio(
           key: const ValueKey('whiteboard-aspect-ratio'),
-          aspectRatio: lessonWhiteboardAspectRatio,
+          aspectRatio: aspectRatio,
           child: LayoutBuilder(
             builder: (context, constraints) {
               final size = Size(constraints.maxWidth, constraints.maxHeight);
               final minimapWidth = math.min(120.0, size.width * 0.32);
               final minimapSize = Size(
                 minimapWidth,
-                minimapWidth / lessonWhiteboardAspectRatio,
+                minimapWidth / aspectRatio,
               );
               return Semantics(
                 label: 'ホワイトボード',
@@ -536,13 +685,20 @@ class _LessonWhiteboardCanvasState extends State<LessonWhiteboardCanvas> {
                                 _handlePointerEnd(event, size, cancelled: true),
                             onPointerSignal: (event) =>
                                 _handlePointerSignal(event, size),
-                            child: CustomPaint(
-                              size: size,
-                              painter: _LessonWhiteboardPainter(
-                                strokes: allStrokes,
-                                viewport: _viewport,
-                              ),
-                              child: const SizedBox.expand(),
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                if (widget.background != null)
+                                  _buildBackground(size),
+                                CustomPaint(
+                                  size: size,
+                                  painter: _LessonWhiteboardPainter(
+                                    strokes: allStrokes,
+                                    viewport: _viewport,
+                                  ),
+                                  child: const SizedBox.expand(),
+                                ),
+                              ],
                             ),
                           ),
                         ),
@@ -579,14 +735,25 @@ class _LessonWhiteboardCanvasState extends State<LessonWhiteboardCanvas> {
                                 ),
                                 child: SizedBox.fromSize(
                                   size: minimapSize,
-                                  child: CustomPaint(
-                                    painter: _LessonWhiteboardMinimapPainter(
-                                      strokes: allStrokes,
-                                      viewport: _viewport,
-                                      viewportColor: Theme.of(
-                                        context,
-                                      ).colorScheme.primary,
-                                    ),
+                                  child: Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      if (widget.background != null)
+                                        _buildBackground(
+                                          minimapSize,
+                                          minimap: true,
+                                        ),
+                                      CustomPaint(
+                                        painter:
+                                            _LessonWhiteboardMinimapPainter(
+                                              strokes: allStrokes,
+                                              viewport: _viewport,
+                                              viewportColor: Theme.of(
+                                                context,
+                                              ).colorScheme.primary,
+                                            ),
+                                      ),
+                                    ],
                                   ),
                                 ),
                               ),

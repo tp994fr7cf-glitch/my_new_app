@@ -1,6 +1,7 @@
 import 'course.dart';
 import 'lesson_media_config.dart';
 import 'lesson_media_segment.dart';
+import 'lesson_whiteboard_board_set.dart';
 
 const String lessonPlaybackModeLockedError = '公開済みのパートがあるため、再生モードは変更できません。';
 const String lessonPublishedSegmentsLockedError =
@@ -14,6 +15,8 @@ const String lessonMalformedPublicationMetadataError =
 const String lessonMediaSegmentLimitError = 'メディアパートは100件まで公開できます。';
 const String lessonContentRevisionLimitError =
     'コンテンツリビジョンの上限に達したため、新しいパートを公開できません。';
+const String lessonPublishedMaterialBoardsLockedError =
+    '公開済みのPDF・画像ボードは、背景の変更や削除ができません。新しいボードとして追加してください。';
 const int maxLessonContentRevision = 2147483647;
 
 class LessonPublicationValidator {
@@ -129,6 +132,12 @@ String? validateAppendOnlyLessonPublication({
   if (previousLockedIds.isNotEmpty &&
       previous.playbackMode != next.playbackMode) {
     return lessonPlaybackModeLockedError;
+  }
+  if (!_publishedMaterialBoardsRemainLocked(
+    previous.publishedBoardSet,
+    next.publishedBoardSet,
+  )) {
+    return lessonPublishedMaterialBoardsLockedError;
   }
 
   final previousOrdered = _orderedWithoutNormalizing(previous.mediaSegments);
@@ -246,4 +255,24 @@ bool _hasValidUniquePublishedIds(CourseLesson lesson) {
 bool _hasUniqueOrders(List<LessonMediaSegment> segments) {
   final orders = <int>{};
   return segments.every((segment) => orders.add(segment.order));
+}
+
+bool _publishedMaterialBoardsRemainLocked(BoardSet previous, BoardSet next) {
+  for (final previousBoard in previous.boards) {
+    final previousBackground = previousBoard.background;
+    if (previousBackground == null) {
+      continue;
+    }
+    final nextBoard = next.boardById(previousBoard.id);
+    final nextBackground = nextBoard?.background;
+    if (nextBackground == null ||
+        previousBackground.assetId != nextBackground.assetId ||
+        previousBackground.storagePath != nextBackground.storagePath ||
+        previousBackground.mediaType != nextBackground.mediaType ||
+        previousBackground.pageNumber != nextBackground.pageNumber ||
+        previousBackground.aspectRatio != nextBackground.aspectRatio) {
+      return false;
+    }
+  }
+  return true;
 }

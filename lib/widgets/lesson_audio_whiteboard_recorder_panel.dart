@@ -1414,6 +1414,8 @@ class _LessonAudioWhiteboardRecorderPanelState
                       !_previewPlaying &&
                       (_isRecording || _isPaused) &&
                       !_drawingLimitReached,
+                  background: _selectedBoard.background,
+                  aspectRatio: _selectedBoard.aspectRatio,
                   showViewportControls: false,
                   bottomLeftOverlay: _buildScreenShareButton(context),
                 ),

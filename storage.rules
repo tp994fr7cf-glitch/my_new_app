@@ -41,6 +41,19 @@ service firebase.storage {
         && request.resource.size <= 100 * 1024 * 1024;
     }
 
+    function isLessonMaterialContentType() {
+      return request.resource.contentType == 'application/pdf'
+        || request.resource.contentType == 'image/jpeg'
+        || request.resource.contentType == 'image/png'
+        || request.resource.contentType == 'image/webp';
+    }
+
+    function isValidLessonMaterialUpload() {
+      return isLessonMaterialContentType()
+        && request.resource.size > 0
+        && request.resource.size <= 50 * 1024 * 1024;
+    }
+
     function lessonExists(courseId, lessonId) {
       return firestore.exists(
         /databases/(default)/documents/courses/$(courseId)/lessons/$(lessonId)
@@ -57,6 +70,24 @@ service firebase.storage {
         && courseIsPublished(courseId)
         && lessonExists(courseId, lessonId)
         && isValidLessonMediaUpload();
+      allow delete: if isCourseInstructor(courseId);
+    }
+
+    match /courseMedia/{courseId}/lessons/{lessonId}/materials/{assetId}/source/{fileName} {
+      allow read: if isCourseInstructor(courseId);
+      allow create, update: if isCourseInstructor(courseId)
+        && courseIsPublished(courseId)
+        && lessonExists(courseId, lessonId)
+        && isValidLessonMaterialUpload();
+      allow delete: if isCourseInstructor(courseId);
+    }
+
+    match /courseMedia/{courseId}/lessons/{lessonId}/materials/{assetId}/shared/{fileName} {
+      allow read: if canReadCourseMedia(courseId);
+      allow create, update: if isCourseInstructor(courseId)
+        && courseIsPublished(courseId)
+        && lessonExists(courseId, lessonId)
+        && isValidLessonMaterialUpload();
       allow delete: if isCourseInstructor(courseId);
     }
   }

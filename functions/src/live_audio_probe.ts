@@ -287,6 +287,30 @@ export function isValidWhiteboardStroke(
   });
 }
 
+function isValidBoardBackground(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "assetId",
+      "storagePath",
+      "mediaType",
+      "pageNumber",
+      "aspectRatio",
+    ])
+  ) {
+    return false;
+  }
+  return (
+    isSafeId(value.assetId) &&
+    typeof value.storagePath === "string" &&
+    isBoundedString(value.storagePath, 1000) &&
+    value.storagePath.startsWith("courseMedia/") &&
+    (value.mediaType === "pdf" || value.mediaType === "image") &&
+    isFiniteIntegerInRange(value.pageNumber, 1, maxLiveAudioBoards) &&
+    isFiniteNumberInRange(value.aspectRatio, 0.1, 10)
+  );
+}
+
 export function isValidBoardSet(
   value: unknown,
 ): value is Record<string, unknown> {
@@ -312,10 +336,12 @@ export function isValidBoardSet(
   for (const board of value.boards) {
     if (
       !isRecord(board) ||
-      !hasOnlyKeys(board, ["id", "order", "title", "layers"]) ||
+      !hasOnlyKeys(board, ["id", "order", "title", "layers", "background"]) ||
       !isSafeId(board.id) ||
       !isFiniteIntegerInRange(board.order, 0, maxLiveAudioBoards - 1) ||
       (board.title !== undefined && !isBoundedString(board.title, 100)) ||
+      (board.background !== undefined &&
+        !isValidBoardBackground(board.background)) ||
       !Array.isArray(board.layers) ||
       board.layers.length > 20 ||
       boardIds.has(board.id) ||

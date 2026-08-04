@@ -125,6 +125,43 @@ void main() {
     },
   );
 
+  test('round-trip retains optional PDF and image board backgrounds', () {
+    const backgrounds = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: 'pdf-page',
+          order: 0,
+          background: LessonWhiteboardBoardBackground(
+            assetId: 'asset-pdf',
+            storagePath: 'courseMedia/course/lessons/lesson/materials/pdf.pdf',
+            mediaType: lessonWhiteboardBackgroundPdf,
+            pageNumber: 3,
+            aspectRatio: 0.707,
+          ),
+        ),
+        LessonWhiteboardBoard(
+          id: 'image-page',
+          order: 1,
+          background: LessonWhiteboardBoardBackground(
+            assetId: 'asset-image',
+            storagePath:
+                'courseMedia/course/lessons/lesson/materials/image.webp',
+            mediaType: lessonWhiteboardBackgroundImage,
+            aspectRatio: 16 / 9,
+          ),
+        ),
+      ],
+    );
+
+    final restored = BoardSet.fromMap(backgrounds.toMap());
+
+    expect(restored.orderedBoards[0].background?.isPdf, isTrue);
+    expect(restored.orderedBoards[0].background?.pageNumber, 3);
+    expect(restored.orderedBoards[0].aspectRatio, closeTo(0.707, 0.0001));
+    expect(restored.orderedBoards[1].background?.isImage, isTrue);
+    expect(restored.orderedBoards[1].aspectRatio, closeTo(16 / 9, 0.0001));
+  });
+
   test('viewport playback interpolates only within one interaction', () {
     expect(
       boardSet

@@ -11,6 +11,7 @@ const String lessonBoardLimitMessage = '書き物は20枚まで保存できま�
 const String lessonBoardSwitchEventLimitMessage = '書き物の切替履歴は10000件まで保存できます。';
 const String lessonViewportEventLimitMessage = '表示範囲の操作履歴が多すぎるため保存できません。';
 const String lessonBoardDataInvalidMessage = '書き物のIDまたは順序が不正なため保存できません。';
+const String lessonBoardBackgroundInvalidMessage = 'PDF・画像の背景情報が不正なため保存できません。';
 const String lessonBoardSwitchDataInvalidMessage = '書き物の切替履歴が不正なため保存できません。';
 const String lessonViewportDataInvalidMessage = '表示範囲の操作履歴が不正なため保存できません。';
 
@@ -50,6 +51,24 @@ void validateBoardSetForPersistence(BoardSet boardSet) {
         !orders.add(board.order),
   )) {
     throw const LessonPayloadValidationException(lessonBoardDataInvalidMessage);
+  }
+  if (boardSet.boards.any((board) {
+    final background = board.background;
+    return background != null &&
+        (background.assetId.trim().isEmpty ||
+            background.assetId.length > 100 ||
+            background.storagePath.trim().isEmpty ||
+            background.storagePath.length > 1000 ||
+            (!background.isPdf && !background.isImage) ||
+            background.pageNumber < 1 ||
+            background.pageNumber > maxLessonWhiteboardBoards ||
+            !background.aspectRatio.isFinite ||
+            background.aspectRatio < 0.1 ||
+            background.aspectRatio > 10);
+  })) {
+    throw const LessonPayloadValidationException(
+      lessonBoardBackgroundInvalidMessage,
+    );
   }
   final switchSequences = <int>{};
   if (boardSet.switchEvents.any(

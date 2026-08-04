@@ -327,6 +327,31 @@ void main() {
     expect(find.text('音声をアップロード'), findsOneWidget);
   });
 
+  testWidgets('再生可能メディアがなくても配信前の資料準備を表示する', (tester) async {
+    final course = _courseWithLesson(
+      const CourseLesson(id: 'lesson-1', title: 'ライブ予定', duration: '10分'),
+    );
+    await tester.binding.setSurfaceSize(const Size(800, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonManagePage(
+          course: course,
+          lessonId: 'lesson-1',
+          onSaveOverride: (_) async {},
+        ),
+      ),
+    );
+
+    expect(
+      find.byKey(const ValueKey('prelive-material-preparation-panel')),
+      findsOneWidget,
+    );
+    expect(find.text('配信・録音前のPDF／画像資料'), findsOneWidget);
+    expect(find.text('PDFを追加'), findsOneWidget);
+  });
+
   testWidgets('再生モードに列挙値の日本語ラベルと説明を表示する', (tester) async {
     await tester.binding.setSurfaceSize(const Size(800, 1200));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -544,7 +569,11 @@ void main() {
         ),
       ),
     );
-    await tester.ensureVisible(find.text('レッスン情報を保存'));
+    await tester.scrollUntilVisible(
+      find.text('レッスン情報を保存'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.tap(find.text('レッスン情報を保存'));
     await tester.pumpAndSettle();
 
@@ -596,7 +625,11 @@ void main() {
         ),
       ),
     );
-    await tester.ensureVisible(find.text('レッスン情報を保存'));
+    await tester.scrollUntilVisible(
+      find.text('レッスン情報を保存'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.tap(find.text('レッスン情報を保存'));
     await tester.pumpAndSettle();
 

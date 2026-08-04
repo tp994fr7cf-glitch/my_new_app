@@ -1581,6 +1581,8 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
           onViewportChanged: _isCatchup ? null : _handleViewportChanged,
           viewportInteractionEnabled: !_isCatchup,
           showViewportControls: !_isCatchup,
+          background: board.background,
+          aspectRatio: board.aspectRatio,
         ),
         const SizedBox(height: 12),
         if (_canPublish)

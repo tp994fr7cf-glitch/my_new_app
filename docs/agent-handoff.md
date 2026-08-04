@@ -23,6 +23,50 @@ Firebase Console: https://console.firebase.google.com/project/my-new-app-naona-2
 
 ---
 
+## 0-C. 2026-08-04 PDF・画像付き板書（Phase 1実装、本番Web反映済み）
+
+ブランチ `cursor/pdf-image-whiteboard-c48f` で、先生が事前準備したPDF・画像を
+板書背景として使うPhase 1を実装した。Storageルールと関連Functionsは本番へ反映済み。
+Web版もFirebase Hostingへ反映済み。Android実機で資料追加・表示の基本動作を確認済み。
+
+実機確認では、最初のライブ配信パートの板書・viewport時刻がすべて0秒になる場合がある
+既存のライブ時計不具合も確認された。本番データから初回Agora NTP値の異常採用が原因と特定済みだが、
+ユーザーの指示により、このコミットには時計修正を含めない。次の明示的な指示後に修正する。
+
+初回実装では、資料追加が再生URLのあるパート用の板書編集画面内にしかなく、
+配信前のライブパートでは入口自体が表示されない不備があった。2026-08-04に修正し、
+再生可能メディアがなくてもレッスン管理画面へ
+「配信・録音前のPDF／画像資料」を常時表示するようにした。
+PDF、画像ファイル、端末の写真を明示的な3ボタンから追加でき、追加直後に板書下書きを保存する。
+未公開資料は同パネルから削除でき、公開済み資料はロック表示になる。
+
+実装範囲:
+
+- PDFは先生が選択したページだけを端末内で新しいPDFへ抽出し、元PDFは先生専用パス、
+  共有用PDFは受講者が読めるパスへ保存する。未選択ページを含む元PDFのURLはBoardSetへ保存しない。
+- JPG・PNG・WebPはファイル選択と写真選択に対応し、1ファイル50MB以下。
+- PDF・画像を含めてボードは合計20枚。各ページの元の縦横比を保持する。
+- `pdfrx`でPDFを表示し、既存の最大8倍ズーム、パン、ペン座標、ミニマップを共通利用する。
+- 通常編集、録音しながら書く、通常再生、ライブ、追っかけ、公開後再生は、
+  同じBoardSet背景情報を引き継ぐ。
+- 公開済み資料ボードの背景変更・削除は禁止し、新しい資料は新規ボードとして追加する。
+- 入口修正後もWeb release buildとAndroid debug APK buildは成功し、Hostingへ再反映済み。
+  資料準備パネルとレッスン管理画面の関連Flutterテストも成功。
+  確認時はAndroid端末がPCへ接続されていなかったため、APKの端末インストール操作は未実施。
+- 初回実装時の関連FlutterテストとFunctions全テストも成功。
+  `flutter test`全体には既存のノート・質問画面などの失敗が残る。
+
+主な関連ファイル:
+
+- `lib/services/lesson_material_storage_service.dart`
+- `lib/models/lesson_whiteboard_board_set.dart`
+- `lib/widgets/lesson_material_preparation_panel.dart`
+- `lib/widgets/lesson_whiteboard_canvas.dart`
+- `lib/widgets/lesson_whiteboard_editor_panel.dart`
+- `storage.rules`
+
+---
+
 ## 0-B. 2026-08-04 ライブ配信の音声・板書同期（現在の実機確認済み基準）
 
 ユーザーがAndroid実機で、同じレッスン内の単一・複数配信パートについて、

@@ -145,6 +145,31 @@ test("validates BoardSet snapshots and bounded timeline chunks", () => {
     ],
   };
   assert.equal(isValidBoardSet(boardSet), true);
+  const materialBackground = {
+    assetId: "material-1",
+    storagePath:
+      "courseMedia/course-1/lessons/lesson-1/materials/material-1/shared.pdf",
+    mediaType: "pdf",
+    pageNumber: 1,
+    aspectRatio: 0.707,
+  };
+  const materialBoardSet = {
+    ...boardSet,
+    boards: [{...boardSet.boards[0], background: materialBackground}],
+  };
+  assert.equal(isValidBoardSet(materialBoardSet), true);
+  assert.equal(
+    isValidBoardSet({
+      ...materialBoardSet,
+      boards: [
+        {
+          ...materialBoardSet.boards[0],
+          background: {...materialBackground, storagePath: "other/private.pdf"},
+        },
+      ],
+    }),
+    false,
+  );
   assert.equal(
     isValidBoardSet({...boardSet, extraServerField: "not allowed"}),
     false,

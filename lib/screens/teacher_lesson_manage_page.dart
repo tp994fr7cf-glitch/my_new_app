@@ -22,6 +22,7 @@ import '../services/lesson_media_storage_service.dart';
 import '../services/live_audio_probe_service.dart';
 import '../utils/firebase_error_message.dart';
 import '../widgets/lesson_audio_whiteboard_recorder_panel.dart';
+import '../widgets/lesson_material_preparation_panel.dart';
 import '../widgets/lesson_whiteboard_editor_panel.dart';
 import 'live_audio_probe_page.dart';
 import 'teacher_quiz_manage_page.dart';
@@ -2074,6 +2075,22 @@ class _LessonEditorCard extends StatelessWidget {
                 ),
               ),
             const SizedBox(height: 16),
+            LessonMaterialPreparationPanel(
+              courseId: courseId,
+              lessonId: lessonId,
+              boardSet: editor.workingBoardSet,
+              publishedBoardSet: editor.publishedBoardSet,
+              enabled: !editor.hasAudioRecordingInProgress,
+              onBoardSetSaved: (boardSet) async {
+                editor.workingBoardSet = boardSet;
+                editor.workingWhiteboardLayers =
+                    boardSet.defaultBoard?.layerBundle ??
+                    const LessonWhiteboardLayerBundle();
+                onChanged();
+                await onDraftSaved(boardSet);
+              },
+            ),
+            const SizedBox(height: 16),
             Text('メディアパート', style: Theme.of(context).textTheme.titleSmall),
             const SizedBox(height: 8),
             if (editor.segments.isEmpty)
@@ -2354,6 +2371,7 @@ class _LessonEditorCard extends StatelessWidget {
                 ),
                 courseId: courseId,
                 lessonNumber: index,
+                lessonId: lessonId,
                 mediaSegments: builtSegments,
                 durationLabel: durationLabel,
                 enabled: !editor.hasAudioRecordingDraft,

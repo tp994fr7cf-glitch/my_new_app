@@ -27,6 +27,52 @@ void main() {
     expect(() => validateLessonsForPersistence(lessons), returnsNormally);
   });
 
+  test('validates material board background metadata', () {
+    const valid = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: 'page-1',
+          order: 0,
+          background: LessonWhiteboardBoardBackground(
+            assetId: 'material-1',
+            storagePath:
+                'courseMedia/course/lessons/lesson/materials/shared.pdf',
+            mediaType: lessonWhiteboardBackgroundPdf,
+            pageNumber: 1,
+            aspectRatio: 0.707,
+          ),
+        ),
+      ],
+    );
+    const invalid = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: 'page-1',
+          order: 0,
+          background: LessonWhiteboardBoardBackground(
+            assetId: 'material-1',
+            storagePath: '',
+            mediaType: lessonWhiteboardBackgroundPdf,
+            pageNumber: 1,
+            aspectRatio: 0.707,
+          ),
+        ),
+      ],
+    );
+
+    expect(() => validateBoardSetForPersistence(valid), returnsNormally);
+    expect(
+      () => validateBoardSetForPersistence(invalid),
+      throwsA(
+        isA<LessonPayloadValidationException>().having(
+          (error) => error.message,
+          'message',
+          lessonBoardBackgroundInvalidMessage,
+        ),
+      ),
+    );
+  });
+
   test(
     'rejects a twenty-first embedded board before serialization truncates it',
     () {

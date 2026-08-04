@@ -3,6 +3,7 @@ import 'package:my_new_app/models/course.dart';
 import 'package:my_new_app/models/lesson_media_segment.dart';
 import 'package:my_new_app/models/lesson_playback_mode.dart';
 import 'package:my_new_app/models/lesson_publication_validator.dart';
+import 'package:my_new_app/models/lesson_whiteboard_board_set.dart';
 
 void main() {
   const locked = LessonMediaSegment(
@@ -51,6 +52,69 @@ void main() {
 
     expect(validate(next), isNull);
   });
+
+  test(
+    'locks published material backgrounds but allows new material boards',
+    () {
+      const background = LessonWhiteboardBoardBackground(
+        assetId: 'material-1',
+        storagePath:
+            'courseMedia/course/lessons/lesson/materials/'
+            'material-1/shared/selected.pdf',
+        mediaType: lessonWhiteboardBackgroundPdf,
+        pageNumber: 1,
+        aspectRatio: 0.707,
+      );
+      final previous = previousLesson().copyWith(
+        publishedBoardSet: const BoardSet(
+          boards: [
+            LessonWhiteboardBoard(
+              id: 'material-board',
+              order: 0,
+              background: background,
+            ),
+          ],
+        ),
+      );
+      final appended = previous.copyWith(
+        publishedBoardSet: const BoardSet(
+          boards: [
+            LessonWhiteboardBoard(
+              id: 'material-board',
+              order: 0,
+              background: background,
+            ),
+            LessonWhiteboardBoard(
+              id: 'new-board',
+              order: 1,
+              background: LessonWhiteboardBoardBackground(
+                assetId: 'material-2',
+                storagePath:
+                    'courseMedia/course/lessons/lesson/materials/'
+                    'material-2/shared/image.png',
+                mediaType: lessonWhiteboardBackgroundImage,
+                aspectRatio: 1.5,
+              ),
+            ),
+          ],
+        ),
+      );
+      final removed = previous.copyWith(
+        publishedBoardSet: const BoardSet(
+          boards: [LessonWhiteboardBoard(id: 'replacement', order: 0)],
+        ),
+      );
+
+      expect(
+        validateAppendOnlyLessonPublication(previous: previous, next: appended),
+        isNull,
+      );
+      expect(
+        validateAppendOnlyLessonPublication(previous: previous, next: removed),
+        lessonPublishedMaterialBoardsLockedError,
+      );
+    },
+  );
 
   test('publishes every URL-bearing tail and increments the revision once', () {
     final next = previousLesson().copyWith(
