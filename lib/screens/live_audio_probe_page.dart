@@ -324,6 +324,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
             session.boardSet,
             preserveSelectedBoard: _canPublish,
           );
+          _snapshotTracker.markServerSnapshotApplied(session.boardSetRevision);
         }
         if (session.archiveError.isNotEmpty) {
           _message = session.archiveError;
@@ -476,16 +477,15 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
           _snapshotSaveTimer = null;
           _cancelLocalStroke();
           final session = _session;
-          if (session?.boardSet.isNotEmpty == true &&
-              _snapshotTracker.shouldApplyServerSnapshot(
-                revision: session!.boardSetRevision,
-                preserveUnsavedLocalChanges: false,
-              )) {
+          if (session != null && session.boardSet.isNotEmpty) {
             _snapshotTracker.reset(serverRevision: session.boardSetRevision);
             _rememberBoardSetTimelineEvents(session.boardSet);
             _boardState = _boardState.replaceSnapshot(
               session.boardSet,
               preserveSelectedBoard: _canPublish,
+            );
+            _snapshotTracker.markServerSnapshotApplied(
+              session.boardSetRevision,
             );
           }
         }

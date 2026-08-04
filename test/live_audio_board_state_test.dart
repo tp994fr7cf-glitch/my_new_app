@@ -3,6 +3,7 @@ import 'package:my_new_app/models/lesson_whiteboard.dart';
 import 'package:my_new_app/models/lesson_whiteboard_board_set.dart';
 import 'package:my_new_app/services/live_audio_board_state.dart';
 import 'package:my_new_app/services/live_audio_probe_message.dart';
+import 'package:my_new_app/services/live_audio_snapshot_tracker.dart';
 
 void main() {
   test('applies board creation, switch, and viewport in order', () {
@@ -149,6 +150,90 @@ void main() {
     expect(afterDelayed.inProgressStrokes, isEmpty);
     expect(afterDelayed.selectedCompletedStrokes, hasLength(1));
   });
+
+  test(
+    'keeps RTC stroke and board switch when the server revision is unchanged',
+    () {
+      const staleSnapshot = BoardSet(
+        boards: [
+          LessonWhiteboardBoard(id: 'board-1', order: 0),
+          LessonWhiteboardBoard(id: 'board-2', order: 1),
+        ],
+        switchEvents: [
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: 'board-1',
+            globalTimestampSec: 0,
+            sequence: 0,
+          ),
+        ],
+      );
+      final tracker = LiveAudioSnapshotTracker();
+      var state = LiveAudioBoardState.initial();
+
+      expect(
+        tracker.shouldApplyServerSnapshot(
+          revision: 0,
+          preserveUnsavedLocalChanges: false,
+        ),
+        isTrue,
+      );
+      state = state.replaceSnapshot(
+        staleSnapshot,
+        preserveSelectedBoard: false,
+      );
+      tracker.markServerSnapshotApplied(0);
+
+      state = state
+          .applyMessage(
+            const LiveAudioProbeMessage(
+              kind: LiveAudioProbeMessageKind.boardSwitch,
+              boardId: 'board-2',
+              timestampSec: 1,
+            ),
+          )
+          .applyMessage(
+            const LiveAudioProbeMessage(
+              kind: LiveAudioProbeMessageKind.strokeStart,
+              strokeId: 'rtc-stroke',
+              boardId: 'board-2',
+              timestampSec: 1,
+            ),
+          )
+          .applyMessage(
+            const LiveAudioProbeMessage(
+              kind: LiveAudioProbeMessageKind.strokePoint,
+              strokeId: 'rtc-stroke',
+              boardId: 'board-2',
+              timestampSec: 1.1,
+              point: WhiteboardPoint(x: 0.2, y: 0.3),
+            ),
+          )
+          .applyMessage(
+            const LiveAudioProbeMessage(
+              kind: LiveAudioProbeMessageKind.strokeEnd,
+              strokeId: 'rtc-stroke',
+              boardId: 'board-2',
+              timestampSec: 1.2,
+              point: WhiteboardPoint(x: 0.4, y: 0.5),
+            ),
+          );
+
+      if (tracker.shouldApplyServerSnapshot(
+        revision: 0,
+        preserveUnsavedLocalChanges: false,
+      )) {
+        state = state.replaceSnapshot(
+          staleSnapshot,
+          preserveSelectedBoard: false,
+        );
+        tracker.markServerSnapshotApplied(0);
+      }
+
+      expect(state.selectedBoardId, 'board-2');
+      expect(state.selectedCompletedStrokes, hasLength(1));
+      expect(state.selectedCompletedStrokes.single.id, 'rtc-stroke');
+    },
+  );
 
   test('restores selected board and saved stroke IDs from a snapshot', () {
     const stroke = WhiteboardStroke(

@@ -107,6 +107,48 @@ void main() {
   });
 
   group('LiveAudioSnapshotTracker', () {
+    test(
+      'applies the initial snapshot once and then requires a newer revision',
+      () {
+        final tracker = LiveAudioSnapshotTracker();
+
+        expect(
+          tracker.shouldApplyServerSnapshot(
+            revision: 0,
+            preserveUnsavedLocalChanges: false,
+          ),
+          isTrue,
+        );
+
+        tracker.markServerSnapshotApplied(0);
+
+        expect(
+          tracker.shouldApplyServerSnapshot(
+            revision: 0,
+            preserveUnsavedLocalChanges: false,
+          ),
+          isFalse,
+        );
+        expect(
+          tracker.shouldApplyServerSnapshot(
+            revision: 1,
+            preserveUnsavedLocalChanges: false,
+          ),
+          isTrue,
+        );
+
+        tracker.markServerSnapshotApplied(1);
+
+        expect(
+          tracker.shouldApplyServerSnapshot(
+            revision: 1,
+            preserveUnsavedLocalChanges: false,
+          ),
+          isFalse,
+        );
+      },
+    );
+
     test('keeps a locally changed board set dirty until it is saved', () {
       final tracker = LiveAudioSnapshotTracker();
 
