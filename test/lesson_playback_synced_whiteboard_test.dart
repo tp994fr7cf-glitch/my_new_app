@@ -658,7 +658,7 @@ void main() {
               enableSubPlayback: true,
               materialUrlResolver: (storagePath) async {
                 requestedPaths.add(storagePath);
-                return '';
+                return const LessonWhiteboardMaterialSource.network('');
               },
             ),
           ),

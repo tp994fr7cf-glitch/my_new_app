@@ -23,8 +23,10 @@ import '../models/quiz_answer_key.dart';
 import '../models/watched_range.dart';
 import '../services/course_access_service.dart';
 import '../services/course_privacy_service.dart';
+import '../services/lesson_material_cache_service.dart';
 import '../services/lesson_media_playback.dart';
 import '../services/lesson_media_playlist_playback.dart';
+import '../widgets/lesson_whiteboard_canvas.dart';
 import '../widgets/lesson_playback_synced_whiteboard.dart';
 import 'course_entry_gate.dart';
 import 'lesson_questions_page.dart';
@@ -99,6 +101,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   Timer? _postSeekDisplaySyncTimer;
   StreamSubscription<CourseEntryRequirement>? _entryRequirementSubscription;
   StreamSubscription<bool>? _courseAccessSubscription;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>?
+  _lessonSubscription;
   String? _sessionId;
   String? _segmentId;
   bool _hasActiveLearningLock = false;
@@ -131,9 +135,17 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   bool _courseDeleted = false;
   final Map<String, double> _mediaSegmentResumePositionsSec = {};
   final Set<String> _completedMediaSegmentIds = {};
+  late CourseLesson _currentLesson;
+  late final LessonMaterialCacheService _materialCache;
+  LessonMaterialCacheStatus? _materialCacheStatus;
+  LessonMaterialDownloadProgress? _materialDownloadProgress;
+  bool _materialDownloadBusy = false;
+  bool _cancelMaterialDownload = false;
+  bool _materialUpdateAvailable = false;
+  bool _materialServerValidated = false;
 
   Course get course => widget.course;
-  CourseLesson get lesson => widget.lesson;
+  CourseLesson get lesson => _currentLesson;
   int get lessonNumber => widget.lessonNumber;
 
   LessonMediaTimeline get _mediaTimeline =>
@@ -267,10 +279,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   @override
   void initState() {
     super.initState();
+    _currentLesson = widget.lesson;
+    _materialCache = LessonMaterialCacheService();
     WidgetsBinding.instance.addObserver(this);
     _isLoadingLearningState = Firebase.apps.isNotEmpty && !_isTeacherPreview;
     _listenEntryRequirement();
     _listenCourseAccess();
+    _listenLessonUpdates();
+    unawaited(_refreshMaterialCacheStatus());
     if (_hasMediaSource) {
       _isLoadingMedia = true;
       unawaited(_initializeMediaPlayer());
@@ -288,6 +304,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _postSeekDisplaySyncTimer?.cancel();
     _entryRequirementSubscription?.cancel();
     _courseAccessSubscription?.cancel();
+    _lessonSubscription?.cancel();
     _positionSubscription?.cancel();
     _durationSubscription?.cancel();
     _playingSubscription?.cancel();
@@ -327,6 +344,267 @@ class _VideoLessonPageState extends State<VideoLessonPage>
             _isLessonQuestionsOpen = false;
           });
         });
+  }
+
+  void _listenLessonUpdates() {
+    final lessonId = lesson.id;
+    if (Firebase.apps.isEmpty ||
+        _isTeacherPreview ||
+        lessonId == null ||
+        lessonId.isEmpty) {
+      return;
+    }
+    _lessonSubscription = FirebaseFirestore.instance
+        .collection('courses')
+        .doc(_courseId())
+        .collection('lessons')
+        .doc(lessonId)
+        .snapshots(includeMetadataChanges: true)
+        .listen((snapshot) {
+          if (!mounted || !snapshot.exists || snapshot.metadata.isFromCache) {
+            return;
+          }
+          final nextLesson = CourseLesson.fromMap(
+            snapshot.data() ?? const <String, dynamic>{},
+            id: snapshot.id,
+          );
+          final previousMaterialFingerprint = lessonMaterialFingerprint(
+            lesson.publishedBoardSet,
+          );
+          final nextMaterialFingerprint = lessonMaterialFingerprint(
+            nextLesson.publishedBoardSet,
+          );
+          setState(() {
+            _currentLesson = nextLesson;
+            _materialServerValidated = true;
+            if (previousMaterialFingerprint != nextMaterialFingerprint &&
+                _materialCacheStatus?.hasCurrentCache == true) {
+              _materialUpdateAvailable = true;
+            }
+          });
+          unawaited(_refreshMaterialCacheStatus());
+        });
+  }
+
+  Future<void> _refreshMaterialCacheStatus() async {
+    final lessonId = lesson.id ?? '';
+    if (!_materialCache.supported ||
+        _isTeacherPreview ||
+        lessonId.isEmpty ||
+        lessonMaterialStoragePaths(lesson.publishedBoardSet).isEmpty) {
+      return;
+    }
+    final status = await _materialCache.status(
+      courseId: _courseId(),
+      lessonId: lessonId,
+      boardSet: lesson.publishedBoardSet,
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _materialCacheStatus = status;
+      _materialUpdateAvailable = status.hasStaleCache;
+    });
+  }
+
+  Future<LessonWhiteboardMaterialSource> _resolveMaterialSource(
+    String storagePath,
+  ) async {
+    final lessonId = lesson.id ?? '';
+    if (_materialServerValidated && lessonId.isNotEmpty) {
+      final localPath = await _materialCache.localPath(
+        courseId: _courseId(),
+        lessonId: lessonId,
+        boardSet: lesson.publishedBoardSet,
+        storagePath: storagePath,
+      );
+      if (localPath != null) {
+        return LessonWhiteboardMaterialSource.file(localPath);
+      }
+    }
+    return resolveLessonWhiteboardMaterialUrl(storagePath);
+  }
+
+  Future<void> _downloadLessonMaterials() async {
+    final lessonId = lesson.id ?? '';
+    if (_materialDownloadBusy ||
+        !_materialServerValidated ||
+        lessonId.isEmpty) {
+      return;
+    }
+    setState(() {
+      _materialDownloadBusy = true;
+      _cancelMaterialDownload = false;
+      _materialDownloadProgress = const LessonMaterialDownloadProgress(
+        downloadedBytes: 0,
+        totalBytes: 0,
+        completedFiles: 0,
+        totalFiles: 0,
+      );
+    });
+    try {
+      await _materialCache.downloadLesson(
+        courseId: _courseId(),
+        lessonId: lessonId,
+        boardSet: lesson.publishedBoardSet,
+        onProgress: (progress) {
+          if (mounted) {
+            setState(() => _materialDownloadProgress = progress);
+          }
+        },
+        isCancelled: () => _cancelMaterialDownload,
+      );
+      await _refreshMaterialCacheStatus();
+      if (mounted) {
+        setState(() => _materialUpdateAvailable = false);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('PDF・画像を端末内に保存しました。')));
+      }
+    } on LessonMaterialCacheCancelled {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('資料の保存をキャンセルしました。')));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('資料を保存できませんでした: $error')));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _materialDownloadBusy = false;
+          _materialDownloadProgress = null;
+        });
+      }
+    }
+  }
+
+  Future<void> _deleteLessonMaterials() async {
+    final lessonId = lesson.id ?? '';
+    if (_materialDownloadBusy || lessonId.isEmpty) {
+      return;
+    }
+    await _materialCache.deleteLesson(
+      courseId: _courseId(),
+      lessonId: lessonId,
+    );
+    await _refreshMaterialCacheStatus();
+  }
+
+  Future<void> _deleteAllLessonMaterials() async {
+    if (_materialDownloadBusy) {
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('端末内の資料をすべて削除しますか？'),
+        content: const Text('他のレッスンで保存したPDF・画像も削除されます。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('戻る'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('すべて削除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) {
+      return;
+    }
+    await _materialCache.deleteAll();
+    await _refreshMaterialCacheStatus();
+  }
+
+  String _formatMaterialBytes(int bytes) {
+    if (bytes >= 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
+    }
+    if (bytes >= 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)}KB';
+    }
+    return '$bytes B';
+  }
+
+  Widget _buildMaterialCacheCard() {
+    final status = _materialCacheStatus;
+    final progress = _materialDownloadProgress;
+    final hasCurrentCache = status?.hasCurrentCache == true;
+    return Card(
+      key: const ValueKey('lesson-material-cache-card'),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('PDF・画像の事前保存', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 6),
+            Text(
+              !_materialServerValidated
+                  ? '最新版と受講権限を確認しています。'
+                  : _materialUpdateAvailable
+                  ? '先生の編集により保存済み資料が古くなりました。'
+                        '再保存するまではネットワークから表示します。'
+                  : hasCurrentCache
+                  ? 'このレッスンの資料は端末内に保存済みです'
+                        '（${_formatMaterialBytes(status!.totalBytes)}）。'
+                  : '先に保存すると、ボード切り替え時のPDF・画像を'
+                        'より早く表示できます。',
+            ),
+            if (progress != null) ...[
+              const SizedBox(height: 10),
+              LinearProgressIndicator(value: progress.fraction),
+              const SizedBox(height: 4),
+              Text('${progress.completedFiles} / ${progress.totalFiles}件'),
+            ],
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: _materialDownloadBusy || !_materialServerValidated
+                      ? null
+                      : _downloadLessonMaterials,
+                  icon: const Icon(Icons.download),
+                  label: Text(
+                    hasCurrentCache && !_materialUpdateAvailable
+                        ? '保存し直す'
+                        : 'このレッスンを保存',
+                  ),
+                ),
+                if (_materialDownloadBusy)
+                  OutlinedButton(
+                    onPressed: () => _cancelMaterialDownload = true,
+                    child: const Text('キャンセル'),
+                  ),
+                if (hasCurrentCache || status?.hasStaleCache == true)
+                  OutlinedButton(
+                    onPressed: _materialDownloadBusy
+                        ? null
+                        : _deleteLessonMaterials,
+                    child: const Text('このレッスンの保存を削除'),
+                  ),
+                TextButton(
+                  onPressed: _materialDownloadBusy
+                      ? null
+                      : _deleteAllLessonMaterials,
+                  child: const Text('端末内の資料をすべて削除'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -2899,6 +3177,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                   ),
                 ),
               ),
+            if (!_isTeacherPreview &&
+                _materialCache.supported &&
+                lessonMaterialStoragePaths(
+                  lesson.publishedBoardSet,
+                ).isNotEmpty) ...[
+              const SizedBox(height: 16),
+              _buildMaterialCacheCard(),
+            ],
             if (_hasWhiteboard) ...[
               const SizedBox(height: 16),
               Text('ホワイトボード', style: Theme.of(context).textTheme.titleSmall),
@@ -2912,6 +3198,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                 totalDurationSec: _totalDurationSec,
                 enableSubPlayback:
                     lesson.playbackMode == LessonPlaybackMode.continuous,
+                materialUrlResolver: _resolveMaterialSource,
               ),
             ],
             const SizedBox(height: 24),

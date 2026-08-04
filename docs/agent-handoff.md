@@ -1,6 +1,6 @@
 # 引き継ぎノート（my_new_app / Agora技術検証準備後）
 
-最終更新: 2026-08-04
+最終更新: 2026-08-05
 
 **2026-08-04、Agoraライブ音声＋板書の同期方式は本番反映・Android実機確認済みです。**
 **次のagentは最初に「0-B. ライブ配信の音声・板書同期」を読んでください。**
@@ -20,6 +20,47 @@
 本番 Web: https://my-new-app-naona-20260523.web.app
 Firebase プロジェクト: my-new-app-naona-20260523
 Firebase Console: https://console.firebase.google.com/project/my-new-app-naona-20260523/overview
+
+---
+
+## 0-F. 2026-08-05 受講者向けPDF・画像のAndroid事前保存
+
+レッスン再生とライブ視聴で背景資料が遅れて表示される問題を軽減するため、
+受講者がレッスン単位でPDF・画像をAndroidのアプリ専用領域へ事前保存できる機能を追加した。
+暗号化と板書データの保存、サブ再生描画ロジックの追加高速化は今回の対象外。
+Webは従来どおりネットワーク表示を使用する。
+
+実装:
+
+- 通常再生・追っかけ・公開後再生とライブ画面に、保存、進捗、キャンセル、
+  レッスン単位削除、更新案内を追加。
+- Firestoreのサーバー応答で現在のLesson／Session資料一覧を確認できた場合だけローカル資料を使う。
+  未確認、保存なし、旧版、ファイル欠損時はFirebase Storageへフォールバックする。
+- 資料のStorageパス一覧をfingerprintとしてmanifestへ保存する。
+  資料アップロードはassetIdごとの不変パスを作るため、資料差し替え時はfingerprintが変わる。
+- 再保存は一時ディレクトリへの全件取得後にディレクトリを入れ替え、
+  成功後だけ旧版を削除する。キャンセル・失敗時は旧版を維持する。
+- 保存先はFirebase UIDごとに分離し、Androidのクラウドバックアップと端末移行から除外。
+- Androidホーム上部と各保存パネルから、端末内の全レッスン資料を一括削除できる。
+
+確認:
+
+- 変更対象の`flutter analyze`は指摘なし。
+- fingerprint、同期ホワイトボード、ズーム関連のFlutterテスト19件成功。
+- Web release buildとAndroid debug APK build成功。
+- 全体の`flutter analyze`は既存の91件（主にthird_partyのinfo/warning）で終了コード1。
+- 本番データを使うAndroid実機での保存・更新・キャンセル・権限喪失確認は未実施。
+- Web版はFirebase Hostingへdeploy済み。変更はまだcommit、pushしておらず、
+  Android APKの実機インストール・配布はしていない。
+
+主な関連ファイル:
+
+- `lib/services/lesson_material_cache_service_io.dart`
+- `lib/services/lesson_material_cache_types.dart`
+- `lib/widgets/lesson_whiteboard_canvas.dart`
+- `lib/screens/video_lesson_page.dart`
+- `lib/screens/live_audio_probe_page.dart`
+- `lib/screens/home_page.dart`
 
 ---
 

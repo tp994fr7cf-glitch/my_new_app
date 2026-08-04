@@ -8,6 +8,7 @@ import '../models/public_user_profile.dart';
 import '../services/course_access_service.dart';
 import '../services/course_catalog_service.dart';
 import '../services/course_privacy_service.dart';
+import '../services/lesson_material_cache_service.dart';
 import 'course_entry_gate.dart';
 import 'course_create_page.dart';
 import 'course_list_page.dart';
@@ -763,12 +764,47 @@ class _HomeScaffold extends StatelessWidget {
   final List<String> roles;
   final Widget child;
 
+  Future<void> _deleteDownloadedMaterials(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('端末内の資料をすべて削除しますか？'),
+        content: const Text('事前保存したすべてのレッスンのPDF・画像を削除します。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('戻る'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('すべて削除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) {
+      return;
+    }
+    await LessonMaterialCacheService().deleteAll();
+    if (context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('端末内に保存した資料をすべて削除しました。')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: Text(title),
         actions: [
+          if (LessonMaterialCacheService().supported)
+            IconButton(
+              onPressed: () => _deleteDownloadedMaterials(context),
+              icon: const Icon(Icons.delete_sweep_outlined),
+              tooltip: '端末内に保存した資料をすべて削除',
+            ),
           if (roles.length > 1)
             IconButton(
               onPressed: () {

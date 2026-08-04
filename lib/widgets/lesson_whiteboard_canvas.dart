@@ -8,23 +8,39 @@ import 'package:pdfrx/pdfrx.dart';
 
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
+import 'lesson_material_file_image.dart';
 
 const double lessonWhiteboardAspectRatio = 4 / 3;
 const double lessonWhiteboardMaxWidth = 640;
 const double lessonWhiteboardCompactMaxWidth =
     220 * lessonWhiteboardAspectRatio;
 
+class LessonWhiteboardMaterialSource {
+  const LessonWhiteboardMaterialSource.network(this.networkUrl)
+    : localFilePath = null;
+
+  const LessonWhiteboardMaterialSource.file(this.localFilePath)
+    : networkUrl = null;
+
+  final String? networkUrl;
+  final String? localFilePath;
+
+  bool get isLocalFile => localFilePath != null;
+}
+
 typedef LessonWhiteboardMaterialUrlResolver =
-    Future<String> Function(String storagePath);
+    Future<LessonWhiteboardMaterialSource> Function(String storagePath);
 
 const int _maxCachedLessonMaterialUrls = 64;
 final Map<String, Future<String>> _lessonMaterialUrlCache = {};
 
-Future<String> resolveLessonWhiteboardMaterialUrl(String storagePath) {
+Future<LessonWhiteboardMaterialSource> resolveLessonWhiteboardMaterialUrl(
+  String storagePath,
+) async {
   final cached = _lessonMaterialUrlCache.remove(storagePath);
   if (cached != null) {
     _lessonMaterialUrlCache[storagePath] = cached;
-    return cached;
+    return LessonWhiteboardMaterialSource.network(await cached);
   }
 
   final completer = Completer<String>();
@@ -40,7 +56,7 @@ Future<String> resolveLessonWhiteboardMaterialUrl(String storagePath) {
       completer: completer,
     ),
   );
-  return future;
+  return LessonWhiteboardMaterialSource.network(await future);
 }
 
 Future<void> _loadLessonWhiteboardMaterialUrl({
@@ -177,7 +193,7 @@ class _LessonWhiteboardBackgroundPreload extends StatefulWidget {
 
 class _LessonWhiteboardBackgroundPreloadState
     extends State<_LessonWhiteboardBackgroundPreload> {
-  late Future<String> _urlFuture;
+  late Future<LessonWhiteboardMaterialSource> _sourceFuture;
 
   @override
   void initState() {
@@ -195,21 +211,39 @@ class _LessonWhiteboardBackgroundPreloadState
   }
 
   void _resolveUrl() {
-    _urlFuture = Future<String>.sync(
+    _sourceFuture = Future<LessonWhiteboardMaterialSource>.sync(
       () => widget.urlResolver(widget.background.storagePath),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<String>(
-      future: _urlFuture,
+    return FutureBuilder<LessonWhiteboardMaterialSource>(
+      future: _sourceFuture,
       builder: (context, snapshot) {
-        final url = snapshot.data;
-        if (url == null || url.isEmpty) {
+        final source = snapshot.data;
+        if (source == null) {
           return const SizedBox.shrink();
         }
         if (widget.background.isImage) {
+          if (source.isLocalFile) {
+            final provider = lessonMaterialFileImageProvider(
+              source.localFilePath!,
+            );
+            return provider == null
+                ? const SizedBox.shrink()
+                : Image(
+                    image: provider,
+                    width: 1,
+                    height: 1,
+                    errorBuilder: (context, error, stackTrace) =>
+                        const SizedBox.shrink(),
+                  );
+          }
+          final url = source.networkUrl;
+          if (url == null || url.isEmpty) {
+            return const SizedBox.shrink();
+          }
           return Image.network(
             url,
             width: 1,
@@ -219,13 +253,28 @@ class _LessonWhiteboardBackgroundPreloadState
                 const SizedBox.shrink(),
           );
         }
-        return PdfDocumentViewBuilder.uri(
-          Uri.parse(url),
-          useProgressiveLoading: true,
-          builder: (context, document) => const SizedBox.shrink(),
-          loadingBuilder: (context) => const SizedBox.shrink(),
-          errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
-        );
+        final localPath = source.localFilePath;
+        if (localPath != null) {
+          return PdfDocumentViewBuilder.file(
+            localPath,
+            useProgressiveLoading: true,
+            builder: (context, document) => const SizedBox.shrink(),
+            loadingBuilder: (context) => const SizedBox.shrink(),
+            errorBuilder: (context, error, stackTrace) =>
+                const SizedBox.shrink(),
+          );
+        }
+        final url = source.networkUrl;
+        return url == null || url.isEmpty
+            ? const SizedBox.shrink()
+            : PdfDocumentViewBuilder.uri(
+                Uri.parse(url),
+                useProgressiveLoading: true,
+                builder: (context, document) => const SizedBox.shrink(),
+                loadingBuilder: (context) => const SizedBox.shrink(),
+                errorBuilder: (context, error, stackTrace) =>
+                    const SizedBox.shrink(),
+              );
       },
     );
   }
@@ -250,7 +299,7 @@ class _LessonWhiteboardBackgroundView extends StatefulWidget {
 
 class _LessonWhiteboardBackgroundViewState
     extends State<_LessonWhiteboardBackgroundView> {
-  late Future<String> _urlFuture;
+  late Future<LessonWhiteboardMaterialSource> _sourceFuture;
 
   @override
   void initState() {
@@ -268,15 +317,15 @@ class _LessonWhiteboardBackgroundViewState
   }
 
   void _resolveUrl() {
-    _urlFuture = Future<String>.sync(
+    _sourceFuture = Future<LessonWhiteboardMaterialSource>.sync(
       () => widget.urlResolver(widget.background.storagePath),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<String>(
-      future: _urlFuture,
+    return FutureBuilder<LessonWhiteboardMaterialSource>(
+      future: _sourceFuture,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return const ColoredBox(
@@ -289,8 +338,8 @@ class _LessonWhiteboardBackgroundViewState
             ),
           );
         }
-        final url = snapshot.data;
-        if (url == null || url.isEmpty) {
+        final source = snapshot.data;
+        if (source == null) {
           return const ColoredBox(
             color: Colors.white,
             child: Center(
@@ -301,6 +350,31 @@ class _LessonWhiteboardBackgroundViewState
           );
         }
         if (widget.background.isImage) {
+          if (source.isLocalFile) {
+            final provider = lessonMaterialFileImageProvider(
+              source.localFilePath!,
+            );
+            if (provider == null) {
+              return const ColoredBox(
+                color: Color(0xfff5f5f5),
+                child: Center(child: Icon(Icons.broken_image_outlined)),
+              );
+            }
+            return Image(
+              image: provider,
+              key: const ValueKey('whiteboard-image-background'),
+              fit: BoxFit.fill,
+              filterQuality: FilterQuality.high,
+              errorBuilder: (context, error, stackTrace) => const ColoredBox(
+                color: Color(0xfff5f5f5),
+                child: Center(child: Icon(Icons.broken_image_outlined)),
+              ),
+            );
+          }
+          final url = source.networkUrl;
+          if (url == null || url.isEmpty) {
+            return const ColoredBox(color: Colors.white);
+          }
           return Image.network(
             url,
             key: const ValueKey('whiteboard-image-background'),
@@ -312,26 +386,50 @@ class _LessonWhiteboardBackgroundViewState
             ),
           );
         }
-        return PdfDocumentViewBuilder.uri(
-          Uri.parse(url),
-          key: ValueKey('whiteboard-pdf-${widget.background.assetId}'),
-          useProgressiveLoading: true,
-          builder: (context, document) => PdfPageView(
-            document: document,
-            pageNumber: widget.background.pageNumber,
-            maximumDpi: widget.maximumDpi,
-            decoration: const BoxDecoration(color: Colors.white),
-            backgroundColor: Colors.white,
-          ),
-          loadingBuilder: (context) => const ColoredBox(
-            color: Colors.white,
-            child: Center(child: CircularProgressIndicator()),
-          ),
-          errorBuilder: (context, error, stackTrace) => const ColoredBox(
-            color: Color(0xfff5f5f5),
-            child: Center(child: Icon(Icons.broken_image_outlined)),
-          ),
+        Widget loadingBuilder(BuildContext context) => const ColoredBox(
+          color: Colors.white,
+          child: Center(child: CircularProgressIndicator()),
         );
+        Widget builder(BuildContext context, PdfDocument? document) =>
+            document == null
+            ? loadingBuilder(context)
+            : PdfPageView(
+                document: document,
+                pageNumber: widget.background.pageNumber,
+                maximumDpi: widget.maximumDpi,
+                decoration: const BoxDecoration(color: Colors.white),
+                backgroundColor: Colors.white,
+              );
+        Widget errorBuilder(
+          BuildContext context,
+          Object error,
+          StackTrace? stackTrace,
+        ) => const ColoredBox(
+          color: Color(0xfff5f5f5),
+          child: Center(child: Icon(Icons.broken_image_outlined)),
+        );
+        final localPath = source.localFilePath;
+        if (localPath != null) {
+          return PdfDocumentViewBuilder.file(
+            localPath,
+            key: ValueKey('whiteboard-pdf-${widget.background.assetId}'),
+            useProgressiveLoading: true,
+            builder: builder,
+            loadingBuilder: loadingBuilder,
+            errorBuilder: errorBuilder,
+          );
+        }
+        final url = source.networkUrl;
+        return url == null || url.isEmpty
+            ? const ColoredBox(color: Colors.white)
+            : PdfDocumentViewBuilder.uri(
+                Uri.parse(url),
+                key: ValueKey('whiteboard-pdf-${widget.background.assetId}'),
+                useProgressiveLoading: true,
+                builder: builder,
+                loadingBuilder: loadingBuilder,
+                errorBuilder: errorBuilder,
+              );
       },
     );
   }

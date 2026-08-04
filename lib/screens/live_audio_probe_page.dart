@@ -20,6 +20,7 @@ import '../services/live_audio_snapshot_tracker.dart';
 import '../services/live_audio_stroke_persistence.dart';
 import '../services/live_audio_timeline_clock.dart';
 import '../services/live_audio_timeline_outbox.dart';
+import '../services/lesson_material_cache_service.dart';
 import '../widgets/lesson_whiteboard_canvas.dart';
 
 const bool liveAudioProbeEnabled = bool.fromEnvironment(
@@ -118,6 +119,14 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   double? _archiveMediaTimelineOffsetSec;
   double? _archiveAudioPlaybackCompensationSec;
   bool _suspendLiveRtcMessages = false;
+  final LessonMaterialCacheService _materialCache =
+      LessonMaterialCacheService();
+  LessonMaterialCacheStatus? _materialCacheStatus;
+  LessonMaterialDownloadProgress? _materialDownloadProgress;
+  bool _materialDownloadBusy = false;
+  bool _cancelMaterialDownload = false;
+  bool _materialServerValidated = false;
+  String? _lastMaterialFingerprint;
 
   bool get _isTeacher => widget.activeRole == 'teacher';
   bool get _isOwner => _session?.ownerUid == widget.user.uid;
@@ -309,6 +318,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       }
       setState(() {
         _session = session;
+        _materialServerValidated = true;
         _serverBoardIds.addAll(
           session.boardSet.boards.map((board) => board.id),
         );
@@ -330,6 +340,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
           _message = session.archiveError;
         }
       });
+      unawaited(_refreshLiveMaterialCacheStatus());
       _scheduleDurationLimit(session);
       _announceCurrentBoardStateIfReady();
       if (!session.isActive) {
@@ -1394,6 +1405,9 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         _timelineClockConfirmed = false;
         _timelineClockSyncing = false;
         _currentBoardStateAnnounced = false;
+        _materialServerValidated = false;
+        _materialCacheStatus = null;
+        _lastMaterialFingerprint = null;
       });
     }
     _leaving = false;
@@ -1443,6 +1457,237 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       _ => error.toString(),
     };
     setState(() => _message = message);
+  }
+
+  Future<void> _refreshLiveMaterialCacheStatus({bool force = false}) async {
+    final session = _session;
+    if (!_materialCache.supported ||
+        _isTeacher ||
+        session == null ||
+        session.courseId.isEmpty ||
+        session.lessonId.isEmpty) {
+      return;
+    }
+    final fingerprint = lessonMaterialFingerprint(_boardState.boardSet);
+    if (fingerprint.isEmpty ||
+        (!force &&
+            fingerprint == _lastMaterialFingerprint &&
+            _materialCacheStatus != null)) {
+      return;
+    }
+    _lastMaterialFingerprint = fingerprint;
+    final status = await _materialCache.status(
+      courseId: session.courseId,
+      lessonId: session.lessonId,
+      boardSet: _boardState.boardSet,
+    );
+    if (mounted) {
+      setState(() => _materialCacheStatus = status);
+    }
+  }
+
+  Future<LessonWhiteboardMaterialSource> _resolveLiveMaterialSource(
+    String storagePath,
+  ) async {
+    final session = _session;
+    if (_materialServerValidated &&
+        session != null &&
+        session.courseId.isNotEmpty &&
+        session.lessonId.isNotEmpty) {
+      final localPath = await _materialCache.localPath(
+        courseId: session.courseId,
+        lessonId: session.lessonId,
+        boardSet: _boardState.boardSet,
+        storagePath: storagePath,
+      );
+      if (localPath != null) {
+        return LessonWhiteboardMaterialSource.file(localPath);
+      }
+    }
+    return resolveLessonWhiteboardMaterialUrl(storagePath);
+  }
+
+  Future<void> _downloadLiveMaterials() async {
+    final session = _session;
+    if (_materialDownloadBusy ||
+        !_materialServerValidated ||
+        session == null ||
+        session.courseId.isEmpty ||
+        session.lessonId.isEmpty) {
+      return;
+    }
+    setState(() {
+      _materialDownloadBusy = true;
+      _cancelMaterialDownload = false;
+      _materialDownloadProgress = const LessonMaterialDownloadProgress(
+        downloadedBytes: 0,
+        totalBytes: 0,
+        completedFiles: 0,
+        totalFiles: 0,
+      );
+    });
+    try {
+      await _materialCache.downloadLesson(
+        courseId: session.courseId,
+        lessonId: session.lessonId,
+        boardSet: _boardState.boardSet,
+        onProgress: (progress) {
+          if (mounted) {
+            setState(() => _materialDownloadProgress = progress);
+          }
+        },
+        isCancelled: () => _cancelMaterialDownload,
+      );
+      _lastMaterialFingerprint = null;
+      await _refreshLiveMaterialCacheStatus(force: true);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('配信資料を端末内に保存しました。')));
+      }
+    } on LessonMaterialCacheCancelled {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('資料の保存をキャンセルしました。')));
+      }
+    } catch (error) {
+      _showError(error);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _materialDownloadBusy = false;
+          _materialDownloadProgress = null;
+        });
+      }
+    }
+  }
+
+  Future<void> _deleteLiveLessonMaterials() async {
+    final session = _session;
+    if (_materialDownloadBusy ||
+        session == null ||
+        session.courseId.isEmpty ||
+        session.lessonId.isEmpty) {
+      return;
+    }
+    await _materialCache.deleteLesson(
+      courseId: session.courseId,
+      lessonId: session.lessonId,
+    );
+    _lastMaterialFingerprint = null;
+    await _refreshLiveMaterialCacheStatus(force: true);
+  }
+
+  Future<void> _deleteAllLiveMaterials() async {
+    if (_materialDownloadBusy) {
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('端末内の資料をすべて削除しますか？'),
+        content: const Text('他のレッスンで保存したPDF・画像も削除されます。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('戻る'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('すべて削除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) {
+      return;
+    }
+    await _materialCache.deleteAll();
+    _lastMaterialFingerprint = null;
+    await _refreshLiveMaterialCacheStatus(force: true);
+  }
+
+  String _formatMaterialBytes(int bytes) {
+    if (bytes >= 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
+    }
+    if (bytes >= 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)}KB';
+    }
+    return '$bytes B';
+  }
+
+  Widget _buildLiveMaterialCacheCard() {
+    final status = _materialCacheStatus;
+    final progress = _materialDownloadProgress;
+    final hasCurrentCache = status?.hasCurrentCache == true;
+    return Card(
+      key: const ValueKey('live-material-cache-card'),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('PDF・画像の事前保存', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 6),
+            Text(
+              !_materialServerValidated
+                  ? '配信資料を確認しています。'
+                  : status?.hasStaleCache == true
+                  ? '資料が更新されています。再保存するまでは'
+                        'ネットワークから表示します。'
+                  : hasCurrentCache
+                  ? '配信資料は端末内に保存済みです'
+                        '（${_formatMaterialBytes(status!.totalBytes)}）。'
+                  : '配信中に使うPDF・画像だけを端末内に保存できます。',
+            ),
+            if (progress != null) ...[
+              const SizedBox(height: 10),
+              LinearProgressIndicator(value: progress.fraction),
+              const SizedBox(height: 4),
+              Text('${progress.completedFiles} / ${progress.totalFiles}件'),
+            ],
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: _materialDownloadBusy || !_materialServerValidated
+                      ? null
+                      : _downloadLiveMaterials,
+                  icon: const Icon(Icons.download),
+                  label: Text(
+                    hasCurrentCache && status?.hasStaleCache != true
+                        ? '保存し直す'
+                        : '配信資料を保存',
+                  ),
+                ),
+                if (_materialDownloadBusy)
+                  OutlinedButton(
+                    onPressed: () => _cancelMaterialDownload = true,
+                    child: const Text('キャンセル'),
+                  ),
+                if (hasCurrentCache || status?.hasStaleCache == true)
+                  OutlinedButton(
+                    onPressed: _materialDownloadBusy
+                        ? null
+                        : _deleteLiveLessonMaterials,
+                    child: const Text('このレッスンの保存を削除'),
+                  ),
+                TextButton(
+                  onPressed: _materialDownloadBusy
+                      ? null
+                      : _deleteAllLiveMaterials,
+                  child: const Text('端末内の資料をすべて削除'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -1707,6 +1952,14 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
           ),
           const SizedBox(height: 12),
         ],
+        if (!_isTeacher &&
+            _materialCache.supported &&
+            (_session?.courseId.isNotEmpty ?? false) &&
+            (_session?.lessonId.isNotEmpty ?? false) &&
+            lessonMaterialStoragePaths(_boardState.boardSet).isNotEmpty) ...[
+          _buildLiveMaterialCacheCard(),
+          const SizedBox(height: 12),
+        ],
         LessonWhiteboardCanvas(
           strokes: displayStrokes,
           inProgressStroke: !_isCatchup && _localStrokeBoardId == board.id
@@ -1724,6 +1977,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
           showViewportControls: !_isCatchup,
           background: board.background,
           aspectRatio: board.aspectRatio,
+          materialUrlResolver: _resolveLiveMaterialSource,
         ),
         const SizedBox(height: 12),
         if (_canPublish)

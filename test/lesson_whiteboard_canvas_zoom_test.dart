@@ -10,7 +10,7 @@ void main() {
   testWidgets('uses a material page aspect ratio while its background loads', (
     tester,
   ) async {
-    final unresolvedUrl = Completer<String>();
+    final unresolvedUrl = Completer<LessonWhiteboardMaterialSource>();
     const background = LessonWhiteboardBoardBackground(
       assetId: 'image-asset',
       storagePath: 'courseMedia/course/lessons/lesson/materials/page.webp',
