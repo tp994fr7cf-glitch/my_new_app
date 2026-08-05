@@ -7,6 +7,8 @@ class LiveAudioRtcEventHandler {
     this.onConnectionInterrupted,
     this.onConnectionLost,
     this.onLeft,
+    this.onClientRoleChanged,
+    this.onClientRoleChangeFailed,
     this.onError,
     this.onStreamMessage,
     this.onStreamMessageError,
@@ -18,6 +20,9 @@ class LiveAudioRtcEventHandler {
   final void Function()? onConnectionInterrupted;
   final void Function()? onConnectionLost;
   final void Function()? onLeft;
+  final void Function(bool canPublish)? onClientRoleChanged;
+  final void Function(String reason, bool currentCanPublish)?
+  onClientRoleChangeFailed;
   final void Function(String code, String message)? onError;
   final void Function(Uint8List data)? onStreamMessage;
   final void Function(String code, int missed)? onStreamMessageError;

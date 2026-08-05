@@ -141,6 +141,13 @@ class LiveAudioAndroidRtcBackend implements LiveAudioRtcBackend {
         _handler.onConnectionLost?.call();
       case 'left':
         _handler.onLeft?.call();
+      case 'clientRoleChanged':
+        _handler.onClientRoleChanged?.call(arguments['canPublish'] == true);
+      case 'clientRoleChangeFailed':
+        _handler.onClientRoleChangeFailed?.call(
+          '${arguments['reason']}',
+          arguments['currentCanPublish'] == true,
+        );
       case 'error':
         _handler.onError?.call(
           '${arguments['code']}',

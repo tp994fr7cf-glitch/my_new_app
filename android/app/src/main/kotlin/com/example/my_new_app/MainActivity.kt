@@ -250,6 +250,31 @@ class MainActivity : FlutterActivity() {
                 sendEvent("left")
             }
 
+            override fun onClientRoleChanged(
+                oldRole: Int,
+                newRole: Int,
+                newRoleOptions: ClientRoleOptions?,
+            ) {
+                sendEvent(
+                    "clientRoleChanged",
+                    mapOf(
+                        "canPublish" to
+                            (newRole == Constants.CLIENT_ROLE_BROADCASTER),
+                    ),
+                )
+            }
+
+            override fun onClientRoleChangeFailed(reason: Int, currentRole: Int) {
+                sendEvent(
+                    "clientRoleChangeFailed",
+                    mapOf(
+                        "reason" to reason,
+                        "currentCanPublish" to
+                            (currentRole == Constants.CLIENT_ROLE_BROADCASTER),
+                    ),
+                )
+            }
+
             override fun onError(err: Int) {
                 sendEvent(
                     "error",

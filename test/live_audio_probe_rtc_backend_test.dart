@@ -109,6 +109,78 @@ void main() {
     await controller.dispose();
   });
 
+  test('waits for presenter role confirmation before sending data', () async {
+    final backend = _FakeLiveAudioRtcBackend();
+    final controller = LiveAudioProbeRtcController(
+      refreshToken: () async => _credentials,
+      createBackend: () => backend,
+    );
+    await controller.join(_subscriberCredentials);
+
+    var applyCompleted = false;
+    final applying = controller
+        .applyCredentials(_credentials)
+        .whenComplete(() => applyCompleted = true);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(backend.calls, contains('setClientRole:true'));
+    expect(applyCompleted, isFalse);
+    expect(backend.calls, isNot(contains('createDataStream')));
+
+    backend.emitClientRoleChanged(true);
+    await applying;
+    expect(backend.calls, contains('createDataStream'));
+
+    await controller.sendWhiteboardMessage(
+      const LiveAudioProbeMessage(
+        kind: LiveAudioProbeMessageKind.boardSwitch,
+        boardId: 'board-1',
+        timestampSec: 1,
+      ),
+    );
+    expect(backend.sentMessages, hasLength(1));
+    await controller.dispose();
+  });
+
+  test(
+    'ignores an in-flight send failure while leaving presenter role',
+    () async {
+      final sendGate = Completer<void>();
+      final backend = _FakeLiveAudioRtcBackend()
+        ..nextSendGate = sendGate
+        ..nextSendError = StateError('Agora sendStreamMessage failed: -9');
+      final controller = LiveAudioProbeRtcController(
+        refreshToken: () async => _subscriberCredentials,
+        createBackend: () => backend,
+      );
+      await controller.join(_credentials);
+
+      final send = controller.sendWhiteboardMessage(
+        const LiveAudioProbeMessage(
+          kind: LiveAudioProbeMessageKind.boardSwitch,
+          boardId: 'board-1',
+          timestampSec: 1,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      final applying = controller.applyCredentials(_subscriberCredentials);
+
+      sendGate.complete();
+      await send;
+      for (var attempt = 0; attempt < 10; attempt += 1) {
+        if (backend.calls.contains('setClientRole:false')) {
+          break;
+        }
+        await Future<void>.delayed(Duration.zero);
+      }
+      backend.emitClientRoleChanged(false);
+      await applying;
+
+      expect(backend.calls, contains('setClientRole:false'));
+      await controller.dispose();
+    },
+  );
+
   test('silences playback without unsubscribing from remote audio', () async {
     final backend = _FakeLiveAudioRtcBackend();
     final controller = LiveAudioProbeRtcController(
@@ -205,11 +277,21 @@ const _credentials = LiveAudioProbeCredentials(
   expiresInSec: 3600,
 );
 
+const _subscriberCredentials = LiveAudioProbeCredentials(
+  appId: 'test-app-id',
+  channelName: 'test-channel',
+  rtcUid: 42,
+  token: 'subscriber-token',
+  permission: LiveAudioProbePermission.subscriber,
+  expiresInSec: 3600,
+);
+
 class _FakeLiveAudioRtcBackend implements LiveAudioRtcBackend {
   final calls = <String>[];
   final sentMessages = <Uint8List>[];
   final playbackVolumes = <int>[];
   Completer<void>? nextSendGate;
+  Object? nextSendError;
   int concurrentSends = 0;
   int maximumConcurrentSends = 0;
   bool connected = true;
@@ -267,7 +349,9 @@ class _FakeLiveAudioRtcBackend implements LiveAudioRtcBackend {
   Future<void> renewToken(String token) async {}
 
   @override
-  Future<void> updateMediaOptions({required bool canPublish}) async {}
+  Future<void> updateMediaOptions({required bool canPublish}) async {
+    calls.add('updateMediaOptions:$canPublish');
+  }
 
   @override
   Future<void> muteLocalAudioStream(bool muted) async {}
@@ -286,8 +370,13 @@ class _FakeLiveAudioRtcBackend implements LiveAudioRtcBackend {
     sentMessages.add(Uint8List.fromList(data));
     final gate = nextSendGate;
     nextSendGate = null;
+    final error = nextSendError;
+    nextSendError = null;
     try {
       await gate?.future;
+      if (error != null) {
+        throw error;
+      }
     } finally {
       concurrentSends -= 1;
     }
@@ -310,5 +399,9 @@ class _FakeLiveAudioRtcBackend implements LiveAudioRtcBackend {
 
   void emitStreamMessageTimeout() {
     _handler.onStreamMessageError?.call('117', 0);
+  }
+
+  void emitClientRoleChanged(bool canPublish) {
+    _handler.onClientRoleChanged?.call(canPublish);
   }
 }

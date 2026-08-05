@@ -45,6 +45,13 @@ class LiveAudioAgoraRtcBackend implements LiveAudioRtcBackend {
             _handler.onConnectionInterrupted?.call(),
         onConnectionLost: (_) => _handler.onConnectionLost?.call(),
         onLeaveChannel: (_, _) => _handler.onLeft?.call(),
+        onClientRoleChanged: (_, _, newRole, _) => _handler.onClientRoleChanged
+            ?.call(newRole == ClientRoleType.clientRoleBroadcaster),
+        onClientRoleChangeFailed: (_, reason, currentRole) =>
+            _handler.onClientRoleChangeFailed?.call(
+              reason.name,
+              currentRole == ClientRoleType.clientRoleBroadcaster,
+            ),
         onError: (code, message) => _handler.onError?.call(code.name, message),
         onStreamMessage: (_, _, _, data, length, _) {
           final safeLength = length.clamp(0, data.length);

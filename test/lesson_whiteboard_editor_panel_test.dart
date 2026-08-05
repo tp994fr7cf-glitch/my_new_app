@@ -744,6 +744,256 @@ void main() {
   );
 
   testWidgets(
+    'recorded screen-share following is available before publication',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(900, 1500));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final playback = _ControllableLivePositionPlaylistPlayback(
+        totalDurationSec: 90,
+      );
+      const draft = BoardSet(
+        boards: [
+          LessonWhiteboardBoard(
+            id: LessonWhiteboardBoard.defaultBoardId,
+            order: 0,
+            title: '一枚目',
+          ),
+          LessonWhiteboardBoard(id: 'second', order: 1, title: '二枚目'),
+        ],
+        switchEvents: [
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: 'second',
+            globalTimestampSec: 2,
+            sequence: 0,
+          ),
+        ],
+        viewportEvents: [
+          LessonWhiteboardViewportEvent(
+            boardId: 'second',
+            globalTimestampSec: 2,
+            sequence: 0,
+            interactionId: 0,
+            viewport: LessonWhiteboardViewport(
+              centerX: 0.5,
+              centerY: 0.5,
+              scale: 2,
+            ),
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: LessonWhiteboardEditorPanel(
+                courseId: 'course-1',
+                lessonNumber: 1,
+                mediaSegments: testMediaSegments(),
+                durationLabel: '1分30秒',
+                draftBoardSet: draft,
+                onBoardSetDraftSaved: (_) async {},
+                playlistPlaybackFactory: () => playback,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final followSwitch = tester.widget<Switch>(
+        find.byKey(
+          const ValueKey('editor-recorded-screen-share-follow-switch'),
+        ),
+      );
+      expect(followSwitch.value, isTrue);
+      expect(find.text('記録した画面共有に合わせる'), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'スタート'));
+      await tester.pump();
+      playback.liveOffsetSec = 3;
+      await tester.pump(const Duration(milliseconds: 60));
+
+      expect(
+        find.byKey(const ValueKey('whiteboard-board-dropdown-second')),
+        findsOneWidget,
+      );
+      final followedCanvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      expect(followedCanvas.viewport?.scale, 2);
+    },
+  );
+
+  testWidgets(
+    'published editing follows recorded board and viewport until manual control',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(900, 1500));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final playback = _ControllableLivePositionPlaylistPlayback(
+        totalDurationSec: 90,
+      );
+      const published = BoardSet(
+        boards: [
+          LessonWhiteboardBoard(
+            id: LessonWhiteboardBoard.defaultBoardId,
+            order: 0,
+            title: '一枚目',
+          ),
+          LessonWhiteboardBoard(id: 'second', order: 1, title: '二枚目'),
+        ],
+        switchEvents: [
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: 'second',
+            globalTimestampSec: 2,
+            sequence: 0,
+          ),
+        ],
+        viewportEvents: [
+          LessonWhiteboardViewportEvent(
+            boardId: 'second',
+            globalTimestampSec: 2,
+            sequence: 0,
+            interactionId: 0,
+            viewport: LessonWhiteboardViewport(
+              centerX: 0.5,
+              centerY: 0.5,
+              scale: 2,
+            ),
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: LessonWhiteboardEditorPanel(
+                courseId: 'course-1',
+                lessonNumber: 1,
+                mediaSegments: testMediaSegments(),
+                durationLabel: '1分30秒',
+                publishedBoardSet: published,
+                publishedTimelineDurationSec: 90,
+                onBoardSetDraftSaved: (_) async {},
+                playlistPlaybackFactory: () => playback,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(OutlinedButton, '書き物を描き直す'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(OutlinedButton, '公開しているものを編集する'));
+      await tester.pumpAndSettle();
+
+      var followSwitch = tester.widget<Switch>(
+        find.byKey(
+          const ValueKey('editor-recorded-screen-share-follow-switch'),
+        ),
+      );
+      expect(followSwitch.value, isTrue);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'スタート'));
+      await tester.pump();
+      playback.liveOffsetSec = 3;
+      await tester.pump(const Duration(milliseconds: 60));
+
+      expect(
+        find.byKey(const ValueKey('whiteboard-board-dropdown-second')),
+        findsOneWidget,
+      );
+      final followedCanvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      expect(followedCanvas.viewport?.scale, 2);
+
+      await _selectBoard(tester, '1. 一枚目');
+      followSwitch = tester.widget<Switch>(
+        find.byKey(
+          const ValueKey('editor-recorded-screen-share-follow-switch'),
+        ),
+      );
+      expect(followSwitch.value, isFalse);
+    },
+  );
+
+  testWidgets(
+    'screen-share overwrite temporarily suspends published following',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(900, 1500));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final playback = _ControllableLivePositionPlaylistPlayback(
+        totalDurationSec: 90,
+      );
+      const published = BoardSet(
+        boards: [
+          LessonWhiteboardBoard(
+            id: LessonWhiteboardBoard.defaultBoardId,
+            order: 0,
+            title: '一枚目',
+          ),
+          LessonWhiteboardBoard(id: 'second', order: 1, title: '二枚目'),
+        ],
+        switchEvents: [
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: 'second',
+            globalTimestampSec: 2,
+            sequence: 0,
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: LessonWhiteboardEditorPanel(
+                courseId: 'course-1',
+                lessonNumber: 1,
+                mediaSegments: testMediaSegments(),
+                durationLabel: '1分30秒',
+                publishedBoardSet: published,
+                publishedTimelineDurationSec: 90,
+                onBoardSetDraftSaved: (_) async {},
+                playlistPlaybackFactory: () => playback,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(OutlinedButton, '書き物を描き直す'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(OutlinedButton, '公開しているものを編集する'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('screen-share-override-checkbox')),
+      );
+      await tester.pump();
+
+      final followSwitch = tester.widget<Switch>(
+        find.byKey(
+          const ValueKey('editor-recorded-screen-share-follow-switch'),
+        ),
+      );
+      expect(followSwitch.value, isTrue);
+      expect(followSwitch.onChanged, isNull);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'スタート'));
+      await tester.pump();
+      playback.liveOffsetSec = 3;
+      await tester.pump(const Duration(milliseconds: 60));
+
+      expect(
+        find.byKey(const ValueKey('whiteboard-board-dropdown-default')),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
     'published screen-share overwrite restores the original timeline when off',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(900, 1500));
@@ -818,7 +1068,7 @@ void main() {
       await tester.pump();
 
       expect(
-        find.byKey(const ValueKey('whiteboard-board-dropdown-third')),
+        find.byKey(const ValueKey('whiteboard-board-dropdown-second')),
         findsOneWidget,
       );
 

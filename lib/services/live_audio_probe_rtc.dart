@@ -57,9 +57,12 @@ class LiveAudioProbeRtcController {
   Duration? _lastDataStreamSendElapsed;
   bool _dataStreamUnavailable = false;
   bool _dataStreamDrainRunning = false;
+  bool _dataStreamSendingEnabled = false;
   bool _disposed = false;
   bool _tokenRefreshInProgress = false;
   int _dataStreamGeneration = 0;
+  Completer<void>? _clientRoleChangeCompleter;
+  bool? _expectedClientRoleCanPublish;
   LiveAudioProbeRtcState _state = LiveAudioProbeRtcState.idle;
 
   Stream<LiveAudioProbeRtcStatus> get statuses => _statusController.stream;
@@ -103,6 +106,8 @@ class LiveAudioProbeRtcController {
         onLeft: () {
           _emitStatus(LiveAudioProbeRtcState.disconnected);
         },
+        onClientRoleChanged: _completeClientRoleChange,
+        onClientRoleChangeFailed: _failClientRoleChange,
         onError: (code, message) {
           _emitStatus(
             LiveAudioProbeRtcState.failed,
@@ -147,6 +152,7 @@ class LiveAudioProbeRtcController {
       final warning = credentials.permission.canPublish
           ? await _preparePublisherDataStream()
           : null;
+      _dataStreamSendingEnabled = credentials.permission.canPublish;
       _emitStatus(LiveAudioProbeRtcState.connected, message: warning);
     } catch (error) {
       _emitStatus(
@@ -174,19 +180,41 @@ class LiveAudioProbeRtcController {
         credentials.rtcUid != previous.rtcUid) {
       throw StateError('接続中の配信とは異なる接続情報です。');
     }
-    await backend.renewToken(credentials.token);
-    await backend.setClientRole(canPublish: credentials.permission.canPublish);
-    await backend.updateMediaOptions(
-      canPublish: credentials.permission.canPublish,
-    );
-    _credentials = credentials;
-    if (credentials.permission.canPublish) {
-      final warning = await _preparePublisherDataStream();
-      if (warning != null) {
-        _emitStatus(LiveAudioProbeRtcState.connected, message: warning);
+    final permissionChanged = credentials.permission != previous.permission;
+    final canPublish = credentials.permission.canPublish;
+    Completer<void>? roleChange;
+    Future<void>? roleChangeConfirmation;
+    if (permissionChanged) {
+      if (!canPublish) {
+        await _disableDataStreamSending();
       }
-    } else {
-      _discardPendingDataStreamMessages();
+      roleChange = Completer<void>();
+      _clientRoleChangeCompleter = roleChange;
+      _expectedClientRoleCanPublish = canPublish;
+      roleChangeConfirmation = roleChange.future.timeout(_rtcCommandTimeout);
+    }
+    try {
+      await backend.renewToken(credentials.token);
+      await backend.setClientRole(canPublish: canPublish);
+      await backend.updateMediaOptions(canPublish: canPublish);
+      if (roleChangeConfirmation != null) {
+        await roleChangeConfirmation;
+      }
+      _credentials = credentials;
+      if (canPublish) {
+        final warning = await _preparePublisherDataStream();
+        _dataStreamSendingEnabled = true;
+        if (warning != null) {
+          _emitStatus(LiveAudioProbeRtcState.connected, message: warning);
+        }
+      } else {
+        _dataStreamSendingEnabled = false;
+      }
+    } finally {
+      if (_clientRoleChangeCompleter == roleChange) {
+        _clientRoleChangeCompleter = null;
+        _expectedClientRoleCanPublish = null;
+      }
     }
   }
 
@@ -275,12 +303,50 @@ class LiveAudioProbeRtcController {
     return null;
   }
 
+  void _completeClientRoleChange(bool canPublish) {
+    final completer = _clientRoleChangeCompleter;
+    if (completer == null ||
+        completer.isCompleted ||
+        canPublish != _expectedClientRoleCanPublish) {
+      return;
+    }
+    completer.complete();
+  }
+
+  void _failClientRoleChange(String reason, bool currentCanPublish) {
+    final completer = _clientRoleChangeCompleter;
+    if (completer == null || completer.isCompleted) {
+      return;
+    }
+    completer.completeError(
+      StateError(
+        'Agoraの発表者切替に失敗しました'
+        '（理由: $reason、現在: ${currentCanPublish ? '発表者' : '視聴専用'}）。',
+      ),
+    );
+  }
+
+  Future<void> _disableDataStreamSending() async {
+    _dataStreamSendingEnabled = false;
+    _dataStreamGeneration += 1;
+    _discardPendingDataStreamMessages();
+    final drainFuture = _dataStreamDrainFuture;
+    if (drainFuture == null) {
+      return;
+    }
+    try {
+      await drainFuture.timeout(_rtcCleanupTimeout);
+    } catch (_) {
+      // An already-running native send is ignored after its generation changes.
+    }
+  }
+
   Future<void> sendWhiteboardMessage(LiveAudioProbeMessage message) async {
     final backend = _backend;
     if (backend == null || _credentials?.permission.canPublish != true) {
       throw StateError('発表を許可された人だけが板書できます。');
     }
-    if (_dataStreamUnavailable) {
+    if (!_dataStreamSendingEnabled || _dataStreamUnavailable) {
       return;
     }
     final data = message.encode();
@@ -408,7 +474,12 @@ class LiveAudioProbeRtcController {
         }
       } catch (error, stackTrace) {
         if (!pending.completer.isCompleted) {
-          pending.completer.completeError(error, stackTrace);
+          if (generation != _dataStreamGeneration ||
+              !_dataStreamSendingEnabled) {
+            pending.completer.complete();
+          } else {
+            pending.completer.completeError(error, stackTrace);
+          }
         }
       }
     }
@@ -446,8 +517,17 @@ class LiveAudioProbeRtcController {
     _backend = null;
     _dataStreamId = null;
     _dataStreamUnavailable = false;
+    _dataStreamSendingEnabled = false;
     _dataStreamGeneration += 1;
     _discardPendingDataStreamMessages();
+    final roleChangeCompleter = _clientRoleChangeCompleter;
+    if (roleChangeCompleter != null && !roleChangeCompleter.isCompleted) {
+      roleChangeCompleter.completeError(
+        StateError('Agora接続の終了により、発表者切替を中止しました。'),
+      );
+    }
+    _clientRoleChangeCompleter = null;
+    _expectedClientRoleCanPublish = null;
     final drainFuture = _dataStreamDrainFuture;
     if (drainFuture != null) {
       try {

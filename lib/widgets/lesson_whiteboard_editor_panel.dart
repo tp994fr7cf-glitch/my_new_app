@@ -103,6 +103,7 @@ class _LessonWhiteboardEditorPanelState
   double? _lastViewportEventSec;
   LessonWhiteboardViewport? _pendingPausedViewport;
   final Map<String, LessonWhiteboardViewport> _editorViewports = {};
+  bool _followsRecordedScreenShare = true;
   bool _screenShareOverrideEnabled = false;
   BoardSet? _screenShareOverrideBaseline;
   double? _screenShareOverrideStartSec;
@@ -145,12 +146,27 @@ class _LessonWhiteboardEditorPanelState
         _recordingPositionSec < publishedEnd;
   }
 
-  LessonWhiteboardViewport get _selectedEditorViewport =>
-      _editorViewports[_selectedBoardId] ??
-      _boardSet.resolveViewportAt(
+  bool get _hasRecordedScreenShareTimeline =>
+      _boardSet.switchEvents.isNotEmpty || _boardSet.viewportEvents.isNotEmpty;
+
+  bool get _isFollowingRecordedScreenShare =>
+      _followsRecordedScreenShare &&
+      !_screenShareOverrideEnabled &&
+      _hasRecordedScreenShareTimeline;
+
+  LessonWhiteboardViewport get _selectedEditorViewport {
+    if (_isFollowingRecordedScreenShare) {
+      return _boardSet.resolveViewportAt(
         boardId: _selectedBoardId,
         globalTimestampSec: _recordingPositionSec,
       );
+    }
+    return _editorViewports[_selectedBoardId] ??
+        _boardSet.resolveViewportAt(
+          boardId: _selectedBoardId,
+          globalTimestampSec: _recordingPositionSec,
+        );
+  }
 
   bool get _hasUnpublishedDraft {
     return _draftBoardSet.isNotEmpty;
@@ -278,6 +294,7 @@ class _LessonWhiteboardEditorPanelState
     _pendingPausedViewport = null;
     _activeViewportInteractionId = null;
     _lastViewportEventSec = null;
+    _followsRecordedScreenShare = true;
     _editorViewports
       ..clear()
       ..[_selectedBoardId] = _boardSet.resolveViewportAt(
@@ -364,6 +381,7 @@ class _LessonWhiteboardEditorPanelState
           _currentPositionSecExact = position;
           _currentPositionSec = position.floor();
         });
+        _syncRecordedScreenShare(position);
       });
       _durationSubscription = playback.totalDurationStream.listen((duration) {
         _updateResolvedDuration(playerDuration: Duration(seconds: duration));
@@ -450,6 +468,7 @@ class _LessonWhiteboardEditorPanelState
         (_) {
           if (mounted && _isPlaying) {
             _finishOverrideAtPublishedBoundaryIfNeeded();
+            _syncRecordedScreenShare(_recordingPositionSec);
             setState(() {});
           }
         },
@@ -494,8 +513,49 @@ class _LessonWhiteboardEditorPanelState
     _finishInProgressStroke();
   }
 
+  void _setFollowsRecordedScreenShare(bool value) {
+    if (_screenShareOverrideEnabled) {
+      return;
+    }
+    if (!value && _isFollowingRecordedScreenShare) {
+      _editorViewports[_selectedBoardId] = _boardSet.resolveViewportAt(
+        boardId: _selectedBoardId,
+        globalTimestampSec: _recordingPositionSec,
+      );
+    }
+    setState(() => _followsRecordedScreenShare = value);
+    if (value) {
+      _syncRecordedScreenShare(_recordingPositionSec);
+    }
+  }
+
+  void _syncRecordedScreenShare(double positionSec) {
+    if (!_shouldShowEditingCanvas || !_isFollowingRecordedScreenShare) {
+      return;
+    }
+    final followedBoard = _boardSet.resolveBoardAt(positionSec);
+    if (followedBoard == null || followedBoard.id == _selectedBoardId) {
+      return;
+    }
+    _finishInProgressStroke();
+    _pendingPausedViewport = null;
+    _activeViewportInteractionId = null;
+    _lastViewportEventSec = null;
+    _commitSelectedBoard();
+    setState(() {
+      _selectedBoardId = followedBoard.id;
+      _strokes = List<WhiteboardStroke>.from(
+        followedBoard.layerBundle.primaryLayer?.strokes ?? const [],
+      );
+    });
+  }
+
   void _handleViewportChanged(LessonWhiteboardViewportChange change) {
     _finishOverrideAtPublishedBoundaryIfNeeded();
+    if (_isFollowingRecordedScreenShare &&
+        change.phase == LessonWhiteboardViewportChangePhase.start) {
+      setState(() => _followsRecordedScreenShare = false);
+    }
     _editorViewports[_selectedBoardId] = change.viewport;
     if (!_shouldRecordSelectedViewport()) {
       _pendingPausedViewport = null;
@@ -618,6 +678,7 @@ class _LessonWhiteboardEditorPanelState
       _currentPositionSecExact = nextPosition.toDouble();
       _message = null;
     });
+    _syncRecordedScreenShare(nextPosition.toDouble());
   }
 
   void _handleStrokeStart() {
@@ -819,6 +880,7 @@ class _LessonWhiteboardEditorPanelState
       if (!_isInPublishedTimeline || _screenShareOverrideEnabled) {
         return;
       }
+      _editorViewports[_selectedBoardId] = _selectedEditorViewport;
       _commitSelectedBoard();
       _screenShareOverrideBaseline = _boardSet;
       _screenShareOverrideStartSec = _recordingPositionSec;
@@ -870,6 +932,7 @@ class _LessonWhiteboardEditorPanelState
         _clearScreenShareOverride();
         _message = '操作履歴が保存上限に達したため、今回の画面共有上書きは反映されませんでした。';
       });
+      _syncRecordedScreenShare(_recordingPositionSec);
       return;
     }
     setState(() {
@@ -878,6 +941,7 @@ class _LessonWhiteboardEditorPanelState
       _message = '画面共有の上書きを終了しました。この先は元の共有内容を引き継ぎます。';
     });
     widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
+    _syncRecordedScreenShare(_recordingPositionSec);
   }
 
   void _finishOverrideAtPublishedBoundaryIfNeeded() {
@@ -904,12 +968,14 @@ class _LessonWhiteboardEditorPanelState
       _clearScreenShareOverride();
       _message = '操作履歴が保存上限に達したため、今回の画面共有上書きは反映されませんでした。';
     });
+    _syncRecordedScreenShare(_recordingPositionSec);
   }
 
   void _switchBoard(String boardId) {
     if (boardId == _selectedBoardId || _boardSet.boardById(boardId) == null) {
       return;
     }
+    final stopsFollowing = _isFollowingRecordedScreenShare;
     _finishOverrideAtPublishedBoundaryIfNeeded();
     _finishInProgressStroke();
     if (_pendingPausedViewport != null) {
@@ -917,17 +983,27 @@ class _LessonWhiteboardEditorPanelState
     }
     _commitSelectedBoard();
     setState(() {
+      if (stopsFollowing) {
+        _followsRecordedScreenShare = false;
+      }
       _selectedBoardId = boardId;
       _strokes = List<WhiteboardStroke>.from(
         _selectedBoard.layerBundle.primaryLayer?.strokes ?? const [],
       );
-      _editorViewports.putIfAbsent(
-        boardId,
-        () => _boardSet.resolveViewportAt(
+      if (stopsFollowing) {
+        _editorViewports[boardId] = _boardSet.resolveViewportAt(
           boardId: boardId,
           globalTimestampSec: _recordingPositionSec,
-        ),
-      );
+        );
+      } else {
+        _editorViewports.putIfAbsent(
+          boardId,
+          () => _boardSet.resolveViewportAt(
+            boardId: boardId,
+            globalTimestampSec: _recordingPositionSec,
+          ),
+        );
+      }
       _message = null;
     });
     if (_screenShareOverrideEnabled && _isInPublishedTimeline) {
@@ -1536,6 +1612,7 @@ class _LessonWhiteboardEditorPanelState
       _editSessionKind = WhiteboardEditSessionKind.published;
       _message = '公開中の書き物を編集しています。一時保存で仮保存されます。';
     });
+    _syncRecordedScreenShare(_recordingPositionSec);
     _clearInProgressStroke();
     await _playback?.pause();
   }
@@ -1551,6 +1628,7 @@ class _LessonWhiteboardEditorPanelState
       _editSessionKind = WhiteboardEditSessionKind.draft;
       _message = '仮保存中の書き物を編集しています。';
     });
+    _syncRecordedScreenShare(_recordingPositionSec);
     _clearInProgressStroke();
     await _playback?.pause();
   }
@@ -1716,6 +1794,39 @@ class _LessonWhiteboardEditorPanelState
                 ],
               ],
             ),
+            if (_shouldShowEditingCanvas && _hasRecordedScreenShareTimeline)
+              SizedBox(
+                height: 30,
+                child: Tooltip(
+                  message: _screenShareOverrideEnabled
+                      ? '「画面共有を上書き」の間は一時停止しています。'
+                      : '記録時のボード切り替えと拡大・移動を再現します'
+                            '（自分で操作すると一時解除）。',
+                  child: Row(
+                    children: [
+                      Switch(
+                        key: const ValueKey(
+                          'editor-recorded-screen-share-follow-switch',
+                        ),
+                        value: _followsRecordedScreenShare,
+                        onChanged: _screenShareOverrideEnabled
+                            ? null
+                            : _setFollowsRecordedScreenShare,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          _screenShareOverrideEnabled
+                              ? '記録した画面共有に合わせる（上書き中は停止）'
+                              : '記録した画面共有に合わせる',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             if (_shouldShowEditingCanvas) ...[
               Row(
                 mainAxisSize: MainAxisSize.min,
