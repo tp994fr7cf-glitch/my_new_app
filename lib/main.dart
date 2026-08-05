@@ -6,8 +6,11 @@ import 'firebase_options.dart';
 import 'screens/auth_gate.dart';
 import 'screens/firebase_setup_page.dart';
 
+final _memoryPressureObserver = _AppMemoryPressureObserver();
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  WidgetsBinding.instance.addObserver(_memoryPressureObserver);
   await pdfrxFlutterInitialize();
 
   Object? firebaseError;
@@ -20,6 +23,14 @@ void main() async {
   }
 
   runApp(MyApp(firebaseError: firebaseError));
+}
+
+class _AppMemoryPressureObserver with WidgetsBindingObserver {
+  @override
+  void didHaveMemoryPressure() {
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
+  }
 }
 
 class MyApp extends StatelessWidget {

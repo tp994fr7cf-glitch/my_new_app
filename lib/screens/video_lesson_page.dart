@@ -26,6 +26,7 @@ import '../services/course_privacy_service.dart';
 import '../services/lesson_material_cache_service.dart';
 import '../services/lesson_media_playback.dart';
 import '../services/lesson_media_playlist_playback.dart';
+import '../widgets/async_route_exit_scope.dart';
 import '../widgets/lesson_whiteboard_canvas.dart';
 import '../widgets/lesson_playback_synced_whiteboard.dart';
 import 'course_entry_gate.dart';
@@ -143,6 +144,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   bool _cancelMaterialDownload = false;
   bool _materialUpdateAvailable = false;
   bool _materialServerValidated = false;
+  Future<void>? _playbackCloseOperation;
 
   Course get course => widget.course;
   CourseLesson get lesson => _currentLesson;
@@ -296,6 +298,58 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
   }
 
+  Future<void> _closePlaybackResources() {
+    final existing = _playbackCloseOperation;
+    if (existing != null) {
+      return existing;
+    }
+    final playback = _playlistPlayback;
+    _playlistPlayback = null;
+    final subscriptions = <StreamSubscription<dynamic>?>[
+      _positionSubscription,
+      _durationSubscription,
+      _playingSubscription,
+      _segmentIndexSubscription,
+      _segmentCompletedSubscription,
+    ];
+    _positionSubscription = null;
+    _durationSubscription = null;
+    _playingSubscription = null;
+    _segmentIndexSubscription = null;
+    _segmentCompletedSubscription = null;
+
+    final operation = () async {
+      Future<void>? closeFuture;
+      try {
+        closeFuture = playback?.close();
+      } catch (error, stackTrace) {
+        debugPrint(
+          'Failed to start closing lesson playback resources: '
+          '$error\n$stackTrace',
+        );
+      }
+      for (final subscription in subscriptions) {
+        try {
+          await subscription?.cancel();
+        } catch (error, stackTrace) {
+          debugPrint(
+            'Failed to cancel lesson playback subscription: '
+            '$error\n$stackTrace',
+          );
+        }
+      }
+      try {
+        await closeFuture;
+      } catch (error, stackTrace) {
+        debugPrint(
+          'Failed to close lesson playback resources: $error\n$stackTrace',
+        );
+      }
+    }();
+    _playbackCloseOperation = operation;
+    return operation;
+  }
+
   @override
   void dispose() {
     _playbackTimer?.cancel();
@@ -305,12 +359,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _entryRequirementSubscription?.cancel();
     _courseAccessSubscription?.cancel();
     _lessonSubscription?.cancel();
-    _positionSubscription?.cancel();
-    _durationSubscription?.cancel();
-    _playingSubscription?.cancel();
-    _segmentIndexSubscription?.cancel();
-    _segmentCompletedSubscription?.cancel();
-    unawaited(_playlistPlayback?.close());
+    unawaited(_closePlaybackResources());
     WidgetsBinding.instance.removeObserver(this);
     if (!_isTeacherPreview) {
       if (_pendingCompletion && !_sessionCompleted) {
@@ -2930,15 +2979,18 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   @override
   Widget build(BuildContext context) {
     if (_courseDeleted) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('レッスン視聴')),
-        body: const SafeArea(
-          child: Center(
-            child: Padding(
-              padding: EdgeInsets.all(24),
-              child: Text(
-                'この講座は削除されたため、レッスンを視聴できません。\n学習記録は引き続き確認できます。',
-                textAlign: TextAlign.center,
+      return AsyncRouteExitScope(
+        onExit: _closePlaybackResources,
+        child: Scaffold(
+          appBar: AppBar(title: const Text('レッスン視聴')),
+          body: const SafeArea(
+            child: Center(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  'この講座は削除されたため、レッスンを視聴できません。\n学習記録は引き続き確認できます。',
+                  textAlign: TextAlign.center,
+                ),
               ),
             ),
           ),
@@ -2978,449 +3030,468 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         ? '動画視聴'
         : 'レッスン視聴';
 
-    return Scaffold(
-      appBar: AppBar(title: Text(pageTitle)),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(24),
-          children: [
-            Text(
-              lesson.playbackMode.displayLabel,
-              key: const ValueKey('lesson-playback-mode-label'),
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 12),
-            if (_unplayablePublishedMediaSegments.isNotEmpty) ...[
-              _buildUnplayablePartsNotice(context),
+    return AsyncRouteExitScope(
+      onExit: _closePlaybackResources,
+      progressLabel: '再生を終了しています…',
+      child: Scaffold(
+        appBar: AppBar(title: Text(pageTitle)),
+        body: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.all(24),
+            children: [
+              Text(
+                lesson.playbackMode.displayLabel,
+                key: const ValueKey('lesson-playback-mode-label'),
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
               const SizedBox(height: 12),
-            ],
-            if (lesson.playbackMode == LessonPlaybackMode.independentPanels)
-              _buildIndependentPanels(
-                context,
-                canControlPlayback: canControlPlayback,
-                orderedSegments: orderedSegments,
-              )
-            else if (lesson.playbackMode ==
-                LessonPlaybackMode.independentSingle)
-              _buildPlayerSurface(
-                context,
-                canControlPlayback: canControlPlayback,
-                orderedSegments: orderedSegments,
-                showPartNavigation: true,
-              )
-            else
-              Container(
-                constraints: const BoxConstraints(minHeight: 260),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      if (!_hasMediaSource) ...[
-                        Icon(
-                          Icons.perm_media_outlined,
-                          size: 72,
-                          color: Theme.of(context).colorScheme.error,
-                        ),
-                        const SizedBox(height: 8),
-                        const Text(
-                          'メディアファイルが未設定です',
-                          style: TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 4),
-                        const Text(
-                          '先生がレッスン管理画面から音声・動画をアップロードすると、ここで再生できます。',
-                          textAlign: TextAlign.center,
-                        ),
-                      ] else if (_isLoadingMedia) ...[
-                        const CircularProgressIndicator(),
-                        const SizedBox(height: 12),
-                        const Text('メディアを読み込み中…'),
-                      ] else if (_mediaLoadError != null) ...[
-                        Icon(
-                          Icons.error_outline,
-                          size: 72,
-                          color: Theme.of(context).colorScheme.error,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(_mediaLoadError!, textAlign: TextAlign.center),
-                      ] else ...[
-                        if (!_currentSegmentIsAudio &&
-                            videoController != null &&
-                            videoController.value.isInitialized) ...[
-                          AspectRatio(
-                            aspectRatio: videoController.value.aspectRatio,
-                            child: VideoPlayer(videoController),
-                          ),
-                          const SizedBox(height: 16),
-                        ] else ...[
+              if (_unplayablePublishedMediaSegments.isNotEmpty) ...[
+                _buildUnplayablePartsNotice(context),
+                const SizedBox(height: 12),
+              ],
+              if (lesson.playbackMode == LessonPlaybackMode.independentPanels)
+                _buildIndependentPanels(
+                  context,
+                  canControlPlayback: canControlPlayback,
+                  orderedSegments: orderedSegments,
+                )
+              else if (lesson.playbackMode ==
+                  LessonPlaybackMode.independentSingle)
+                _buildPlayerSurface(
+                  context,
+                  canControlPlayback: canControlPlayback,
+                  orderedSegments: orderedSegments,
+                  showPartNavigation: true,
+                )
+              else
+                Container(
+                  constraints: const BoxConstraints(minHeight: 260),
+                  decoration: BoxDecoration(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        if (!_hasMediaSource) ...[
                           Icon(
-                            _currentSegmentIsAudio
-                                ? Icons.headphones
-                                : Icons.smart_display,
+                            Icons.perm_media_outlined,
                             size: 72,
-                            color: Theme.of(context).colorScheme.primary,
+                            color: Theme.of(context).colorScheme.error,
                           ),
                           const SizedBox(height: 8),
-                          Text(_currentSegmentIsAudio ? '音声プレイヤー' : '動画プレイヤー'),
-                          if (currentSegment != null) ...[
-                            const SizedBox(height: 4),
+                          const Text(
+                            'メディアファイルが未設定です',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(height: 4),
+                          const Text(
+                            '先生がレッスン管理画面から音声・動画をアップロードすると、ここで再生できます。',
+                            textAlign: TextAlign.center,
+                          ),
+                        ] else if (_isLoadingMedia) ...[
+                          const CircularProgressIndicator(),
+                          const SizedBox(height: 12),
+                          const Text('メディアを読み込み中…'),
+                        ] else if (_mediaLoadError != null) ...[
+                          Icon(
+                            Icons.error_outline,
+                            size: 72,
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(_mediaLoadError!, textAlign: TextAlign.center),
+                        ] else ...[
+                          if (!_currentSegmentIsAudio &&
+                              videoController != null &&
+                              videoController.value.isInitialized) ...[
+                            AspectRatio(
+                              aspectRatio: videoController.value.aspectRatio,
+                              child: VideoPlayer(videoController),
+                            ),
+                            const SizedBox(height: 16),
+                          ] else ...[
+                            Icon(
+                              _currentSegmentIsAudio
+                                  ? Icons.headphones
+                                  : Icons.smart_display,
+                              size: 72,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                            const SizedBox(height: 8),
                             Text(
-                              currentSegment.title.isNotEmpty
-                                  ? currentSegment.title
-                                  : 'パート${(_playlistPlayback?.currentSegmentIndex ?? 0) + 1}',
+                              _currentSegmentIsAudio ? '音声プレイヤー' : '動画プレイヤー',
+                            ),
+                            if (currentSegment != null) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                currentSegment.title.isNotEmpty
+                                    ? currentSegment.title
+                                    : 'パート${(_playlistPlayback?.currentSegmentIndex ?? 0) + 1}',
+                              ),
+                            ],
+                            const SizedBox(height: 4),
+                            const Text('アップロード済みのファイルを再生します。'),
+                            const SizedBox(height: 16),
+                          ],
+                          Text(
+                            '${formatLessonTime(_displayedPositionSec)} / ${formatLessonTime(_totalDurationSec)}',
+                            style: const TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 32),
+                            child: Slider(
+                              value:
+                                  (_sliderDragPositionSec ??
+                                          _currentPositionSec.toDouble())
+                                      .clamp(0, _totalDurationSec)
+                                      .toDouble(),
+                              min: 0,
+                              max: sliderMax,
+                              divisions: _totalDurationSec > 0
+                                  ? _totalDurationSec
+                                  : null,
+                              label: formatLessonTime(_displayedPositionSec),
+                              onChangeStart: canControlPlayback
+                                  ? (_) {
+                                      setState(() {
+                                        _sliderDragPositionSec =
+                                            _currentPositionSec.toDouble();
+                                      });
+                                    }
+                                  : null,
+                              onChanged: canControlPlayback
+                                  ? (value) {
+                                      setState(() {
+                                        _sliderDragPositionSec = value;
+                                      });
+                                    }
+                                  : null,
+                              onChangeEnd: canControlPlayback
+                                  ? (value) {
+                                      final targetSec = value.round().clamp(
+                                        0,
+                                        _totalDurationSec,
+                                      );
+                                      setState(() {
+                                        _sliderDragPositionSec = null;
+                                        _currentPositionSec = targetSec;
+                                        _currentPositionSecExact = targetSec
+                                            .toDouble();
+                                      });
+                                      unawaited(
+                                        _seekPlaybackPosition(targetSec),
+                                      );
+                                    }
+                                  : null,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          FilledButton.icon(
+                            onPressed:
+                                !canControlPlayback || _isPreparingSession
+                                ? null
+                                : () {
+                                    unawaited(_togglePlayback());
+                                  },
+                            icon: Icon(_playButtonIcon),
+                            label: Text(_playButtonLabel),
+                          ),
+                          if (orderedSegments.length > 1) ...[
+                            const SizedBox(height: 16),
+                            Text(
+                              'パート移動',
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                for (final entry in orderedSegments.indexed)
+                                  OutlinedButton(
+                                    onPressed: !canControlPlayback
+                                        ? null
+                                        : () {
+                                            unawaited(
+                                              _switchContinuousPart(entry.$1),
+                                            );
+                                          },
+                                    child: Text(
+                                      entry.$2.title.isNotEmpty
+                                          ? entry.$2.title
+                                          : 'パート${entry.$1 + 1}',
+                                    ),
+                                  ),
+                              ],
                             ),
                           ],
-                          const SizedBox(height: 4),
-                          const Text('アップロード済みのファイルを再生します。'),
-                          const SizedBox(height: 16),
-                        ],
-                        Text(
-                          '${formatLessonTime(_displayedPositionSec)} / ${formatLessonTime(_totalDurationSec)}',
-                          style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 32),
-                          child: Slider(
-                            value:
-                                (_sliderDragPositionSec ??
-                                        _currentPositionSec.toDouble())
-                                    .clamp(0, _totalDurationSec)
-                                    .toDouble(),
-                            min: 0,
-                            max: sliderMax,
-                            divisions: _totalDurationSec > 0
-                                ? _totalDurationSec
-                                : null,
-                            label: formatLessonTime(_displayedPositionSec),
-                            onChangeStart: canControlPlayback
-                                ? (_) {
-                                    setState(() {
-                                      _sliderDragPositionSec =
-                                          _currentPositionSec.toDouble();
-                                    });
-                                  }
-                                : null,
-                            onChanged: canControlPlayback
-                                ? (value) {
-                                    setState(() {
-                                      _sliderDragPositionSec = value;
-                                    });
-                                  }
-                                : null,
-                            onChangeEnd: canControlPlayback
-                                ? (value) {
-                                    final targetSec = value.round().clamp(
-                                      0,
-                                      _totalDurationSec,
-                                    );
-                                    setState(() {
-                                      _sliderDragPositionSec = null;
-                                      _currentPositionSec = targetSec;
-                                      _currentPositionSecExact = targetSec
-                                          .toDouble();
-                                    });
-                                    unawaited(_seekPlaybackPosition(targetSec));
-                                  }
-                                : null,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        FilledButton.icon(
-                          onPressed: !canControlPlayback || _isPreparingSession
-                              ? null
-                              : () {
-                                  unawaited(_togglePlayback());
-                                },
-                          icon: Icon(_playButtonIcon),
-                          label: Text(_playButtonLabel),
-                        ),
-                        if (orderedSegments.length > 1) ...[
-                          const SizedBox(height: 16),
-                          Text(
-                            'パート移動',
-                            style: Theme.of(context).textTheme.titleSmall,
-                          ),
-                          const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              for (final entry in orderedSegments.indexed)
-                                OutlinedButton(
-                                  onPressed: !canControlPlayback
-                                      ? null
-                                      : () {
-                                          unawaited(
-                                            _switchContinuousPart(entry.$1),
-                                          );
-                                        },
-                                  child: Text(
-                                    entry.$2.title.isNotEmpty
-                                        ? entry.$2.title
-                                        : 'パート${entry.$1 + 1}',
-                                  ),
-                                ),
-                            ],
-                          ),
                         ],
                       ],
-                    ],
-                  ),
-                ),
-              ),
-            if (!_isTeacherPreview &&
-                _materialCache.supported &&
-                lessonMaterialStoragePaths(
-                  lesson.publishedBoardSet,
-                ).isNotEmpty) ...[
-              const SizedBox(height: 16),
-              _buildMaterialCacheCard(),
-            ],
-            if (_hasWhiteboard) ...[
-              const SizedBox(height: 16),
-              Text('ホワイトボード', style: Theme.of(context).textTheme.titleSmall),
-              const SizedBox(height: 8),
-              LessonPlaybackSyncedWhiteboard(
-                boardSet: lesson.publishedBoardSet,
-                timeline: _mediaTimeline,
-                playback: _playlistPlayback,
-                isPlaying: _isPlaying,
-                positionSecExact: _currentPositionSecExact,
-                totalDurationSec: _totalDurationSec,
-                enableSubPlayback:
-                    lesson.playbackMode == LessonPlaybackMode.continuous,
-                materialUrlResolver: _resolveMaterialSource,
-              ),
-            ],
-            const SizedBox(height: 24),
-            Text(course.title, style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Text(
-              'レッスン$lessonNumber: ${lesson.title}',
-              style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-            ),
-            if (_isTeacherPreview) ...[
-              const SizedBox(height: 12),
-              Card(
-                color: Theme.of(context).colorScheme.secondaryContainer,
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(
-                    '先生プレビュー中です。講座内容と公開欄だけを確認でき、'
-                    '自分のメモ・質問投稿・学習記録は使いません。',
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.onSecondaryContainer,
                     ),
                   ),
                 ),
+              if (!_isTeacherPreview &&
+                  _materialCache.supported &&
+                  lessonMaterialStoragePaths(
+                    lesson.publishedBoardSet,
+                  ).isNotEmpty) ...[
+                const SizedBox(height: 16),
+                _buildMaterialCacheCard(),
+              ],
+              if (_hasWhiteboard) ...[
+                const SizedBox(height: 16),
+                Text('ホワイトボード', style: Theme.of(context).textTheme.titleSmall),
+                const SizedBox(height: 8),
+                LessonPlaybackSyncedWhiteboard(
+                  boardSet: lesson.publishedBoardSet,
+                  timeline: _mediaTimeline,
+                  playback: _playlistPlayback,
+                  isPlaying: _isPlaying,
+                  positionSecExact: _currentPositionSecExact,
+                  totalDurationSec: _totalDurationSec,
+                  enableSubPlayback:
+                      lesson.playbackMode == LessonPlaybackMode.continuous,
+                  materialUrlResolver: _resolveMaterialSource,
+                ),
+              ],
+              const SizedBox(height: 24),
+              Text(
+                course.title,
+                style: Theme.of(context).textTheme.titleMedium,
               ),
-            ],
-            const SizedBox(height: 8),
-            Text('再生時間: ${lesson.duration}'),
-            const SizedBox(height: 8),
-            Text(
-              'パート数: ${orderedSegments.length} / 合計 ${formatLessonTime(_totalDurationSec)}',
-            ),
-            if (_hasMediaSource) ...[
               const SizedBox(height: 8),
-              Text('再生時間（ファイル）: ${formatLessonTime(_totalDurationSec)}'),
-            ],
-            const SizedBox(height: 8),
-            Text(
-              _isIndependentPlayback
-                  ? '現在位置（パート）: ${formatLessonTime(_currentLocalPositionSecExact.round())}'
-                  : '現在位置: ${formatLessonTime(_currentPositionSec)}',
-            ),
-            if (!_isTeacherPreview && canControlPlayback) ...[
+              Text(
+                'レッスン$lessonNumber: ${lesson.title}',
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              if (_isTeacherPreview) ...[
+                const SizedBox(height: 12),
+                Card(
+                  color: Theme.of(context).colorScheme.secondaryContainer,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(
+                      '先生プレビュー中です。講座内容と公開欄だけを確認でき、'
+                      '自分のメモ・質問投稿・学習記録は使いません。',
+                      style: TextStyle(
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.onSecondaryContainer,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(height: 8),
-              Text('現在の周回: $cycleLabel'),
+              Text('再生時間: ${lesson.duration}'),
               const SizedBox(height: 8),
-              Text('学習時間: $studySecondsLabel'),
-              const SizedBox(height: 8),
-              Text('視聴時間: $watchSecondsLabel'),
+              Text(
+                'パート数: ${orderedSegments.length} / 合計 ${formatLessonTime(_totalDurationSec)}',
+              ),
+              if (_hasMediaSource) ...[
+                const SizedBox(height: 8),
+                Text('再生時間（ファイル）: ${formatLessonTime(_totalDurationSec)}'),
+              ],
               const SizedBox(height: 8),
               Text(
                 _isIndependentPlayback
-                    ? 'パート完了: ${_requiredMediaSegmentIds.where(_completedMediaSegmentIds.contains).length}'
-                          ' / ${_requiredMediaSegmentIds.length}'
-                    : '視聴終了判定: 最終パートの自然再生終了',
+                    ? '現在位置（パート）: ${formatLessonTime(_currentLocalPositionSecExact.round())}'
+                    : '現在位置: ${formatLessonTime(_currentPositionSec)}',
               ),
-            ],
-            if (canControlPlayback && kDebugMode) ...[
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      unawaited(_seekForDevelopment(1));
-                    },
-                    icon: const Icon(Icons.add),
-                    label: const Text('1秒進める（開発用）'),
+              if (!_isTeacherPreview && canControlPlayback) ...[
+                const SizedBox(height: 8),
+                Text('現在の周回: $cycleLabel'),
+                const SizedBox(height: 8),
+                Text('学習時間: $studySecondsLabel'),
+                const SizedBox(height: 8),
+                Text('視聴時間: $watchSecondsLabel'),
+                const SizedBox(height: 8),
+                Text(
+                  _isIndependentPlayback
+                      ? 'パート完了: ${_requiredMediaSegmentIds.where(_completedMediaSegmentIds.contains).length}'
+                            ' / ${_requiredMediaSegmentIds.length}'
+                      : '視聴終了判定: 最終パートの自然再生終了',
+                ),
+              ],
+              if (canControlPlayback && kDebugMode) ...[
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        unawaited(_seekForDevelopment(1));
+                      },
+                      icon: const Icon(Icons.add),
+                      label: const Text('1秒進める（開発用）'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        unawaited(_seekForDevelopment(5));
+                      },
+                      icon: const Icon(Icons.add),
+                      label: const Text('5秒進める（開発用）'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        unawaited(_seekForDevelopment(30));
+                      },
+                      icon: const Icon(Icons.forward_30),
+                      label: const Text('30秒進める（開発用）'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        unawaited(_seekForDevelopment(-1));
+                      },
+                      icon: const Icon(Icons.remove),
+                      label: const Text('1秒巻き戻す（開発用）'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        unawaited(_seekForDevelopment(-5));
+                      },
+                      icon: const Icon(Icons.remove),
+                      label: const Text('5秒巻き戻す（開発用）'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        unawaited(_seekForDevelopment(-30));
+                      },
+                      icon: const Icon(Icons.replay_30),
+                      label: const Text('30秒巻き戻す（開発用）'),
+                    ),
+                  ],
+                ),
+              ],
+              if (!_isTeacherPreview && canControlPlayback) ...[
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: _sessionCompleted
+                      ? null
+                      : () {
+                          unawaited(_completeManually());
+                        },
+                  icon: const Icon(Icons.check_circle_outline),
+                  label: Text(
+                    _isIndependentPlayback ? '現在のパートを視聴済みにする' : '視聴終了として記録',
                   ),
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      unawaited(_seekForDevelopment(5));
+                ),
+              ],
+              if (kDebugMode && orderedSegments.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'segments: ${orderedSegments.map((segment) => segment.id).join(', ')}',
+                ),
+              ],
+              if (_dueQuizEvents.isNotEmpty) ...[
+                const SizedBox(height: 24),
+                const _SectionTitle('授業中クイズ'),
+                const SizedBox(height: 8),
+                for (final event in _dueQuizEvents) ...[
+                  _QuizCard(
+                    event: event,
+                    selectedChoiceIndex: _selectedChoices[event.quizAnswerKey],
+                    answerResult: _answerResults[event.quizAnswerKey],
+                    alreadyAnswered: _answeredQuizEventIds.contains(
+                      event.quizAnswerKey,
+                    ),
+                    onChoiceChanged: (choiceIndex) {
+                      setState(() {
+                        _selectedChoices[event.quizAnswerKey] = choiceIndex;
+                        _message = null;
+                      });
                     },
-                    icon: const Icon(Icons.add),
-                    label: const Text('5秒進める（開発用）'),
+                    onSubmit: () => _submitAnswer(event),
                   ),
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      unawaited(_seekForDevelopment(30));
-                    },
-                    icon: const Icon(Icons.forward_30),
-                    label: const Text('30秒進める（開発用）'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      unawaited(_seekForDevelopment(-1));
-                    },
-                    icon: const Icon(Icons.remove),
-                    label: const Text('1秒巻き戻す（開発用）'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      unawaited(_seekForDevelopment(-5));
-                    },
-                    icon: const Icon(Icons.remove),
-                    label: const Text('5秒巻き戻す（開発用）'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      unawaited(_seekForDevelopment(-30));
-                    },
-                    icon: const Icon(Icons.replay_30),
-                    label: const Text('30秒巻き戻す（開発用）'),
-                  ),
+                  const SizedBox(height: 12),
                 ],
-              ),
-            ],
-            if (!_isTeacherPreview && canControlPlayback) ...[
+              ],
+              if (statusMessage != null) ...[
+                const SizedBox(height: 12),
+                Card(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(statusMessage),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 24),
+              const _SectionTitle('学習メモ'),
               const SizedBox(height: 8),
               OutlinedButton.icon(
-                onPressed: _sessionCompleted
-                    ? null
-                    : () {
-                        unawaited(_completeManually());
-                      },
-                icon: const Icon(Icons.check_circle_outline),
-                label: Text(
-                  _isIndependentPlayback ? '現在のパートを視聴済みにする' : '視聴終了として記録',
+                onPressed: () {
+                  setState(() {
+                    _isLessonNotesOpen = !_isLessonNotesOpen;
+                  });
+                },
+                icon: Icon(
+                  _isLessonNotesOpen
+                      ? Icons.keyboard_arrow_up
+                      : Icons.note_alt_outlined,
                 ),
+                label: Text(_isLessonNotesOpen ? 'レッスンメモを閉じる' : 'レッスンメモを開く'),
               ),
-            ],
-            if (kDebugMode && orderedSegments.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text(
-                'segments: ${orderedSegments.map((segment) => segment.id).join(', ')}',
-              ),
-            ],
-            if (_dueQuizEvents.isNotEmpty) ...[
-              const SizedBox(height: 24),
-              const _SectionTitle('授業中クイズ'),
-              const SizedBox(height: 8),
-              for (final event in _dueQuizEvents) ...[
-                _QuizCard(
-                  event: event,
-                  selectedChoiceIndex: _selectedChoices[event.quizAnswerKey],
-                  answerResult: _answerResults[event.quizAnswerKey],
-                  alreadyAnswered: _answeredQuizEventIds.contains(
-                    event.quizAnswerKey,
-                  ),
-                  onChoiceChanged: (choiceIndex) {
-                    setState(() {
-                      _selectedChoices[event.quizAnswerKey] = choiceIndex;
-                      _message = null;
-                    });
-                  },
-                  onSubmit: () => _submitAnswer(event),
-                ),
+              if (_isLessonNotesOpen) ...[
                 const SizedBox(height: 12),
+                LessonNotesPanel(
+                  course: course,
+                  lesson: lesson,
+                  lessonNumber: lessonNumber,
+                  isEmbedded: true,
+                  isTeacherPreview: _isTeacherPreview,
+                ),
               ],
-            ],
-            if (statusMessage != null) ...[
-              const SizedBox(height: 12),
-              Card(
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(statusMessage),
+              const SizedBox(height: 24),
+              const _SectionTitle('質問コメント'),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: () {
+                  setState(() {
+                    _isLessonQuestionsOpen = !_isLessonQuestionsOpen;
+                  });
+                },
+                icon: Icon(
+                  _isLessonQuestionsOpen
+                      ? Icons.keyboard_arrow_up
+                      : Icons.question_answer_outlined,
+                ),
+                label: Text(
+                  _isLessonQuestionsOpen ? '質問コメント欄を閉じる' : '質問コメント欄を開く',
                 ),
               ),
+              if (_isLessonQuestionsOpen) ...[
+                const SizedBox(height: 12),
+                LessonQuestionsPanel(
+                  course: course,
+                  lesson: lesson,
+                  lessonNumber: lessonNumber,
+                  isEmbedded: true,
+                  isTeacherPreview: _isTeacherPreview,
+                ),
+              ],
+              const SizedBox(height: 24),
+              const _SectionTitle('この画面の機能'),
+              const SizedBox(height: 8),
+              _BulletText('メディアファイルの再生'),
+              const _BulletText('再生位置の保存'),
+              const _BulletText('視聴完了チェック'),
+              const _BulletText('コメント・質問欄'),
             ],
-            const SizedBox(height: 24),
-            const _SectionTitle('学習メモ'),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: () {
-                setState(() {
-                  _isLessonNotesOpen = !_isLessonNotesOpen;
-                });
-              },
-              icon: Icon(
-                _isLessonNotesOpen
-                    ? Icons.keyboard_arrow_up
-                    : Icons.note_alt_outlined,
-              ),
-              label: Text(_isLessonNotesOpen ? 'レッスンメモを閉じる' : 'レッスンメモを開く'),
-            ),
-            if (_isLessonNotesOpen) ...[
-              const SizedBox(height: 12),
-              LessonNotesPanel(
-                course: course,
-                lesson: lesson,
-                lessonNumber: lessonNumber,
-                isEmbedded: true,
-                isTeacherPreview: _isTeacherPreview,
-              ),
-            ],
-            const SizedBox(height: 24),
-            const _SectionTitle('質問コメント'),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: () {
-                setState(() {
-                  _isLessonQuestionsOpen = !_isLessonQuestionsOpen;
-                });
-              },
-              icon: Icon(
-                _isLessonQuestionsOpen
-                    ? Icons.keyboard_arrow_up
-                    : Icons.question_answer_outlined,
-              ),
-              label: Text(
-                _isLessonQuestionsOpen ? '質問コメント欄を閉じる' : '質問コメント欄を開く',
-              ),
-            ),
-            if (_isLessonQuestionsOpen) ...[
-              const SizedBox(height: 12),
-              LessonQuestionsPanel(
-                course: course,
-                lesson: lesson,
-                lessonNumber: lessonNumber,
-                isEmbedded: true,
-                isTeacherPreview: _isTeacherPreview,
-              ),
-            ],
-            const SizedBox(height: 24),
-            const _SectionTitle('この画面の機能'),
-            const SizedBox(height: 8),
-            _BulletText('メディアファイルの再生'),
-            const _BulletText('再生位置の保存'),
-            const _BulletText('視聴完了チェック'),
-            const _BulletText('コメント・質問欄'),
-          ],
+          ),
         ),
       ),
     );

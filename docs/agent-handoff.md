@@ -23,6 +23,44 @@ Firebase Console: https://console.firebase.google.com/project/my-new-app-naona-2
 
 ---
 
+## 0-G. 2026-08-05 長時間デバッグ後のメモリ逼迫対策
+
+Android実機で、画面を閉じても同じデバッグプロセスが約15時間残り、
+アプリ画面が操作不能になる事象を確認した。AndroidのANR・クラッシュはなく、
+停止前はPSS約834MB、Swap PSS約546MB、Native Heap Alloc約346MBだった。
+保存済み資料は約214KBだけであり、資料キャッシュは原因ではない。
+`adb am force-stop`でデータを維持したまま完全再起動すると操作可能になり、
+Swap PSSは約0.3MB、Native Heap Allocは約37MBまで低下した。
+
+予防修正:
+
+- 通常レッスン画面を閉じる際、動画・音声プレイリストと購読の解放完了を待ってから戻る。
+- ライブ画面を閉じる際、タイムライン送信、Firestore購読、Agora RTC、
+  追っかけ再生の終了完了を待ってから戻る。
+- 戻る操作の連打でも終了処理を1回だけ実行する共通`AsyncRouteExitScope`を追加。
+- Androidからメモリ逼迫通知を受けた場合、Flutterの通常画像キャッシュに加えて
+  live image追跡も解放する。
+
+確認:
+
+- 変更4ファイルの`flutter analyze`は指摘なし。
+- 終了待機、同期ホワイトボード、ズーム関連テスト18件成功。
+- `widget_test.dart`では今回影響した再生タイマー残留13件を解消し、
+  再生・クイズ関連の確認対象は成功。全体は`scrollUntilVisible`関連2件が失敗。
+- Android debug APK build成功。
+- Web版はFirebase Hostingへdeploy済み。変更はまだcommit、pushしておらず、
+  Android実機への更新版インストールはしていない。
+
+主な関連ファイル:
+
+- `lib/widgets/async_route_exit_scope.dart`
+- `lib/screens/video_lesson_page.dart`
+- `lib/screens/live_audio_probe_page.dart`
+- `lib/main.dart`
+- `test/async_route_exit_scope_test.dart`
+
+---
+
 ## 0-F. 2026-08-05 受講者向けPDF・画像のAndroid事前保存
 
 レッスン再生とライブ視聴で背景資料が遅れて表示される問題を軽減するため、
@@ -49,9 +87,8 @@ Webは従来どおりネットワーク表示を使用する。
 - fingerprint、同期ホワイトボード、ズーム関連のFlutterテスト19件成功。
 - Web release buildとAndroid debug APK build成功。
 - 全体の`flutter analyze`は既存の91件（主にthird_partyのinfo/warning）で終了コード1。
-- 本番データを使うAndroid実機での保存・更新・キャンセル・権限喪失確認は未実施。
-- Web版はFirebase Hostingへdeploy済み。変更はまだcommit、pushしておらず、
-  Android APKの実機インストール・配布はしていない。
+- Android実機で受講登録済みの受講者によるライブ資料の保存と表示に成功。
+- Web版はFirebase Hostingへdeploy済み。commit `6046fb6`をmainへpush済み。
 
 主な関連ファイル:
 

@@ -21,6 +21,7 @@ import '../services/live_audio_stroke_persistence.dart';
 import '../services/live_audio_timeline_clock.dart';
 import '../services/live_audio_timeline_outbox.dart';
 import '../services/lesson_material_cache_service.dart';
+import '../widgets/async_route_exit_scope.dart';
 import '../widgets/lesson_whiteboard_canvas.dart';
 
 const bool liveAudioProbeEnabled = bool.fromEnvironment(
@@ -111,7 +112,6 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   bool _busy = false;
   bool _microphoneMuted = false;
   bool _applyingPermission = false;
-  bool _leaving = false;
   bool _closingSession = false;
   String? _message;
   String _participantHlsManifestUrl = '';
@@ -127,6 +127,8 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   bool _cancelMaterialDownload = false;
   bool _materialServerValidated = false;
   String? _lastMaterialFingerprint;
+  Future<void>? _leaveRtcOperation;
+  Future<void>? _routeCleanupOperation;
 
   bool get _isTeacher => widget.activeRole == 'teacher';
   bool get _isOwner => _session?.ownerUid == widget.user.uid;
@@ -228,18 +230,38 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   @override
   void dispose() {
     _sessionCodeController.dispose();
-    _timelineFlushTimer?.cancel();
-    _snapshotSaveTimer?.cancel();
-    _durationLimitTimer?.cancel();
-    _cancelSubscriptions();
-    unawaited(_catchupSubscription?.cancel());
-    unawaited(_catchup.dispose());
-    final rtc = _rtc;
-    _rtc = null;
-    if (rtc != null) {
-      unawaited(rtc.dispose());
-    }
+    unawaited(_cleanupRouteResources());
     super.dispose();
+  }
+
+  Future<void> _cleanupRouteResources() {
+    final existing = _routeCleanupOperation;
+    if (existing != null) {
+      return existing;
+    }
+    final operation = () async {
+      try {
+        await _leaveRtcOnly(updateUi: false);
+      } catch (error, stackTrace) {
+        debugPrint('Failed to close live RTC resources: $error\n$stackTrace');
+      }
+      final catchupSubscription = _catchupSubscription;
+      _catchupSubscription = null;
+      try {
+        await catchupSubscription?.cancel();
+      } catch (error, stackTrace) {
+        debugPrint(
+          'Failed to cancel catch-up subscription: $error\n$stackTrace',
+        );
+      }
+      try {
+        await _catchup.dispose();
+      } catch (error, stackTrace) {
+        debugPrint('Failed to close catch-up playback: $error\n$stackTrace');
+      }
+    }();
+    _routeCleanupOperation = operation;
+    return operation;
   }
 
   Future<void> _createAndJoin() async {
@@ -1353,11 +1375,21 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     }
   }
 
-  Future<void> _leaveRtcOnly() async {
-    if (_leaving) {
-      return;
+  Future<void> _leaveRtcOnly({bool updateUi = true}) {
+    final existing = _leaveRtcOperation;
+    if (existing != null) {
+      return existing;
     }
-    _leaving = true;
+    final operation = _performLeaveRtcOnly(updateUi: updateUi);
+    _leaveRtcOperation = operation;
+    return operation.whenComplete(() {
+      if (identical(_leaveRtcOperation, operation)) {
+        _leaveRtcOperation = null;
+      }
+    });
+  }
+
+  Future<void> _performLeaveRtcOnly({required bool updateUi}) async {
     _clock.stop();
     _timelineFlushTimer?.cancel();
     _timelineFlushTimer = null;
@@ -1377,7 +1409,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     if (rtc != null) {
       await rtc.dispose();
     }
-    if (mounted) {
+    if (updateUi && mounted) {
       setState(() {
         _session = null;
         _participants = const [];
@@ -1410,7 +1442,6 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         _lastMaterialFingerprint = null;
       });
     }
-    _leaving = false;
   }
 
   Future<void> _cancelSubscriptions() async {
@@ -1692,9 +1723,13 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('ライブ音声・板書配信')),
-      body: SafeArea(child: _session == null ? _buildLobby() : _buildRoom()),
+    return AsyncRouteExitScope(
+      onExit: _cleanupRouteResources,
+      progressLabel: '配信との接続を終了しています…',
+      child: Scaffold(
+        appBar: AppBar(title: const Text('ライブ音声・板書配信')),
+        body: SafeArea(child: _session == null ? _buildLobby() : _buildRoom()),
+      ),
     );
   }
 
