@@ -561,4 +561,45 @@ void main() {
     expect(changed.publishedBoardSet.switchEvents, hasLength(3));
     expect(changed.publishedBoardSet.viewportEvents, hasLength(4));
   });
+
+  test('background raster scale stays put for small follow steps', () {
+    expect(
+      commitLessonWhiteboardBackgroundRasterScale(
+        visualScale: 1.1,
+        currentRasterScale: 1,
+      ),
+      1,
+    );
+    expect(
+      commitLessonWhiteboardBackgroundRasterScale(
+        visualScale: 2.1,
+        currentRasterScale: 2,
+      ),
+      2,
+    );
+  });
+
+  test('background raster scale updates after a large zoom jump', () {
+    expect(
+      commitLessonWhiteboardBackgroundRasterScale(
+        visualScale: 2,
+        currentRasterScale: 1,
+      ),
+      2,
+    );
+    expect(
+      commitLessonWhiteboardBackgroundRasterScale(
+        visualScale: 8,
+        currentRasterScale: 6.5,
+      ),
+      8,
+    );
+    expect(
+      commitLessonWhiteboardBackgroundRasterScale(
+        visualScale: 1,
+        currentRasterScale: 1.15,
+      ),
+      1,
+    );
+  });
 }

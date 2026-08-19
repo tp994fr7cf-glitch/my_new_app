@@ -5,6 +5,38 @@ const int maxLessonBoardSwitchEvents = 10000;
 const int maxLessonViewportEvents = 2000;
 const double minLessonWhiteboardViewportScale = 1;
 const double maxLessonWhiteboardViewportScale = 8;
+const double lessonWhiteboardBackgroundRasterMinRatio = 0.85;
+const double lessonWhiteboardBackgroundRasterMaxRatio = 1.2;
+
+/// Keeps PDF/image raster size stable during small zoom follow steps.
+///
+/// Playback interpolates viewport scale about 20 times per second. Rebuilding
+/// the background at every step made PDFium allocate new GPU images without
+/// disposing the previous ones. Commit a new raster only when zoom has moved
+/// far enough, or when it reaches 1x / 8x.
+double commitLessonWhiteboardBackgroundRasterScale({
+  required double visualScale,
+  required double currentRasterScale,
+}) {
+  final clamped = visualScale
+      .clamp(minLessonWhiteboardViewportScale, maxLessonWhiteboardViewportScale)
+      .toDouble();
+  if (!currentRasterScale.isFinite || currentRasterScale <= 0) {
+    return clamped;
+  }
+  const minScale = minLessonWhiteboardViewportScale;
+  const maxScale = maxLessonWhiteboardViewportScale;
+  if ((clamped - minScale).abs() < 0.01 || (clamped - maxScale).abs() < 0.01) {
+    return clamped;
+  }
+  final ratio = clamped / currentRasterScale;
+  if (ratio >= lessonWhiteboardBackgroundRasterMinRatio &&
+      ratio <= lessonWhiteboardBackgroundRasterMaxRatio) {
+    return currentRasterScale;
+  }
+  return clamped;
+}
+
 const String lessonWhiteboardBackgroundPdf = 'pdf';
 const String lessonWhiteboardBackgroundImage = 'image';
 

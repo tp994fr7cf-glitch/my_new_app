@@ -39,6 +39,57 @@ void main() {
     );
   });
 
+  testWidgets('keeps PDF raster layout stable across small follow zooms', (
+    tester,
+  ) async {
+    final unresolvedUrl = Completer<LessonWhiteboardMaterialSource>();
+    const background = LessonWhiteboardBoardBackground(
+      assetId: 'pdf-asset',
+      storagePath:
+          'courseMedia/course/lessons/lesson/materials/doc/shared/selected.pdf',
+      mediaType: lessonWhiteboardBackgroundPdf,
+      aspectRatio: 4 / 3,
+    );
+
+    Widget host(double scale) {
+      return MaterialApp(
+        home: Scaffold(
+          body: LessonWhiteboardCanvas(
+            strokes: const [],
+            background: background,
+            aspectRatio: background.aspectRatio,
+            viewport: LessonWhiteboardViewport(
+              centerX: 0.5,
+              centerY: 0.5,
+              scale: scale,
+            ),
+            materialUrlResolver: (_) => unresolvedUrl.future,
+          ),
+        ),
+      );
+    }
+
+    await tester.pumpWidget(host(1));
+    final canvasSize = tester.getSize(
+      find.byKey(const ValueKey('whiteboard-aspect-ratio')),
+    );
+    final rasterFinder = find.byKey(
+      const ValueKey('whiteboard-background-raster-layout'),
+    );
+    expect(tester.getSize(rasterFinder), canvasSize);
+
+    await tester.pumpWidget(host(1.1));
+    await tester.pump();
+    expect(tester.getSize(rasterFinder), canvasSize);
+
+    await tester.pumpWidget(host(2));
+    await tester.pump();
+    expect(
+      tester.getSize(rasterFinder).width,
+      closeTo(canvasSize.width * 2, 0.5),
+    );
+  });
+
   testWidgets('uses 4:3, zooms to 8x, pans, and hides the minimap', (
     tester,
   ) async {

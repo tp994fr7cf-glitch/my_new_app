@@ -286,11 +286,13 @@ class _LessonWhiteboardBackgroundView extends StatefulWidget {
     required this.background,
     required this.urlResolver,
     required this.maximumDpi,
+    required this.rasterSignature,
   });
 
   final LessonWhiteboardBoardBackground background;
   final LessonWhiteboardMaterialUrlResolver urlResolver;
   final double maximumDpi;
+  final String rasterSignature;
 
   @override
   State<_LessonWhiteboardBackgroundView> createState() =>
@@ -360,30 +362,18 @@ class _LessonWhiteboardBackgroundViewState
                 child: Center(child: Icon(Icons.broken_image_outlined)),
               );
             }
-            return Image(
+            return _sizedImageBackground(
               image: provider,
-              key: const ValueKey('whiteboard-image-background'),
-              fit: BoxFit.fill,
-              filterQuality: FilterQuality.high,
-              errorBuilder: (context, error, stackTrace) => const ColoredBox(
-                color: Color(0xfff5f5f5),
-                child: Center(child: Icon(Icons.broken_image_outlined)),
-              ),
+              rasterSignature: widget.rasterSignature,
             );
           }
           final url = source.networkUrl;
           if (url == null || url.isEmpty) {
             return const ColoredBox(color: Colors.white);
           }
-          return Image.network(
-            url,
-            key: const ValueKey('whiteboard-image-background'),
-            fit: BoxFit.fill,
-            filterQuality: FilterQuality.high,
-            errorBuilder: (context, error, stackTrace) => const ColoredBox(
-              color: Color(0xfff5f5f5),
-              child: Center(child: Icon(Icons.broken_image_outlined)),
-            ),
+          return _sizedNetworkImageBackground(
+            url: url,
+            rasterSignature: widget.rasterSignature,
           );
         }
         Widget loadingBuilder(BuildContext context) => const ColoredBox(
@@ -394,6 +384,10 @@ class _LessonWhiteboardBackgroundViewState
             document == null
             ? loadingBuilder(context)
             : PdfPageView(
+                key: ValueKey(
+                  'whiteboard-pdf-page-${widget.background.pageNumber}-'
+                  '${widget.rasterSignature}',
+                ),
                 document: document,
                 pageNumber: widget.background.pageNumber,
                 maximumDpi: widget.maximumDpi,
@@ -435,9 +429,70 @@ class _LessonWhiteboardBackgroundViewState
   }
 }
 
+Widget _sizedImageBackground({
+  required ImageProvider image,
+  required String rasterSignature,
+}) {
+  return LayoutBuilder(
+    builder: (context, constraints) {
+      final cacheSize = _imageCacheSizeFor(context, constraints);
+      return Image(
+        image: ResizeImage(image, width: cacheSize.$1, height: cacheSize.$2),
+        key: ValueKey('whiteboard-image-background-$rasterSignature'),
+        fit: BoxFit.fill,
+        filterQuality: FilterQuality.high,
+        errorBuilder: (context, error, stackTrace) => const ColoredBox(
+          color: Color(0xfff5f5f5),
+          child: Center(child: Icon(Icons.broken_image_outlined)),
+        ),
+      );
+    },
+  );
+}
+
+Widget _sizedNetworkImageBackground({
+  required String url,
+  required String rasterSignature,
+}) {
+  return LayoutBuilder(
+    builder: (context, constraints) {
+      final cacheSize = _imageCacheSizeFor(context, constraints);
+      return Image.network(
+        url,
+        key: ValueKey('whiteboard-image-background-$rasterSignature'),
+        fit: BoxFit.fill,
+        filterQuality: FilterQuality.high,
+        cacheWidth: cacheSize.$1,
+        cacheHeight: cacheSize.$2,
+        errorBuilder: (context, error, stackTrace) => const ColoredBox(
+          color: Color(0xfff5f5f5),
+          child: Center(child: Icon(Icons.broken_image_outlined)),
+        ),
+      );
+    },
+  );
+}
+
+(int, int) _imageCacheSizeFor(
+  BuildContext context,
+  BoxConstraints constraints,
+) {
+  final dpr = MediaQuery.devicePixelRatioOf(context);
+  final layoutWidth = constraints.maxWidth.isFinite
+      ? constraints.maxWidth
+      : 1.0;
+  final layoutHeight = constraints.maxHeight.isFinite
+      ? constraints.maxHeight
+      : 1.0;
+  final width = (layoutWidth * dpr).round().clamp(1, 4096);
+  final height = (layoutHeight * dpr).round().clamp(1, 4096);
+  return (width, height);
+}
+
 class _LessonWhiteboardCanvasState extends State<LessonWhiteboardCanvas> {
   final Map<int, Offset> _pointerPositions = {};
   late LessonWhiteboardViewport _viewport;
+  late double _backgroundRasterScale;
   Timer? _minimapHideTimer;
   Timer? _scrollInteractionEndTimer;
   bool _minimapVisible = false;
@@ -452,17 +507,22 @@ class _LessonWhiteboardCanvasState extends State<LessonWhiteboardCanvas> {
   void initState() {
     super.initState();
     _viewport = widget.viewport ?? LessonWhiteboardViewport.full;
+    _backgroundRasterScale = _viewport.scale;
   }
 
   @override
   void didUpdateWidget(covariant LessonWhiteboardCanvas oldWidget) {
     super.didUpdateWidget(oldWidget);
     final controlledViewport = widget.viewport;
-    if (controlledViewport != null &&
-        controlledViewport != _viewport &&
-        !_viewInteractionActive) {
-      _viewport = controlledViewport;
-      _showMinimap(scheduleHide: true);
+    if (controlledViewport != null && !_viewInteractionActive) {
+      if (controlledViewport != _viewport) {
+        _viewport = controlledViewport;
+        _showMinimap(scheduleHide: true);
+      }
+      _backgroundRasterScale = commitLessonWhiteboardBackgroundRasterScale(
+        visualScale: controlledViewport.scale,
+        currentRasterScale: _backgroundRasterScale,
+      );
     }
   }
 
@@ -507,7 +567,13 @@ class _LessonWhiteboardCanvasState extends State<LessonWhiteboardCanvas> {
     if (viewport == _viewport) {
       return;
     }
-    setState(() => _viewport = viewport);
+    setState(() {
+      _viewport = viewport;
+      _backgroundRasterScale = commitLessonWhiteboardBackgroundRasterScale(
+        visualScale: viewport.scale,
+        currentRasterScale: _backgroundRasterScale,
+      );
+    });
     _showMinimap(scheduleHide: false);
     widget.onViewportChanged?.call(
       LessonWhiteboardViewportChange(
@@ -523,6 +589,15 @@ class _LessonWhiteboardCanvasState extends State<LessonWhiteboardCanvas> {
     }
     _viewInteractionActive = false;
     _scrollInteractionEndTimer = null;
+    final snapped = _viewport.scale
+        .clamp(
+          minLessonWhiteboardViewportScale,
+          maxLessonWhiteboardViewportScale,
+        )
+        .toDouble();
+    if (snapped != _backgroundRasterScale) {
+      setState(() => _backgroundRasterScale = snapped);
+    }
     widget.onViewportChanged?.call(
       LessonWhiteboardViewportChange(
         viewport: _viewport,
@@ -855,23 +930,45 @@ class _LessonWhiteboardCanvasState extends State<LessonWhiteboardCanvas> {
     if (background == null) {
       return const SizedBox.shrink();
     }
-    final viewport = minimap ? LessonWhiteboardViewport.full : _viewport;
-    final scale = viewport.scale;
-    return Positioned(
-      left: -viewport.left * size.width * scale,
-      top: -viewport.top * size.height * scale,
-      width: size.width * scale,
-      height: size.height * scale,
-      child: IgnorePointer(
-        child: _LessonWhiteboardBackgroundView(
-          key: ValueKey(
-            'whiteboard-background-${background.assetId}-${background.pageNumber}',
-          ),
-          background: background,
-          urlResolver: widget.materialUrlResolver,
-          maximumDpi: minimap ? 96 : 300,
-        ),
+    final visual = minimap ? LessonWhiteboardViewport.full : _viewport;
+    final rasterScale = minimap ? 1.0 : _backgroundRasterScale;
+    final extraScale = visual.scale / rasterScale;
+    final rasterSignature = rasterScale.toStringAsFixed(3);
+    final rasterWidth = size.width * rasterScale;
+    final rasterHeight = size.height * rasterScale;
+    Widget backgroundView = _LessonWhiteboardBackgroundView(
+      key: ValueKey(
+        'whiteboard-background-${background.assetId}-'
+        '${background.pageNumber}',
       ),
+      background: background,
+      urlResolver: widget.materialUrlResolver,
+      maximumDpi: minimap ? 96 : 300,
+      rasterSignature: rasterSignature,
+    );
+    backgroundView = SizedBox(
+      key: ValueKey(
+        minimap
+            ? 'whiteboard-background-raster-layout-minimap'
+            : 'whiteboard-background-raster-layout',
+      ),
+      width: rasterWidth,
+      height: rasterHeight,
+      child: backgroundView,
+    );
+    if ((extraScale - 1).abs() > 0.0001) {
+      backgroundView = Transform.scale(
+        alignment: Alignment.topLeft,
+        scale: extraScale,
+        child: backgroundView,
+      );
+    }
+    return Positioned(
+      left: -visual.left * size.width * visual.scale,
+      top: -visual.top * size.height * visual.scale,
+      width: rasterWidth,
+      height: rasterHeight,
+      child: IgnorePointer(child: backgroundView),
     );
   }
 
