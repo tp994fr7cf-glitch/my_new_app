@@ -120,12 +120,80 @@ export function permissionForParticipant({
   activePresenterUid?: string;
   presenterUids?: readonly string[];
 }): LiveAudioProbePermission {
-  const presenterUid = resolveActivePresenterUid({
+  return canPublishAudio({
     ownerUid,
+    participantUid,
     activePresenterUid,
     presenterUids,
-  });
-  return participantUid === presenterUid ? "publisher" : "subscriber";
+  }) ?
+    "publisher" :
+    "subscriber";
+}
+
+export function canPublishAudio({
+  ownerUid,
+  participantUid,
+  activePresenterUid,
+  presenterUids = [],
+}: {
+  ownerUid: string;
+  participantUid: string;
+  activePresenterUid?: string;
+  presenterUids?: readonly string[];
+}): boolean {
+  if (participantUid === ownerUid) {
+    return true;
+  }
+  return (
+    resolveCoSpeakerUid({
+      ownerUid,
+      activePresenterUid,
+      presenterUids,
+    }) === participantUid
+  );
+}
+
+export function canDrawBoard({
+  ownerUid,
+  participantUid,
+  activePresenterUid,
+  presenterUids = [],
+}: {
+  ownerUid: string;
+  participantUid: string;
+  activePresenterUid?: string;
+  presenterUids?: readonly string[];
+}): boolean {
+  return (
+    participantUid ===
+    resolveActivePresenterUid({
+      ownerUid,
+      activePresenterUid,
+      presenterUids,
+    })
+  );
+}
+
+export function resolveCoSpeakerUid({
+  ownerUid,
+  activePresenterUid,
+  presenterUids = [],
+}: {
+  ownerUid: string;
+  activePresenterUid?: string;
+  presenterUids?: readonly string[];
+}): string | undefined {
+  const listed = presenterUids.find(
+    (uid) => uid.trim().length > 0 && uid !== ownerUid,
+  );
+  if (listed) {
+    return listed;
+  }
+  const explicit = activePresenterUid?.trim();
+  if (explicit && explicit !== ownerUid) {
+    return explicit;
+  }
+  return undefined;
 }
 
 export function resolveActivePresenterUid({
@@ -137,12 +205,19 @@ export function resolveActivePresenterUid({
   activePresenterUid?: string;
   presenterUids?: readonly string[];
 }): string {
+  const coSpeakerUid = resolveCoSpeakerUid({
+    ownerUid,
+    activePresenterUid,
+    presenterUids,
+  });
   const explicit = activePresenterUid?.trim();
-  if (explicit) {
+  if (explicit === ownerUid) {
+    return ownerUid;
+  }
+  if (explicit && explicit === coSpeakerUid) {
     return explicit;
   }
-  const legacyPresenter = presenterUids.find((uid) => uid.trim().length > 0);
-  return legacyPresenter ?? ownerUid;
+  return ownerUid;
 }
 
 export function isLiveSessionState(value: unknown): boolean {

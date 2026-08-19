@@ -64,8 +64,11 @@ import {
   maxLiveAudioProbeStrokes,
   maxLiveAudioTimelineEvents,
   maximumAllowedGlobalTimestampSec,
+  canDrawBoard,
+  canPublishAudio,
   permissionForParticipant,
   resolveActivePresenterUid,
+  resolveCoSpeakerUid,
   remainingLiveAudioProbeDurationSec,
   rtcUidForFirebaseUser,
   validateTimelineBoardReferences,
@@ -427,48 +430,74 @@ export const issueLiveAudioProbeToken = onCall(
     const uid = requireAuthenticatedUid(request);
     const sessionId = requireSessionId(request.data?.sessionId);
     const sessionReference = db.collection(sessionCollection).doc(sessionId);
-    const sessionSnapshot = await sessionReference.get();
-    if (!sessionSnapshot.exists) {
-      throw new HttpsError("not-found", "検証配信が見つかりません。");
-    }
-    const session = sessionSnapshot.data() ?? {};
-    requireLiveSession(session);
-    const remainingDurationSec = remainingLiveAudioProbeDurationSec({
-      startedAtMs: session.startedAtMs,
-      nowMs: Date.now(),
-    });
-    if (remainingDurationSec <= 0) {
-      throw new HttpsError(
-        "failed-precondition",
-        "この配信は1時間の上限に達したため終了しました。",
-      );
-    }
-    const ownerUid = stringField(session.ownerUid);
-    const activePresenterUid = resolveActivePresenterUid({
-      ownerUid,
-      activePresenterUid: stringField(session.activePresenterUid),
-      presenterUids: stringListField(session.presenterUids),
-    });
-    const permission = permissionForParticipant({
-      ownerUid,
-      participantUid: uid,
-      activePresenterUid,
-      presenterUids: stringListField(session.presenterUids),
-    });
-    const rtcUid = rtcUidForFirebaseUser(uid);
-    const displayName = authenticatedDisplayName(request);
-    const now = FieldValue.serverTimestamp();
-    await sessionReference.collection("participants").doc(uid).set(
-      {
+    const participantReference = sessionReference
+      .collection("participants")
+      .doc(uid);
+    // Session read and participant.permission write stay in one transaction so
+    // a concurrent presenter change cannot stamp a stale role onto the doc.
+    const issued = await db.runTransaction(async (transaction) => {
+      const sessionSnapshot = await transaction.get(sessionReference);
+      if (!sessionSnapshot.exists) {
+        throw new HttpsError("not-found", "検証配信が見つかりません。");
+      }
+      const session = sessionSnapshot.data() ?? {};
+      requireLiveSession(session);
+      const remainingDurationSec = remainingLiveAudioProbeDurationSec({
+        startedAtMs: session.startedAtMs,
+        nowMs: Date.now(),
+      });
+      if (remainingDurationSec <= 0) {
+        throw new HttpsError(
+          "failed-precondition",
+          "この配信は1時間の上限に達したため終了しました。",
+        );
+      }
+      const ownerUid = stringField(session.ownerUid);
+      const presenterUids = stringListField(session.presenterUids);
+      const activePresenterUid = resolveActivePresenterUid({
+        ownerUid,
+        activePresenterUid: stringField(session.activePresenterUid),
+        presenterUids,
+      });
+      const permission = permissionForParticipant({
+        ownerUid,
+        participantUid: uid,
+        activePresenterUid,
+        presenterUids,
+      });
+      const canDraw = canDrawBoard({
+        ownerUid,
+        participantUid: uid,
+        activePresenterUid,
+        presenterUids,
+      });
+      const rtcUid = rtcUidForFirebaseUser(uid);
+      const displayName = authenticatedDisplayName(request);
+      const now = FieldValue.serverTimestamp();
+      const participantSnapshot = await transaction.get(participantReference);
+      const participantUpdate: Record<string, unknown> = {
         uid,
         rtcUid,
         displayName,
         permission,
-        joinedAt: now,
         updatedAt: now,
-      },
-      {merge: true},
-    );
+      };
+      if (!participantSnapshot.exists) {
+        participantUpdate.joinedAt = now;
+      }
+      transaction.set(participantReference, participantUpdate, {merge: true});
+      return {
+        permission,
+        canDraw,
+        rtcUid,
+        channelName: stringField(session.channelName),
+        remainingDurationSec,
+        maximumEndsAtMs:
+          safeNonNegativeInteger(session.maximumEndsAtMs) ||
+          safeNonNegativeInteger(session.startedAtMs) +
+            liveAudioProbeMaxDurationMs,
+      };
+    });
 
     const appId = agoraAppId.value().trim();
     const appCertificate = agoraAppCertificate.value().trim();
@@ -478,17 +507,16 @@ export const issueLiveAudioProbeToken = onCall(
         "Agoraの安全なサーバー設定が完了していません。",
       );
     }
-    const canPublish = permission === "publisher";
-    const channelName = stringField(session.channelName);
+    const canPublish = issued.permission === "publisher";
     const tokenLifetimeSec = Math.min(
       liveAudioProbeTokenLifetimeSec,
-      remainingDurationSec,
+      issued.remainingDurationSec,
     );
     const token = RtcTokenBuilder.buildTokenWithUidAndPrivilege(
       appId,
       appCertificate,
-      channelName,
-      rtcUid,
+      issued.channelName,
+      issued.rtcUid,
       tokenLifetimeSec,
       tokenLifetimeSec,
       canPublish ? tokenLifetimeSec : 0,
@@ -497,16 +525,14 @@ export const issueLiveAudioProbeToken = onCall(
     );
     return {
       appId,
-      channelName,
-      rtcUid,
+      channelName: issued.channelName,
+      rtcUid: issued.rtcUid,
       token,
-      permission,
+      permission: issued.permission,
+      canDraw: issued.canDraw,
       expiresInSec: tokenLifetimeSec,
       serverNowMs: Date.now(),
-      maximumEndsAtMs:
-        safeNonNegativeInteger(session.maximumEndsAtMs) ||
-        safeNonNegativeInteger(session.startedAtMs) +
-          liveAudioProbeMaxDurationMs,
+      maximumEndsAtMs: issued.maximumEndsAtMs,
     };
   },
 );
@@ -516,11 +542,15 @@ export const setLiveAudioProbePresenter = onCall(async (request) => {
   const sessionId = requireSessionId(request.data?.sessionId);
   const participantUid = requireNonEmptyString(
     request.data?.participantUid,
-    "発表者を特定できません。",
+    "対象の参加者を特定できません。",
   );
   const enabled = request.data?.enabled;
   if (typeof enabled !== "boolean") {
-    throw new HttpsError("invalid-argument", "発表許可の値が不正です。");
+    throw new HttpsError("invalid-argument", "許可の値が不正です。");
+  }
+  const control = request.data?.control;
+  if (control !== "coSpeaker" && control !== "drawer") {
+    throw new HttpsError("invalid-argument", "操作の種類が不正です。");
   }
   const sessionReference = db.collection(sessionCollection).doc(sessionId);
   return db.runTransaction(async (transaction) => {
@@ -533,34 +563,37 @@ export const setLiveAudioProbePresenter = onCall(async (request) => {
     if (ownerUid !== uid) {
       throw new HttpsError(
         "permission-denied",
-        "配信を開始した先生だけが発表者を変更できます。",
+        "配信を開始した先生だけが許可を変更できます。",
       );
     }
     requireLiveSession(session);
-    const previousPresenterUid = resolveActivePresenterUid({
+    const presenterUids = stringListField(session.presenterUids);
+    const currentCoSpeakerUid = resolveCoSpeakerUid({
       ownerUid,
       activePresenterUid: stringField(session.activePresenterUid),
-      presenterUids: stringListField(session.presenterUids),
+      presenterUids,
     });
-    const nextPresenterUid = enabled ?
-      participantUid :
-      participantUid === previousPresenterUid ?
-        ownerUid :
-        previousPresenterUid;
-    const nextParticipantReference = sessionReference
-      .collection("participants")
-      .doc(nextPresenterUid);
-    const previousParticipantReference = sessionReference
-      .collection("participants")
-      .doc(previousPresenterUid);
+    const currentDrawerUid = resolveActivePresenterUid({
+      ownerUid,
+      activePresenterUid: stringField(session.activePresenterUid),
+      presenterUids,
+    });
     const requestedParticipantReference = sessionReference
       .collection("participants")
       .doc(participantUid);
+    const ownerParticipantReference = sessionReference
+      .collection("participants")
+      .doc(ownerUid);
+    const currentCoSpeakerReference = currentCoSpeakerUid ?
+      sessionReference.collection("participants").doc(currentCoSpeakerUid) :
+      null;
     const references = new Map<string, DocumentReference<DocumentData>>([
-      [nextPresenterUid, nextParticipantReference],
-      [previousPresenterUid, previousParticipantReference],
       [participantUid, requestedParticipantReference],
+      [ownerUid, ownerParticipantReference],
     ]);
+    if (currentCoSpeakerReference && currentCoSpeakerUid) {
+      references.set(currentCoSpeakerUid, currentCoSpeakerReference);
+    }
     const snapshots = new Map<string, boolean>();
     for (const [participantId, reference] of references) {
       snapshots.set(participantId, (await transaction.get(reference)).exists);
@@ -571,48 +604,144 @@ export const setLiveAudioProbePresenter = onCall(async (request) => {
         "対象の参加者はまだこの配信へ参加していません。",
       );
     }
-    if (!snapshots.get(nextPresenterUid)) {
-      throw new HttpsError(
-        "not-found",
-        "発表者はまだこの配信へ参加していません。",
-      );
-    }
 
     const now = FieldValue.serverTimestamp();
+    let nextCoSpeakerUid = currentCoSpeakerUid;
+    let nextDrawerUid = currentDrawerUid;
+
+    if (control === "coSpeaker") {
+      if (participantUid === ownerUid) {
+        throw new HttpsError(
+          "failed-precondition",
+          "先生のマイクは配信中ずっと使えます。",
+        );
+      }
+      if (enabled) {
+        nextCoSpeakerUid = participantUid;
+        if (currentDrawerUid !== ownerUid && currentDrawerUid !== participantUid) {
+          nextDrawerUid = ownerUid;
+        }
+      } else if (currentCoSpeakerUid === participantUid) {
+        nextCoSpeakerUid = undefined;
+        if (currentDrawerUid === participantUid) {
+          nextDrawerUid = ownerUid;
+        }
+      }
+    } else if (enabled) {
+      if (participantUid !== ownerUid && participantUid !== currentCoSpeakerUid) {
+        throw new HttpsError(
+          "failed-precondition",
+          "書き物を渡せるのは、一緒に話している受講者だけです。",
+        );
+      }
+      nextDrawerUid = participantUid;
+    } else if (participantUid !== ownerUid && currentDrawerUid === participantUid) {
+      nextDrawerUid = ownerUid;
+    }
+
+    const nextPresenterUids = nextCoSpeakerUid ? [nextCoSpeakerUid] : [];
     transaction.update(sessionReference, {
-      activePresenterUid: nextPresenterUid,
-      presenterUids: nextPresenterUid === ownerUid ? [] : [nextPresenterUid],
+      activePresenterUid: nextDrawerUid,
+      presenterUids: nextPresenterUids,
       updatedAt: now,
     });
-    if (
-      previousPresenterUid !== nextPresenterUid &&
-      snapshots.get(previousPresenterUid)
-    ) {
-      transaction.update(previousParticipantReference, {
-        permission: "subscriber",
+    if (snapshots.get(ownerUid)) {
+      transaction.update(ownerParticipantReference, {
+        permission: "publisher",
         updatedAt: now,
       });
     }
     if (
-      participantUid !== nextPresenterUid &&
-      participantUid !== previousPresenterUid
+      currentCoSpeakerUid &&
+      currentCoSpeakerUid !== nextCoSpeakerUid &&
+      snapshots.get(currentCoSpeakerUid)
+    ) {
+      transaction.update(
+        sessionReference.collection("participants").doc(currentCoSpeakerUid),
+        {
+          permission: "subscriber",
+          updatedAt: now,
+        },
+      );
+    }
+    if (nextCoSpeakerUid && snapshots.get(nextCoSpeakerUid)) {
+      transaction.update(
+        sessionReference.collection("participants").doc(nextCoSpeakerUid),
+        {
+          permission: "publisher",
+          updatedAt: now,
+        },
+      );
+    } else if (
+      participantUid !== ownerUid &&
+      participantUid !== nextCoSpeakerUid &&
+      snapshots.get(participantUid)
     ) {
       transaction.update(requestedParticipantReference, {
         permission: "subscriber",
         updatedAt: now,
       });
     }
-    transaction.update(nextParticipantReference, {
-      permission: "publisher",
+    return {
+      activePresenterUid: nextDrawerUid,
+      coSpeakerUid: nextCoSpeakerUid ?? null,
+      enabled:
+        control === "coSpeaker" ?
+          nextCoSpeakerUid === participantUid :
+          nextDrawerUid === participantUid,
+    };
+  });
+});
+
+export const leaveLiveAudioProbeSession = onCall(async (request) => {
+  const uid = requireAuthenticatedUid(request);
+  const sessionId = requireSessionId(request.data?.sessionId);
+  const sessionReference = db.collection(sessionCollection).doc(sessionId);
+  return db.runTransaction(async (transaction) => {
+    const sessionSnapshot = await transaction.get(sessionReference);
+    if (!sessionSnapshot.exists) {
+      throw new HttpsError("not-found", "検証配信が見つかりません。");
+    }
+    const session = sessionSnapshot.data() ?? {};
+    if (!isLiveSessionState(storedSessionState(session))) {
+      return {released: false};
+    }
+    const ownerUid = stringField(session.ownerUid);
+    if (uid === ownerUid) {
+      return {released: false};
+    }
+    const presenterUids = stringListField(session.presenterUids);
+    const currentCoSpeakerUid = resolveCoSpeakerUid({
+      ownerUid,
+      activePresenterUid: stringField(session.activePresenterUid),
+      presenterUids,
+    });
+    const currentDrawerUid = resolveActivePresenterUid({
+      ownerUid,
+      activePresenterUid: stringField(session.activePresenterUid),
+      presenterUids,
+    });
+    if (uid !== currentCoSpeakerUid && uid !== currentDrawerUid) {
+      return {released: false};
+    }
+    const participantReference = sessionReference
+      .collection("participants")
+      .doc(uid);
+    const participantExists = (await transaction.get(participantReference))
+      .exists;
+    const now = FieldValue.serverTimestamp();
+    transaction.update(sessionReference, {
+      activePresenterUid: ownerUid,
+      presenterUids: [],
       updatedAt: now,
     });
-    const requestedPermission =
-      participantUid === nextPresenterUid ? "publisher" : "subscriber";
-    return {
-      activePresenterUid: nextPresenterUid,
-      permission: requestedPermission,
-      enabled: requestedPermission === "publisher",
-    };
+    if (participantExists) {
+      transaction.update(participantReference, {
+        permission: "subscriber",
+        updatedAt: now,
+      });
+    }
+    return {released: true};
   });
 });
 
@@ -638,7 +767,7 @@ export const reportLiveAudioProbeAudioCaptureStart = onCall(
         throw new HttpsError("not-found", "検証配信が見つかりません。");
       }
       const session = snapshot.data() ?? {};
-      requirePublisher(session, uid);
+      requireAudioPublisher(session, uid);
       if (safeNonNegativeInteger(session.archiveTimingVersion) < 5) {
         return {stored: false};
       }
@@ -1338,15 +1467,31 @@ async function moveSessionToFinalizing(
     if (!allowRetry && (state === "archiveFailed" || state === "ended")) {
       return {session, alreadyClosed: true};
     }
-    const activePresenterUid = resolveActivePresenterUid({
+    const presenterUids = stringListField(session.presenterUids);
+    const drawerUid = resolveActivePresenterUid({
       ownerUid,
       activePresenterUid: stringField(session.activePresenterUid),
-      presenterUids: stringListField(session.presenterUids),
+      presenterUids,
     });
-    const activeParticipantReference = sessionReference
-      .collection("participants")
-      .doc(activePresenterUid);
-    const activeParticipant = await transaction.get(activeParticipantReference);
+    const coSpeakerUid = resolveCoSpeakerUid({
+      ownerUid,
+      activePresenterUid: stringField(session.activePresenterUid),
+      presenterUids,
+    });
+    const participantUidsToUpdate = new Set<string>([drawerUid]);
+    if (coSpeakerUid) {
+      participantUidsToUpdate.add(coSpeakerUid);
+    }
+    const participantSnapshots = new Map<string, boolean>();
+    for (const participantId of participantUidsToUpdate) {
+      const reference = sessionReference
+        .collection("participants")
+        .doc(participantId);
+      participantSnapshots.set(
+        participantId,
+        (await transaction.get(reference)).exists,
+      );
+    }
     const joinCode = stringField(session.joinCode);
     const joinCodeReference = isValidLiveAudioJoinCode(joinCode) ?
       db.collection(joinCodeCollection).doc(joinCode) :
@@ -1380,11 +1525,17 @@ async function moveSessionToFinalizing(
       ...closeMetadata,
       updatedAt: now,
     });
-    if (activeParticipant.exists) {
-      transaction.update(activeParticipantReference, {
-        permission: "subscriber",
-        updatedAt: now,
-      });
+    for (const [participantId, exists] of participantSnapshots) {
+      if (!exists) {
+        continue;
+      }
+      transaction.update(
+        sessionReference.collection("participants").doc(participantId),
+        {
+          permission: "subscriber",
+          updatedAt: now,
+        },
+      );
     }
     return {
       session: {
@@ -2214,19 +2365,40 @@ function cloudRecordingConfig(): AgoraCloudRecordingConfig {
   };
 }
 
+function requireAudioPublisher(session: DocumentData, uid: string): void {
+  requireLiveSession(session);
+  const ownerUid = stringField(session.ownerUid);
+  const presenterUids = stringListField(session.presenterUids);
+  if (
+    !canPublishAudio({
+      ownerUid,
+      participantUid: uid,
+      activePresenterUid: stringField(session.activePresenterUid),
+      presenterUids,
+    })
+  ) {
+    throw new HttpsError(
+      "permission-denied",
+      "いまマイクを使える人だけが音声時刻を保存できます。",
+    );
+  }
+}
+
 function requirePublisher(session: DocumentData, uid: string): void {
   requireLiveSession(session);
   const ownerUid = stringField(session.ownerUid);
-  const permission = permissionForParticipant({
-    ownerUid,
-    participantUid: uid,
-    activePresenterUid: stringField(session.activePresenterUid),
-    presenterUids: stringListField(session.presenterUids),
-  });
-  if (permission !== "publisher") {
+  const presenterUids = stringListField(session.presenterUids);
+  if (
+    !canDrawBoard({
+      ownerUid,
+      participantUid: uid,
+      activePresenterUid: stringField(session.activePresenterUid),
+      presenterUids,
+    })
+  ) {
     throw new HttpsError(
       "permission-denied",
-      "現在の発表者だけが板書を保存できます。",
+      "いま書き物を担当している人だけが板書を保存できます。",
     );
   }
 }

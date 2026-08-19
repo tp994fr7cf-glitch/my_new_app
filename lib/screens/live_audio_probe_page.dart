@@ -12,6 +12,7 @@ import '../services/live_audio_board_selection.dart';
 import '../services/live_audio_board_state.dart';
 import '../services/live_audio_catchup_playback.dart';
 import '../services/live_audio_microphone_permission.dart';
+import '../services/live_audio_permission_apply.dart';
 import '../services/live_audio_probe_message.dart';
 import '../services/live_audio_probe_rtc.dart';
 import '../services/live_audio_probe_service.dart';
@@ -97,6 +98,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   String? _viewerBoardId;
   LessonWhiteboardViewport? _viewerViewport;
   bool _followPresenter = true;
+  bool? _localDrawer;
   int _viewportInteractionId = 0;
   DateTime? _lastViewportSentAt;
   Timer? _timelineFlushTimer;
@@ -112,6 +114,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   bool _busy = false;
   bool _microphoneMuted = false;
   bool _applyingPermission = false;
+  int _permissionApplyFollowUps = 0;
   bool _closingSession = false;
   String? _message;
   String _participantHlsManifestUrl = '';
@@ -136,13 +139,21 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       _rtcState == LiveAudioProbeRtcState.connected ||
       _rtcState == LiveAudioProbeRtcState.reconnecting;
   bool get _canPublish => _permission?.canPublish == true && !_closingSession;
+  bool get _isDrawer {
+    final session = _session;
+    if (session != null) {
+      return session.isDrawer(widget.user.uid);
+    }
+    return _localDrawer == true;
+  }
+
   // This is intentionally the single gate for every teacher action written to
   // the shared timeline: strokes, viewport zoom/pan, board/PDF page switching,
   // board creation, and the initial board announcement. Do not narrow it to
   // drawing alone. Viewer-only board and viewport changes stay local and must
   // remain available without an NTP-confirmed publishing clock.
   bool get _canUseSharedTimeline => canEmitLiveAudioTimelineEvents(
-    canPublish: _canPublish,
+    canPublish: _isDrawer && !_closingSession,
     sessionIsActive: _session?.isActive == true,
     ntpClockConfirmed: _timelineClockConfirmed,
   );
@@ -159,7 +170,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     boardSet: _boardState.boardSet,
     presenterBoardId: _boardState.selectedBoardId,
     isCatchup: _isCatchup,
-    followPresenter: _canPublish || _followPresenter,
+    followPresenter: _isDrawer || _followPresenter,
     viewerBoardId: _viewerBoardId,
     catchupTimelineSec: _catchupTimelineSec,
     boardsCreatedDuringSession: _boardsCreatedDuringSession,
@@ -177,7 +188,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       _boardState.boardSet.boardById(_displayBoardId) ??
       _boardState.selectedBoard;
   LessonWhiteboardViewport get _displayViewport {
-    if (!_canPublish && !_followPresenter && _viewerViewport != null) {
+    if (!_isDrawer && !_followPresenter && _viewerViewport != null) {
       return _viewerViewport!;
     }
     final playbackSec = _isCatchup ? _catchupTimelineSec : double.infinity;
@@ -312,9 +323,11 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       return;
     }
     _permission = credentials.permission;
+    _localDrawer = credentials.canDraw;
     _participantHlsManifestUrl = credentials.hlsManifestUrl;
     final rtc = LiveAudioProbeRtcController(
       refreshToken: () => _service.issueToken(sessionId),
+      onCredentialsApplied: _syncPermissionFromRtcCredentials,
     );
     _rtc = rtc;
     _statusSubscription = rtc.statuses.listen((status) {
@@ -347,14 +360,14 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         _timelineOutbox.observeServerSequence(session.timelineNextSequence);
         final shouldApplyBoardSet = _snapshotTracker.shouldApplyServerSnapshot(
           revision: session.boardSetRevision,
-          preserveUnsavedLocalChanges: _canPublish,
+          preserveUnsavedLocalChanges: _isDrawer,
         );
         _snapshotTracker.observeServerRevision(session.boardSetRevision);
         if (session.boardSet.isNotEmpty && shouldApplyBoardSet) {
           _rememberBoardSetTimelineEvents(session.boardSet);
           _boardState = _boardState.replaceSnapshot(
             session.boardSet,
-            preserveSelectedBoard: _canPublish,
+            preserveSelectedBoard: _isDrawer,
           );
           _snapshotTracker.markServerSnapshotApplied(session.boardSetRevision);
         }
@@ -364,6 +377,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       });
       unawaited(_refreshLiveMaterialCacheStatus());
       _scheduleDurationLimit(session);
+      unawaited(_applyDrawerState(session));
       _announceCurrentBoardStateIfReady();
       if (!session.isActive) {
         setState(
@@ -386,9 +400,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       final own = participants
           .where((participant) => participant.uid == widget.user.uid)
           .firstOrNull;
-      if (own != null &&
-          own.permission != _permission &&
-          !_applyingPermission) {
+      if (own != null && own.permission != _permission) {
         unawaited(_applyPermissionChange(sessionId));
       }
     }, onError: (Object error) => _showError(error));
@@ -461,6 +473,10 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       (_) => unawaited(_refreshArchiveStatus(sessionId)),
     );
     unawaited(_refreshArchiveStatus(sessionId));
+    final session = _session;
+    if (session != null) {
+      await _applyDrawerState(session);
+    }
     _announceCurrentBoardStateIfReady();
   }
 
@@ -485,15 +501,54 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     });
   }
 
-  Future<void> _applyPermissionChange(String sessionId) async {
+  LiveAudioProbePermission? get _ownRemotePermission {
+    for (final participant in _participants) {
+      if (participant.uid == widget.user.uid) {
+        return participant.permission;
+      }
+    }
+    return null;
+  }
+
+  void _syncPermissionFromRtcCredentials(
+    LiveAudioProbeCredentials credentials,
+  ) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _permission = credentials.permission;
+      if (credentials.hlsManifestUrl.isNotEmpty) {
+        _participantHlsManifestUrl = credentials.hlsManifestUrl;
+      }
+    });
+    final sessionId = _sessionId;
+    if (sessionId != null &&
+        shouldFollowUpLiveAudioPermissionApply(
+          localPermission: credentials.permission,
+          remotePermission: _ownRemotePermission,
+          followUpCount: 0,
+        )) {
+      unawaited(_applyPermissionChange(sessionId));
+    }
+  }
+
+  Future<void> _applyPermissionChange(
+    String sessionId, {
+    bool isFollowUp = false,
+  }) async {
     final rtc = _rtc;
     if (rtc == null || _applyingPermission) {
       return;
     }
+    if (!isFollowUp) {
+      _permissionApplyFollowUps = 0;
+    }
     _applyingPermission = true;
     try {
-      final credentials = await _service.issueToken(sessionId);
-      await rtc.applyCredentials(credentials);
+      final credentials = await rtc.applyFetchedCredentials(
+        () => _service.issueToken(sessionId),
+      );
       if (!mounted) {
         return;
       }
@@ -503,35 +558,34 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         _microphoneMuted = false;
         _currentBoardStateAnnounced = false;
         _message = credentials.permission.canPublish
-            ? '先生から発表を許可されました。配信時計の同期後に共有操作を利用できます。'
-            : '発表を終了し、視聴専用へ戻りました。';
-        if (!credentials.permission.canPublish) {
-          _snapshotSaveTimer?.cancel();
-          _snapshotSaveTimer = null;
-          _cancelLocalStroke();
-          final session = _session;
-          if (session != null && session.boardSet.isNotEmpty) {
-            _snapshotTracker.reset(serverRevision: session.boardSetRevision);
-            _rememberBoardSetTimelineEvents(session.boardSet);
-            _boardState = _boardState.replaceSnapshot(
-              session.boardSet,
-              preserveSelectedBoard: _canPublish,
-            );
-            _snapshotTracker.markServerSnapshotApplied(
-              session.boardSetRevision,
-            );
-          }
-        }
+            ? '一緒に話すことを許可されました。'
+            : '一緒に話すことを終了し、視聴専用へ戻りました。';
       });
       if (credentials.permission.canPublish) {
         unawaited(_reportAudioCaptureStart(sessionId, rtc));
         await _synchronizeTimelineClock(sessionId, rtc);
-        _announceCurrentBoardStateIfReady();
+      }
+      final session = _session;
+      if (session != null) {
+        await _applyDrawerState(session);
       }
     } catch (error) {
       _showError(error);
     } finally {
       _applyingPermission = false;
+    }
+    if (!mounted) {
+      return;
+    }
+    if (shouldFollowUpLiveAudioPermissionApply(
+      localPermission: _permission,
+      remotePermission: _ownRemotePermission,
+      followUpCount: _permissionApplyFollowUps,
+    )) {
+      _permissionApplyFollowUps += 1;
+      unawaited(_applyPermissionChange(sessionId, isFollowUp: true));
+    } else {
+      _permissionApplyFollowUps = 0;
     }
   }
 
@@ -560,26 +614,81 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     }
   }
 
-  Future<void> _togglePresenter(
-    LiveAudioProbeParticipant participant,
-    bool enabled,
-  ) async {
-    final sessionId = _sessionId;
-    if (sessionId == null || _presenterUpdates.contains(participant.uid)) {
+  Future<void> _applyDrawerState(LiveAudioProbeSession session) async {
+    final isDrawer = session.isDrawer(widget.user.uid);
+    final rtc = _rtc;
+    if (rtc == null ||
+        (_rtcState != LiveAudioProbeRtcState.connected &&
+            _rtcState != LiveAudioProbeRtcState.reconnecting)) {
       return;
     }
-    setState(() => _presenterUpdates.add(participant.uid));
+    if (isDrawer && !_canPublish) {
+      return;
+    }
+    await rtc.setBoardSendingEnabled(isDrawer);
+    if (_localDrawer == isDrawer) {
+      return;
+    }
+    if (isDrawer) {
+      if (!mounted) {
+        _localDrawer = true;
+        return;
+      }
+      setState(() {
+        _localDrawer = true;
+        _currentBoardStateAnnounced = false;
+        _message = '書き物を担当します。同期後に共有操作を利用できます。';
+      });
+      await _synchronizeTimelineClock(session.id, rtc);
+      _announceCurrentBoardStateIfReady();
+      return;
+    }
+    if (!mounted) {
+      _localDrawer = false;
+      return;
+    }
+    setState(() {
+      _localDrawer = false;
+      _followPresenter = true;
+      _snapshotSaveTimer?.cancel();
+      _snapshotSaveTimer = null;
+      _cancelLocalStroke();
+      if (session.boardSet.isNotEmpty) {
+        _snapshotTracker.reset(serverRevision: session.boardSetRevision);
+        _rememberBoardSetTimelineEvents(session.boardSet);
+        _boardState = _boardState.replaceSnapshot(
+          session.boardSet,
+          preserveSelectedBoard: false,
+        );
+        _snapshotTracker.markServerSnapshotApplied(session.boardSetRevision);
+      }
+      _message = '書き物の担当ではなくなりました。';
+    });
+  }
+
+  Future<void> _toggleLiveControl({
+    required LiveAudioProbeParticipant participant,
+    required String control,
+    required bool enabled,
+  }) async {
+    final sessionId = _sessionId;
+    final updateKey = '${participant.uid}:$control';
+    if (sessionId == null || _presenterUpdates.contains(updateKey)) {
+      return;
+    }
+    setState(() => _presenterUpdates.add(updateKey));
     try {
       await _service.setPresenter(
         sessionId: sessionId,
         participantUid: participant.uid,
         enabled: enabled,
+        control: control,
       );
     } catch (error) {
       _showError(error);
     } finally {
       if (mounted) {
-        setState(() => _presenterUpdates.remove(participant.uid));
+        setState(() => _presenterUpdates.remove(updateKey));
       }
     }
   }
@@ -1098,7 +1207,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   }
 
   void _selectBoard(String boardId) {
-    if (_canPublish) {
+    if (_isDrawer) {
       if (!_canUseSharedTimeline) {
         return;
       }
@@ -1135,7 +1244,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   }
 
   void _handleViewportChanged(LessonWhiteboardViewportChange change) {
-    if (!_canPublish) {
+    if (!_isDrawer) {
       if (_followPresenter) {
         setState(() => _followPresenter = false);
       }
@@ -1390,6 +1499,16 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   }
 
   Future<void> _performLeaveRtcOnly({required bool updateUi}) async {
+    final leavingSessionId = _sessionId;
+    final shouldReleaseRoles =
+        !_isOwner && leavingSessionId != null && !_closingSession;
+    if (shouldReleaseRoles) {
+      try {
+        await _service.leaveSession(leavingSessionId);
+      } catch (error, stackTrace) {
+        debugPrint('Failed to release live roles: $error\n$stackTrace');
+      }
+    }
     _clock.stop();
     _timelineFlushTimer?.cancel();
     _timelineFlushTimer = null;
@@ -1414,6 +1533,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         _session = null;
         _participants = const [];
         _permission = null;
+        _localDrawer = null;
         _rtcState = LiveAudioProbeRtcState.idle;
         _microphoneMuted = false;
         _boardState = LiveAudioBoardState.initial();
@@ -1852,9 +1972,11 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
           ],
         ),
         Text('接続状態: ${_rtcStateLabel(_rtcState)}'),
-        Text('現在の権限: ${_canPublish ? '発表者' : '視聴専用'}'),
+        Text(
+          '現在の権限: ${_canPublish ? (_isDrawer ? 'マイクあり・書き物担当' : 'マイクあり') : '視聴専用'}',
+        ),
         Text('アーカイブ: ${_archiveStatusLabel(session.archiveStatus)}'),
-        if (_canPublish && !_timelineClockConfirmed)
+        if (_isDrawer && !_timelineClockConfirmed)
           Card(
             color: Theme.of(context).colorScheme.tertiaryContainer,
             child: Padding(
@@ -1912,7 +2034,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
                   item.title.isEmpty ? 'ボード${item.order + 1}' : item.title,
                 ),
                 selected: item.id == board.id,
-                onSelected: _canPublish && !_canUseSharedTimeline
+                onSelected: _isDrawer && !_canUseSharedTimeline
                     ? null
                     : (_) => _selectBoard(item.id),
               ),
@@ -1924,10 +2046,10 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
               ),
           ],
         ),
-        if (!_canPublish)
+        if (!_isDrawer)
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            title: Text(_isCatchup ? '録画時のボード切り替えを追従' : '発表者のボードと表示範囲を追従'),
+            title: Text(_isCatchup ? '録画時のボード切り替えを追従' : '書き物担当者のボードと表示範囲を追従'),
             value: _followPresenter,
             onChanged: (value) {
               setState(() {
@@ -2008,7 +2130,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
           viewport: _displayViewport,
           onViewportChanged: _isCatchup ? null : _handleViewportChanged,
           viewportInteractionEnabled:
-              !_isCatchup && (!_canPublish || _canUseSharedTimeline),
+              !_isCatchup && (!_isDrawer || _canUseSharedTimeline),
           showViewportControls: !_isCatchup,
           background: board.background,
           aspectRatio: board.aspectRatio,
@@ -2024,26 +2146,14 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         if (_isOwner) ...[
           const SizedBox(height: 20),
           const Text(
-            '参加者と発表許可',
+            '参加者と許可',
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
           ),
+          const SizedBox(height: 4),
+          const Text('マイクは先生と受講者1人まで同時に使えます。書き物は常にどちらか1人です。'),
           const SizedBox(height: 8),
           for (final participant in _participants)
-            SwitchListTile(
-              title: Text(participant.displayName),
-              subtitle: Text(
-                session.activePresenterUid == participant.uid
-                    ? '現在の発表者（音声・板書・画面操作）'
-                    : '視聴専用',
-              ),
-              value: session.activePresenterUid == participant.uid,
-              onChanged:
-                  _presenterUpdates.contains(participant.uid) ||
-                      (participant.uid == session.ownerUid &&
-                          session.activePresenterUid == session.ownerUid)
-                  ? null
-                  : (enabled) => _togglePresenter(participant, enabled),
-            ),
+            ..._buildParticipantPermissionTiles(session, participant),
           const SizedBox(height: 12),
           OutlinedButton.icon(
             onPressed: _closingSession ? null : () => _closeSession(),
@@ -2059,6 +2169,60 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         ],
       ],
     );
+  }
+
+  List<Widget> _buildParticipantPermissionTiles(
+    LiveAudioProbeSession session,
+    LiveAudioProbeParticipant participant,
+  ) {
+    final isOwnerParticipant = participant.uid == session.ownerUid;
+    final isCoSpeaker = session.coSpeakerUid == participant.uid;
+    final isDrawer = session.isDrawer(participant.uid);
+    if (isOwnerParticipant) {
+      return [
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          title: Text(participant.displayName),
+          subtitle: Text(isDrawer ? '先生（常に話せます・書き物担当）' : '先生（常に話せます）'),
+        ),
+      ];
+    }
+    final coSpeakerKey = '${participant.uid}:coSpeaker';
+    final drawerKey = '${participant.uid}:drawer';
+    return [
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: Text(participant.displayName),
+        subtitle: Text(isCoSpeaker ? '一緒に話しています' : '視聴専用'),
+        value: isCoSpeaker,
+        onChanged: _presenterUpdates.contains(coSpeakerKey)
+            ? null
+            : (enabled) => _toggleLiveControl(
+                participant: participant,
+                control: 'coSpeaker',
+                enabled: enabled,
+              ),
+      ),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('書き物を渡す'),
+        subtitle: Text(
+          isDrawer
+              ? 'この人が書き物を担当しています'
+              : isCoSpeaker
+              ? 'オフの間は先生が書けます'
+              : '先に「一緒に話す」を許可してください',
+        ),
+        value: isDrawer,
+        onChanged: !isCoSpeaker || _presenterUpdates.contains(drawerKey)
+            ? null
+            : (enabled) => _toggleLiveControl(
+                participant: participant,
+                control: 'drawer',
+                enabled: enabled,
+              ),
+      ),
+    ];
   }
 }
 

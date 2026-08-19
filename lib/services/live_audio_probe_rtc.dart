@@ -32,17 +32,21 @@ class LiveAudioProbeRtcStatus {
 
 typedef LiveAudioProbeTokenRefresher =
     Future<LiveAudioProbeCredentials> Function();
+typedef LiveAudioProbeCredentialsApplied =
+    void Function(LiveAudioProbeCredentials credentials);
 
 class LiveAudioProbeRtcController {
   LiveAudioProbeRtcController({
     required this.refreshToken,
     LiveAudioRtcBackend Function()? createBackend,
     this.dataStreamSendInterval = _defaultDataStreamSendInterval,
+    this.onCredentialsApplied,
   }) : _createBackend = createBackend ?? createLiveAudioRtcBackend;
 
   final LiveAudioProbeTokenRefresher refreshToken;
   final LiveAudioRtcBackend Function() _createBackend;
   final Duration dataStreamSendInterval;
+  final LiveAudioProbeCredentialsApplied? onCredentialsApplied;
   final _statusController =
       StreamController<LiveAudioProbeRtcStatus>.broadcast();
   final _messageController =
@@ -60,6 +64,8 @@ class LiveAudioProbeRtcController {
   bool _dataStreamSendingEnabled = false;
   bool _disposed = false;
   bool _tokenRefreshInProgress = false;
+  bool _tokenRefreshQueued = false;
+  Future<void> _credentialsQueue = Future<void>.value();
   int _dataStreamGeneration = 0;
   Completer<void>? _clientRoleChangeCompleter;
   bool? _expectedClientRoleCanPublish;
@@ -149,10 +155,10 @@ class LiveAudioProbeRtcController {
         callbackSignal: joined.future,
         isConnected: backend.isConnected,
       );
-      final warning = credentials.permission.canPublish
+      final warning = credentials.canDraw
           ? await _preparePublisherDataStream()
           : null;
-      _dataStreamSendingEnabled = credentials.permission.canPublish;
+      _dataStreamSendingEnabled = credentials.canDraw;
       _emitStatus(LiveAudioProbeRtcState.connected, message: warning);
     } catch (error) {
       _emitStatus(
@@ -169,7 +175,41 @@ class LiveAudioProbeRtcController {
     }
   }
 
-  Future<void> applyCredentials(LiveAudioProbeCredentials credentials) async {
+  Future<LiveAudioProbeCredentials> applyFetchedCredentials(
+    Future<LiveAudioProbeCredentials> Function() fetch,
+  ) {
+    return _enqueueCredentialsOp(() async {
+      final credentials = await fetch();
+      await _applyCredentialsNow(credentials);
+      return credentials;
+    });
+  }
+
+  Future<void> applyCredentials(LiveAudioProbeCredentials credentials) {
+    return _enqueueCredentialsOp(() => _applyCredentialsNow(credentials));
+  }
+
+  Future<T> _enqueueCredentialsOp<T>(Future<T> Function() action) {
+    final result = Completer<T>();
+    final previous = _credentialsQueue;
+    _credentialsQueue = previous.catchError((_) {}).then((_) async {
+      try {
+        if (_disposed || _backend == null) {
+          throw StateError('Agoraへ接続していません。');
+        }
+        result.complete(await action());
+      } catch (error, stackTrace) {
+        if (!result.isCompleted) {
+          result.completeError(error, stackTrace);
+        }
+      }
+    });
+    return result.future;
+  }
+
+  Future<void> _applyCredentialsNow(
+    LiveAudioProbeCredentials credentials,
+  ) async {
     final backend = _backend;
     final previous = _credentials;
     if (backend == null || previous == null) {
@@ -201,15 +241,16 @@ class LiveAudioProbeRtcController {
         await roleChangeConfirmation;
       }
       _credentials = credentials;
-      if (canPublish) {
+      if (canPublish && credentials.canDraw) {
         final warning = await _preparePublisherDataStream();
         _dataStreamSendingEnabled = true;
         if (warning != null) {
           _emitStatus(LiveAudioProbeRtcState.connected, message: warning);
         }
       } else {
-        _dataStreamSendingEnabled = false;
+        await _disableDataStreamSending();
       }
+      onCredentialsApplied?.call(credentials);
     } finally {
       if (_clientRoleChangeCompleter == roleChange) {
         _clientRoleChangeCompleter = null;
@@ -224,6 +265,24 @@ class LiveAudioProbeRtcController {
       return;
     }
     await backend.muteLocalAudioStream(muted);
+  }
+
+  Future<void> setBoardSendingEnabled(bool enabled) async {
+    if (_disposed || _backend == null) {
+      return;
+    }
+    if (!enabled) {
+      await _disableDataStreamSending();
+      return;
+    }
+    if (_credentials?.permission.canPublish != true) {
+      return;
+    }
+    final warning = await _preparePublisherDataStream();
+    _dataStreamSendingEnabled = true;
+    if (warning != null) {
+      _emitStatus(LiveAudioProbeRtcState.connected, message: warning);
+    }
   }
 
   Future<void> setLiveAudioMuted(bool muted) async {
@@ -320,8 +379,8 @@ class LiveAudioProbeRtcController {
     }
     completer.completeError(
       StateError(
-        'Agoraの発表者切替に失敗しました'
-        '（理由: $reason、現在: ${currentCanPublish ? '発表者' : '視聴専用'}）。',
+        'Agoraのマイク権限切替に失敗しました'
+        '（理由: $reason、現在: ${currentCanPublish ? '送信可' : '視聴専用'}）。',
       ),
     );
   }
@@ -344,7 +403,7 @@ class LiveAudioProbeRtcController {
   Future<void> sendWhiteboardMessage(LiveAudioProbeMessage message) async {
     final backend = _backend;
     if (backend == null || _credentials?.permission.canPublish != true) {
-      throw StateError('発表を許可された人だけが板書できます。');
+      throw StateError('マイクが許可された人だけが板書を送れます。');
     }
     if (!_dataStreamSendingEnabled || _dataStreamUnavailable) {
       return;
@@ -495,13 +554,19 @@ class LiveAudioProbeRtcController {
   }
 
   Future<void> _refreshCurrentToken() async {
-    if (_tokenRefreshInProgress || _disposed || _backend == null) {
+    if (_disposed || _backend == null) {
+      return;
+    }
+    if (_tokenRefreshInProgress) {
+      _tokenRefreshQueued = true;
       return;
     }
     _tokenRefreshInProgress = true;
     try {
-      final credentials = await refreshToken();
-      await applyCredentials(credentials);
+      do {
+        _tokenRefreshQueued = false;
+        await applyFetchedCredentials(refreshToken);
+      } while (_tokenRefreshQueued && !_disposed && _backend != null);
     } catch (error) {
       _emitStatus(
         LiveAudioProbeRtcState.failed,

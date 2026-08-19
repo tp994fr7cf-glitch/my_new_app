@@ -34,6 +34,7 @@ class LiveAudioProbeCredentials {
     required this.token,
     required this.permission,
     required this.expiresInSec,
+    this.canDraw = false,
     this.serverNowMs = 0,
     this.hlsManifestUrl = '',
   });
@@ -43,17 +44,20 @@ class LiveAudioProbeCredentials {
   final int rtcUid;
   final String token;
   final LiveAudioProbePermission permission;
+  final bool canDraw;
   final int expiresInSec;
   final int serverNowMs;
   final String hlsManifestUrl;
 
   factory LiveAudioProbeCredentials.fromMap(Map<Object?, Object?> data) {
+    final permission = LiveAudioProbePermission.fromStorage(data['permission']);
     return LiveAudioProbeCredentials(
       appId: data['appId'] as String? ?? '',
       channelName: data['channelName'] as String? ?? '',
       rtcUid: (data['rtcUid'] as num?)?.toInt() ?? 0,
       token: data['token'] as String? ?? '',
-      permission: LiveAudioProbePermission.fromStorage(data['permission']),
+      permission: permission,
+      canDraw: data['canDraw'] as bool? ?? permission.canPublish,
       expiresInSec: (data['expiresInSec'] as num?)?.toInt() ?? 0,
       serverNowMs: (data['serverNowMs'] as num?)?.toInt() ?? 0,
       hlsManifestUrl: data['hlsManifestUrl'] as String? ?? '',
@@ -119,6 +123,21 @@ class LiveAudioProbeSession {
   bool get isDraftReady => status == 'draftReady';
   bool get archiveFailed =>
       archiveStatus == 'archiveFailed' || archiveStatus == 'failed';
+
+  String? get coSpeakerUid {
+    for (final uid in presenterUids) {
+      if (uid.isNotEmpty && uid != ownerUid) {
+        return uid;
+      }
+    }
+    return null;
+  }
+
+  bool canSpeak(String uid) => uid == ownerUid || coSpeakerUid == uid;
+
+  bool isDrawer(String uid) =>
+      activePresenterUid == uid ||
+      (activePresenterUid.isEmpty && uid == ownerUid);
 
   factory LiveAudioProbeSession.fromSnapshot(
     DocumentSnapshot<Map<String, dynamic>> snapshot,
@@ -311,11 +330,19 @@ class LiveAudioProbeService {
     required String sessionId,
     required String participantUid,
     required bool enabled,
+    required String control,
   }) async {
     await _functions.httpsCallable('setLiveAudioProbePresenter').call({
       'sessionId': sessionId,
       'participantUid': participantUid,
       'enabled': enabled,
+      'control': control,
+    });
+  }
+
+  Future<void> leaveSession(String sessionId) async {
+    await _functions.httpsCallable('leaveLiveAudioProbeSession').call({
+      'sessionId': sessionId,
     });
   }
 

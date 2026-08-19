@@ -646,7 +646,7 @@ class TeacherHomePage extends StatelessWidget {
             _HomeActionCard(
               icon: Icons.podcasts,
               title: 'ライブ音声・板書配信',
-              description: '音声とホワイトボードを配信し、発表者の交代やアーカイブを管理します。',
+              description: '音声とホワイトボードを配信し、一緒に話す許可や書き物の交代、アーカイブを管理します。',
               buttonText: '配信画面を開く',
               onPressed: () {
                 Navigator.of(context).push(

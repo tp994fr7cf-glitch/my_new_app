@@ -12,8 +12,11 @@ import {
   isValidTimelineChunk,
   isValidWhiteboardStroke,
   maximumAllowedGlobalTimestampSec,
+  canDrawBoard,
+  canPublishAudio,
   permissionForParticipant,
   resolveActivePresenterUid,
+  resolveCoSpeakerUid,
   remainingLiveAudioProbeDurationSec,
   rtcUidForFirebaseUser,
   validateTimelineBoardReferences,
@@ -27,24 +30,51 @@ test("assigns stable non-zero Agora IDs", () => {
   assert.ok(first <= 0xffffffff);
 });
 
-test("exactly one active presenter can publish", () => {
+test("teacher always publishes audio and drawing stays with one person", () => {
   assert.equal(
     permissionForParticipant({
       ownerUid: "teacher",
       participantUid: "teacher",
       activePresenterUid: "student-a",
-      presenterUids: [],
+      presenterUids: ["student-a"],
     }),
-    "subscriber",
+    "publisher",
   );
   assert.equal(
-    permissionForParticipant({
+    canPublishAudio({
+      ownerUid: "teacher",
+      participantUid: "student-a",
+      activePresenterUid: "teacher",
+      presenterUids: ["student-a"],
+    }),
+    true,
+  );
+  assert.equal(
+    canDrawBoard({
+      ownerUid: "teacher",
+      participantUid: "teacher",
+      activePresenterUid: "teacher",
+      presenterUids: ["student-a"],
+    }),
+    true,
+  );
+  assert.equal(
+    canDrawBoard({
+      ownerUid: "teacher",
+      participantUid: "student-a",
+      activePresenterUid: "teacher",
+      presenterUids: ["student-a"],
+    }),
+    false,
+  );
+  assert.equal(
+    canDrawBoard({
       ownerUid: "teacher",
       participantUid: "student-a",
       activePresenterUid: "student-a",
-      presenterUids: ["student-a", "student-b"],
+      presenterUids: ["student-a"],
     }),
-    "publisher",
+    true,
   );
   assert.equal(
     permissionForParticipant({
@@ -54,6 +84,30 @@ test("exactly one active presenter can publish", () => {
       presenterUids: ["student-a", "student-b"],
     }),
     "subscriber",
+  );
+  assert.equal(
+    resolveCoSpeakerUid({
+      ownerUid: "teacher",
+      activePresenterUid: "teacher",
+      presenterUids: ["student-a"],
+    }),
+    "student-a",
+  );
+  assert.equal(
+    resolveActivePresenterUid({
+      ownerUid: "teacher",
+      activePresenterUid: "student-a",
+      presenterUids: [],
+    }),
+    "student-a",
+  );
+  assert.equal(
+    resolveActivePresenterUid({
+      ownerUid: "teacher",
+      activePresenterUid: "student-a",
+      presenterUids: ["student-b"],
+    }),
+    "teacher",
   );
   assert.equal(
     resolveActivePresenterUid({

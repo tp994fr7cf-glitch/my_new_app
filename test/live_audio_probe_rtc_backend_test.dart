@@ -196,6 +196,79 @@ void main() {
     await controller.dispose();
   });
 
+  test(
+    'fetches a token refresh only after an in-flight role change finishes',
+    () async {
+      var refreshFetches = 0;
+      final backend = _FakeLiveAudioRtcBackend();
+      final controller = LiveAudioProbeRtcController(
+        refreshToken: () async {
+          refreshFetches += 1;
+          return _credentials;
+        },
+        createBackend: () => backend,
+      );
+      await controller.join(_subscriberCredentials);
+
+      final applying = controller.applyCredentials(_credentials);
+      await Future<void>.delayed(Duration.zero);
+      backend.emitTokenRefreshRequired();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(refreshFetches, 0);
+
+      backend.emitClientRoleChanged(true);
+      await applying;
+      for (var attempt = 0; attempt < 10 && refreshFetches == 0; attempt += 1) {
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      expect(refreshFetches, 1);
+      await controller.dispose();
+    },
+  );
+
+  test(
+    'serializes credential fetches so the later one starts after the first apply',
+    () async {
+      final backend = _FakeLiveAudioRtcBackend();
+      final firstFetchStarted = Completer<void>();
+      final firstFetchGate = Completer<void>();
+      var fetches = 0;
+      final controller = LiveAudioProbeRtcController(
+        refreshToken: () async => _credentials,
+        createBackend: () => backend,
+      );
+      await controller.join(_subscriberCredentials);
+
+      final first = controller.applyFetchedCredentials(() async {
+        fetches += 1;
+        firstFetchStarted.complete();
+        await firstFetchGate.future;
+        return _credentials;
+      });
+      final second = controller.applyFetchedCredentials(() async {
+        fetches += 1;
+        return _subscriberCredentials;
+      });
+
+      await firstFetchStarted.future;
+      expect(fetches, 1);
+      firstFetchGate.complete();
+      await Future<void>.delayed(Duration.zero);
+      expect(fetches, 1);
+
+      backend.emitClientRoleChanged(true);
+      await first;
+      await Future<void>.delayed(Duration.zero);
+      expect(fetches, 2);
+
+      backend.emitClientRoleChanged(false);
+      await second;
+      await controller.dispose();
+    },
+  );
+
   test('reads the Agora NTP wall clock from the active RTC engine', () async {
     final backend = _FakeLiveAudioRtcBackend();
     final controller = LiveAudioProbeRtcController(
@@ -266,6 +339,51 @@ void main() {
     await subscription.cancel();
     await controller.dispose();
   });
+
+  test(
+    'mic-only publisher does not send board data until drawing is enabled',
+    () async {
+      final backend = _FakeLiveAudioRtcBackend();
+      final controller = LiveAudioProbeRtcController(
+        refreshToken: () async => _micOnlyCredentials,
+        createBackend: () => backend,
+      );
+      await controller.join(_micOnlyCredentials);
+
+      expect(backend.calls, isNot(contains('createDataStream')));
+
+      await controller.sendWhiteboardMessage(
+        const LiveAudioProbeMessage(
+          kind: LiveAudioProbeMessageKind.boardSwitch,
+          boardId: 'board-1',
+          timestampSec: 1,
+        ),
+      );
+      expect(backend.sentMessages, isEmpty);
+
+      await controller.setBoardSendingEnabled(true);
+      expect(backend.calls, contains('createDataStream'));
+      await controller.sendWhiteboardMessage(
+        const LiveAudioProbeMessage(
+          kind: LiveAudioProbeMessageKind.boardSwitch,
+          boardId: 'board-1',
+          timestampSec: 2,
+        ),
+      );
+      expect(backend.sentMessages, hasLength(1));
+
+      await controller.setBoardSendingEnabled(false);
+      await controller.sendWhiteboardMessage(
+        const LiveAudioProbeMessage(
+          kind: LiveAudioProbeMessageKind.boardSwitch,
+          boardId: 'board-1',
+          timestampSec: 3,
+        ),
+      );
+      expect(backend.sentMessages, hasLength(1));
+      await controller.dispose();
+    },
+  );
 }
 
 const _credentials = LiveAudioProbeCredentials(
@@ -274,6 +392,17 @@ const _credentials = LiveAudioProbeCredentials(
   rtcUid: 42,
   token: 'test-token',
   permission: LiveAudioProbePermission.publisher,
+  canDraw: true,
+  expiresInSec: 3600,
+);
+
+const _micOnlyCredentials = LiveAudioProbeCredentials(
+  appId: 'test-app-id',
+  channelName: 'test-channel',
+  rtcUid: 42,
+  token: 'mic-only-token',
+  permission: LiveAudioProbePermission.publisher,
+  canDraw: false,
   expiresInSec: 3600,
 );
 
@@ -283,6 +412,7 @@ const _subscriberCredentials = LiveAudioProbeCredentials(
   rtcUid: 42,
   token: 'subscriber-token',
   permission: LiveAudioProbePermission.subscriber,
+  canDraw: false,
   expiresInSec: 3600,
 );
 
@@ -403,5 +533,9 @@ class _FakeLiveAudioRtcBackend implements LiveAudioRtcBackend {
 
   void emitClientRoleChanged(bool canPublish) {
     _handler.onClientRoleChanged?.call(canPublish);
+  }
+
+  void emitTokenRefreshRequired() {
+    _handler.onTokenRefreshRequired?.call();
   }
 }
