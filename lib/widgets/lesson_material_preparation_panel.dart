@@ -5,7 +5,9 @@ import 'package:pdfrx/pdfrx.dart';
 
 import '../models/lesson_payload_size_validator.dart';
 import '../models/lesson_whiteboard_board_set.dart';
+import '../services/lesson_material_library_service.dart';
 import '../services/lesson_material_storage_service.dart';
+import 'lesson_material_library_picker.dart';
 
 typedef LessonMaterialBoardSetSaveCallback =
     Future<void> Function(BoardSet boardSet);
@@ -19,6 +21,7 @@ class LessonMaterialPreparationPanel extends StatefulWidget {
     required this.publishedBoardSet,
     required this.onBoardSetSaved,
     this.storageService = const LessonMaterialStorageService(),
+    this.libraryService = const LessonMaterialLibraryService(),
     this.enabled = true,
   });
 
@@ -28,6 +31,7 @@ class LessonMaterialPreparationPanel extends StatefulWidget {
   final BoardSet publishedBoardSet;
   final LessonMaterialBoardSetSaveCallback onBoardSetSaved;
   final LessonMaterialStorageService storageService;
+  final LessonMaterialLibraryService libraryService;
   final bool enabled;
 
   @override
@@ -95,6 +99,94 @@ class _LessonMaterialPreparationPanelState
       }
       if (mounted) {
         setState(() => _message = 'PDFの追加に失敗しました。時間をおいて再度お試しください。');
+      }
+    } finally {
+      await pickedPdf?.dispose();
+      if (mounted) {
+        setState(() => _busy = false);
+      }
+    }
+  }
+
+  Future<void> _addFromLibrary() async {
+    if (!_canUpload) {
+      _showUnavailableMessage();
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _message = '保存済み資料を読み込んでいます…';
+    });
+    PickedLessonPdf? pickedPdf;
+    LessonMaterialUploadResult? uploaded;
+    try {
+      final items = await widget.libraryService.listItems();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _busy = false;
+        _message = null;
+      });
+      final selected = await showLessonMaterialLibraryPicker(
+        context: context,
+        items: items,
+      );
+      if (selected == null || !mounted) {
+        return;
+      }
+      setState(() {
+        _busy = true;
+        _message = selected.isPdf ? 'PDFを読み込んでいます…' : '画像を読み込んでいます…';
+      });
+      if (selected.isPdf) {
+        pickedPdf = await widget.storageService.openPdfFromStorage(
+          storagePath: selected.sourceStoragePath,
+          fileName: selected.fileName,
+        );
+        if (!mounted) {
+          return;
+        }
+        final selectedPages = await _selectPdfPages(
+          pickedPdf,
+          maximumCount: _remainingCount,
+        );
+        if (selectedPages == null || selectedPages.isEmpty || !mounted) {
+          return;
+        }
+        setState(() => _message = '選択したページだけの共有用PDFを作成しています…');
+        uploaded = await widget.storageService.uploadSelectedPdfPages(
+          courseId: widget.courseId,
+          lessonId: widget.lessonId!.trim(),
+          pickedPdf: pickedPdf,
+          selectedPageNumbers: selectedPages,
+        );
+      } else {
+        final image = await widget.storageService.openImageFromStorage(
+          storagePath: selected.sourceStoragePath,
+          fileName: selected.fileName,
+        );
+        if (!mounted) {
+          return;
+        }
+        setState(() => _message = '画像をアップロードしています…');
+        uploaded = await widget.storageService.uploadImages(
+          courseId: widget.courseId,
+          lessonId: widget.lessonId!.trim(),
+          images: [image],
+        );
+      }
+      await _appendAndSave(uploaded);
+    } on LessonMaterialStorageException catch (error) {
+      if (mounted) {
+        setState(() => _message = error.message);
+      }
+    } catch (_) {
+      if (uploaded != null) {
+        await _deleteUploadedAssetsBestEffort(uploaded);
+      }
+      if (mounted) {
+        setState(() => _message = '保存済み資料の追加に失敗しました。時間をおいて再度お試しください。');
       }
     } finally {
       await pickedPdf?.dispose();
@@ -487,6 +579,14 @@ class _LessonMaterialPreparationPanelState
                       : null,
                   icon: const Icon(Icons.photo_library_outlined),
                   label: const Text('写真から追加'),
+                ),
+                OutlinedButton.icon(
+                  key: const ValueKey('prelive-add-saved-material'),
+                  onPressed: _canUpload
+                      ? () => unawaited(_addFromLibrary())
+                      : null,
+                  icon: const Icon(Icons.folder_copy_outlined),
+                  label: const Text('保存済みから選ぶ'),
                 ),
               ],
             ),

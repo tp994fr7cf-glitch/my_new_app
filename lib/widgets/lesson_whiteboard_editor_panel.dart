@@ -13,9 +13,11 @@ import '../models/lesson_player_view_state.dart';
 import '../models/lesson_publication_validator.dart';
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
+import '../services/lesson_material_library_service.dart';
 import '../services/lesson_media_playback.dart';
 import '../services/lesson_media_playlist_playback.dart';
 import '../services/lesson_material_storage_service.dart';
+import 'lesson_material_library_picker.dart';
 import 'lesson_whiteboard_canvas.dart';
 
 typedef WhiteboardDraftSaveCallback =
@@ -43,6 +45,7 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
     this.enabled = true,
     this.playlistPlaybackFactory = createLessonMediaPlaylistPlayback,
     this.materialStorageService = const LessonMaterialStorageService(),
+    this.materialLibraryService = const LessonMaterialLibraryService(),
   }) : assert(
          onDraftSaved != null || onBoardSetDraftSaved != null,
          'A whiteboard draft callback is required.',
@@ -65,6 +68,7 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
   final bool enabled;
   final LessonMediaPlaylistPlaybackFactory playlistPlaybackFactory;
   final LessonMaterialStorageService materialStorageService;
+  final LessonMaterialLibraryService materialLibraryService;
 
   @override
   State<LessonWhiteboardEditorPanel> createState() =>
@@ -1079,6 +1083,103 @@ class _LessonWhiteboardEditorPanelState
     return true;
   }
 
+  Future<void> _addFromLibrary() async {
+    final lessonId = widget.lessonId?.trim() ?? '';
+    final remaining = maxLessonWhiteboardBoards - _boardSet.boards.length;
+    if (lessonId.isEmpty || remaining <= 0 || _isUploadingMaterial) {
+      setState(() {
+        _message = lessonId.isEmpty
+            ? 'PDF・画像を追加するには、先にレッスンを保存してください。'
+            : lessonBoardLimitMessage;
+      });
+      return;
+    }
+    setState(() {
+      _isUploadingMaterial = true;
+      _message = '保存済み資料を読み込んでいます…';
+    });
+    PickedLessonPdf? pickedPdf;
+    try {
+      final items = await widget.materialLibraryService.listItems();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isUploadingMaterial = false;
+        _message = null;
+      });
+      final selected = await showLessonMaterialLibraryPicker(
+        context: context,
+        items: items,
+      );
+      if (selected == null || !mounted) {
+        return;
+      }
+      setState(() {
+        _isUploadingMaterial = true;
+        _message = selected.isPdf ? 'PDFを読み込んでいます…' : '画像を読み込んでいます…';
+      });
+      if (selected.isPdf) {
+        pickedPdf = await widget.materialStorageService.openPdfFromStorage(
+          storagePath: selected.sourceStoragePath,
+          fileName: selected.fileName,
+        );
+        if (!mounted) {
+          return;
+        }
+        final selectedPages = await _selectPdfPages(
+          pickedPdf,
+          maximumCount: remaining,
+        );
+        if (selectedPages == null || selectedPages.isEmpty || !mounted) {
+          return;
+        }
+        setState(() => _message = '選択したPDFページを安全な共有用ファイルにしています…');
+        final result = await widget.materialStorageService
+            .uploadSelectedPdfPages(
+              courseId: widget.courseId,
+              lessonId: lessonId,
+              pickedPdf: pickedPdf,
+              selectedPageNumbers: selectedPages,
+            );
+        if (!mounted) {
+          return;
+        }
+        _appendMaterialBoards(result);
+      } else {
+        final image = await widget.materialStorageService.openImageFromStorage(
+          storagePath: selected.sourceStoragePath,
+          fileName: selected.fileName,
+        );
+        if (!mounted) {
+          return;
+        }
+        setState(() => _message = '画像をアップロードしています…');
+        final result = await widget.materialStorageService.uploadImages(
+          courseId: widget.courseId,
+          lessonId: lessonId,
+          images: [image],
+        );
+        if (mounted) {
+          _appendMaterialBoards(result);
+        }
+      }
+    } on LessonMaterialStorageException catch (error) {
+      if (mounted) {
+        setState(() => _message = error.message);
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _message = '保存済み資料の追加に失敗しました。時間をおいて再度お試しください。');
+      }
+    } finally {
+      await pickedPdf?.dispose();
+      if (mounted) {
+        setState(() => _isUploadingMaterial = false);
+      }
+    }
+  }
+
   Future<void> _addPdfMaterial() async {
     final lessonId = widget.lessonId?.trim() ?? '';
     final remaining = maxLessonWhiteboardBoards - _boardSet.boards.length;
@@ -1854,6 +1955,8 @@ class _LessonWhiteboardEditorPanelState
                     onSelected: (value) {
                       if (value == 'pdf') {
                         unawaited(_addPdfMaterial());
+                      } else if (value == 'library') {
+                        unawaited(_addFromLibrary());
                       } else {
                         unawaited(
                           _addImageMaterials(fromGallery: value == 'gallery'),
@@ -1867,6 +1970,7 @@ class _LessonWhiteboardEditorPanelState
                         child: Text('画像ファイルを追加'),
                       ),
                       PopupMenuItem(value: 'gallery', child: Text('写真から追加')),
+                      PopupMenuItem(value: 'library', child: Text('保存済みから選ぶ')),
                     ],
                   ),
                   Text('${_boardSet.boards.length}/$maxLessonWhiteboardBoards'),

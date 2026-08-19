@@ -126,46 +126,26 @@ class LessonMaterialStorageService {
       ),
     );
     debugPrint('[LessonMaterialPdf] PDF bytes loaded (${bytes.length} bytes).');
-    try {
-      debugPrint('[LessonMaterialPdf] Opening the PDF document.');
-      final opening =
-          pdfDocumentOpener?.call(bytes, file.name) ??
-          PdfDocument.openData(bytes, sourceName: file.name);
-      late final PdfDocument document;
-      try {
-        document = await opening.timeout(pdfDocumentOpenTimeout);
-      } on TimeoutException {
-        unawaited(
-          opening
-              .then<void>((lateDocument) => lateDocument.dispose())
-              .catchError((_) {}),
-        );
-        throw const LessonMaterialStorageException(
-          'PDFの解析に時間がかかりすぎています。'
-          'アプリを開き直してから、もう一度お試しください。',
-        );
-      }
-      if (document.pages.isEmpty) {
-        await document.dispose();
-        throw const LessonMaterialStorageException('ページがないPDFは追加できません。');
-      }
-      debugPrint(
-        '[LessonMaterialPdf] PDF document opened '
-        '(${document.pages.length} pages).',
-      );
-      return PickedLessonPdf(
-        fileName: file.name,
-        bytes: bytes,
-        document: document,
-      );
-    } catch (error) {
-      if (error is LessonMaterialStorageException) {
-        rethrow;
-      }
-      throw const LessonMaterialStorageException(
-        'PDFを開けませんでした。パスワード付きPDFや破損したPDFは追加できません。',
-      );
-    }
+    return _openPdfFromBytes(fileName: file.name, bytes: bytes);
+  }
+
+  Future<PickedLessonPdf> openPdfFromStorage({
+    required String storagePath,
+    required String fileName,
+  }) async {
+    final bytes = await _downloadStorageBytes(storagePath);
+    return _openPdfFromBytes(fileName: fileName, bytes: bytes);
+  }
+
+  Future<PickedLessonImage> openImageFromStorage({
+    required String storagePath,
+    required String fileName,
+  }) async {
+    final bytes = await _downloadStorageBytes(storagePath);
+    final resolvedName = _fileExtension(fileName).isNotEmpty
+        ? fileName
+        : '$fileName.${_fileExtension(storagePath)}';
+    return _imageFromBytes(resolvedName, bytes);
   }
 
   Future<List<PickedLessonImage>> pickImageFiles({
@@ -391,6 +371,80 @@ class LessonMaterialStorageService {
     final bytes = file.bytes ?? await file.xFile.readAsBytes();
     _validateSize(bytes.length);
     return bytes;
+  }
+
+  Future<PickedLessonPdf> _openPdfFromBytes({
+    required String fileName,
+    required Uint8List bytes,
+  }) async {
+    _validateSize(bytes.length);
+    try {
+      debugPrint('[LessonMaterialPdf] Opening the PDF document.');
+      final opening =
+          pdfDocumentOpener?.call(bytes, fileName) ??
+          PdfDocument.openData(bytes, sourceName: fileName);
+      late final PdfDocument document;
+      try {
+        document = await opening.timeout(pdfDocumentOpenTimeout);
+      } on TimeoutException {
+        unawaited(
+          opening
+              .then<void>((lateDocument) => lateDocument.dispose())
+              .catchError((_) {}),
+        );
+        throw const LessonMaterialStorageException(
+          'PDFの解析に時間がかかりすぎています。'
+          'アプリを開き直してから、もう一度お試しください。',
+        );
+      }
+      if (document.pages.isEmpty) {
+        await document.dispose();
+        throw const LessonMaterialStorageException('ページがないPDFは追加できません。');
+      }
+      debugPrint(
+        '[LessonMaterialPdf] PDF document opened '
+        '(${document.pages.length} pages).',
+      );
+      return PickedLessonPdf(
+        fileName: fileName,
+        bytes: bytes,
+        document: document,
+      );
+    } catch (error) {
+      if (error is LessonMaterialStorageException) {
+        rethrow;
+      }
+      throw const LessonMaterialStorageException(
+        'PDFを開けませんでした。パスワード付きPDFや破損したPDFは追加できません。',
+      );
+    }
+  }
+
+  Future<Uint8List> _downloadStorageBytes(String storagePath) async {
+    if (storagePath.trim().isEmpty ||
+        !storagePath.startsWith('courseMedia/') ||
+        storagePath.contains('..')) {
+      throw const LessonMaterialStorageException('資料の保存場所が不正です。');
+    }
+    if (Firebase.apps.isEmpty) {
+      throw const LessonMaterialStorageException('Firebase が初期化されていません。');
+    }
+    try {
+      final data = await FirebaseStorage.instance
+          .ref(storagePath)
+          .getData(maxBytes);
+      if (data == null) {
+        throw const LessonMaterialStorageException('保存済み資料を読み込めませんでした。');
+      }
+      _validateSize(data.length);
+      return data;
+    } on LessonMaterialStorageException {
+      rethrow;
+    } catch (_) {
+      throw const LessonMaterialStorageException(
+        '保存済み資料を読み込めませんでした。時間をおいて再度お試しください。',
+      );
+    }
   }
 
   Future<void> _uploadSourceAndShared({
