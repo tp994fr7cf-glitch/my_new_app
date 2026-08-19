@@ -132,6 +132,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   String? _lastMaterialFingerprint;
   Future<void>? _leaveRtcOperation;
   Future<void>? _routeCleanupOperation;
+  Future<void>? _serverCloseOperation;
 
   bool get _isTeacher => widget.activeRole == 'teacher';
   bool get _isOwner => _session?.ownerUid == widget.user.uid;
@@ -251,6 +252,13 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       return existing;
     }
     final operation = () async {
+      try {
+        await _serverCloseOperation;
+      } catch (error, stackTrace) {
+        debugPrint(
+          'Failed to wait for live session close: $error\n$stackTrace',
+        );
+      }
       try {
         await _leaveRtcOnly(updateUi: false);
       } catch (error, stackTrace) {
@@ -1444,25 +1452,32 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       return;
     }
     var closed = false;
+    _closingSession = true;
     setState(() {
-      _closingSession = true;
       _message = automaticDurationLimit ? '配信時間が1時間に達したため、自動終了しています。' : null;
     });
     _timelineFlushTimer?.cancel();
     _timelineFlushTimer = null;
     _snapshotSaveTimer?.cancel();
     _snapshotSaveTimer = null;
-    try {
+    final serverClose = () async {
       await _saveBoardSnapshotNow();
       if (!await _flushAllTimelineMessages()) {
+        return false;
+      }
+      await _service.closeSession(sessionId);
+      return true;
+    }();
+    _serverCloseOperation = serverClose.then<void>((_) {}, onError: (_) {});
+    try {
+      closed = await serverClose;
+      if (!closed) {
         setState(() {
           _message = '板書の保存が完了していません。通信を確認して、もう一度終了してください。';
         });
-        return;
+      } else {
+        await _leaveRtcOnly();
       }
-      await _service.closeSession(sessionId);
-      closed = true;
-      await _leaveRtcOnly();
     } catch (error) {
       _showError(error);
     } finally {
@@ -1846,6 +1861,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     return AsyncRouteExitScope(
       onExit: _cleanupRouteResources,
       progressLabel: '配信との接続を終了しています…',
+      busyLabel: _closingSession ? 'サーバーへ保存しています' : null,
       child: Scaffold(
         appBar: AppBar(title: const Text('ライブ音声・板書配信')),
         body: SafeArea(child: _session == null ? _buildLobby() : _buildRoom()),
@@ -2195,7 +2211,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
         title: Text(participant.displayName),
         subtitle: Text(isCoSpeaker ? '一緒に話しています' : '視聴専用'),
         value: isCoSpeaker,
-        onChanged: _presenterUpdates.contains(coSpeakerKey)
+        onChanged: _closingSession || _presenterUpdates.contains(coSpeakerKey)
             ? null
             : (enabled) => _toggleLiveControl(
                 participant: participant,
@@ -2214,7 +2230,10 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
               : '先に「一緒に話す」を許可してください',
         ),
         value: isDrawer,
-        onChanged: !isCoSpeaker || _presenterUpdates.contains(drawerKey)
+        onChanged:
+            _closingSession ||
+                !isCoSpeaker ||
+                _presenterUpdates.contains(drawerKey)
             ? null
             : (enabled) => _toggleLiveControl(
                 participant: participant,
