@@ -132,6 +132,13 @@ class LessonWhiteboardCanvas extends StatefulWidget {
   State<LessonWhiteboardCanvas> createState() => _LessonWhiteboardCanvasState();
 }
 
+@visibleForTesting
+void debugCompleteLessonWhiteboardBackgroundRaster(Element canvasElement) {
+  final state =
+      (canvasElement as StatefulElement).state as _LessonWhiteboardCanvasState;
+  state._onBackgroundRasterReady(state._backgroundRasterScale);
+}
+
 class LessonWhiteboardBackgroundPreloader extends StatelessWidget {
   const LessonWhiteboardBackgroundPreloader({
     super.key,
@@ -286,13 +293,27 @@ class _LessonWhiteboardBackgroundView extends StatefulWidget {
     required this.background,
     required this.urlResolver,
     required this.maximumDpi,
-    required this.rasterSignature,
+    required this.canvasSize,
+    required this.visual,
+    required this.visibleRasterScale,
+    this.pendingRasterScale,
+    required this.visibleLayoutKey,
+    required this.pendingLayoutKey,
+    required this.slotKeyPrefix,
+    this.onRasterReady,
   });
 
   final LessonWhiteboardBoardBackground background;
   final LessonWhiteboardMaterialUrlResolver urlResolver;
   final double maximumDpi;
-  final String rasterSignature;
+  final Size canvasSize;
+  final LessonWhiteboardViewport visual;
+  final double visibleRasterScale;
+  final double? pendingRasterScale;
+  final String visibleLayoutKey;
+  final String pendingLayoutKey;
+  final String slotKeyPrefix;
+  final ValueChanged<double>? onRasterReady;
 
   @override
   State<_LessonWhiteboardBackgroundView> createState() =>
@@ -302,6 +323,7 @@ class _LessonWhiteboardBackgroundView extends StatefulWidget {
 class _LessonWhiteboardBackgroundViewState
     extends State<_LessonWhiteboardBackgroundView> {
   late Future<LessonWhiteboardMaterialSource> _sourceFuture;
+  final Set<String> _notifiedSignatures = <String>{};
 
   @override
   void initState() {
@@ -315,12 +337,158 @@ class _LessonWhiteboardBackgroundViewState
     if (oldWidget.background.storagePath != widget.background.storagePath ||
         oldWidget.urlResolver != widget.urlResolver) {
       _resolveUrl();
+      _notifiedSignatures.clear();
     }
+    _pruneNotifiedSignatures();
+  }
+
+  void _pruneNotifiedSignatures() {
+    final keep = <String>{
+      widget.visibleRasterScale.toStringAsFixed(3),
+      if (widget.pendingRasterScale != null)
+        widget.pendingRasterScale!.toStringAsFixed(3),
+    };
+    _notifiedSignatures.removeWhere((signature) => !keep.contains(signature));
+  }
+
+  void _scheduleRasterReady(double scale) {
+    final signature = scale.toStringAsFixed(3);
+    if (_notifiedSignatures.contains(signature)) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _notifiedSignatures.contains(signature)) {
+        return;
+      }
+      _notifiedSignatures.add(signature);
+      widget.onRasterReady?.call(scale);
+    });
   }
 
   void _resolveUrl() {
     _sourceFuture = Future<LessonWhiteboardMaterialSource>.sync(
       () => widget.urlResolver(widget.background.storagePath),
+    );
+  }
+
+  String _slotKey(double rasterScale) {
+    if (widget.slotKeyPrefix.endsWith('-minimap')) {
+      return widget.slotKeyPrefix;
+    }
+    return '${widget.slotKeyPrefix}-${rasterScale.toStringAsFixed(3)}';
+  }
+
+  Widget _statusPage({required bool isError, required bool labeled}) {
+    if (isError) {
+      return ColoredBox(
+        color: const Color(0xfff5f5f5),
+        child: Center(
+          child: Icon(
+            Icons.broken_image_outlined,
+            key: labeled ? const ValueKey('whiteboard-background-error') : null,
+          ),
+        ),
+      );
+    }
+    return ColoredBox(
+      color: Colors.white,
+      child: Center(
+        child: CircularProgressIndicator(
+          key: labeled ? const ValueKey('whiteboard-background-loading') : null,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRasterStack({required Widget Function(double scale) pageChild}) {
+    final visibleScale = widget.visibleRasterScale;
+    final pendingScale = widget.pendingRasterScale;
+    return Stack(
+      clipBehavior: Clip.none,
+      fit: StackFit.expand,
+      children: [
+        _buildRasterLayer(
+          rasterScale: visibleScale,
+          hidden: false,
+          layoutKey: widget.visibleLayoutKey,
+          pageChild: pageChild(visibleScale),
+        ),
+        if (pendingScale != null)
+          _buildRasterLayer(
+            rasterScale: pendingScale,
+            hidden: true,
+            layoutKey: widget.pendingLayoutKey,
+            pageChild: pageChild(pendingScale),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildRasterLayer({
+    required double rasterScale,
+    required bool hidden,
+    required String layoutKey,
+    required Widget pageChild,
+  }) {
+    final visual = widget.visual;
+    final size = widget.canvasSize;
+    final extraScale = visual.scale / rasterScale;
+    final rasterWidth = size.width * rasterScale;
+    final rasterHeight = size.height * rasterScale;
+    Widget layer = SizedBox(
+      width: rasterWidth,
+      height: rasterHeight,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          pageChild,
+          IgnorePointer(child: SizedBox.expand(key: ValueKey(layoutKey))),
+        ],
+      ),
+    );
+    if ((extraScale - 1).abs() > 0.0001) {
+      layer = Transform.scale(
+        alignment: Alignment.topLeft,
+        scale: extraScale,
+        child: layer,
+      );
+    }
+    return Positioned(
+      key: ValueKey(_slotKey(rasterScale)),
+      left: -visual.left * size.width * visual.scale,
+      top: -visual.top * size.height * visual.scale,
+      width: rasterWidth,
+      height: rasterHeight,
+      child: IgnorePointer(
+        child: Offstage(offstage: hidden, child: layer),
+      ),
+    );
+  }
+
+  Widget _buildPdfPages(PdfDocument document) {
+    return _buildRasterStack(
+      pageChild: (scale) {
+        final signature = scale.toStringAsFixed(3);
+        return PdfPageView(
+          key: ValueKey(
+            'whiteboard-pdf-page-${widget.background.pageNumber}-'
+            '$signature',
+          ),
+          document: document,
+          pageNumber: widget.background.pageNumber,
+          maximumDpi: widget.maximumDpi,
+          backgroundColor: Colors.white,
+          decorationBuilder: (context, pageSize, page, pageImage) {
+            if (pageImage != null) {
+              _scheduleRasterReady(scale);
+            }
+            return ColoredBox(
+              color: Colors.white,
+              child: pageImage ?? const SizedBox.expand(),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -330,23 +498,24 @@ class _LessonWhiteboardBackgroundViewState
       future: _sourceFuture,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
-          return const ColoredBox(
-            color: Color(0xfff5f5f5),
-            child: Center(
-              child: Icon(
-                Icons.broken_image_outlined,
-                key: ValueKey('whiteboard-background-error'),
+          return _buildRasterStack(
+            pageChild: (scale) => _statusPage(
+              isError: true,
+              labeled: _sameWhiteboardRasterScale(
+                scale,
+                widget.visibleRasterScale,
               ),
             ),
           );
         }
         final source = snapshot.data;
         if (source == null) {
-          return const ColoredBox(
-            color: Colors.white,
-            child: Center(
-              child: CircularProgressIndicator(
-                key: ValueKey('whiteboard-background-loading'),
+          return _buildRasterStack(
+            pageChild: (scale) => _statusPage(
+              isError: false,
+              labeled: _sameWhiteboardRasterScale(
+                scale,
+                widget.visibleRasterScale,
               ),
             ),
           );
@@ -357,50 +526,63 @@ class _LessonWhiteboardBackgroundViewState
               source.localFilePath!,
             );
             if (provider == null) {
-              return const ColoredBox(
-                color: Color(0xfff5f5f5),
-                child: Center(child: Icon(Icons.broken_image_outlined)),
+              return _buildRasterStack(
+                pageChild: (scale) => _statusPage(
+                  isError: true,
+                  labeled: _sameWhiteboardRasterScale(
+                    scale,
+                    widget.visibleRasterScale,
+                  ),
+                ),
               );
             }
-            return _sizedImageBackground(
-              image: provider,
-              rasterSignature: widget.rasterSignature,
+            return _buildRasterStack(
+              pageChild: (scale) => _sizedImageBackground(
+                image: provider,
+                rasterSignature: scale.toStringAsFixed(3),
+                onFrame: () => _scheduleRasterReady(scale),
+              ),
             );
           }
           final url = source.networkUrl;
           if (url == null || url.isEmpty) {
-            return const ColoredBox(color: Colors.white);
+            return _buildRasterStack(
+              pageChild: (_) => const ColoredBox(color: Colors.white),
+            );
           }
-          return _sizedNetworkImageBackground(
-            url: url,
-            rasterSignature: widget.rasterSignature,
+          return _buildRasterStack(
+            pageChild: (scale) => _sizedNetworkImageBackground(
+              url: url,
+              rasterSignature: scale.toStringAsFixed(3),
+              onFrame: () => _scheduleRasterReady(scale),
+            ),
           );
         }
-        Widget loadingBuilder(BuildContext context) => const ColoredBox(
-          color: Colors.white,
-          child: Center(child: CircularProgressIndicator()),
+        Widget loadingBuilder(BuildContext context) => _buildRasterStack(
+          pageChild: (scale) => _statusPage(
+            isError: false,
+            labeled: _sameWhiteboardRasterScale(
+              scale,
+              widget.visibleRasterScale,
+            ),
+          ),
         );
         Widget builder(BuildContext context, PdfDocument? document) =>
             document == null
             ? loadingBuilder(context)
-            : PdfPageView(
-                key: ValueKey(
-                  'whiteboard-pdf-page-${widget.background.pageNumber}-'
-                  '${widget.rasterSignature}',
-                ),
-                document: document,
-                pageNumber: widget.background.pageNumber,
-                maximumDpi: widget.maximumDpi,
-                decoration: const BoxDecoration(color: Colors.white),
-                backgroundColor: Colors.white,
-              );
+            : _buildPdfPages(document);
         Widget errorBuilder(
           BuildContext context,
           Object error,
           StackTrace? stackTrace,
-        ) => const ColoredBox(
-          color: Color(0xfff5f5f5),
-          child: Center(child: Icon(Icons.broken_image_outlined)),
+        ) => _buildRasterStack(
+          pageChild: (scale) => _statusPage(
+            isError: true,
+            labeled: _sameWhiteboardRasterScale(
+              scale,
+              widget.visibleRasterScale,
+            ),
+          ),
         );
         final localPath = source.localFilePath;
         if (localPath != null) {
@@ -415,7 +597,9 @@ class _LessonWhiteboardBackgroundViewState
         }
         final url = source.networkUrl;
         return url == null || url.isEmpty
-            ? const ColoredBox(color: Colors.white)
+            ? _buildRasterStack(
+                pageChild: (_) => const ColoredBox(color: Colors.white),
+              )
             : PdfDocumentViewBuilder.uri(
                 Uri.parse(url),
                 key: ValueKey('whiteboard-pdf-${widget.background.assetId}'),
@@ -432,6 +616,7 @@ class _LessonWhiteboardBackgroundViewState
 Widget _sizedImageBackground({
   required ImageProvider image,
   required String rasterSignature,
+  VoidCallback? onFrame,
 }) {
   return LayoutBuilder(
     builder: (context, constraints) {
@@ -441,6 +626,12 @@ Widget _sizedImageBackground({
         key: ValueKey('whiteboard-image-background-$rasterSignature'),
         fit: BoxFit.fill,
         filterQuality: FilterQuality.high,
+        frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+          if (frame != null || wasSynchronouslyLoaded) {
+            onFrame?.call();
+          }
+          return child;
+        },
         errorBuilder: (context, error, stackTrace) => const ColoredBox(
           color: Color(0xfff5f5f5),
           child: Center(child: Icon(Icons.broken_image_outlined)),
@@ -453,6 +644,7 @@ Widget _sizedImageBackground({
 Widget _sizedNetworkImageBackground({
   required String url,
   required String rasterSignature,
+  VoidCallback? onFrame,
 }) {
   return LayoutBuilder(
     builder: (context, constraints) {
@@ -464,6 +656,12 @@ Widget _sizedNetworkImageBackground({
         filterQuality: FilterQuality.high,
         cacheWidth: cacheSize.$1,
         cacheHeight: cacheSize.$2,
+        frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+          if (frame != null || wasSynchronouslyLoaded) {
+            onFrame?.call();
+          }
+          return child;
+        },
         errorBuilder: (context, error, stackTrace) => const ColoredBox(
           color: Color(0xfff5f5f5),
           child: Center(child: Icon(Icons.broken_image_outlined)),
@@ -489,10 +687,31 @@ Widget _sizedNetworkImageBackground({
   return (width, height);
 }
 
+bool _sameWhiteboardRasterScale(double a, double b) => (a - b).abs() < 0.001;
+
+bool _sameWhiteboardBackground(
+  LessonWhiteboardBoardBackground? a,
+  LessonWhiteboardBoardBackground? b,
+) {
+  if (identical(a, b)) {
+    return true;
+  }
+  if (a == null || b == null) {
+    return false;
+  }
+  return a.assetId == b.assetId &&
+      a.pageNumber == b.pageNumber &&
+      a.storagePath == b.storagePath &&
+      a.mediaType == b.mediaType;
+}
+
 class _LessonWhiteboardCanvasState extends State<LessonWhiteboardCanvas> {
   final Map<int, Offset> _pointerPositions = {};
   late LessonWhiteboardViewport _viewport;
   late double _backgroundRasterScale;
+  late double _visibleRasterScale;
+  bool _visibleRasterReady = false;
+  double? _queuedRasterScale;
   Timer? _minimapHideTimer;
   Timer? _scrollInteractionEndTimer;
   bool _minimapVisible = false;
@@ -508,22 +727,77 @@ class _LessonWhiteboardCanvasState extends State<LessonWhiteboardCanvas> {
     super.initState();
     _viewport = widget.viewport ?? LessonWhiteboardViewport.full;
     _backgroundRasterScale = _viewport.scale;
+    _visibleRasterScale = _backgroundRasterScale;
+    _visibleRasterReady = false;
+    _queuedRasterScale = null;
+  }
+
+  bool get _isPendingRasterInFlight =>
+      _visibleRasterReady &&
+      !_sameWhiteboardRasterScale(_visibleRasterScale, _backgroundRasterScale);
+
+  double get _hysteresisRasterScale =>
+      _queuedRasterScale ?? _backgroundRasterScale;
+
+  /// Starts a new PDF/image raster only when none is already in flight.
+  /// While one is rendering, keep showing the old image and remember the
+  /// latest desired scale for afterwards.
+  void _requestBackgroundRasterScale(double desiredScale) {
+    if (_sameWhiteboardRasterScale(desiredScale, _backgroundRasterScale)) {
+      _queuedRasterScale = null;
+      return;
+    }
+    if (_isPendingRasterInFlight) {
+      _queuedRasterScale = desiredScale;
+      return;
+    }
+    _backgroundRasterScale = desiredScale;
+    _queuedRasterScale = null;
   }
 
   @override
   void didUpdateWidget(covariant LessonWhiteboardCanvas oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!_sameWhiteboardBackground(oldWidget.background, widget.background)) {
+      _visibleRasterReady = false;
+      _visibleRasterScale = _backgroundRasterScale;
+      _queuedRasterScale = null;
+    }
     final controlledViewport = widget.viewport;
     if (controlledViewport != null && !_viewInteractionActive) {
       if (controlledViewport != _viewport) {
         _viewport = controlledViewport;
         _showMinimap(scheduleHide: true);
       }
-      _backgroundRasterScale = commitLessonWhiteboardBackgroundRasterScale(
-        visualScale: controlledViewport.scale,
-        currentRasterScale: _backgroundRasterScale,
+      _requestBackgroundRasterScale(
+        commitLessonWhiteboardBackgroundRasterScale(
+          visualScale: controlledViewport.scale,
+          currentRasterScale: _hysteresisRasterScale,
+        ),
       );
     }
+  }
+
+  void _onBackgroundRasterReady(double scale) {
+    if (!mounted) {
+      return;
+    }
+    if (!_sameWhiteboardRasterScale(scale, _backgroundRasterScale)) {
+      return;
+    }
+    if (_visibleRasterReady &&
+        _sameWhiteboardRasterScale(scale, _visibleRasterScale)) {
+      return;
+    }
+    setState(() {
+      _visibleRasterScale = scale;
+      _visibleRasterReady = true;
+      final queued = _queuedRasterScale;
+      _queuedRasterScale = null;
+      if (queued != null && !_sameWhiteboardRasterScale(queued, scale)) {
+        _backgroundRasterScale = queued;
+      }
+    });
   }
 
   @override
@@ -569,9 +843,11 @@ class _LessonWhiteboardCanvasState extends State<LessonWhiteboardCanvas> {
     }
     setState(() {
       _viewport = viewport;
-      _backgroundRasterScale = commitLessonWhiteboardBackgroundRasterScale(
-        visualScale: viewport.scale,
-        currentRasterScale: _backgroundRasterScale,
+      _requestBackgroundRasterScale(
+        commitLessonWhiteboardBackgroundRasterScale(
+          visualScale: viewport.scale,
+          currentRasterScale: _hysteresisRasterScale,
+        ),
       );
     });
     _showMinimap(scheduleHide: false);
@@ -595,8 +871,10 @@ class _LessonWhiteboardCanvasState extends State<LessonWhiteboardCanvas> {
           maxLessonWhiteboardViewportScale,
         )
         .toDouble();
-    if (snapped != _backgroundRasterScale) {
-      setState(() => _backgroundRasterScale = snapped);
+    if (!_sameWhiteboardRasterScale(snapped, _backgroundRasterScale) ||
+        (_queuedRasterScale != null &&
+            !_sameWhiteboardRasterScale(snapped, _queuedRasterScale!))) {
+      setState(() => _requestBackgroundRasterScale(snapped));
     }
     widget.onViewportChanged?.call(
       LessonWhiteboardViewportChange(
@@ -930,45 +1208,46 @@ class _LessonWhiteboardCanvasState extends State<LessonWhiteboardCanvas> {
     if (background == null) {
       return const SizedBox.shrink();
     }
-    final visual = minimap ? LessonWhiteboardViewport.full : _viewport;
-    final rasterScale = minimap ? 1.0 : _backgroundRasterScale;
-    final extraScale = visual.scale / rasterScale;
-    final rasterSignature = rasterScale.toStringAsFixed(3);
-    final rasterWidth = size.width * rasterScale;
-    final rasterHeight = size.height * rasterScale;
-    Widget backgroundView = _LessonWhiteboardBackgroundView(
+    if (minimap) {
+      return _LessonWhiteboardBackgroundView(
+        key: ValueKey(
+          'whiteboard-background-${background.assetId}-'
+          '${background.pageNumber}-minimap',
+        ),
+        background: background,
+        urlResolver: widget.materialUrlResolver,
+        maximumDpi: 96,
+        canvasSize: size,
+        visual: LessonWhiteboardViewport.full,
+        visibleRasterScale: 1,
+        visibleLayoutKey: 'whiteboard-background-raster-layout-minimap',
+        pendingLayoutKey: 'whiteboard-background-raster-layout-minimap-pending',
+        slotKeyPrefix: 'whiteboard-background-raster-slot-minimap',
+      );
+    }
+    final pendingScale = _backgroundRasterScale;
+    final visibleScale = _visibleRasterReady
+        ? _visibleRasterScale
+        : pendingScale;
+    final hasPending =
+        _visibleRasterReady &&
+        !_sameWhiteboardRasterScale(visibleScale, pendingScale);
+    return _LessonWhiteboardBackgroundView(
       key: ValueKey(
         'whiteboard-background-${background.assetId}-'
         '${background.pageNumber}',
       ),
       background: background,
       urlResolver: widget.materialUrlResolver,
-      maximumDpi: minimap ? 96 : 300,
-      rasterSignature: rasterSignature,
-    );
-    backgroundView = SizedBox(
-      key: ValueKey(
-        minimap
-            ? 'whiteboard-background-raster-layout-minimap'
-            : 'whiteboard-background-raster-layout',
-      ),
-      width: rasterWidth,
-      height: rasterHeight,
-      child: backgroundView,
-    );
-    if ((extraScale - 1).abs() > 0.0001) {
-      backgroundView = Transform.scale(
-        alignment: Alignment.topLeft,
-        scale: extraScale,
-        child: backgroundView,
-      );
-    }
-    return Positioned(
-      left: -visual.left * size.width * visual.scale,
-      top: -visual.top * size.height * visual.scale,
-      width: rasterWidth,
-      height: rasterHeight,
-      child: IgnorePointer(child: backgroundView),
+      maximumDpi: 300,
+      canvasSize: size,
+      visual: _viewport,
+      visibleRasterScale: visibleScale,
+      pendingRasterScale: hasPending ? pendingScale : null,
+      visibleLayoutKey: 'whiteboard-background-raster-layout',
+      pendingLayoutKey: 'whiteboard-background-raster-layout-pending',
+      slotKeyPrefix: 'whiteboard-background-raster-slot',
+      onRasterReady: _onBackgroundRasterReady,
     );
   }
 

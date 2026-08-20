@@ -88,7 +88,186 @@ void main() {
       tester.getSize(rasterFinder).width,
       closeTo(canvasSize.width * 2, 0.5),
     );
+    expect(
+      find.byKey(const ValueKey('whiteboard-background-raster-layout-pending')),
+      findsNothing,
+    );
   });
+
+  testWidgets(
+    'keeps the previous background raster until the next one is ready',
+    (tester) async {
+      final unresolvedUrl = Completer<LessonWhiteboardMaterialSource>();
+      const background = LessonWhiteboardBoardBackground(
+        assetId: 'pdf-asset',
+        storagePath:
+            'courseMedia/course/lessons/lesson/materials/doc/shared/selected.pdf',
+        mediaType: lessonWhiteboardBackgroundPdf,
+        aspectRatio: 4 / 3,
+      );
+
+      Widget host(double scale) {
+        return MaterialApp(
+          home: Scaffold(
+            body: LessonWhiteboardCanvas(
+              strokes: const [],
+              background: background,
+              aspectRatio: background.aspectRatio,
+              viewport: LessonWhiteboardViewport(
+                centerX: 0.5,
+                centerY: 0.5,
+                scale: scale,
+              ),
+              materialUrlResolver: (_) => unresolvedUrl.future,
+            ),
+          ),
+        );
+      }
+
+      await tester.pumpWidget(host(1));
+      debugCompleteLessonWhiteboardBackgroundRaster(
+        tester.element(find.byType(LessonWhiteboardCanvas)),
+      );
+      await tester.pump();
+
+      final canvasSize = tester.getSize(
+        find.byKey(const ValueKey('whiteboard-aspect-ratio')),
+      );
+      final rasterFinder = find.byKey(
+        const ValueKey('whiteboard-background-raster-layout'),
+      );
+      final pendingFinder = find.byKey(
+        const ValueKey('whiteboard-background-raster-layout-pending'),
+        skipOffstage: false,
+      );
+      expect(tester.getSize(rasterFinder), canvasSize);
+      expect(pendingFinder, findsNothing);
+
+      await tester.pumpWidget(host(2));
+      await tester.pump();
+      expect(tester.getSize(rasterFinder), canvasSize);
+      expect(pendingFinder, findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('whiteboard-background-pdf-asset-1')),
+        findsOneWidget,
+      );
+      expect(
+        tester.getSize(pendingFinder).width,
+        closeTo(canvasSize.width * 2, 0.5),
+      );
+
+      debugCompleteLessonWhiteboardBackgroundRaster(
+        tester.element(find.byType(LessonWhiteboardCanvas)),
+      );
+      await tester.pump();
+      expect(pendingFinder, findsNothing);
+      expect(
+        tester.getSize(rasterFinder).width,
+        closeTo(canvasSize.width * 2, 0.5),
+      );
+    },
+  );
+
+  testWidgets(
+    'queues a later raster scale until the in-flight raster is ready',
+    (tester) async {
+      final unresolvedUrl = Completer<LessonWhiteboardMaterialSource>();
+      const background = LessonWhiteboardBoardBackground(
+        assetId: 'pdf-asset',
+        storagePath:
+            'courseMedia/course/lessons/lesson/materials/doc/shared/selected.pdf',
+        mediaType: lessonWhiteboardBackgroundPdf,
+        aspectRatio: 4 / 3,
+      );
+
+      Widget host(double scale) {
+        return MaterialApp(
+          home: Scaffold(
+            body: LessonWhiteboardCanvas(
+              strokes: const [],
+              background: background,
+              aspectRatio: background.aspectRatio,
+              viewport: LessonWhiteboardViewport(
+                centerX: 0.5,
+                centerY: 0.5,
+                scale: scale,
+              ),
+              materialUrlResolver: (_) => unresolvedUrl.future,
+            ),
+          ),
+        );
+      }
+
+      await tester.pumpWidget(host(1));
+      debugCompleteLessonWhiteboardBackgroundRaster(
+        tester.element(find.byType(LessonWhiteboardCanvas)),
+      );
+      await tester.pump();
+
+      final canvasSize = tester.getSize(
+        find.byKey(const ValueKey('whiteboard-aspect-ratio')),
+      );
+      final rasterFinder = find.byKey(
+        const ValueKey('whiteboard-background-raster-layout'),
+      );
+      final pendingFinder = find.byKey(
+        const ValueKey('whiteboard-background-raster-layout-pending'),
+        skipOffstage: false,
+      );
+
+      await tester.pumpWidget(host(2));
+      await tester.pump();
+      expect(pendingFinder, findsOneWidget);
+      expect(
+        tester.getSize(pendingFinder).width,
+        closeTo(canvasSize.width * 2, 0.5),
+      );
+
+      await tester.pumpWidget(host(8));
+      await tester.pump();
+      expect(
+        tester.getSize(rasterFinder),
+        canvasSize,
+        reason: 'keep showing the old raster while the first new one renders',
+      );
+      expect(
+        tester.getSize(pendingFinder).width,
+        closeTo(canvasSize.width * 2, 0.5),
+        reason: 'must not start an 8x raster until 2x is ready',
+      );
+      expect(
+        find.byKey(
+          const ValueKey('whiteboard-background-raster-slot-8.000'),
+          skipOffstage: false,
+        ),
+        findsNothing,
+      );
+
+      debugCompleteLessonWhiteboardBackgroundRaster(
+        tester.element(find.byType(LessonWhiteboardCanvas)),
+      );
+      await tester.pump();
+      expect(
+        tester.getSize(rasterFinder).width,
+        closeTo(canvasSize.width * 2, 0.5),
+      );
+      expect(pendingFinder, findsOneWidget);
+      expect(
+        tester.getSize(pendingFinder).width,
+        closeTo(canvasSize.width * 8, 0.5),
+      );
+
+      debugCompleteLessonWhiteboardBackgroundRaster(
+        tester.element(find.byType(LessonWhiteboardCanvas)),
+      );
+      await tester.pump();
+      expect(pendingFinder, findsNothing);
+      expect(
+        tester.getSize(rasterFinder).width,
+        closeTo(canvasSize.width * 8, 0.5),
+      );
+    },
+  );
 
   testWidgets('uses 4:3, zooms to 8x, pans, and hides the minimap', (
     tester,

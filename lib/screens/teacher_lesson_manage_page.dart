@@ -20,6 +20,7 @@ import '../services/course_lesson_repository.dart';
 import '../services/lesson_media_duration_service.dart';
 import '../services/lesson_media_storage_service.dart';
 import '../services/live_audio_probe_service.dart';
+import '../services/app_media_memory.dart';
 import '../utils/firebase_error_message.dart';
 import '../widgets/lesson_audio_whiteboard_recorder_panel.dart';
 import '../widgets/lesson_material_preparation_panel.dart';
@@ -269,6 +270,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     for (final editor in _lessonEditors) {
       editor.dispose();
     }
+    releaseAppMediaMemory();
     super.dispose();
   }
 

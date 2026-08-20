@@ -56,13 +56,49 @@ class _MediaPlayerSlot {
   int? loadedSegmentIndex;
   String? loadedUrl;
   Future<void>? _prepareFuture;
+  Future<void>? _releaseFuture;
 
-  LessonMediaPlayback get player => _player ??= createPlayer();
+  LessonMediaPlayback get player {
+    final existing = _player;
+    if (existing != null) {
+      return existing;
+    }
+    _releaseFuture = null;
+    return _player = createPlayer();
+  }
 
   bool isPreparedFor(int segmentIndex, String url) {
+    final player = _player;
     return loadedSegmentIndex == segmentIndex &&
         loadedUrl == url &&
+        player != null &&
         player.isReady;
+  }
+
+  /// Disposes the native player if one exists, then forgets it so the next
+  /// [player] access creates a fresh instance.
+  Future<void> release() {
+    return _releaseFuture ??= _releaseOnce();
+  }
+
+  Future<void> _releaseOnce() async {
+    final pendingPrepare = _prepareFuture;
+    if (pendingPrepare != null) {
+      try {
+        await pendingPrepare;
+      } catch (_) {
+        // The prepare caller still receives the failure. Release must
+        // continue so a half-open native player is not left behind.
+      }
+    }
+    final player = _player;
+    _player = null;
+    loadedSegmentIndex = null;
+    loadedUrl = null;
+    _prepareFuture = null;
+    if (player != null) {
+      await player.disposePlayer();
+    }
   }
 }
 
@@ -119,6 +155,10 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   int? _deferredCompletionSegmentIndex;
   int? _deferredCompletionIntentGeneration;
   bool _replayAfterSeekDrain = false;
+
+  /// Bumped when all slots are dropped so an in-flight idle-slot cleanup
+  /// cannot dispose a player that a newer activation just opened.
+  int _slotReleaseGeneration = 0;
 
   /// Bumped every time a user/UI-initiated [play] or [pause] call actually
   /// runs. Used to detect "did the user tap play/pause again while a
@@ -429,7 +469,9 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       _isReady = slot.player.isReady;
       _emitTotalDuration();
 
-      unawaited(_preloadNextSegment(segmentIndex + 1));
+      unawaited(
+        _preloadNextThenReleaseIdle(segmentIndex, ++_slotReleaseGeneration),
+      );
       _logSwitch(
         '_activateSegment done: segmentIndex=$segmentIndex '
         'globalPositionSec=$_globalPositionSec isReady=$_isReady',
@@ -572,6 +614,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
         _globalPositionSec = _timeline.totalDurationSecExact;
         _globalPositionController.add(_globalPositionSec);
         await _pauseInternal();
+        await _releaseStoppedPlaybackPlayers();
         return;
       }
 
@@ -651,7 +694,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   }
 
   Future<void> _playInternal() async {
-    if (_activePlayer == null) {
+    if (_isResetting || _timeline.isEmpty) {
       return;
     }
     if (isLessonPlaybackAtEnd(
@@ -667,6 +710,9 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       if (_isPlaying) {
         return;
       }
+    }
+    if (_activePlayer == null) {
+      return;
     }
     _logSwitch('_playInternal: currentSegmentIndex=$_currentSegmentIndex');
     await _activePlayer!.play();
@@ -839,7 +885,8 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       'currentSegmentIndex=$_currentSegmentIndex '
       'crossSegment=${position.segmentIndex != _currentSegmentIndex}',
     );
-    if (position.segmentIndex != _currentSegmentIndex) {
+    if (position.segmentIndex != _currentSegmentIndex ||
+        _activePlayer == null) {
       final shouldResumePlaying = _playRequested;
       final generationAtStart = _playbackIntentGeneration;
       // Mark the switch as starting immediately, before pausing the
@@ -979,18 +1026,94 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     await _segmentCompletedController.close();
   }
 
+  Future<void> _preloadNextThenReleaseIdle(
+    int activeSegmentIndex,
+    int generation,
+  ) async {
+    try {
+      await _preloadNextSegment(activeSegmentIndex + 1);
+      if (_isResetting || generation != _slotReleaseGeneration) {
+        return;
+      }
+      await _releaseUnusedIdleSlots(activeSegmentIndex: activeSegmentIndex);
+    } catch (error) {
+      _logSwitch(
+        '_preloadNextThenReleaseIdle: FAILED activeSegmentIndex='
+        '$activeSegmentIndex error=$error',
+      );
+    }
+  }
+
+  /// Drops pooled players that are neither the active segment nor the
+  /// preloaded next segment. After the last part starts, this is what
+  /// unloads the previous part so it is not still decoded at the end.
+  Future<void> _releaseUnusedIdleSlots({required int activeSegmentIndex}) async {
+    final nextIndex = activeSegmentIndex + 1;
+    final ordered = _timeline.orderedSegments;
+    final hasNext = nextIndex >= 0 && nextIndex < ordered.length;
+    final nextSegment = hasNext ? ordered[nextIndex] : null;
+
+    for (final slot in List<_MediaPlayerSlot>.from(_audioSlots)) {
+      if (identical(slot, _activeSlot)) {
+        continue;
+      }
+      final keepForNext =
+          hasNext &&
+          nextSegment != null &&
+          nextSegment.isAudio &&
+          (slot.loadedSegmentIndex == nextIndex || slot._prepareFuture != null);
+      if (keepForNext) {
+        continue;
+      }
+      _logSwitch(
+        '_releaseUnusedIdleSlots: releasing idle audio '
+        'loadedSegmentIndex=${slot.loadedSegmentIndex} '
+        'activeSegmentIndex=$activeSegmentIndex',
+      );
+      _audioSlots.remove(slot);
+      await slot.release();
+    }
+
+    final videoSlot = _videoSlot;
+    if (videoSlot != null && !identical(videoSlot, _activeSlot)) {
+      final keepForNext =
+          hasNext && nextSegment != null && !nextSegment.isAudio;
+      if (!keepForNext) {
+        _logSwitch(
+          '_releaseUnusedIdleSlots: releasing idle video '
+          'activeSegmentIndex=$activeSegmentIndex',
+        );
+        _videoSlot = null;
+        await videoSlot.release();
+      }
+    }
+  }
+
+  /// After natural end, drop every decoded player while keeping the
+  /// timeline so "play again" can [seekGlobal] to 0 and reopen.
+  Future<void> _releaseStoppedPlaybackPlayers() async {
+    _logSwitch(
+      '_releaseStoppedPlaybackPlayers: dumping players after playlist end '
+      'currentSegmentIndex=$_currentSegmentIndex',
+    );
+    await _disposeAllSlots();
+  }
+
   Future<void> _disposeAllSlots() async {
+    _slotReleaseGeneration++;
     await _detachActiveSubscriptions();
-    for (final slot in _audioSlots) {
-      await slot.player.disposePlayer();
-    }
+    final audioSlots = List<_MediaPlayerSlot>.from(_audioSlots);
     _audioSlots.clear();
-    if (_videoSlot != null) {
-      await _videoSlot!.player.disposePlayer();
-      _videoSlot = null;
-    }
+    final videoSlot = _videoSlot;
+    _videoSlot = null;
     _activePlayer = null;
     _activeSlot = null;
+    for (final slot in audioSlots) {
+      await slot.release();
+    }
+    if (videoSlot != null) {
+      await videoSlot.release();
+    }
   }
 }
 

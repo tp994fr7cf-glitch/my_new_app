@@ -129,6 +129,70 @@ void main() {
   });
 
   test(
+    'natural end of the last audio part dumps unused players and replay reopens',
+    () async {
+      final created = <FakeLessonMediaPlayback>[];
+      final playback = LessonMediaPlaylistPlayback(
+        playbackFactory: ({required bool isAudio}) {
+          final player = FakeLessonMediaPlayback(
+            totalDuration: const Duration(seconds: 2),
+          );
+          created.add(player);
+          return player;
+        },
+      );
+      await playback.openSegments([
+        LessonMediaSegment(
+          id: 'audio-0',
+          order: 0,
+          mediaType: 'audio',
+          url: 'https://example.com/audio-0.mp3',
+          durationSec: 2,
+        ),
+        LessonMediaSegment(
+          id: 'audio-1',
+          order: 1,
+          mediaType: 'audio',
+          url: 'https://example.com/audio-1.mp3',
+          durationSec: 2,
+        ),
+      ]);
+      await Future<void>.delayed(Duration.zero);
+      expect(created, hasLength(2));
+
+      await playback.play();
+      await created[0].simulateNaturalCompletion(emitStoppedFirst: true);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(playback.currentSegmentIndex, 1);
+      expect(playback.isPlaying, isTrue);
+      expect(created[0].disposeCount, 1);
+      expect(created[1].disposeCount, 0);
+
+      await created[1].simulateNaturalCompletion(emitStoppedFirst: true);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(playback.isPlaying, isFalse);
+      expect(playback.globalPositionSec, closeTo(4, 0.001));
+      expect(created[1].disposeCount, 1);
+      expect(playback.isReady, isTrue);
+
+      await playback.play();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.currentSegmentIndex, 0);
+      expect(playback.isPlaying, isTrue);
+      expect(playback.globalPositionSec, closeTo(0, 0.01));
+      expect(created.length, greaterThanOrEqualTo(3));
+      expect(
+        created[2].openedUrls.map((url) => url.toString()),
+        contains('https://example.com/audio-0.mp3'),
+      );
+      await playback.close();
+    },
+  );
+
+  test(
     'openSegments preloads the next segment into the pooled player',
     () async {
       final audioPlayer = FakeLessonMediaPlayback();

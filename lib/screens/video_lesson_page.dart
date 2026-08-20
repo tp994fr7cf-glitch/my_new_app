@@ -26,6 +26,7 @@ import '../services/course_privacy_service.dart';
 import '../services/lesson_material_cache_service.dart';
 import '../services/lesson_media_playback.dart';
 import '../services/lesson_media_playlist_playback.dart';
+import '../services/app_media_memory.dart';
 import '../widgets/async_route_exit_scope.dart';
 import '../widgets/lesson_whiteboard_canvas.dart';
 import '../widgets/lesson_playback_synced_whiteboard.dart';
@@ -361,6 +362,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _lessonSubscription?.cancel();
     unawaited(_closePlaybackResources());
     WidgetsBinding.instance.removeObserver(this);
+    releaseAppMediaMemory();
     if (!_isTeacherPreview) {
       if (_pendingCompletion && !_sessionCompleted) {
         unawaited(_completeCurrentSegment(updateUi: false));

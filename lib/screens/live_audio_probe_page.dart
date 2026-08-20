@@ -22,6 +22,7 @@ import '../services/live_audio_stroke_persistence.dart';
 import '../services/live_audio_timeline_clock.dart';
 import '../services/live_audio_timeline_outbox.dart';
 import '../services/lesson_material_cache_service.dart';
+import '../services/app_media_memory.dart';
 import '../widgets/async_route_exit_scope.dart';
 import '../widgets/lesson_whiteboard_canvas.dart';
 
@@ -243,6 +244,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   void dispose() {
     _sessionCodeController.dispose();
     unawaited(_cleanupRouteResources());
+    releaseAppMediaMemory();
     super.dispose();
   }
 

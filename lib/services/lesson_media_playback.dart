@@ -791,6 +791,7 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
   /// Every position (in seconds) that [seek] was called with, in order.
   final List<double> seekCallsSec = [];
   int pauseCallCount = 0;
+  int disposeCount = 0;
   Duration _position = Duration.zero;
   bool _isPlaying = false;
   bool _isReady = false;
@@ -930,11 +931,10 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
 
   @override
   Future<void> disposePlayer() async {
+    disposeCount += 1;
     _isReady = false;
     _timer?.cancel();
-    await _positionController.close();
-    await _durationController.close();
-    await _playingController.close();
-    await _completedController.close();
+    _timer = null;
+    _isPlaying = false;
   }
 }

@@ -5,6 +5,7 @@ import 'package:pdfrx/pdfrx.dart';
 import 'firebase_options.dart';
 import 'screens/auth_gate.dart';
 import 'screens/firebase_setup_page.dart';
+import 'services/app_media_memory.dart';
 
 final _memoryPressureObserver = _AppMemoryPressureObserver();
 
@@ -28,8 +29,7 @@ void main() async {
 class _AppMemoryPressureObserver with WidgetsBindingObserver {
   @override
   void didHaveMemoryPressure() {
-    PaintingBinding.instance.imageCache.clear();
-    PaintingBinding.instance.imageCache.clearLiveImages();
+    releaseAppMediaMemory();
   }
 }
 
