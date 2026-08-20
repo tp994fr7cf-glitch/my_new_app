@@ -4,7 +4,25 @@ import 'package:flutter/material.dart';
 
 import '../models/course.dart';
 import '../utils/firebase_error_message.dart';
+import '../utils/firestore_parsing.dart';
 import 'course_detail_page.dart';
+
+List<Course> sortLearnerCourses(List<Course> courses) {
+  final indexed = [
+    for (var i = 0; i < courses.length; i++) (index: i, course: courses[i]),
+  ];
+  indexed.sort((a, b) {
+    final byCreatedAt = compareTimestampDescWithUnknownLast(
+      a.course.createdAt,
+      b.course.createdAt,
+    );
+    if (byCreatedAt != 0) {
+      return byCreatedAt;
+    }
+    return a.index.compareTo(b.index);
+  });
+  return [for (final item in indexed) item.course];
+}
 
 class CourseListPage extends StatefulWidget {
   const CourseListPage({super.key, this.courseStream});
@@ -39,12 +57,10 @@ class _CourseListPageState extends State<CourseListPage> {
         .where('status', isEqualTo: 'published')
         .snapshots()
         .map((snapshot) {
-          final courses = snapshot.docs
+          return snapshot.docs
               .map(Course.tryFromFirestore)
               .whereType<Course>()
               .toList();
-          courses.sort((a, b) => a.title.compareTo(b.title));
-          return courses;
         });
   }
 
@@ -266,7 +282,7 @@ class _CourseListPageState extends State<CourseListPage> {
                   return _CourseLoadError(error: snapshot.error!);
                 }
 
-                final courses = snapshot.data ?? const [];
+                final courses = sortLearnerCourses(snapshot.data ?? const []);
                 final filteredCourses = _filteredCourses(courses);
                 if (courses.isEmpty) {
                   return _EmptyCoursesCard(
