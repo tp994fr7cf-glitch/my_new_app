@@ -1,4 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+
+import '../utils/await_or_timeout.dart';
 
 class AsyncRouteExitScope extends StatefulWidget {
   const AsyncRouteExitScope({
@@ -7,6 +11,7 @@ class AsyncRouteExitScope extends StatefulWidget {
     required this.child,
     this.progressLabel = '終了処理中…',
     this.busyLabel,
+    this.exitTimeout = kRouteExitCleanupTimeout,
   });
 
   final Future<void> Function() onExit;
@@ -16,6 +21,7 @@ class AsyncRouteExitScope extends StatefulWidget {
   /// When set, a blocking progress overlay is shown on top of [child]
   /// without starting [onExit]. Used for in-page work such as saving.
   final String? busyLabel;
+  final Duration exitTimeout;
 
   @override
   State<AsyncRouteExitScope> createState() => _AsyncRouteExitScopeState();
@@ -46,7 +52,13 @@ class _AsyncRouteExitScopeState extends State<AsyncRouteExitScope> {
       setState(() => _isExiting = true);
     }
     try {
-      await widget.onExit();
+      // onExit keeps running after a timeout so native teardown can finish.
+      await widget.onExit().timeout(widget.exitTimeout);
+    } on TimeoutException {
+      debugPrint(
+        'Async route cleanup timed out after '
+        '${widget.exitTimeout.inMilliseconds}ms (${widget.progressLabel})',
+      );
     } catch (error, stackTrace) {
       debugPrint('Async route cleanup failed: $error\n$stackTrace');
     }

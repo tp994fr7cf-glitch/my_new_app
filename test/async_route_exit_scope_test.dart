@@ -126,4 +126,44 @@ void main() {
     await tester.pump();
     expect(find.text('open'), findsOneWidget);
   });
+
+  testWidgets('leaves the route if cleanup never finishes', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: FilledButton(
+              onPressed: () {
+                Navigator.of(context).push<void>(
+                  MaterialPageRoute(
+                    builder: (_) => AsyncRouteExitScope(
+                      progressLabel: 'closing',
+                      exitTimeout: const Duration(milliseconds: 50),
+                      onExit: () => Completer<void>().future,
+                      child: const Scaffold(body: Text('protected route')),
+                    ),
+                  ),
+                );
+              },
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+
+    expect(find.text('protected route'), findsOneWidget);
+    expect(find.text('closing'), findsOneWidget);
+
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.pumpAndSettle();
+
+    expect(find.text('open'), findsOneWidget);
+    expect(find.text('protected route'), findsNothing);
+  });
 }

@@ -6,6 +6,7 @@ import 'package:video_player/video_player.dart';
 import '../models/lesson_media_segment.dart';
 import '../models/lesson_media_timeline.dart';
 import '../models/lesson_player_view_state.dart';
+import '../utils/await_or_timeout.dart';
 import 'lesson_media_playback.dart';
 
 typedef LessonMediaPlaylistPlaybackFactory =
@@ -48,10 +49,15 @@ abstract class LessonMediaPlaylistController {
 }
 
 class _MediaPlayerSlot {
-  _MediaPlayerSlot({required this.isAudio, required this.createPlayer});
+  _MediaPlayerSlot({
+    required this.isAudio,
+    required this.createPlayer,
+    required this.mediaOpTimeout,
+  });
 
   final bool isAudio;
   final LessonMediaPlayback Function() createPlayer;
+  final Duration mediaOpTimeout;
   LessonMediaPlayback? _player;
   int? loadedSegmentIndex;
   String? loadedUrl;
@@ -84,12 +90,11 @@ class _MediaPlayerSlot {
   Future<void> _releaseOnce() async {
     final pendingPrepare = _prepareFuture;
     if (pendingPrepare != null) {
-      try {
-        await pendingPrepare;
-      } catch (_) {
-        // The prepare caller still receives the failure. Release must
-        // continue so a half-open native player is not left behind.
-      }
+      await awaitOrTimeout(
+        pendingPrepare,
+        timeout: mediaOpTimeout,
+        debugLabel: 'slot prepare before release',
+      );
     }
     final player = _player;
     _player = null;
@@ -97,7 +102,11 @@ class _MediaPlayerSlot {
     loadedUrl = null;
     _prepareFuture = null;
     if (player != null) {
-      await player.disposePlayer();
+      await awaitOrTimeout(
+        player.disposePlayer(),
+        timeout: mediaOpTimeout,
+        debugLabel: 'slot disposePlayer',
+      );
     }
   }
 }
@@ -115,10 +124,13 @@ class _PlaylistSeekTarget {
 }
 
 class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
-  LessonMediaPlaylistPlayback({LessonMediaPlaybackFactory? playbackFactory})
-    : _playbackFactory = playbackFactory ?? createLessonMediaPlayback;
+  LessonMediaPlaylistPlayback({
+    LessonMediaPlaybackFactory? playbackFactory,
+    this.mediaOpTimeout = kNativeMediaOpTimeout,
+  }) : _playbackFactory = playbackFactory ?? createLessonMediaPlayback;
 
   final LessonMediaPlaybackFactory _playbackFactory;
+  final Duration mediaOpTimeout;
   final StreamController<double> _globalPositionController =
       StreamController<double>.broadcast();
   final StreamController<int> _totalDurationController =
@@ -262,6 +274,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       return _videoSlot ??= _MediaPlayerSlot(
         isAudio: false,
         createPlayer: () => _playbackFactory(isAudio: false),
+        mediaOpTimeout: mediaOpTimeout,
       );
     }
 
@@ -280,6 +293,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       final candidate = _MediaPlayerSlot(
         isAudio: true,
         createPlayer: () => _playbackFactory(isAudio: true),
+        mediaOpTimeout: mediaOpTimeout,
       );
       final duplicatePlayer = _audioSlots.any(
         (slot) => identical(slot.player, candidate.player),
@@ -352,7 +366,11 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
         '_prepareSegmentInSlot: not prepared, opening url (isAudio=${slot.isAudio})',
       );
       if (slot.player.isPlaying) {
-        await slot.player.pause();
+        await awaitOrTimeout(
+          slot.player.pause(),
+          timeout: mediaOpTimeout,
+          debugLabel: 'slot pause before open',
+        );
       }
       await slot.player.open(Uri.parse(url));
       slot.loadedSegmentIndex = segmentIndex;
@@ -444,8 +462,13 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
 
       shouldResumePlaying = resumePlaying == true;
 
-      if (_activePlayer != null && _activePlayer!.isPlaying) {
-        await _activePlayer!.pause();
+      final activePlayer = _activePlayer;
+      if (activePlayer != null && activePlayer.isPlaying) {
+        await awaitOrTimeout(
+          activePlayer.pause(),
+          timeout: mediaOpTimeout,
+          debugLabel: 'playlist pause before segment switch',
+        );
       }
 
       await _prepareSegmentInSlot(segmentIndex, localStartSec: localStartSec);
@@ -740,7 +763,11 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       return;
     }
     _logSwitch('_pauseInternal: currentSegmentIndex=$_currentSegmentIndex');
-    await activePlayer?.pause();
+    await awaitOrTimeout(
+      activePlayer?.pause(),
+      timeout: mediaOpTimeout,
+      debugLabel: 'playlist pause',
+    );
     _emitPlaying(false);
   }
 
@@ -987,20 +1014,19 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   Future<void> _disposePlayerInternal() async {
     final activePause = _pauseFuture;
     if (activePause != null) {
-      try {
-        await activePause;
-      } catch (_) {
-        // Disposal still needs to release the player after a failed pause.
-      }
+      await awaitOrTimeout(
+        activePause,
+        timeout: mediaOpTimeout,
+        debugLabel: 'playlist pause before dispose',
+      );
     }
     final activeSeekDrain = _seekDrainFuture;
     if (activeSeekDrain != null) {
-      try {
-        await activeSeekDrain;
-      } catch (_) {
-        // The original seek caller still receives the failure. Disposal must
-        // nevertheless continue so partially prepared players are released.
-      }
+      await awaitOrTimeout(
+        activeSeekDrain,
+        timeout: mediaOpTimeout,
+        debugLabel: 'playlist seek drain before dispose',
+      );
     }
     _isReady = false;
     _isPlaying = false;

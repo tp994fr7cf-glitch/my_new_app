@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:video_player/video_player.dart';
 
+import '../utils/await_or_timeout.dart';
+
 typedef LessonMediaPlaybackFactory =
     LessonMediaPlayback Function({required bool isAudio});
 
@@ -435,7 +437,11 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
     // Disarm before awaiting the native player so a pause at (or very near)
     // the end cannot be mistaken for natural completion.
     _completionState.markPauseRequested();
-    await _player.pause();
+    await awaitOrTimeout(
+      _player.pause(),
+      timeout: kNativeMediaOpTimeout,
+      debugLabel: 'AudioPlayer.pause',
+    );
     _anchorWallTime = null;
     _stopPositionRefresh();
     _publishCurrentPosition();
@@ -463,7 +469,11 @@ class AudioLessonMediaPlayback implements LessonMediaPlayback {
     _isReady = false;
     _completionState.reset();
     _stopPositionRefresh();
-    await _player.dispose();
+    await awaitOrTimeout(
+      _player.dispose(),
+      timeout: kNativeMediaOpTimeout,
+      debugLabel: 'AudioPlayer.dispose',
+    );
     await _playingController.close();
     await _completedController.close();
     await _positionController.close();
@@ -611,7 +621,11 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
   Future<void> pause() async {
     _logPlayback('VideoLessonMediaPlayback.pause');
     _completionState.markPauseRequested();
-    await _controller?.pause();
+    await awaitOrTimeout(
+      _controller?.pause(),
+      timeout: kNativeMediaOpTimeout,
+      debugLabel: 'VideoPlayer.pause',
+    );
     _notifyPlaying();
   }
 
@@ -640,7 +654,11 @@ class VideoLessonMediaPlayback implements LessonMediaPlayback {
     _isReady = false;
     _completionState.reset();
     _controller?.removeListener(_onControllerUpdate);
-    await _controller?.dispose();
+    await awaitOrTimeout(
+      _controller?.dispose(),
+      timeout: kNativeMediaOpTimeout,
+      debugLabel: 'VideoPlayer.dispose',
+    );
     _controller = null;
     await _playingController.close();
     await _completedController.close();
@@ -792,6 +810,8 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
   final List<double> seekCallsSec = [];
   int pauseCallCount = 0;
   int disposeCount = 0;
+  Completer<void>? blockPause;
+  Completer<void>? blockDispose;
   Duration _position = Duration.zero;
   bool _isPlaying = false;
   bool _isReady = false;
@@ -881,6 +901,10 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
   @override
   Future<void> pause() async {
     pauseCallCount += 1;
+    final pendingPause = blockPause;
+    if (pendingPause != null) {
+      await pendingPause.future;
+    }
     if (pauseDelay > Duration.zero) {
       await Future<void>.delayed(pauseDelay);
     }
@@ -932,6 +956,10 @@ class FakeLessonMediaPlayback implements LessonMediaPlayback {
   @override
   Future<void> disposePlayer() async {
     disposeCount += 1;
+    final pendingDispose = blockDispose;
+    if (pendingDispose != null) {
+      await pendingDispose.future;
+    }
     _isReady = false;
     _timer?.cancel();
     _timer = null;

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:my_new_app/models/lesson_media_segment.dart';
 import 'package:my_new_app/services/lesson_media_playback.dart';
@@ -191,6 +193,53 @@ void main() {
       await playback.close();
     },
   );
+
+  test('close finishes even if native pause never completes', () async {
+    const hangTimeout = Duration(milliseconds: 30);
+    final player = FakeLessonMediaPlayback(
+      totalDuration: const Duration(seconds: 2),
+    )..blockPause = Completer<void>();
+    final playback = LessonMediaPlaylistPlayback(
+      playbackFactory: ({required bool isAudio}) => player,
+      mediaOpTimeout: hangTimeout,
+    );
+    await playback.openSegments([
+      LessonMediaSegment(
+        id: 'audio-0',
+        order: 0,
+        mediaType: 'audio',
+        url: 'https://example.com/audio-0.mp3',
+        durationSec: 2,
+      ),
+    ]);
+    await playback.play();
+    unawaited(playback.pause());
+    await Future<void>.delayed(Duration.zero);
+
+    await playback.close().timeout(const Duration(seconds: 1));
+    expect(player.pauseCallCount, greaterThan(0));
+  });
+
+  test('close finishes even if native dispose never completes', () async {
+    const hangTimeout = Duration(milliseconds: 30);
+    final player = FakeLessonMediaPlayback()..blockDispose = Completer<void>();
+    final playback = LessonMediaPlaylistPlayback(
+      playbackFactory: ({required bool isAudio}) => player,
+      mediaOpTimeout: hangTimeout,
+    );
+    await playback.openSegments([
+      LessonMediaSegment(
+        id: 'audio-0',
+        order: 0,
+        mediaType: 'audio',
+        url: 'https://example.com/audio-0.mp3',
+        durationSec: 2,
+      ),
+    ]);
+
+    await playback.close().timeout(const Duration(seconds: 1));
+    expect(player.disposeCount, greaterThan(0));
+  });
 
   test(
     'openSegments preloads the next segment into the pooled player',
