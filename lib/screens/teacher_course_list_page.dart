@@ -145,8 +145,10 @@ class _TeacherCourseListPageState extends State<TeacherCourseListPage> {
             title: const Text('講座を削除'),
             content: Text(
               '「${course.title}」を削除しますか？\n\n'
-              '動画・音声ファイルは削除され、学習者は講座・レッスン・コメント欄を開けなくなります。'
+              '動画・音声・PDF・画像と、この講座のライブ配信の生録画は削除され、'
+              '学習者は講座・レッスン・コメント欄を開けなくなります。'
               '学習記録と自分用メモは残ります。\n\n'
+              '配信中の講座は削除できません。配信を終了してから削除してください。\n\n'
               'この操作は取り消せず、再公開もできません。',
             ),
             actions: [
@@ -548,7 +550,9 @@ class _DeletingCoursesSection extends StatelessWidget {
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 6),
-                  const Text('学習者からは既に見えません。動画・音声の削除が中断した場合は処理を再開してください。'),
+                  const Text(
+                    '学習者からは既に見えません。動画・音声・PDF・画像やライブ配信の生録画の削除が中断した場合は処理を再開してください。',
+                  ),
                   const SizedBox(height: 10),
                   OutlinedButton.icon(
                     onPressed: pendingCourseKeys.contains(courseKey(course))

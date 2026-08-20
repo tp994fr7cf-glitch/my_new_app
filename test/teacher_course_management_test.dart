@@ -208,6 +208,7 @@ void main() {
     await tester.tap(find.widgetWithText(OutlinedButton, '削除'));
     await tester.pumpAndSettle();
     expect(find.textContaining('この操作は取り消せず、再公開もできません。'), findsOneWidget);
+    expect(find.textContaining('ライブ配信の生録画'), findsOneWidget);
     await tester.tap(find.widgetWithText(FilledButton, '削除する'));
     await tester.pumpAndSettle();
 
@@ -240,6 +241,7 @@ void main() {
 
     expect(find.text('削除処理中'), findsOneWidget);
     expect(find.text('削除途中の講座'), findsOneWidget);
+    expect(find.textContaining('ライブ配信の生録画'), findsOneWidget);
     await tester.tap(find.widgetWithText(OutlinedButton, '削除処理を再開'));
     await tester.pumpAndSettle();
 

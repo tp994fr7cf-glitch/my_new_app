@@ -10,12 +10,18 @@ import {
   RAW_ARCHIVE_HARD_LIMIT_BYTES,
   LiveAudioProbeRawSession,
   LiveAudioProbeRetentionDecision,
+  evaluateCourseDeletedRawCleanupSession,
   evaluateLiveAudioProbeRetentionSession,
   expectedLinkedArchiveCopyPath,
   expectedLiveAudioProbeRawPrefix,
   planLiveAudioProbeRetention,
 } from "./live_audio_probe_retention";
-import {runLiveAudioProbeRawRetention} from
+import {
+  cleanupRawArchivesForCourse,
+  CourseLiveArchiveInProgressError,
+  runDeletedCourseRawArchiveCleanup,
+  runLiveAudioProbeRawRetention,
+} from
   "./live_audio_probe_retention_runtime";
 
 const gb = RAW_ARCHIVE_BYTES_PER_GB;
@@ -334,6 +340,53 @@ test("requires a verified exact MP4 copy for linked sessions", () => {
       }),
     ).eligible,
     true,
+  );
+});
+
+test("course-deleted cleanup ignores missing copies but protects live sessions", () => {
+  const links = {
+    courseId: "course-1",
+    lessonId: "lesson-1",
+    segmentId: "segment-1",
+  };
+  assert.equal(
+    evaluateCourseDeletedRawCleanupSession(
+      rawSession(sessionIds.oldest, {
+        ...links,
+        completedCopyExists: false,
+      }),
+    ).eligible,
+    true,
+  );
+  assert.equal(
+    evaluateCourseDeletedRawCleanupSession(
+      rawSession(sessionIds.oldest, {archivePrefix: ""}),
+    ).eligible,
+    true,
+  );
+  assert.equal(
+    protectionReason(
+      evaluateCourseDeletedRawCleanupSession(
+        rawSession(sessionIds.oldest, {status: "active"}),
+      ),
+    ),
+    "liveOrRecording",
+  );
+  assert.equal(
+    protectionReason(
+      evaluateCourseDeletedRawCleanupSession(
+        rawSession(sessionIds.oldest, {archiveStatus: "stopping"}),
+      ),
+    ),
+    "finalizing",
+  );
+  assert.equal(
+    protectionReason(
+      evaluateCourseDeletedRawCleanupSession(
+        rawSession("not-a-valid-session-id", {archivePrefix: "x"}),
+      ),
+    ),
+    "invalidSessionId",
   );
 });
 
@@ -735,3 +788,233 @@ test("runtime apply revalidates state and uses generation-scoped deletion", asyn
   assert.equal(result.remainingBytes, 4 * gb);
   assert.equal(result.targetReached, true);
 });
+
+class CourseAwareFakeFirestore {
+  constructor(
+    private readonly sessions: Record<string, StoredDocument>,
+    private readonly courses: Record<string, StoredDocument | undefined> = {},
+  ) {}
+
+  collection(name: string) {
+    if (name === "courses") {
+      return {
+        doc: (courseId: string) => ({
+          get: async () => {
+            const data = this.courses[courseId];
+            return {
+              exists: data !== undefined,
+              data: () => data,
+            };
+          },
+        }),
+      };
+    }
+    assert.equal(name, "liveAudioProbeSessions");
+    return {
+      doc: (sessionId: string) => ({
+        get: async () => {
+          const data = this.sessions[sessionId];
+          return {
+            exists: data !== undefined,
+            data: () => data,
+          };
+        },
+      }),
+      where: (field: string, op: string, value: string) => {
+        assert.equal(field, "courseId");
+        assert.equal(op, "==");
+        return {
+          get: async () => ({
+            docs: Object.entries(this.sessions)
+              .filter(([, data]) => data.courseId === value)
+              .map(([id, data]) => ({
+                id,
+                data: () => data,
+              })),
+          }),
+        };
+      },
+    };
+  }
+
+  asFirestore(): Firestore {
+    return this as unknown as Firestore;
+  }
+}
+
+test("course cleanup refuses live sessions without deleting any objects", async () => {
+  const rawBucket = new FakeRawBucket([
+    rawObject(sessionIds.oldest, gb, "live.mp4", "41"),
+    rawObject(sessionIds.middle, gb, "other.mp4", "42"),
+  ]);
+  const db = new CourseAwareFakeFirestore({
+    [sessionIds.oldest]: storedSession(sessionIds.oldest, 100, {
+      courseId: "course-a",
+      status: "active",
+      state: "live",
+      archiveStatus: "recording",
+    }),
+    [sessionIds.middle]: storedSession(sessionIds.middle, 200, {
+      courseId: "course-b",
+    }),
+  });
+
+  await assert.rejects(
+    () => cleanupRawArchivesForCourse({
+      db: db.asFirestore(),
+      rawBucket: rawBucket.asBucket(),
+      courseId: "course-a",
+      mode: "delete",
+    }),
+    (error: unknown) => error instanceof CourseLiveArchiveInProgressError,
+  );
+  assert.equal(rawBucket.deleteCalls.length, 0);
+});
+
+test("course cleanup deletes that course's raw files without a completed copy", async () => {
+  const prefix = expectedLiveAudioProbeRawPrefix(sessionIds.oldest);
+  assert.ok(prefix);
+  const rawBucket = new FakeRawBucket([
+    rawObject(sessionIds.oldest, gb, "target.mp4", "51"),
+    rawObject(sessionIds.middle, gb, "other-course.mp4", "52"),
+    {
+      name: `${expectedLiveAudioProbeRawPrefix(sessionIds.newest)}../escape.mp4`,
+      sizeBytes: gb,
+      generation: "53",
+    },
+  ]);
+  const db = new CourseAwareFakeFirestore({
+    [sessionIds.oldest]: storedSession(sessionIds.oldest, 100, {
+      courseId: "course-a",
+      completedCopyExists: false,
+    }),
+    [sessionIds.middle]: storedSession(sessionIds.middle, 200, {
+      courseId: "course-b",
+    }),
+    [sessionIds.newest]: storedSession(sessionIds.newest, 300, {
+      courseId: "course-a",
+      archivePrefix: `${prefix}../`,
+    }),
+  });
+
+  const checked = await cleanupRawArchivesForCourse({
+    db: db.asFirestore(),
+    rawBucket: rawBucket.asBucket(),
+    courseId: "course-a",
+    mode: "check",
+  });
+  assert.equal(checked.deletedObjectCount, 0);
+  assert.equal(rawBucket.deleteCalls.length, 0);
+
+  const deleted = await cleanupRawArchivesForCourse({
+    db: db.asFirestore(),
+    rawBucket: rawBucket.asBucket(),
+    courseId: "course-a",
+    mode: "delete",
+  });
+  assert.deepEqual(
+    deleted.sessionResults.map((session) => ({
+      sessionId: session.sessionId,
+      status: session.status,
+      reason: session.reason,
+    })),
+    [
+      {
+        sessionId: sessionIds.oldest,
+        status: "deleted",
+        reason: undefined,
+      },
+      {
+        sessionId: sessionIds.newest,
+        status: "skipped",
+        reason: "unsafeArchivePrefix",
+      },
+    ],
+  );
+  assert.deepEqual(rawBucket.deleteCalls, [
+    {
+      name: `${prefix}target.mp4`,
+      generation: "51",
+      ignoreNotFound: true,
+    },
+  ]);
+  assert.equal(
+    rawBucket.objects.some(
+      (object) => object.name.endsWith("other-course.mp4"),
+    ),
+    true,
+  );
+});
+
+test("deleted-course scheduled cleanup ignores the 9 GB copy requirement", async () => {
+  const rawBucket = new FakeRawBucket([
+    rawObject(sessionIds.oldest, gb, "deleted-course.mp4", "61"),
+    rawObject(sessionIds.middle, gb, "published-course.mp4", "62"),
+    rawObject(sessionIds.newest, gb, "unlinked.mp4", "63"),
+    rawObject(sessionIds.fourth, gb, "live-deleted.mp4", "64"),
+    rawObject("EEEEEEEEEEEEEEEEEEEE", gb, "orphan.mp4", "65"),
+  ]);
+  const db = new CourseAwareFakeFirestore(
+    {
+      [sessionIds.oldest]: storedSession(sessionIds.oldest, 100, {
+        courseId: "gone-course",
+      }),
+      [sessionIds.middle]: storedSession(sessionIds.middle, 200, {
+        courseId: "live-course",
+      }),
+      [sessionIds.newest]: storedSession(sessionIds.newest, 300),
+      [sessionIds.fourth]: storedSession(sessionIds.fourth, 400, {
+        courseId: "gone-course",
+        status: "active",
+        state: "live",
+        archiveStatus: "recording",
+      }),
+      EEEEEEEEEEEEEEEEEEEE: storedSession("EEEEEEEEEEEEEEEEEEEE", 500, {
+        courseId: "missing-course",
+      }),
+    },
+    {
+      "gone-course": {status: "deleted"},
+      "live-course": {status: "published"},
+    },
+  );
+
+  const result = await runDeletedCourseRawArchiveCleanup({
+    db: db.asFirestore(),
+    rawBucket: rawBucket.asBucket(),
+  });
+  assert.deepEqual(
+    result.sessionResults.map((session) => ({
+      sessionId: session.sessionId,
+      status: session.status,
+      reason: session.reason,
+    })),
+    [
+      {
+        sessionId: sessionIds.oldest,
+        status: "deleted",
+        reason: undefined,
+      },
+      {
+        sessionId: sessionIds.fourth,
+        status: "skipped",
+        reason: "liveOrRecording",
+      },
+      {
+        sessionId: "EEEEEEEEEEEEEEEEEEEE",
+        status: "deleted",
+        reason: undefined,
+      },
+    ],
+  );
+  assert.equal(result.deletedBytes, 2 * gb);
+  assert.equal(
+    rawBucket.objects.map((object) => object.name).sort().join("\n"),
+    [
+      `${expectedLiveAudioProbeRawPrefix(sessionIds.fourth)}live-deleted.mp4`,
+      `${expectedLiveAudioProbeRawPrefix(sessionIds.middle)}published-course.mp4`,
+      `${expectedLiveAudioProbeRawPrefix(sessionIds.newest)}unlinked.mp4`,
+    ].sort().join("\n"),
+  );
+});
+

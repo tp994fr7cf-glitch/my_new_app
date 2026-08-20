@@ -4,6 +4,7 @@ import type {DocumentData, Firestore} from "firebase-admin/firestore";
 import {
   LIVE_AUDIO_PROBE_RAW_PREFIX_ROOT,
   RAW_ARCHIVE_CLEANUP_TARGET_BYTES,
+  evaluateCourseDeletedRawCleanupSession,
   evaluateLiveAudioProbeRetentionSession,
   expectedLinkedArchiveCopyPath,
   expectedLiveAudioProbeRawPrefix,
@@ -42,8 +43,41 @@ export type LiveAudioProbeRawRetentionLogEntry = {
     | "session_deleted"
     | "session_skipped"
     | "session_partially_deleted"
-    | "cleanup_complete";
+    | "cleanup_complete"
+    | "deleted_course_cleanup_complete"
+    | "course_raw_cleanup_complete";
   [key: string]: unknown;
+};
+
+export type CourseRawArchiveCleanupMode = "check" | "delete";
+
+export class CourseLiveArchiveInProgressError extends Error {
+  constructor(
+    readonly reason: Extract<
+      LiveAudioProbeRetentionProtectionReason,
+      "liveOrRecording" | "finalizing"
+    >,
+    readonly sessionId: string,
+  ) {
+    super("配信を終了してから削除してください。");
+    this.name = "CourseLiveArchiveInProgressError";
+  }
+}
+
+export type CourseRawArchiveCleanupResult = {
+  courseId: string;
+  mode: CourseRawArchiveCleanupMode;
+  sessionCount: number;
+  deletedSessionCount: number;
+  deletedBytes: number;
+  deletedObjectCount: number;
+  sessionResults: LiveAudioProbeRawRetentionSessionResult[];
+};
+
+export type DeletedCourseRawArchiveCleanupResult = {
+  deletedBytes: number;
+  deletedObjectCount: number;
+  sessionResults: LiveAudioProbeRawRetentionSessionResult[];
 };
 
 export type LiveAudioProbeRawRetentionSessionResult = {
@@ -271,6 +305,215 @@ export async function runLiveAudioProbeRawRetention({
   return result;
 }
 
+export async function cleanupRawArchivesForCourse({
+  db,
+  rawBucket,
+  courseId,
+  mode,
+  refuseIfLive = true,
+  log = () => undefined,
+}: {
+  db: Firestore;
+  rawBucket: Bucket;
+  courseId: string;
+  mode: CourseRawArchiveCleanupMode;
+  refuseIfLive?: boolean;
+  log?: (entry: LiveAudioProbeRawRetentionLogEntry) => void;
+}): Promise<CourseRawArchiveCleanupResult> {
+  const snapshot = await db
+    .collection(LIVE_AUDIO_PROBE_RAW_PREFIX_ROOT)
+    .where("courseId", "==", courseId)
+    .get();
+  const sessions = snapshot.docs.map((doc) => {
+    const data = doc.data() ?? {};
+    const expectedPrefix = expectedLiveAudioProbeRawPrefix(doc.id);
+    return {
+      sessionId: doc.id,
+      archivePrefix: stringField(data.archivePrefix) || expectedPrefix || "",
+      sizeBytes: 0,
+      startedAtMs: numberField(data.startedAtMs),
+      status: data.status,
+      state: data.state,
+      archiveStatus: data.archiveStatus,
+      courseId: data.courseId,
+      lessonId: data.lessonId,
+      segmentId: data.segmentId,
+    } satisfies LiveAudioProbeRawSession;
+  });
+
+  for (const session of sessions) {
+    const decision = evaluateCourseDeletedRawCleanupSession(session);
+    if (
+      !decision.eligible &&
+      (decision.protected.reason === "liveOrRecording" ||
+        decision.protected.reason === "finalizing")
+    ) {
+      if (refuseIfLive) {
+        throw new CourseLiveArchiveInProgressError(
+          decision.protected.reason,
+          session.sessionId,
+        );
+      }
+    }
+  }
+
+  if (mode === "check") {
+    return {
+      courseId,
+      mode,
+      sessionCount: sessions.length,
+      deletedSessionCount: 0,
+      deletedBytes: 0,
+      deletedObjectCount: 0,
+      sessionResults: [],
+    };
+  }
+
+  const sessionResults: LiveAudioProbeRawRetentionSessionResult[] = [];
+  for (const session of sessions) {
+    const decision = evaluateCourseDeletedRawCleanupSession(session);
+    if (!decision.eligible) {
+      sessionResults.push(skippedSessionResult({
+        sessionId: session.sessionId,
+        archivePrefix: session.archivePrefix,
+        plannedBytes: 0,
+        reason: decision.protected.reason,
+      }));
+      continue;
+    }
+    sessionResults.push(
+      await deleteRawSessionPrefixIfSafe({
+        rawBucket,
+        sessionId: session.sessionId,
+        plannedBytes: 0,
+      }),
+    );
+  }
+
+  const deletedSessions = sessionResults.filter(
+    (session) => session.status === "deleted",
+  );
+  const result: CourseRawArchiveCleanupResult = {
+    courseId,
+    mode,
+    sessionCount: sessions.length,
+    deletedSessionCount: deletedSessions.length,
+    deletedBytes: sessionResults.reduce(
+      (total, session) => total + session.deletedBytes,
+      0,
+    ),
+    deletedObjectCount: sessionResults.reduce(
+      (total, session) => total + session.deletedObjectCount,
+      0,
+    ),
+    sessionResults,
+  };
+  log({
+    event: "course_raw_cleanup_complete",
+    ...result,
+  });
+  return result;
+}
+
+export async function runDeletedCourseRawArchiveCleanup({
+  db,
+  rawBucket,
+  log = () => undefined,
+}: {
+  db: Firestore;
+  rawBucket: Bucket;
+  log?: (entry: LiveAudioProbeRawRetentionLogEntry) => void;
+}): Promise<DeletedCourseRawArchiveCleanupResult> {
+  const inventory = await inventoryRawArchive(rawBucket);
+  const sessionResults: LiveAudioProbeRawRetentionSessionResult[] = [];
+
+  for (const group of inventory.sessionGroups) {
+    const snapshot = await db
+      .collection(LIVE_AUDIO_PROBE_RAW_PREFIX_ROOT)
+      .doc(group.sessionId)
+      .get();
+    const data = snapshot.exists ? snapshot.data() ?? {} : {};
+    const courseId = stringField(data.courseId);
+    if (courseId === "") {
+      continue;
+    }
+    const courseSnapshot = await db.collection("courses").doc(courseId).get();
+    const courseStatus = courseSnapshot.exists ?
+      stringField(courseSnapshot.data()?.status) :
+      "deleted";
+    if (
+      courseSnapshot.exists &&
+      courseStatus !== "deleting" &&
+      courseStatus !== "deleted"
+    ) {
+      continue;
+    }
+    if (group.hasUnsafeObjectName) {
+      sessionResults.push(skippedSessionResult({
+        sessionId: group.sessionId,
+        archivePrefix: group.archivePrefix,
+        plannedBytes: group.sizeBytes,
+        remainingBytes: group.sizeBytes,
+        remainingObjectCount: group.objectCount,
+        reason: "unsafeArchivePrefix",
+      }));
+      continue;
+    }
+    const session: LiveAudioProbeRawSession = {
+      sessionId: group.sessionId,
+      archivePrefix: stringField(data.archivePrefix) || group.archivePrefix,
+      sizeBytes: group.sizeBytes,
+      startedAtMs: numberField(data.startedAtMs),
+      status: data.status,
+      state: data.state,
+      archiveStatus: data.archiveStatus,
+      courseId,
+    };
+    const decision = evaluateCourseDeletedRawCleanupSession(session);
+    if (!decision.eligible) {
+      sessionResults.push(skippedSessionResult({
+        sessionId: group.sessionId,
+        archivePrefix: group.archivePrefix,
+        plannedBytes: group.sizeBytes,
+        remainingBytes: group.sizeBytes,
+        remainingObjectCount: group.objectCount,
+        reason: decision.protected.reason,
+      }));
+      continue;
+    }
+    sessionResults.push(
+      await deleteRawSessionPrefixIfSafe({
+        rawBucket,
+        sessionId: group.sessionId,
+        plannedBytes: group.sizeBytes,
+      }),
+    );
+  }
+
+  const result: DeletedCourseRawArchiveCleanupResult = {
+    deletedBytes: sessionResults.reduce(
+      (total, session) => total + session.deletedBytes,
+      0,
+    ),
+    deletedObjectCount: sessionResults.reduce(
+      (total, session) => total + session.deletedObjectCount,
+      0,
+    ),
+    sessionResults,
+  };
+  log({
+    event: "deleted_course_cleanup_complete",
+    inspectedSessionCount: inventory.sessionGroups.length,
+    cleanedSessionCount: sessionResults.length,
+    deletedBytes: result.deletedBytes,
+    deletedObjectCount: result.deletedObjectCount,
+    skippedSessionCount: sessionResults.filter(
+      (session) => session.status === "skipped",
+    ).length,
+  });
+  return result;
+}
+
 async function retentionSessionFromStoredState({
   db,
   completedCopyBucket,
@@ -425,6 +668,82 @@ async function revalidateAndDeleteSession({
     });
   }
 
+  return deleteListedRawSessionObjects({
+    rawBucket,
+    sessionId,
+    expectedPrefix,
+    objects,
+    plannedBytes,
+  });
+}
+
+async function deleteRawSessionPrefixIfSafe({
+  rawBucket,
+  sessionId,
+  plannedBytes,
+}: {
+  rawBucket: Bucket;
+  sessionId: string;
+  plannedBytes: number;
+}): Promise<LiveAudioProbeRawRetentionSessionResult> {
+  const expectedPrefix = expectedLiveAudioProbeRawPrefix(sessionId);
+  if (expectedPrefix === null) {
+    return skippedSessionResult({
+      sessionId,
+      archivePrefix: "",
+      plannedBytes,
+      reason: "invalidSessionId",
+    });
+  }
+
+  const objects = await listRawObjects(rawBucket, expectedPrefix);
+  const unsafeObject = objects.find(
+    (object) => !isStrictSessionObjectName(object.name, expectedPrefix),
+  );
+  if (unsafeObject !== undefined) {
+    return skippedSessionResult({
+      sessionId,
+      archivePrefix: expectedPrefix,
+      plannedBytes,
+      remainingBytes: sumObjectBytes(objects),
+      remainingObjectCount: objects.length,
+      reason: "unsafeArchivePrefix",
+    });
+  }
+  if (objects.length === 0) {
+    return {
+      sessionId,
+      archivePrefix: expectedPrefix,
+      status: "deleted",
+      plannedBytes,
+      deletedBytes: 0,
+      deletedObjectCount: 0,
+      remainingBytes: 0,
+      remainingObjectCount: 0,
+    };
+  }
+  return deleteListedRawSessionObjects({
+    rawBucket,
+    sessionId,
+    expectedPrefix,
+    objects,
+    plannedBytes,
+  });
+}
+
+async function deleteListedRawSessionObjects({
+  rawBucket,
+  sessionId,
+  expectedPrefix,
+  objects,
+  plannedBytes,
+}: {
+  rawBucket: Bucket;
+  sessionId: string;
+  expectedPrefix: string;
+  objects: readonly RawObject[];
+  plannedBytes: number;
+}): Promise<LiveAudioProbeRawRetentionSessionResult> {
   const deletions = await mapWithConcurrency(
     objects,
     storageConcurrency,

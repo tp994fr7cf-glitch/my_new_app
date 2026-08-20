@@ -73,7 +73,12 @@ import {
   rtcUidForFirebaseUser,
   validateTimelineBoardReferences,
 } from "./live_audio_probe";
-import {runLiveAudioProbeRawRetention} from
+import {
+  cleanupRawArchivesForCourse,
+  CourseLiveArchiveInProgressError,
+  runDeletedCourseRawArchiveCleanup,
+  runLiveAudioProbeRawRetention,
+} from
   "./live_audio_probe_retention_runtime";
 
 initializeApp();
@@ -141,9 +146,17 @@ export const cleanupLiveAudioProbeRawArchives = onSchedule(
       if (!rawBucketName) {
         throw new Error("AGORA_GCS_BUCKET is empty.");
       }
+      const rawBucket = storage.bucket(rawBucketName);
+      await runDeletedCourseRawArchiveCleanup({
+        db,
+        rawBucket,
+        log: (entry) => {
+          logger.info(`live_audio_probe_raw_${entry.event}`, entry);
+        },
+      });
       await runLiveAudioProbeRawRetention({
         db,
-        rawBucket: storage.bucket(rawBucketName),
+        rawBucket,
         completedCopyBucket: storage.bucket(),
         mode: "apply",
         selectionPolicy: "threshold",
@@ -166,6 +179,85 @@ export const cleanupLiveAudioProbeRawArchives = onSchedule(
         event: "cleanup_failed",
         errorName: error instanceof Error ? error.name : "UnknownError",
       });
+      throw error;
+    }
+  },
+);
+
+export const deleteLiveAudioProbeRawArchivesForCourse = onCall(
+  {
+    secrets: [agoraGcsBucket],
+    timeoutSeconds: 540,
+  },
+  async (request) => {
+    const uid = requireAuthenticatedUid(request);
+    await requireActiveTeacher(
+      uid,
+      "先生として利用中のユーザーだけが講座の生録画を削除できます。",
+    );
+    const data =
+      request.data !== null &&
+        typeof request.data === "object" &&
+        !Array.isArray(request.data) ?
+        request.data as Record<string, unknown> :
+        {};
+    const courseId = data.courseId;
+    if (!isValidOptionalLinkId(courseId)) {
+      throw new HttpsError("invalid-argument", "講座IDが不正です。");
+    }
+    const mode = data.mode === "check" ? "check" : "delete";
+    const courseSnapshot = await db.collection("courses").doc(courseId).get();
+    if (!courseSnapshot.exists) {
+      throw new HttpsError("not-found", "講座が見つかりません。");
+    }
+    const course = courseSnapshot.data() ?? {};
+    if (course.instructorId !== uid) {
+      throw new HttpsError(
+        "permission-denied",
+        "この講座の生録画を削除する権限がありません。",
+      );
+    }
+    const status = course.status;
+    if (
+      status !== "published" &&
+      status !== "deleting" &&
+      status !== "deleted"
+    ) {
+      throw new HttpsError(
+        "failed-precondition",
+        "この講座の状態では生録画を削除できません。",
+      );
+    }
+    const rawBucketName = agoraGcsBucket.value().trim();
+    if (!rawBucketName) {
+      throw new HttpsError(
+        "failed-precondition",
+        "生録画の保存先が設定されていないため削除できません。",
+      );
+    }
+    try {
+      const result = await cleanupRawArchivesForCourse({
+        db,
+        rawBucket: getStorage().bucket(rawBucketName),
+        courseId,
+        mode,
+        refuseIfLive: true,
+        log: (entry) => {
+          logger.info(`live_audio_probe_raw_${entry.event}`, entry);
+        },
+      });
+      return {
+        courseId: result.courseId,
+        mode: result.mode,
+        sessionCount: result.sessionCount,
+        deletedSessionCount: result.deletedSessionCount,
+        deletedBytes: result.deletedBytes,
+        deletedObjectCount: result.deletedObjectCount,
+      };
+    } catch (error) {
+      if (error instanceof CourseLiveArchiveInProgressError) {
+        throw new HttpsError("failed-precondition", error.message);
+      }
       throw error;
     }
   },
@@ -1335,14 +1427,17 @@ export const retryLiveAudioProbeArchive = onCall(
   },
 );
 
-async function requireActiveTeacher(uid: string): Promise<void> {
+async function requireActiveTeacher(
+  uid: string,
+  message = "先生として利用中のユーザーだけが検証配信を開始できます。",
+): Promise<void> {
   const userSnapshot = await db.collection("users").doc(uid).get();
   const userData = userSnapshot.data();
   const roles = Array.isArray(userData?.roles) ? userData.roles : [];
   if (userData?.activeRole !== "teacher" || !roles.includes("teacher")) {
     throw new HttpsError(
       "permission-denied",
-      "先生として利用中のユーザーだけが検証配信を開始できます。",
+      message,
     );
   }
 }

@@ -112,6 +112,75 @@ export function expectedLinkedArchiveCopyPath({
     `live-${sessionId}.mp4`;
 }
 
+export function liveAudioProbeLifecycleProtectionReason(
+  session: Pick<
+    LiveAudioProbeRawSession,
+    "status" | "state" | "archiveStatus"
+  >,
+): Extract<
+  LiveAudioProbeRetentionProtectionReason,
+  "liveOrRecording" | "finalizing"
+> | null {
+  const lifecycleValues = [session.status, session.state, session.archiveStatus];
+  if (
+    lifecycleValues.some((value) => value === "active" || value === "live") ||
+    session.archiveStatus === "starting" ||
+    session.archiveStatus === "recording" ||
+    session.archiveStatus === "available"
+  ) {
+    return "liveOrRecording";
+  }
+  if (
+    lifecycleValues.includes("finalizing") ||
+    session.archiveStatus === "stopping"
+  ) {
+    return "finalizing";
+  }
+  return null;
+}
+
+export function evaluateCourseDeletedRawCleanupSession(
+  session: LiveAudioProbeRawSession,
+): LiveAudioProbeRetentionDecision {
+  const protect = (
+    reason: LiveAudioProbeRetentionProtectionReason,
+  ): LiveAudioProbeRetentionDecision => ({
+    eligible: false,
+    protected: {
+      sessionId: session.sessionId,
+      archivePrefix: session.archivePrefix,
+      sizeBytes: safeReportableBytes(session.sizeBytes),
+      reason,
+    },
+  });
+
+  const expectedPrefix = expectedLiveAudioProbeRawPrefix(session.sessionId);
+  if (expectedPrefix === null) {
+    return protect("invalidSessionId");
+  }
+  if (
+    session.archivePrefix !== "" &&
+    session.archivePrefix !== expectedPrefix
+  ) {
+    return protect("unsafeArchivePrefix");
+  }
+  const lifecycleReason = liveAudioProbeLifecycleProtectionReason(session);
+  if (lifecycleReason !== null) {
+    return protect(lifecycleReason);
+  }
+  return {
+    eligible: true,
+    candidate: {
+      sessionId: session.sessionId,
+      archivePrefix: expectedPrefix,
+      sizeBytes: safeReportableBytes(session.sizeBytes),
+      startedAtMs: isPositiveSafeInteger(session.startedAtMs) ?
+        session.startedAtMs :
+        0,
+    },
+  };
+}
+
 export function evaluateLiveAudioProbeRetentionSession(
   session: LiveAudioProbeRawSession,
 ): LiveAudioProbeRetentionDecision {
@@ -141,23 +210,12 @@ export function evaluateLiveAudioProbeRetentionSession(
     return protect("invalidStartedAt");
   }
 
-  const lifecycleValues = [session.status, session.state, session.archiveStatus];
-  if (
-    lifecycleValues.some((value) => value === "active" || value === "live") ||
-    session.archiveStatus === "starting" ||
-    session.archiveStatus === "recording" ||
-    session.archiveStatus === "available"
-  ) {
-    return protect("liveOrRecording");
+  const lifecycleReason = liveAudioProbeLifecycleProtectionReason(session);
+  if (lifecycleReason !== null) {
+    return protect(lifecycleReason);
   }
   if (
-    lifecycleValues.includes("finalizing") ||
-    session.archiveStatus === "stopping"
-  ) {
-    return protect("finalizing");
-  }
-  if (
-    lifecycleValues.some(
+    [session.status, session.state, session.archiveStatus].some(
       (value) =>
         value === "archiveFailed" ||
         value === "failed" ||
@@ -166,7 +224,11 @@ export function evaluateLiveAudioProbeRetentionSession(
   ) {
     return protect("retryableArchive");
   }
-  if (!lifecycleValues.every((value) => value === "draftReady")) {
+  if (
+    ![session.status, session.state, session.archiveStatus].every(
+      (value) => value === "draftReady",
+    )
+  ) {
     return protect("unconfirmedTerminalState");
   }
 
