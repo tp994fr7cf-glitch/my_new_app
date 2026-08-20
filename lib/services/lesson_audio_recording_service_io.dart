@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
@@ -10,20 +11,24 @@ LessonAudioRecordingController createPlatformLessonAudioRecordingController() {
   return DeviceLessonAudioRecordingController();
 }
 
+/// Phone-call processing (NS/AEC/AGC) was gating quiet speech into dropouts.
+@visibleForTesting
+const lessonAudioRecordConfig = RecordConfig(
+  encoder: AudioEncoder.aacLc,
+  bitRate: 96000,
+  sampleRate: 44100,
+  numChannels: 1,
+  autoGain: false,
+  echoCancel: false,
+  noiseSuppress: false,
+);
+
 class DeviceLessonAudioRecordingController
     implements LessonAudioRecordingController {
   DeviceLessonAudioRecordingController({AudioRecorder? recorder})
     : _recorder = recorder ?? AudioRecorder();
 
-  static const RecordConfig _recordConfig = RecordConfig(
-    encoder: AudioEncoder.aacLc,
-    bitRate: 96000,
-    sampleRate: 44100,
-    numChannels: 1,
-    autoGain: true,
-    echoCancel: true,
-    noiseSuppress: true,
-  );
+  static const RecordConfig _recordConfig = lessonAudioRecordConfig;
 
   final AudioRecorder _recorder;
   String? _activePath;
