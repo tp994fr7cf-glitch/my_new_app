@@ -5,6 +5,7 @@ import 'package:pdfrx/pdfrx.dart';
 
 import '../models/lesson_payload_size_validator.dart';
 import '../models/lesson_whiteboard_board_set.dart';
+import '../services/lesson_material_cache_service.dart';
 import '../services/lesson_material_library_service.dart';
 import '../services/lesson_material_storage_service.dart';
 import 'lesson_material_library_picker.dart';
@@ -41,8 +42,14 @@ class LessonMaterialPreparationPanel extends StatefulWidget {
 
 class _LessonMaterialPreparationPanelState
     extends State<LessonMaterialPreparationPanel> {
+  final LessonMaterialCacheService _materialCache =
+      LessonMaterialCacheService();
   bool _busy = false;
   String? _message;
+  LessonMaterialCacheStatus? _cacheStatus;
+  LessonMaterialDownloadProgress? _cacheProgress;
+  bool _cacheBusy = false;
+  bool _cancelCacheDownload = false;
 
   BoardSet get _editableBoardSet => widget.boardSet.ensureEditable();
   int get _remainingCount =>
@@ -54,9 +61,50 @@ class _LessonMaterialPreparationPanelState
   bool get _canUpload =>
       widget.enabled &&
       !_busy &&
+      !_cacheBusy &&
       widget.courseId.trim().isNotEmpty &&
       (widget.lessonId?.trim().isNotEmpty ?? false) &&
       _remainingCount > 0;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_materialCache.supported) {
+      unawaited(_refreshCacheStatus());
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant LessonMaterialPreparationPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.courseId != widget.courseId ||
+        oldWidget.lessonId != widget.lessonId ||
+        lessonMaterialFingerprint(oldWidget.boardSet) !=
+            lessonMaterialFingerprint(widget.boardSet)) {
+      unawaited(_refreshCacheStatus());
+    }
+  }
+
+  Future<void> _refreshCacheStatus() async {
+    final lessonId = widget.lessonId?.trim() ?? '';
+    if (!_materialCache.supported ||
+        widget.courseId.trim().isEmpty ||
+        lessonId.isEmpty ||
+        lessonMaterialStoragePaths(_editableBoardSet).isEmpty) {
+      if (mounted && _cacheStatus != null) {
+        setState(() => _cacheStatus = null);
+      }
+      return;
+    }
+    final status = await _materialCache.status(
+      courseId: widget.courseId,
+      lessonId: lessonId,
+      boardSet: _editableBoardSet,
+    );
+    if (mounted) {
+      setState(() => _cacheStatus = status);
+    }
+  }
 
   Future<void> _addPdf() async {
     if (!_canUpload) {
@@ -272,6 +320,7 @@ class _LessonMaterialPreparationPanelState
     );
     validateBoardSetForPersistence(next);
     await widget.onBoardSetSaved(next);
+    await _refreshCacheStatus();
     if (mounted) {
       setState(() {
         _message =
@@ -347,6 +396,7 @@ class _LessonMaterialPreparationPanelState
       if (!stillUsed) {
         await widget.storageService.deleteMaterialAsset(background);
       }
+      await _refreshCacheStatus();
       if (mounted) {
         setState(() => _message = '資料を削除し、下書き保存しました。');
       }
@@ -496,6 +546,189 @@ class _LessonMaterialPreparationPanelState
     );
   }
 
+  Future<void> _downloadCachedMaterials() async {
+    final lessonId = widget.lessonId?.trim() ?? '';
+    if (_cacheBusy ||
+        _busy ||
+        !_materialCache.supported ||
+        widget.courseId.trim().isEmpty ||
+        lessonId.isEmpty) {
+      return;
+    }
+    setState(() {
+      _cacheBusy = true;
+      _cancelCacheDownload = false;
+      _cacheProgress = const LessonMaterialDownloadProgress(
+        downloadedBytes: 0,
+        totalBytes: 0,
+        completedFiles: 0,
+        totalFiles: 0,
+      );
+    });
+    try {
+      final outcome = await _materialCache.downloadLesson(
+        courseId: widget.courseId,
+        lessonId: lessonId,
+        boardSet: _editableBoardSet,
+        onProgress: (progress) {
+          if (mounted) {
+            setState(() => _cacheProgress = progress);
+          }
+        },
+        isCancelled: () => _cancelCacheDownload,
+        overwriteExisting: false,
+        deleteUnlistedFiles: false,
+        skipIfCurrent: true,
+      );
+      await _refreshCacheStatus();
+      if (mounted) {
+        setState(() {
+          _message =
+              outcome == LessonMaterialDownloadOutcome.skippedAlreadyCurrent
+              ? 'この端末には、すでに必要な資料が保存されています。'
+              : 'このレッスンの資料を端末内に保存しました。';
+        });
+      }
+    } on LessonMaterialCacheCancelled {
+      if (mounted) {
+        setState(() => _message = '資料の保存をキャンセルしました。');
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _message = '資料を保存できませんでした。時間をおいて再度お試しください。');
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _cacheBusy = false;
+          _cacheProgress = null;
+        });
+      }
+    }
+  }
+
+  Future<void> _deleteCachedLessonMaterials() async {
+    final lessonId = widget.lessonId?.trim() ?? '';
+    if (_cacheBusy || lessonId.isEmpty) {
+      return;
+    }
+    await _materialCache.deleteLesson(
+      courseId: widget.courseId,
+      lessonId: lessonId,
+    );
+    await _refreshCacheStatus();
+  }
+
+  Future<void> _deleteAllCachedMaterials() async {
+    if (_cacheBusy) {
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('端末内の資料をすべて削除しますか？'),
+        content: const Text('他のレッスンで保存したPDF・画像も削除されます。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('戻る'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('すべて削除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+    await _materialCache.deleteAll();
+    await _refreshCacheStatus();
+  }
+
+  String _formatCacheBytes(int bytes) {
+    if (bytes >= 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
+    }
+    if (bytes >= 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)}KB';
+    }
+    return '$bytes B';
+  }
+
+  List<Widget> _buildCacheActions() {
+    final lessonId = widget.lessonId?.trim() ?? '';
+    if (!_materialCache.supported ||
+        widget.courseId.trim().isEmpty ||
+        lessonId.isEmpty ||
+        lessonMaterialStoragePaths(_editableBoardSet).isEmpty) {
+      return const [];
+    }
+    final status = _cacheStatus;
+    final progress = _cacheProgress;
+    final hasCurrentCache = status?.hasCurrentCache == true;
+    return [
+      const SizedBox(height: 16),
+      const Divider(),
+      const SizedBox(height: 12),
+      Text('PDF・画像の端末保存', style: Theme.of(context).textTheme.titleSmall),
+      const SizedBox(height: 6),
+      Text(
+        status?.hasStaleCache == true
+            ? 'まだ端末にない資料があります。保存すると、この端末での表示が速くなります。'
+            : hasCurrentCache
+            ? 'このレッスンの資料は端末内に保存済みです'
+                  '（${_formatCacheBytes(status!.totalBytes)}）。'
+            : '同じ端末で上げた資料は自動で残します。'
+                  '別の端末で上げた資料があるときは、ここでまとめて保存できます。',
+      ),
+      if (progress != null) ...[
+        const SizedBox(height: 10),
+        LinearProgressIndicator(value: progress.fraction),
+        const SizedBox(height: 4),
+        Text('${progress.completedFiles} / ${progress.totalFiles}件'),
+      ],
+      const SizedBox(height: 10),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          FilledButton.icon(
+            key: const ValueKey('teacher-lesson-material-cache-save'),
+            onPressed: _cacheBusy || _busy
+                ? null
+                : () => unawaited(_downloadCachedMaterials()),
+            icon: const Icon(Icons.download),
+            label: Text(
+              hasCurrentCache && status?.hasStaleCache != true
+                  ? '保存し直す'
+                  : 'このレッスンの資料を保存',
+            ),
+          ),
+          if (_cacheBusy)
+            OutlinedButton(
+              onPressed: () => _cancelCacheDownload = true,
+              child: const Text('キャンセル'),
+            ),
+          if (hasCurrentCache || status?.hasStaleCache == true)
+            OutlinedButton(
+              onPressed: _cacheBusy
+                  ? null
+                  : () => unawaited(_deleteCachedLessonMaterials()),
+              child: const Text('このレッスンの保存を削除'),
+            ),
+          TextButton(
+            onPressed: _cacheBusy
+                ? null
+                : () => unawaited(_deleteAllCachedMaterials()),
+            child: const Text('端末内の資料をすべて削除'),
+          ),
+        ],
+      ),
+    ];
+  }
+
   void _showUnavailableMessage() {
     setState(() {
       if ((widget.lessonId?.trim().isEmpty ?? true)) {
@@ -632,7 +865,8 @@ class _LessonMaterialPreparationPanelState
                         ),
                 ),
             ],
-            if (_busy) ...[
+            ..._buildCacheActions(),
+            if (_busy || _cacheBusy) ...[
               const SizedBox(height: 8),
               const LinearProgressIndicator(),
             ],

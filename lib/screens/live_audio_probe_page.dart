@@ -229,7 +229,8 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       _boardState = LiveAudioBoardState.fromBoardSet(
         widget.initialBoardSet!,
         selectedAtSec: widget.segmentStartSec,
-        partOrder: widget.segmentId == null ||
+        partOrder:
+            widget.segmentId == null ||
                 widget.segmentId!.isEmpty ||
                 widget.orderedSegmentIds.isEmpty
             ? null
@@ -1688,15 +1689,18 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
   Future<LessonWhiteboardMaterialSource> _resolveLiveMaterialSource(
     String storagePath,
   ) async {
-    final session = _session;
-    if (_materialServerValidated &&
-        session != null &&
-        session.courseId.isNotEmpty &&
-        session.lessonId.isNotEmpty) {
+    final courseId = (_session?.courseId.isNotEmpty ?? false)
+        ? _session!.courseId
+        : (widget.courseId ?? '');
+    final lessonId = (_session?.lessonId.isNotEmpty ?? false)
+        ? _session!.lessonId
+        : (widget.lessonId ?? '');
+    if (courseId.isNotEmpty &&
+        lessonId.isNotEmpty &&
+        (_materialServerValidated || _isTeacher)) {
       final localPath = await _materialCache.localPath(
-        courseId: session.courseId,
-        lessonId: session.lessonId,
-        boardSet: _boardState.boardSet,
+        courseId: courseId,
+        lessonId: lessonId,
         storagePath: storagePath,
       );
       if (localPath != null) {
@@ -1982,9 +1986,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     final board = _displayBoard;
     final completedStrokes = visibleWhiteboardBundleStrokes(
       bundle: board.layerBundle,
-      globalPositionSec: _isCatchup
-          ? _catchupTimelineSec
-          : _currentTimelineSec,
+      globalPositionSec: _isCatchup ? _catchupTimelineSec : _currentTimelineSec,
       segmentLocalPositionSec: _isCatchup
           ? _catchupStatus.positionSec
           : _currentSessionSec,

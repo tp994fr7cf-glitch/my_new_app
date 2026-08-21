@@ -10,6 +10,7 @@ import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
 import '../models/lesson_whiteboard_part_order.dart';
 import '../services/lesson_audio_recording_service.dart';
+import '../services/lesson_material_source_resolver.dart';
 import '../services/lesson_media_storage_service.dart';
 import 'lesson_whiteboard_canvas.dart';
 
@@ -29,6 +30,8 @@ class LessonAudioWhiteboardRecorderPanel extends StatefulWidget {
     required this.onUseRecording,
     required this.onDiscard,
     required this.onBusyChanged,
+    this.courseId = '',
+    this.lessonId,
     this.segmentId = '',
     this.orderedSegmentIds = const [],
     this.validateForPublication,
@@ -37,6 +40,8 @@ class LessonAudioWhiteboardRecorderPanel extends StatefulWidget {
   });
 
   final double segmentStartSec;
+  final String courseId;
+  final String? lessonId;
   final String segmentId;
   final List<String> orderedSegmentIds;
   final BoardSet initialBoardSet;
@@ -1165,9 +1170,7 @@ class _LessonAudioWhiteboardRecorderPanelState
       return;
     }
     _boardSet = _boardSet.replaceBoard(
-      board.copyWith(
-        layerBundle: _bundleWithCurrentStrokes(board.layerBundle),
-      ),
+      board.copyWith(layerBundle: _bundleWithCurrentStrokes(board.layerBundle)),
     );
   }
 
@@ -1183,6 +1186,16 @@ class _LessonAudioWhiteboardRecorderPanelState
           strokes: strokes,
         ),
       ),
+    );
+  }
+
+  Future<LessonWhiteboardMaterialSource> _resolveMaterialSource(
+    String storagePath,
+  ) {
+    return resolveCachedLessonMaterialSource(
+      courseId: widget.courseId,
+      lessonId: widget.lessonId ?? '',
+      storagePath: storagePath,
     );
   }
 
@@ -1514,6 +1527,7 @@ class _LessonAudioWhiteboardRecorderPanelState
                   aspectRatio: _selectedBoard.aspectRatio,
                   showViewportControls: false,
                   bottomLeftOverlay: _buildScreenShareButton(context),
+                  materialUrlResolver: _resolveMaterialSource,
                 ),
                 const SizedBox(height: 12),
                 _buildRecordingControls(canUseRecording: canUseRecording),

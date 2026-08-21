@@ -48,6 +48,12 @@ class LessonMaterialCacheCancelled implements Exception {
   const LessonMaterialCacheCancelled();
 }
 
+enum LessonMaterialDownloadOutcome {
+  skippedAlreadyCurrent,
+  downloaded,
+  nothingToDownload,
+}
+
 List<String> lessonMaterialStoragePaths(BoardSet boardSet) {
   final paths = <String>{
     for (final board in boardSet.boards)

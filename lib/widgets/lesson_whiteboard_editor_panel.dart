@@ -14,6 +14,7 @@ import '../models/lesson_publication_validator.dart';
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
 import '../services/lesson_material_library_service.dart';
+import '../services/lesson_material_source_resolver.dart';
 import '../services/lesson_media_playback.dart';
 import '../services/lesson_media_playlist_playback.dart';
 import '../services/lesson_material_storage_service.dart';
@@ -827,6 +828,16 @@ class _LessonWhiteboardEditorPanelState
   BoardSet _buildCurrentBoardSet() {
     _commitSelectedBoard();
     return _boardSet;
+  }
+
+  Future<LessonWhiteboardMaterialSource> _resolveMaterialSource(
+    String storagePath,
+  ) {
+    return resolveCachedLessonMaterialSource(
+      courseId: widget.courseId,
+      lessonId: widget.lessonId ?? '',
+      storagePath: storagePath,
+    );
   }
 
   void _notifyWhiteboardChanged() {
@@ -2025,6 +2036,7 @@ class _LessonWhiteboardEditorPanelState
                 showViewportControls: false,
                 background: _selectedBoard.background,
                 aspectRatio: _selectedBoard.aspectRatio,
+                materialUrlResolver: _resolveMaterialSource,
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
@@ -2051,6 +2063,7 @@ class _LessonWhiteboardEditorPanelState
                 bottomLeftOverlay: _buildScreenShareButton(context),
                 background: _selectedBoard.background,
                 aspectRatio: _selectedBoard.aspectRatio,
+                materialUrlResolver: _resolveMaterialSource,
               ),
               const SizedBox(height: 8),
               Wrap(

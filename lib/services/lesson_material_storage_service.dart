@@ -9,7 +9,9 @@ import 'package:image/image.dart' as image_lib;
 import 'package:image_picker/image_picker.dart';
 import 'package:pdfrx/pdfrx.dart';
 
+import '../models/lesson_material_library.dart';
 import '../models/lesson_whiteboard_board_set.dart';
+import 'lesson_material_cache_service.dart';
 
 class LessonMaterialStorageException implements Exception {
   const LessonMaterialStorageException(this.message);
@@ -250,6 +252,11 @@ class LessonMaterialStorageService {
         'selectedPages': pages.join(','),
       },
     );
+    await _tryCacheFiles(
+      courseId: courseId,
+      lessonId: lessonId,
+      files: {sharedPath: sharedBytes},
+    );
 
     return LessonMaterialUploadResult(
       backgrounds: [
@@ -279,6 +286,7 @@ class LessonMaterialStorageService {
     }
     final backgrounds = <LessonWhiteboardBoardBackground>[];
     final titles = <String>[];
+    final cachedFiles = <String, Uint8List>{};
     for (final pickedImage in images) {
       final assetId = _newAssetId();
       final extension = _extensionForContentType(pickedImage.contentType);
@@ -317,7 +325,13 @@ class LessonMaterialStorageService {
         ),
       );
       titles.add(pickedImage.fileName);
+      cachedFiles[sharedPath] = pickedImage.bytes;
     }
+    await _tryCacheFiles(
+      courseId: courseId,
+      lessonId: lessonId,
+      files: cachedFiles,
+    );
     return LessonMaterialUploadResult(backgrounds: backgrounds, titles: titles);
   }
 
@@ -338,6 +352,50 @@ class LessonMaterialStorageService {
     for (final prefix in result.prefixes) {
       final nested = await prefix.listAll();
       await Future.wait(nested.items.map((item) => item.delete()));
+    }
+    await _tryRemoveCachedFile(background);
+  }
+
+  Future<void> _tryCacheFiles({
+    required String courseId,
+    required String lessonId,
+    required Map<String, List<int>> files,
+  }) async {
+    if (files.isEmpty) {
+      return;
+    }
+    try {
+      await LessonMaterialCacheService().putFiles(
+        courseId: courseId,
+        lessonId: lessonId,
+        files: files,
+      );
+    } catch (error, stackTrace) {
+      debugPrint(
+        'Failed to keep uploaded lesson material on this device: '
+        '$error\n$stackTrace',
+      );
+    }
+  }
+
+  Future<void> _tryRemoveCachedFile(
+    LessonWhiteboardBoardBackground background,
+  ) async {
+    final parsed = parseLessonMaterialSharedPath(background.storagePath);
+    if (parsed == null) {
+      return;
+    }
+    try {
+      await LessonMaterialCacheService().removeFiles(
+        courseId: parsed.courseId,
+        lessonId: parsed.lessonId,
+        storagePaths: [background.storagePath],
+      );
+    } catch (error, stackTrace) {
+      debugPrint(
+        'Failed to remove cached lesson material on this device: '
+        '$error\n$stackTrace',
+      );
     }
   }
 

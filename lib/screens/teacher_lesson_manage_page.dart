@@ -2298,6 +2298,8 @@ class _LessonEditorCard extends StatelessWidget {
                 const SizedBox(height: 8),
                 LessonAudioWhiteboardRecorderPanel(
                   key: ValueKey('audio-recorder-${entry.$2.id}'),
+                  courseId: courseId,
+                  lessonId: lessonId,
                   segmentId: entry.$2.id,
                   orderedSegmentIds: [
                     for (final segment in editor.segments) segment.id,

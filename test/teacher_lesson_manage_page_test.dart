@@ -288,6 +288,8 @@ void main() {
       expect(storageService.pickCount, 1);
       expect(storageService.pickedMediaType, testCase.mediaType);
       expect(find.text(testCase.uploadLabel), findsOneWidget);
+      await tester.drag(find.byType(ListView).first, const Offset(0, -800));
+      await tester.pumpAndSettle();
       expect(find.text('ファイル選択をキャンセルしました。'), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox.shrink());
