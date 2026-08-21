@@ -31,57 +31,116 @@ class LessonPublicationValidator {
     return validateAppendOnlyLessonPublication(previous: previous, next: next);
   }
 
-  /// Validates an edited lesson and publishes every URL-bearing segment.
+  /// Validates an edited lesson and publishes playable parts plus any earlier
+  /// live placeholders so learners keep the original part numbers.
   ///
   /// Publication is append-only: already-published segments keep their
-  /// immutable fields, while new tail segments become locked on this save.
+  /// immutable fields, while newly published IDs become locked on this save.
   /// The content revision changes only when at least one new segment ID is
   /// published.
   static CourseLesson prepareForPublication({
     required CourseLesson previous,
     required CourseLesson next,
   }) {
-    final validationError = validate(previous: previous, next: next);
+    return prepareForPersist(
+      previous: previous,
+      next: next,
+      intent: LessonMediaPersistIntent.publishReadyParts,
+    );
+  }
+
+  static CourseLesson prepareForPersist({
+    required CourseLesson previous,
+    required CourseLesson next,
+    required LessonMediaPersistIntent intent,
+  }) {
+    final prepared = switch (intent) {
+      LessonMediaPersistIntent.publishReadyParts =>
+        _preparePublishReadyParts(previous: previous, next: next),
+      LessonMediaPersistIntent.keepUnpublishedTails =>
+        _prepareReservationOnly(previous: previous, next: next),
+    };
+    final validationError = validate(previous: previous, next: prepared);
     if (validationError != null) {
       throw LessonPublicationValidationException(validationError);
     }
-
-    final orderedSegments = LessonMediaSegment.normalizeOrders(
-      next.mediaSegments,
-    );
-    final publishedIds = orderedSegments
-        .where(
-          (segment) =>
-              previous.lockedSegmentIds.contains(segment.id) || segment.hasUrl,
-        )
-        .map((segment) => segment.id)
-        .toList();
-    final publishesNewIds = publishedIds.any(
-      (id) => !previous.lockedSegmentIds.contains(id),
-    );
-    if (publishesNewIds &&
-        previous.contentRevision >= maxLessonContentRevision) {
-      throw const LessonPublicationValidationException(
-        lessonContentRevisionLimitError,
-      );
-    }
-    final published = next.copyWith(
-      mediaSegments: orderedSegments,
-      publishedSegmentIds: publishedIds,
-      contentRevision: publishesNewIds
-          ? previous.contentRevision + 1
-          : previous.contentRevision,
-    );
-
-    final publishedValidationError = validate(
-      previous: previous,
-      next: published,
-    );
-    if (publishedValidationError != null) {
-      throw LessonPublicationValidationException(publishedValidationError);
-    }
-    return published;
+    return prepared;
   }
+}
+
+enum LessonMediaPersistIntent { publishReadyParts, keepUnpublishedTails }
+
+bool lessonNeedsPendingPartPublishChoice({
+  required CourseLesson previous,
+  required CourseLesson next,
+}) {
+  final ordered = LessonMediaSegment.normalizeOrders(next.mediaSegments);
+  final previousLocked = previous.lockedSegmentIds;
+  var sawUnplayableEarlierSlot = false;
+  for (final segment in ordered) {
+    if (segment.isLivePlaceholder && !previousLocked.contains(segment.id)) {
+      sawUnplayableEarlierSlot = true;
+      continue;
+    }
+    if (sawUnplayableEarlierSlot &&
+        segment.hasUrl &&
+        !previousLocked.contains(segment.id)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+CourseLesson _preparePublishReadyParts({
+  required CourseLesson previous,
+  required CourseLesson next,
+}) {
+  final orderedSegments = LessonMediaSegment.normalizeOrders(
+    next.mediaSegments,
+  );
+  final publishedIds = orderedSegments
+      .where(
+        (segment) =>
+            previous.lockedSegmentIds.contains(segment.id) || segment.hasUrl,
+      )
+      .map((segment) => segment.id)
+      .toList();
+  final publishesNewIds = publishedIds.any(
+    (id) => !previous.lockedSegmentIds.contains(id),
+  );
+  if (publishesNewIds &&
+      previous.contentRevision >= maxLessonContentRevision) {
+    throw const LessonPublicationValidationException(
+      lessonContentRevisionLimitError,
+    );
+  }
+  return next.copyWith(
+    mediaSegments: orderedSegments,
+    publishedSegmentIds: publishedIds,
+    contentRevision: publishesNewIds
+        ? previous.contentRevision + 1
+        : previous.contentRevision,
+  );
+}
+
+CourseLesson _prepareReservationOnly({
+  required CourseLesson previous,
+  required CourseLesson next,
+}) {
+  final orderedSegments = LessonMediaSegment.normalizeOrders(
+    next.mediaSegments,
+  );
+  final previousLocked = previous.lockedSegmentIds;
+  final reservedSegments = [
+    for (final segment in orderedSegments)
+      if (previousLocked.contains(segment.id) || segment.isLivePlaceholder)
+        segment,
+  ];
+  return next.copyWith(
+    mediaSegments: LessonMediaSegment.normalizeOrders(reservedSegments),
+    publishedSegmentIds: previous.publishedSegmentIds,
+    contentRevision: previous.contentRevision,
+  );
 }
 
 class LessonPublicationValidationException implements Exception {

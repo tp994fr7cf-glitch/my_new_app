@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../models/course.dart';
 import '../models/lesson_media_segment.dart';
+import '../models/lesson_media_draft_overlay.dart';
 import '../models/lesson_payload_size_validator.dart';
 import '../models/lesson_whiteboard_board_set.dart';
 
@@ -117,6 +118,8 @@ class CourseLessonRepository {
     required CourseLesson editedLesson,
     required int expectedDocumentVersion,
     int expectedDraftRevision = 0,
+    bool keepDrafts = false,
+    bool publishDraftBoard = true,
   }) async {
     final lessonId = editedLesson.id;
     if (lessonId == null || lessonId.isEmpty) {
@@ -165,13 +168,16 @@ class CourseLessonRepository {
         }
         persistedDraft = BoardSet.fromMap(boardSetData);
       }
+      final nextDocumentVersion = _nextDocumentVersion(previous.documentVersion);
       final saved = editedLesson.copyWith(
         order: previous.order,
-        documentVersion: _nextDocumentVersion(previous.documentVersion),
+        documentVersion: nextDocumentVersion,
         quizVersion: previous.quizVersion,
         lessonEvents: previous.lessonEvents,
         createdAt: previous.createdAt,
-        publishedBoardSet: persistedDraft ?? editedLesson.publishedBoardSet,
+        publishedBoardSet: publishDraftBoard
+            ? (persistedDraft ?? editedLesson.publishedBoardSet)
+            : previous.publishedBoardSet,
         clearDraftBoardSet: true,
       );
       final lessonData = {
@@ -185,7 +191,14 @@ class CourseLessonRepository {
         'updatedAt': FieldValue.serverTimestamp(),
       });
       if (draftSnapshot.exists) {
-        transaction.delete(draftReference);
+        if (keepDrafts) {
+          transaction.update(draftReference, {
+            'baseLessonDocumentVersion': nextDocumentVersion,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        } else {
+          transaction.delete(draftReference);
+        }
       }
       return CourseLessonSaveResult(
         previousLesson: previous,
@@ -287,10 +300,7 @@ class CourseLessonRepository {
       );
       if (normalizedSegments.length > 100 ||
           normalizedSegments.any(
-            (segment) =>
-                segment.id.trim().isEmpty ||
-                segment.url.trim().isEmpty ||
-                segment.durationSec <= 0,
+            (segment) => !isPersistableMediaDraftSegment(segment),
           )) {
         throw StateError('録音した音声の下書きデータが不正です。');
       }

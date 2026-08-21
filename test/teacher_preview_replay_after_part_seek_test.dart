@@ -158,4 +158,65 @@ void main() {
       expect(find.textContaining('00:00'), findsWidgets);
     },
   );
+
+  testWidgets(
+    'unpublished earlier live part stays labeled part 1 and shows a message',
+    (tester) async {
+      const livePlaceholder = LessonMediaSegment(
+        id: 'live',
+        order: 0,
+        mediaType: 'audio',
+        sourceKind: lessonMediaSourceLiveArchive,
+      );
+      const recorded = LessonMediaSegment(
+        id: 'record',
+        order: 1,
+        mediaType: 'audio',
+        url: 'https://example.com/record.mp3',
+        durationSec: 4,
+      );
+      const lesson = CourseLesson(
+        title: 'プレビュー検証',
+        duration: '4秒',
+        mediaSegments: [livePlaceholder, recorded],
+        publishedSegmentIds: ['record'],
+      );
+      final course = Course(
+        id: 'preview-course',
+        title: 'プレビュー講座',
+        instructorName: '先生',
+        category: 'テスト',
+        level: '初級',
+        duration: '4秒',
+        lessonCount: 1,
+        rating: 0,
+        priceLabel: '無料',
+        description: '教師プレビュー検証',
+        lessons: const [lesson],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: VideoLessonPage(
+            course: course,
+            lesson: lesson,
+            lessonNumber: 1,
+            isTeacherPreview: true,
+            playlistPlaybackFactory: () => FakeLessonMediaPlaylistPlayback(
+              totalDurationSec: 4,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.widgetWithText(OutlinedButton, 'パート1'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, 'パート2'), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(OutlinedButton, 'パート1'));
+      await tester.pump();
+
+      expect(find.text('まだ公開前です'), findsOneWidget);
+    },
+  );
 }

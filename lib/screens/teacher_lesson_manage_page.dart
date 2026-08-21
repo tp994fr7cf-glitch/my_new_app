@@ -14,6 +14,7 @@ import '../models/lesson_media_timeline.dart';
 import '../models/lesson_payload_size_validator.dart';
 import '../models/lesson_playback_mode.dart';
 import '../models/lesson_publication_validator.dart';
+import '../models/lesson_media_draft_overlay.dart';
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
 import '../services/course_lesson_repository.dart';
@@ -145,9 +146,45 @@ String _playbackModeExplanation(LessonPlaybackMode mode) {
   };
 }
 
+const String liveReservationBlockedByRecordingMessage =
+    '録音またはアップロードが完了してから配信を開始できます。';
+
+bool isSignedInForLiveReservation() {
+  try {
+    return FirebaseAuth.instance.currentUser != null;
+  } on Object {
+    return false;
+  }
+}
+
+bool canOpenTeacherLiveReservation({
+  required bool hasCourseId,
+  required bool hasLessonId,
+  required bool isSignedIn,
+  required bool isSaving,
+  required bool isRecordingOrUploading,
+  required bool hasExistingLiveSession,
+}) {
+  if (!hasCourseId || !hasLessonId || !isSignedIn) {
+    return false;
+  }
+  if ((isSaving || isRecordingOrUploading) && !hasExistingLiveSession) {
+    return false;
+  }
+  return true;
+}
+
+bool shouldOpenTeacherLiveScreen({
+  required bool reservationSaved,
+  required bool hasExistingLiveSession,
+}) {
+  return reservationSaved || hasExistingLiveSession;
+}
+
 List<CourseLesson> _prepareLessonsForPublication({
   required List<CourseLesson> previousLessons,
   required List<CourseLesson> nextLessons,
+  LessonMediaPersistIntent intent = LessonMediaPersistIntent.publishReadyParts,
 }) {
   if (previousLessons.length != nextLessons.length) {
     throw const LessonPublicationValidationException(
@@ -156,9 +193,10 @@ List<CourseLesson> _prepareLessonsForPublication({
   }
   final publishedLessons = [
     for (var index = 0; index < nextLessons.length; index++)
-      LessonPublicationValidator.prepareForPublication(
+      LessonPublicationValidator.prepareForPersist(
         previous: previousLessons[index],
         next: nextLessons[index],
+        intent: intent,
       ),
   ];
   validateLessonBoardSetsForPersistence(publishedLessons);
@@ -394,23 +432,22 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
           final parsed = mediaSegmentsData
               .whereType<Map>()
               .map(LessonMediaSegment.fromMap)
-              .where(
-                (segment) =>
-                    segment.id.isNotEmpty &&
-                    segment.hasUrl &&
-                    segment.durationSec > 0,
-              )
+              .where(isPersistableMediaDraftSegment)
               .toList();
           if (parsed.isNotEmpty) {
             draftMediaSegments = LessonMediaSegment.normalizeOrders(parsed);
           }
         }
       }
+      final mergedMediaSegments = overlayDraftMediaSegments(
+        publishedSegments: lesson.mediaSegments,
+        draftSegments: draftMediaSegments ?? const [],
+      );
       final lessonWithDraft = draftBoardSet == null
-          ? lesson
+          ? lesson.copyWith(mediaSegments: mergedMediaSegments)
           : lesson.copyWith(
               draftBoardSet: draftBoardSet,
-              mediaSegments: draftMediaSegments,
+              mediaSegments: mergedMediaSegments,
             );
       if (!mounted) {
         return;
@@ -427,7 +464,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                 const {},
           ),
         ];
-        _lastPersistedLessons = [lessonWithDraft];
+        _lastPersistedLessons = [lesson];
         _loadedLessonContentVersion = lesson.documentVersion;
         _loadedDraftRevisions = {
           if (draftRevision > 0) _selectedLessonNumber: draftRevision,
@@ -517,16 +554,22 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
     return lessons;
   }
 
-  Future<void> _saveLessons() async {
+  Future<bool> _saveLessons({
+    LessonMediaPersistIntent? persistIntent,
+    bool skipPendingPartChoice = false,
+  }) async {
+    if (_isSaving) {
+      return false;
+    }
     if (_lessonEditors.any((editor) => editor.isAnySegmentUploading)) {
       setState(() {
         _message = '録音またはアップロードが完了してから保存してください。';
       });
-      return;
+      return false;
     }
     final lessons = _buildLessons();
     if (lessons == null) {
-      return;
+      return false;
     }
 
     final courseId = widget.course.id;
@@ -534,34 +577,65 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       setState(() {
         _message = '講座IDがないため保存できません。';
       });
-      return;
+      return false;
     }
+
+    var intent = persistIntent;
+    if (intent == null && !skipPendingPartChoice) {
+      final needsChoice = [
+        for (var index = 0; index < lessons.length; index++)
+          if (index < _lastPersistedLessons.length)
+            lessonNeedsPendingPartPublishChoice(
+              previous: _lastPersistedLessons[index],
+              next: lessons[index],
+            ),
+      ].any((needs) => needs);
+      if (needsChoice) {
+        intent = await _askPendingPartPublishIntent();
+        if (intent == null || !mounted) {
+          return false;
+        }
+      }
+    }
+    intent ??= LessonMediaPersistIntent.publishReadyParts;
 
     setState(() {
       _isSaving = true;
       _message = null;
     });
 
+    var succeeded = false;
     try {
-      final result = await _persistLessons(lessons, courseId: courseId);
+      final result = await _persistLessons(
+        lessons,
+        courseId: courseId,
+        intent: intent,
+      );
+      final keepDrafts = intent == LessonMediaPersistIntent.keepUnpublishedTails;
       final savedLessons = result.lessons;
-      final removedSegments = _collectRemovedMediaSegments(
-        previousLessons: result.previousLessons,
-        nextLessons: savedLessons,
-      );
-      final savedMediaUrls = {
-        for (final lesson in savedLessons)
-          for (final segment in lesson.mediaSegments)
-            if (segment.hasUrl) segment.url,
-      };
-      removedSegments.addAll(
-        _loadedMediaDraftUrls.where((url) => !savedMediaUrls.contains(url)),
-      );
+      final removedSegments = keepDrafts
+          ? <String>[]
+          : _collectRemovedMediaSegments(
+              previousLessons: result.previousLessons,
+              nextLessons: savedLessons,
+            );
+      if (!keepDrafts) {
+        final savedMediaUrls = {
+          for (final lesson in savedLessons)
+            for (final segment in lesson.mediaSegments)
+              if (segment.hasUrl) segment.url,
+        };
+        removedSegments.addAll(
+          _loadedMediaDraftUrls.where((url) => !savedMediaUrls.contains(url)),
+        );
+      }
 
       _lastPersistedLessons = savedLessons;
       _loadedLessonContentVersion = result.lessonContentVersion;
-      _loadedDraftRevisions.clear();
-      _loadedMediaDraftUrls.clear();
+      if (!keepDrafts) {
+        _loadedDraftRevisions.clear();
+        _loadedMediaDraftUrls.clear();
+      }
       _activeCourse = widget.lessonId == null
           ? _activeCourse.withLessonContent(savedLessons)
           : _replaceLessonInCourse(_activeCourse, savedLessons.single);
@@ -573,15 +647,21 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
               continue;
             }
             final editor = _lessonEditors[index];
-            editor.applySavedLesson(savedLessons[index]);
+            editor.applySavedLesson(
+              savedLessons[index],
+              keepLocalDrafts: keepDrafts,
+            );
           }
-          _message = 'レッスン情報を保存しました。';
+          _message = keepDrafts
+              ? '未完成のパートは公開せず、予約だけ保存しました。'
+              : 'レッスン情報を保存しました。';
         });
       }
 
       if (courseId != null && removedSegments.isNotEmpty) {
         unawaited(_deleteRemovedSegmentFiles(removedSegments));
       }
+      succeeded = true;
     } on LessonDocumentVersionConflict catch (error) {
       if (mounted) {
         setState(() {
@@ -624,6 +704,40 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         });
       }
     }
+    return succeeded;
+  }
+
+  Future<LessonMediaPersistIntent?> _askPendingPartPublishIntent() {
+    return showDialog<LessonMediaPersistIntent>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('まだ完成していないパートがあります'),
+          content: const Text(
+            '前のパートが未完成のまま、後ろの完成したパートを先に公開できます。\n\n'
+            '先に公開する場合、未完成のパートは受講者に「まだ公開前です」と表示されます。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('キャンセル'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(
+                dialogContext,
+              ).pop(LessonMediaPersistIntent.keepUnpublishedTails),
+              child: const Text('完成するまで公開しない'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(
+                dialogContext,
+              ).pop(LessonMediaPersistIntent.publishReadyParts),
+              child: const Text('完成しているパートを先に公開'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   /// Writes [lessons] to Firestore. If the write is rejected because the
@@ -634,28 +748,40 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
   Future<_LessonSaveResult> _persistLessons(
     List<CourseLesson> lessons, {
     required String? courseId,
+    required LessonMediaPersistIntent intent,
   }) async {
     try {
-      return await _writeLessons(lessons, courseId: courseId);
+      return await _writeLessons(
+        lessons,
+        courseId: courseId,
+        intent: intent,
+      );
     } on FirebaseException catch (error) {
       final isPermissionError =
           error.code == 'permission-denied' || error.code == 'unauthorized';
       if (!isPermissionError || !(await _tryRefreshAuthToken())) {
         rethrow;
       }
-      return _writeLessons(lessons, courseId: courseId);
+      return _writeLessons(
+        lessons,
+        courseId: courseId,
+        intent: intent,
+      );
     }
   }
 
   Future<_LessonSaveResult> _writeLessons(
     List<CourseLesson> lessons, {
     required String? courseId,
+    required LessonMediaPersistIntent intent,
   }) async {
     final saveOverride = widget.onSaveOverride;
+    final keepDrafts = intent == LessonMediaPersistIntent.keepUnpublishedTails;
     if (widget.lessonId != null && saveOverride == null) {
       final publishedLessons = _prepareLessonsForPublication(
         previousLessons: _lastPersistedLessons,
         nextLessons: lessons,
+        intent: intent,
       );
       final saveResult = await _lessonRepository.saveLesson(
         courseId: courseId!,
@@ -663,6 +789,8 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
         expectedDocumentVersion: _loadedLessonContentVersion,
         expectedDraftRevision:
             _loadedDraftRevisions[_selectedLessonNumber] ?? 0,
+        keepDrafts: keepDrafts,
+        publishDraftBoard: !keepDrafts,
       );
       return _LessonSaveResult(
         lessons: [saveResult.savedLesson],
@@ -674,6 +802,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       final publishedLessons = _prepareLessonsForPublication(
         previousLessons: _lastPersistedLessons,
         nextLessons: lessons,
+        intent: intent,
       );
       final nextVersion = nextLessonContentVersion(
         _loadedLessonContentVersion == 0 ? null : _loadedLessonContentVersion,
@@ -754,6 +883,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
       final publishedLessons = _prepareLessonsForPublication(
         previousLessons: latestLessons,
         nextLessons: nextLessonsWithDrafts,
+        intent: intent,
       );
       final nextVersion = nextLessonContentVersion(
         snapshotData['lessonContentVersion'],
@@ -1121,7 +1251,10 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
           parseLessonDurationLabel(editor.durationController.text.trim()) ?? 0;
       final draftSegments = LessonMediaSegment.normalizeOrders([
         for (final item in editor.segments)
-          if (item.isLocked || item.hasUrl || item.id == segment.id)
+          if (item.isLocked ||
+              item.hasUrl ||
+              item.id == segment.id ||
+              item.isLiveArchive)
             item.id == segment.id
                 ? LessonMediaSegment(
                     id: item.id,
@@ -1392,6 +1525,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                   course: _activeCourse,
                   lessonId: widget.lessonId,
                   editor: entry.$2,
+                  isSaving: _isSaving,
                   canUploadMedia: canUploadMedia,
                   canRecordAudio:
                       widget.lessonId != null && widget.lessonId!.isNotEmpty,
@@ -1431,6 +1565,11 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                     boardSet: boardSet,
                   ),
                   onPersistRequested: _saveLessons,
+                  onLiveReservationRequested: () => _saveLessons(
+                    persistIntent:
+                        LessonMediaPersistIntent.keepUnpublishedTails,
+                    skipPendingPartChoice: true,
+                  ),
                   onReloadRequested: _loadLatestLessons,
                 ),
                 const SizedBox(height: 16),
@@ -1731,18 +1870,23 @@ class _LessonEditorState {
     );
   }
 
-  void applySavedLesson(CourseLesson lesson) {
+  void applySavedLesson(
+    CourseLesson lesson, {
+    bool keepLocalDrafts = false,
+  }) {
     playbackMode = lesson.playbackMode;
     publishedSegmentIds = lesson.publishedSegmentIds;
     publishedSegmentIdsMetadataValid =
         lesson.hasValidPublishedSegmentIdsMetadata;
     contentRevision = lesson.contentRevision;
     publishedBoardSet = lesson.publishedBoardSet;
-    draftBoardSet = lesson.draftBoardSet;
-    publishedWhiteboardLayers = lesson.whiteboardLayers;
-    draftWhiteboardLayers = lesson.whiteboardDraftLayers;
-    workingWhiteboardLayers = lesson.publishedWhiteboardBundle;
-    workingBoardSet = lesson.publishedBoardSet;
+    if (!keepLocalDrafts) {
+      draftBoardSet = lesson.draftBoardSet;
+      publishedWhiteboardLayers = lesson.whiteboardLayers;
+      draftWhiteboardLayers = lesson.whiteboardDraftLayers;
+      workingWhiteboardLayers = lesson.publishedWhiteboardBundle;
+      workingBoardSet = lesson.publishedBoardSet;
+    }
     final lockedIds = lesson.lockedSegmentIds;
     final savedSegmentsById = {
       for (final segment in lesson.mediaSegments) segment.id: segment,
@@ -1755,8 +1899,11 @@ class _LessonEditorState {
             savedSegment.whiteboardStartCorrectionMs;
         segment.whiteboardEndCorrectionMs =
             savedSegment.whiteboardEndCorrectionMs;
+        if (savedSegment.liveSessionId.isNotEmpty) {
+          segment.liveSessionId = savedSegment.liveSessionId;
+        }
       }
-      if (segment.isLocked) {
+      if (segment.isLocked && !keepLocalDrafts) {
         segment.isAudioRecordingDraft = false;
         segment.isAudioRecordingBusy = false;
         segment.isMediaDraft = false;
@@ -1846,6 +1993,7 @@ class _LessonEditorCardHost extends StatefulWidget {
     required this.course,
     required this.lessonId,
     required this.editor,
+    required this.isSaving,
     required this.canUploadMedia,
     required this.canRecordAudio,
     required this.mediaConfig,
@@ -1856,6 +2004,7 @@ class _LessonEditorCardHost extends StatefulWidget {
     required this.onUseRecordedAudio,
     required this.onDraftSaved,
     required this.onPersistRequested,
+    required this.onLiveReservationRequested,
     required this.onReloadRequested,
   });
 
@@ -1864,6 +2013,7 @@ class _LessonEditorCardHost extends StatefulWidget {
   final Course course;
   final String? lessonId;
   final _LessonEditorState editor;
+  final bool isSaving;
   final bool canUploadMedia;
   final bool canRecordAudio;
   final LessonMediaConfig mediaConfig;
@@ -1881,6 +2031,7 @@ class _LessonEditorCardHost extends StatefulWidget {
   onUseRecordedAudio;
   final WhiteboardBoardSetDraftSaveCallback onDraftSaved;
   final Future<void> Function() onPersistRequested;
+  final Future<bool> Function() onLiveReservationRequested;
   final Future<void> Function() onReloadRequested;
 
   @override
@@ -1896,6 +2047,7 @@ class _LessonEditorCardHostState extends State<_LessonEditorCardHost> {
       course: widget.course,
       lessonId: widget.lessonId,
       editor: widget.editor,
+      isSaving: widget.isSaving,
       canUploadMedia: widget.canUploadMedia,
       canRecordAudio: widget.canRecordAudio,
       mediaConfig: widget.mediaConfig,
@@ -1907,6 +2059,7 @@ class _LessonEditorCardHostState extends State<_LessonEditorCardHost> {
       onUseRecordedAudio: widget.onUseRecordedAudio,
       onDraftSaved: widget.onDraftSaved,
       onPersistRequested: widget.onPersistRequested,
+      onLiveReservationRequested: widget.onLiveReservationRequested,
       onReloadRequested: widget.onReloadRequested,
     );
   }
@@ -1919,6 +2072,7 @@ class _LessonEditorCard extends StatelessWidget {
     required this.course,
     required this.lessonId,
     required this.editor,
+    required this.isSaving,
     required this.canUploadMedia,
     required this.canRecordAudio,
     required this.mediaConfig,
@@ -1930,6 +2084,7 @@ class _LessonEditorCard extends StatelessWidget {
     required this.onUseRecordedAudio,
     required this.onDraftSaved,
     required this.onPersistRequested,
+    required this.onLiveReservationRequested,
     required this.onReloadRequested,
   });
 
@@ -1938,6 +2093,7 @@ class _LessonEditorCard extends StatelessWidget {
   final Course course;
   final String? lessonId;
   final _LessonEditorState editor;
+  final bool isSaving;
   final bool canUploadMedia;
   final bool canRecordAudio;
   final LessonMediaConfig mediaConfig;
@@ -1956,6 +2112,7 @@ class _LessonEditorCard extends StatelessWidget {
   onUseRecordedAudio;
   final WhiteboardBoardSetDraftSaveCallback onDraftSaved;
   final Future<void> Function() onPersistRequested;
+  final Future<bool> Function() onLiveReservationRequested;
   final Future<void> Function() onReloadRequested;
 
   void _showAddSegmentDialog(BuildContext context) {
@@ -2200,14 +2357,28 @@ class _LessonEditorCard extends StatelessWidget {
                           const SizedBox(height: 8),
                           FilledButton.icon(
                             onPressed:
-                                courseId.isEmpty ||
-                                    lessonId == null ||
-                                    lessonId!.isEmpty ||
-                                    FirebaseAuth.instance.currentUser == null
-                                ? null
-                                : () async {
-                                    await onPersistRequested();
+                                canOpenTeacherLiveReservation(
+                                  hasCourseId: courseId.isNotEmpty,
+                                  hasLessonId:
+                                      lessonId != null && lessonId!.isNotEmpty,
+                                  isSignedIn: isSignedInForLiveReservation(),
+                                  isSaving: isSaving,
+                                  isRecordingOrUploading:
+                                      editor.isAnySegmentUploading,
+                                  hasExistingLiveSession:
+                                      entry.$2.liveSessionId.isNotEmpty,
+                                )
+                                ? () async {
+                                    final reserved =
+                                        await onLiveReservationRequested();
                                     if (!context.mounted) {
+                                      return;
+                                    }
+                                    if (!shouldOpenTeacherLiveScreen(
+                                      reservationSaved: reserved,
+                                      hasExistingLiveSession:
+                                          entry.$2.liveSessionId.isNotEmpty,
+                                    )) {
                                       return;
                                     }
                                     await Navigator.of(context).push(
@@ -2248,7 +2419,8 @@ class _LessonEditorCard extends StatelessWidget {
                                       ),
                                     );
                                     await onReloadRequested();
-                                  },
+                                  }
+                                : null,
                             icon: const Icon(Icons.podcasts),
                             label: Text(
                               entry.$2.liveSessionId.isEmpty
@@ -2256,6 +2428,14 @@ class _LessonEditorCard extends StatelessWidget {
                                   : '配信へ戻る',
                             ),
                           ),
+                          if (editor.isAnySegmentUploading &&
+                              entry.$2.liveSessionId.isEmpty) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              liveReservationBlockedByRecordingMessage,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ],
                           if (entry.$2.liveSessionId.isNotEmpty) ...[
                             const SizedBox(height: 8),
                             OutlinedButton.icon(

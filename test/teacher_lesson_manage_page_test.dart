@@ -724,4 +724,144 @@ void main() {
       expect(find.text(lessonPayloadTooLargeMessage), findsOneWidget);
     },
   );
+
+  test('未ログインや録音中は新規配信画面を開けない', () {
+    expect(
+      canOpenTeacherLiveReservation(
+        hasCourseId: true,
+        hasLessonId: true,
+        isSignedIn: false,
+        isSaving: false,
+        isRecordingOrUploading: false,
+        hasExistingLiveSession: false,
+      ),
+      isFalse,
+    );
+    expect(
+      canOpenTeacherLiveReservation(
+        hasCourseId: true,
+        hasLessonId: true,
+        isSignedIn: true,
+        isSaving: false,
+        isRecordingOrUploading: true,
+        hasExistingLiveSession: false,
+      ),
+      isFalse,
+    );
+    expect(
+      canOpenTeacherLiveReservation(
+        hasCourseId: true,
+        hasLessonId: true,
+        isSignedIn: true,
+        isSaving: true,
+        isRecordingOrUploading: false,
+        hasExistingLiveSession: false,
+      ),
+      isFalse,
+    );
+    expect(
+      canOpenTeacherLiveReservation(
+        hasCourseId: true,
+        hasLessonId: true,
+        isSignedIn: true,
+        isSaving: false,
+        isRecordingOrUploading: true,
+        hasExistingLiveSession: true,
+      ),
+      isTrue,
+    );
+  });
+
+  test('予約保存に失敗したら未開始の配信画面は開かない', () {
+    expect(
+      shouldOpenTeacherLiveScreen(
+        reservationSaved: false,
+        hasExistingLiveSession: false,
+      ),
+      isFalse,
+    );
+    expect(
+      shouldOpenTeacherLiveScreen(
+        reservationSaved: true,
+        hasExistingLiveSession: false,
+      ),
+      isTrue,
+    );
+    expect(
+      shouldOpenTeacherLiveScreen(
+        reservationSaved: false,
+        hasExistingLiveSession: true,
+      ),
+      isTrue,
+    );
+  });
+
+  testWidgets('ライブ予約パートの配信ボタンを表示する', (tester) async {
+    final course = _courseWithLesson(
+      const CourseLesson(
+        id: 'lesson-1',
+        title: 'ライブ予定',
+        duration: '10分',
+        mediaSegments: [
+          LessonMediaSegment(
+            id: 'live-1',
+            order: 0,
+            mediaType: 'audio',
+            sourceKind: lessonMediaSourceLiveArchive,
+          ),
+        ],
+      ),
+    );
+    await tester.binding.setSurfaceSize(const Size(800, 1600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonManagePage(
+          course: course,
+          lessonId: 'lesson-1',
+          onSaveOverride: (_) async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('配信画面を開く'),
+      400,
+      scrollable: find.byType(Scrollable).first,
+    );
+
+    expect(find.text('ライブ配信パート（未開始）'), findsOneWidget);
+    expect(find.text('配信画面を開く'), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, '配信画面を開く'))
+          .onPressed,
+      isNull,
+    );
+  });
+
+  testWidgets('保存失敗時はレッスン情報を保存のメッセージを残す', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonManagePage(
+          course: _course,
+          onSaveOverride: (_) async {
+            throw StateError('下書きの版が変わりました。画面を開き直してください。');
+          },
+        ),
+      ),
+    );
+
+    await tester.ensureVisible(find.text('レッスン情報を保存'));
+    await tester.tap(find.text('レッスン情報を保存'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('下書きの版が変わりました'), findsOneWidget);
+    expect(find.text('先生として配信を開始'), findsNothing);
+  });
 }

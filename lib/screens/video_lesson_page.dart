@@ -17,6 +17,7 @@ import '../models/lesson_part_progress.dart';
 import '../models/lesson_playback_mode.dart';
 import '../models/lesson_player_view_state.dart';
 import '../models/lesson_quiz_placement.dart';
+import '../models/lesson_publication_playback_update.dart';
 import '../models/lesson_segment_boundary.dart';
 import '../models/course_privacy_consent.dart';
 import '../models/quiz_answer_key.dart';
@@ -135,6 +136,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   int? _pendingAutoAdvanceIntentGeneration;
   int _userPlaybackIntentGeneration = 0;
   bool _userWantsPlayback = false;
+  bool _isHandlingLessonPublicationReload = false;
   final LatestAsyncRequestRunner<_PostEndPlaybackCommand>
   _postEndPlaybackCommands = LatestAsyncRequestRunner<_PostEndPlaybackCommand>();
   bool _courseDeleted = false;
@@ -158,13 +160,15 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       LessonMediaTimeline(segments: _publishedMediaSegments);
 
   List<LessonMediaSegment> get _allPublishedMediaSegments =>
-      lesson.effectivePublishedMediaSegments;
+      lesson.visibleLessonPartSegments;
 
   List<LessonMediaSegment> get _publishedMediaSegments =>
       _allPublishedMediaSegments.where((segment) => segment.hasUrl).toList();
 
   List<LessonMediaSegment> get _unplayablePublishedMediaSegments =>
-      _allPublishedMediaSegments.where((segment) => !segment.hasUrl).toList();
+      _allPublishedMediaSegments
+          .where((segment) => !segment.hasUrl && !segment.isLivePlaceholder)
+          .toList();
 
   List<String> get _requiredMediaSegmentIds =>
       _publishedMediaSegments.map((segment) => segment.id).toList();
@@ -403,10 +407,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   void _listenLessonUpdates() {
     final lessonId = lesson.id;
-    if (Firebase.apps.isEmpty ||
-        _isTeacherPreview ||
-        lessonId == null ||
-        lessonId.isEmpty) {
+    if (Firebase.apps.isEmpty || lessonId == null || lessonId.isEmpty) {
       return;
     }
     _lessonSubscription = FirebaseFirestore.instance
@@ -419,12 +420,13 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           if (!mounted || !snapshot.exists || snapshot.metadata.isFromCache) {
             return;
           }
+          final previousLesson = lesson;
           final nextLesson = CourseLesson.fromMap(
             snapshot.data() ?? const <String, dynamic>{},
             id: snapshot.id,
           );
           final previousMaterialFingerprint = lessonMaterialFingerprint(
-            lesson.publishedBoardSet,
+            previousLesson.publishedBoardSet,
           );
           final nextMaterialFingerprint = lessonMaterialFingerprint(
             nextLesson.publishedBoardSet,
@@ -438,7 +440,135 @@ class _VideoLessonPageState extends State<VideoLessonPage>
             }
           });
           unawaited(_refreshMaterialCacheStatus());
+          unawaited(
+            _handlePublishedLessonUpdate(
+              previousLesson: previousLesson,
+              nextLesson: nextLesson,
+            ),
+          );
         });
+  }
+
+  Future<void> _handlePublishedLessonUpdate({
+    required CourseLesson previousLesson,
+    required CourseLesson nextLesson,
+  }) async {
+    if (!mounted || _isHandlingLessonPublicationReload) {
+      return;
+    }
+    final target = earliestNewlyPlayableEarlierPart(
+      previousVisibleParts: previousLesson.visibleLessonPartSegments,
+      nextVisibleParts: nextLesson.visibleLessonPartSegments,
+      currentPlayableSegmentId: _activeMediaSegment?.id,
+    );
+    final previousPlayableIds = previousLesson.effectivePublishedMediaSegments
+        .where((segment) => segment.hasUrl)
+        .map((segment) => segment.id)
+        .join(',');
+    final nextPlayableIds = nextLesson.effectivePublishedMediaSegments
+        .where((segment) => segment.hasUrl)
+        .map((segment) => segment.id)
+        .join(',');
+    if (target == null && previousPlayableIds == nextPlayableIds) {
+      return;
+    }
+
+    _isHandlingLessonPublicationReload = true;
+    try {
+      if (target != null) {
+        _userWantsPlayback = false;
+        await _playlistPlayback?.pause();
+      }
+      await _rebuildMediaPlayer();
+      if (!mounted) {
+        return;
+      }
+      if (target == null || !target.hasUrl) {
+        return;
+      }
+      final playbackIndex = _playbackIndexForSegmentId(target.id);
+      if (playbackIndex < 0) {
+        return;
+      }
+      if (_isIndependentPlayback) {
+        await _switchToPart(playbackIndex, forceLocalStartSec: 0);
+      } else {
+        await _playlistPlayback?.seekToSegmentIndex(playbackIndex);
+        _syncDisplayedPlaybackPositionFromPlayer();
+      }
+      _userWantsPlayback = true;
+      await _startMediaPlayback();
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text(newlyPublishedPartMovedMessage)),
+      );
+    } finally {
+      _isHandlingLessonPublicationReload = false;
+    }
+  }
+
+  Future<void> _rebuildMediaPlayer() async {
+    await _positionSubscription?.cancel();
+    await _durationSubscription?.cancel();
+    await _playingSubscription?.cancel();
+    await _segmentIndexSubscription?.cancel();
+    await _segmentCompletedSubscription?.cancel();
+    _positionSubscription = null;
+    _durationSubscription = null;
+    _playingSubscription = null;
+    _segmentIndexSubscription = null;
+    _segmentCompletedSubscription = null;
+    await _playlistPlayback?.close();
+    _playlistPlayback = null;
+    if (mounted) {
+      setState(() {
+        _isLoadingMedia = true;
+        _mediaLoadError = null;
+      });
+    }
+    await _initializeMediaPlayer();
+  }
+
+  int _displayIndexForPlaybackIndex(int playbackIndex) {
+    if (playbackIndex < 0 || playbackIndex >= _publishedMediaSegments.length) {
+      return playbackIndex;
+    }
+    final displayIndex = _displayIndexForSegment(
+      _publishedMediaSegments[playbackIndex],
+    );
+    return displayIndex >= 0 ? displayIndex : playbackIndex;
+  }
+
+  int _playbackIndexForSegmentId(String segmentId) {
+    return _publishedMediaSegments.indexWhere(
+      (segment) => segment.id == segmentId,
+    );
+  }
+
+  int _displayIndexForSegment(LessonMediaSegment segment) {
+    return _allPublishedMediaSegments.indexWhere(
+      (item) => item.id == segment.id,
+    );
+  }
+
+  void _onVisiblePartPressed(LessonMediaSegment segment) {
+    if (!segment.hasUrl) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text(unpublishedLessonPartMessage)),
+      );
+      return;
+    }
+    final playbackIndex = _playbackIndexForSegmentId(segment.id);
+    if (playbackIndex < 0) {
+      return;
+    }
+    if (_isIndependentPlayback) {
+      unawaited(_switchToPart(playbackIndex));
+      return;
+    }
+    _requestContinuousPartSwitch(playbackIndex);
   }
 
   Future<void> _refreshMaterialCacheStatus() async {
@@ -837,7 +967,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
     setState(() {
       _currentMediaSegmentIndex = segmentIndex;
-      _expandedPanelIndex = segmentIndex;
+      _expandedPanelIndex = _displayIndexForPlaybackIndex(segmentIndex);
       _lastWatchProgressSegmentIndex = segmentIndex;
       _sliderDragPositionSec = null;
     });
@@ -1147,7 +1277,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _pendingExplicitRepositionGlobalSec = targetGlobalSec;
     setState(() {
       _currentMediaSegmentIndex = segmentIndex;
-      _expandedPanelIndex = segmentIndex;
+      _expandedPanelIndex = _displayIndexForPlaybackIndex(segmentIndex);
       _lastWatchProgressSegmentIndex = segmentIndex;
       _currentPositionSecExact = targetGlobalSec;
       _currentPositionSec = targetGlobalSec.floor();
@@ -1957,7 +2087,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           initialSegment.id,
         );
         _currentMediaSegmentIndex = 0;
-        _expandedPanelIndex = 0;
+        _expandedPanelIndex = _displayIndexForPlaybackIndex(0);
         _lastWatchProgressSegmentIndex = 0;
         _currentPositionSecExact = _mediaTimeline.globalSecForSegmentIndex(
           segmentIndex: 0,
@@ -2755,8 +2885,15 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
   }
 
-  String _partTitle(LessonMediaSegment segment, int index) {
-    return segment.title.isNotEmpty ? segment.title : 'パート${index + 1}';
+  String _partTitle(LessonMediaSegment segment, [int? fallbackIndex]) {
+    if (segment.title.isNotEmpty) {
+      return segment.title;
+    }
+    final displayIndex = _displayIndexForSegment(segment);
+    final resolvedIndex = displayIndex >= 0
+        ? displayIndex
+        : (fallbackIndex ?? 0);
+    return 'パート${resolvedIndex + 1}';
   }
 
   Widget _buildPartButton(
@@ -2765,9 +2902,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     required LessonMediaSegment segment,
     required bool canControlPlayback,
   }) {
-    final title = _partTitle(segment, index);
+    final title = _partTitle(segment);
     final completed = _completedMediaSegmentIds.contains(segment.id);
-    final isCurrent = index == _currentMediaSegmentIndex;
+    final isCurrent = segment.id == _activeMediaSegment?.id;
     final localSec = isCurrent
         ? _currentLocalPositionSecExact
         : _partProgress.resumePositionSecForPart(segment.id);
@@ -2781,9 +2918,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         selected: isCurrent,
         child: OutlinedButton.icon(
           key: ValueKey('lesson-part-button-${segment.id}'),
-          onPressed: !canControlPlayback
-              ? null
-              : () => unawaited(_switchToPart(index)),
+          onPressed: () => _onVisiblePartPressed(segment),
           icon: Icon(
             completed ? Icons.check_circle : Icons.radio_button_unchecked,
             size: 18,
@@ -2799,12 +2934,15 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   Widget _buildUnplayablePartsNotice(BuildContext context) {
     final publishedParts = _allPublishedMediaSegments;
-    if (!publishedParts.any((segment) => !segment.hasUrl)) {
+    if (!publishedParts.any(
+      (segment) => !segment.hasUrl && !segment.isLivePlaceholder,
+    )) {
       return const SizedBox.shrink();
     }
     final labels = [
       for (final entry in publishedParts.indexed)
-        if (!entry.$2.hasUrl) '${_partTitle(entry.$2, entry.$1)}（メディア未設定）',
+        if (!entry.$2.hasUrl && !entry.$2.isLivePlaceholder)
+          '${_partTitle(entry.$2, entry.$1)}（メディア未設定）',
     ];
     return Card(
       key: const ValueKey('unplayable-published-parts-notice'),
@@ -2906,7 +3044,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                   Text(
                     currentSegment.title.isNotEmpty
                         ? currentSegment.title
-                        : 'パート${(_playlistPlayback?.currentSegmentIndex ?? 0) + 1}',
+                        : _partTitle(currentSegment),
                   ),
                 ],
                 const SizedBox(height: 4),
@@ -2971,7 +3109,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                 icon: Icon(_playButtonIcon),
                 label: Text(_playButtonLabel),
               ),
-              if (showPartNavigation && orderedSegments.length > 1) ...[
+              if (showPartNavigation &&
+                  _allPublishedMediaSegments.length > 1) ...[
                 const SizedBox(height: 16),
                 Text('パート移動', style: Theme.of(context).textTheme.titleSmall),
                 const SizedBox(height: 8),
@@ -2979,20 +3118,20 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    for (final entry in orderedSegments.indexed)
+                    for (final segment in _allPublishedMediaSegments)
                       if (_isIndependentPlayback)
                         _buildPartButton(
                           context,
-                          index: entry.$1,
-                          segment: entry.$2,
+                          index: _displayIndexForSegment(segment),
+                          segment: segment,
                           canControlPlayback: canControlPlayback,
                         )
                       else
                         OutlinedButton(
-                          onPressed: !canControlPlayback
-                              ? null
-                              : () => _requestContinuousPartSwitch(entry.$1),
-                          child: Text(_partTitle(entry.$2, entry.$1)),
+                          onPressed: !segment.hasUrl || canControlPlayback
+                              ? () => _onVisiblePartPressed(segment)
+                              : null,
+                          child: Text(_partTitle(segment)),
                         ),
                   ],
                 ),
@@ -3011,61 +3150,88 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   }) {
     return Column(
       children: [
-        for (final entry in orderedSegments.indexed)
+        for (final segment in _allPublishedMediaSegments)
           Card(
-            key: ValueKey('lesson-part-panel-${entry.$2.id}'),
+            key: ValueKey('lesson-part-panel-${segment.id}'),
             clipBehavior: Clip.antiAlias,
             child: Column(
               children: [
                 Tooltip(
                   message:
-                      '${_partTitle(entry.$2, entry.$1)}を${entry.$1 == _expandedPanelIndex ? '閉じる' : '開く'}',
+                      '${_partTitle(segment)}を${_displayIndexForSegment(segment) == _expandedPanelIndex ? '閉じる' : '開く'}',
                   child: Semantics(
                     label:
-                        '${_partTitle(entry.$2, entry.$1)}、${_completedMediaSegmentIds.contains(entry.$2.id) ? '完了' : '未完了'}',
+                        '${_partTitle(segment)}、${_completedMediaSegmentIds.contains(segment.id) ? '完了' : '未完了'}',
                     button: true,
-                    expanded: entry.$1 == _expandedPanelIndex,
+                    expanded:
+                        _displayIndexForSegment(segment) == _expandedPanelIndex,
                     child: ListTile(
-                      key: ValueKey('lesson-part-panel-header-${entry.$2.id}'),
+                      key: ValueKey('lesson-part-panel-header-${segment.id}'),
                       dense: true,
                       leading: Icon(
-                        _completedMediaSegmentIds.contains(entry.$2.id)
+                        !segment.hasUrl
+                            ? Icons.schedule
+                            : _completedMediaSegmentIds.contains(segment.id)
                             ? Icons.check_circle
                             : Icons.radio_button_unchecked,
                       ),
-                      title: Text(_partTitle(entry.$2, entry.$1)),
+                      title: Text(_partTitle(segment)),
                       subtitle: Text(
-                        '${_completedMediaSegmentIds.contains(entry.$2.id) ? '完了' : '未完了'}・'
-                        '${formatLessonTime(entry.$1 == _currentMediaSegmentIndex ? _currentLocalPositionSecExact.round() : _partProgress.resumePositionSecForPart(entry.$2.id).round())}',
+                        !segment.hasUrl
+                            ? unpublishedLessonPartMessage
+                            : '${_completedMediaSegmentIds.contains(segment.id) ? '完了' : '未完了'}・'
+                                  '${formatLessonTime(segment.id == _activeMediaSegment?.id ? _currentLocalPositionSecExact.round() : _partProgress.resumePositionSecForPart(segment.id).round())}',
                       ),
                       trailing: Icon(
-                        entry.$1 == _expandedPanelIndex
+                        _displayIndexForSegment(segment) == _expandedPanelIndex
                             ? Icons.expand_less
                             : Icons.expand_more,
                       ),
-                      onTap: !canControlPlayback
-                          ? null
-                          : () {
-                              if (entry.$1 == _expandedPanelIndex) {
-                                setState(() {
-                                  _expandedPanelIndex = null;
-                                });
-                                return;
-                              }
-                              unawaited(_switchToPart(entry.$1));
-                            },
+                      onTap: () {
+                        final displayIndex = _displayIndexForSegment(segment);
+                        if (!segment.hasUrl) {
+                          _onVisiblePartPressed(segment);
+                          setState(() {
+                            _expandedPanelIndex =
+                                displayIndex == _expandedPanelIndex
+                                ? null
+                                : displayIndex;
+                          });
+                          return;
+                        }
+                        if (!canControlPlayback) {
+                          return;
+                        }
+                        if (displayIndex == _expandedPanelIndex) {
+                          setState(() {
+                            _expandedPanelIndex = null;
+                          });
+                          return;
+                        }
+                        final playbackIndex = _playbackIndexForSegmentId(
+                          segment.id,
+                        );
+                        if (playbackIndex >= 0) {
+                          unawaited(_switchToPart(playbackIndex));
+                        }
+                      },
                     ),
                   ),
                 ),
-                if (entry.$1 == _expandedPanelIndex)
+                if (_displayIndexForSegment(segment) == _expandedPanelIndex)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-                    child: _buildPlayerSurface(
-                      context,
-                      canControlPlayback: canControlPlayback,
-                      orderedSegments: orderedSegments,
-                      showPartNavigation: false,
-                    ),
+                    child: segment.hasUrl
+                        ? _buildPlayerSurface(
+                            context,
+                            canControlPlayback: canControlPlayback,
+                            orderedSegments: orderedSegments,
+                            showPartNavigation: false,
+                          )
+                        : const Padding(
+                            padding: EdgeInsets.all(16),
+                            child: Text(unpublishedLessonPartMessage),
+                          ),
                   ),
               ],
             ),
@@ -3229,7 +3395,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                               Text(
                                 currentSegment.title.isNotEmpty
                                     ? currentSegment.title
-                                    : 'パート${(_playlistPlayback?.currentSegmentIndex ?? 0) + 1}',
+                                    : _partTitle(currentSegment),
                               ),
                             ],
                             const SizedBox(height: 4),
@@ -3303,7 +3469,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                             icon: Icon(_playButtonIcon),
                             label: Text(_playButtonLabel),
                           ),
-                          if (orderedSegments.length > 1) ...[
+                          if (_allPublishedMediaSegments.length > 1) ...[
                             const SizedBox(height: 16),
                             Text(
                               'パート移動',
@@ -3314,20 +3480,13 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                               spacing: 8,
                               runSpacing: 8,
                               children: [
-                                for (final entry in orderedSegments.indexed)
+                                for (final segment in _allPublishedMediaSegments)
                                   OutlinedButton(
-                                    onPressed: !canControlPlayback
-                                        ? null
-                                        : () {
-                                            _requestContinuousPartSwitch(
-                                              entry.$1,
-                                            );
-                                          },
-                                    child: Text(
-                                      entry.$2.title.isNotEmpty
-                                          ? entry.$2.title
-                                          : 'パート${entry.$1 + 1}',
-                                    ),
+                                    onPressed:
+                                        !segment.hasUrl || canControlPlayback
+                                        ? () => _onVisiblePartPressed(segment)
+                                        : null,
+                                    child: Text(_partTitle(segment)),
                                   ),
                               ],
                             ),

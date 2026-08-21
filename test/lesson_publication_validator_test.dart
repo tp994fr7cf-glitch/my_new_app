@@ -482,4 +482,87 @@ void main() {
       ),
     );
   });
+
+  test(
+    'asks for a choice when a live slot is unfinished and a later part is ready',
+    () {
+      const livePlaceholder = LessonMediaSegment(
+        id: 'live',
+        order: 0,
+        mediaType: 'audio',
+        sourceKind: lessonMediaSourceLiveArchive,
+      );
+      final next = const CourseLesson(
+        title: 'Lesson',
+        duration: '30秒',
+        mediaSegments: [livePlaceholder, tail],
+      );
+
+      expect(
+        lessonNeedsPendingPartPublishChoice(
+          previous: const CourseLesson(title: 'Lesson', duration: '30秒'),
+          next: next,
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'publishing a later part keeps the earlier live slot in the lesson document',
+    () {
+      const livePlaceholder = LessonMediaSegment(
+        id: 'live',
+        order: 0,
+        mediaType: 'audio',
+        sourceKind: lessonMediaSourceLiveArchive,
+      );
+      final published = LessonPublicationValidator.prepareForPublication(
+        previous: const CourseLesson(title: 'Lesson', duration: '30秒'),
+        next: const CourseLesson(
+          title: 'Lesson',
+          duration: '30秒',
+          mediaSegments: [livePlaceholder, tail],
+        ),
+      );
+
+      expect(published.publishedSegmentIds, ['tail']);
+      expect(published.mediaSegments.map((segment) => segment.id), [
+        'live',
+        'tail',
+      ]);
+      expect(
+        published.visibleLessonPartSegments.map((segment) => segment.id),
+        ['live', 'tail'],
+      );
+      expect(
+        published.effectivePublishedMediaSegments.map((segment) => segment.id),
+        ['tail'],
+      );
+      expect(published.visibleLessonPartSegments.first.isLivePlaceholder, isTrue);
+      expect(published.visibleLessonPartSegments[1].order, 1);
+    },
+  );
+
+  test('reservation persist keeps later recorded parts unpublished', () {
+    const livePlaceholder = LessonMediaSegment(
+      id: 'live',
+      order: 0,
+      mediaType: 'audio',
+      sourceKind: lessonMediaSourceLiveArchive,
+    );
+    final reserved = LessonPublicationValidator.prepareForPersist(
+      previous: const CourseLesson(title: 'Lesson', duration: '30秒'),
+      next: const CourseLesson(
+        title: 'Lesson',
+        duration: '30秒',
+        mediaSegments: [livePlaceholder, tail],
+      ),
+      intent: LessonMediaPersistIntent.keepUnpublishedTails,
+    );
+
+    expect(reserved.publishedSegmentIds, isEmpty);
+    expect(reserved.mediaSegments.map((segment) => segment.id), ['live']);
+    expect(reserved.visibleLessonPartSegments, isEmpty);
+  });
 }
