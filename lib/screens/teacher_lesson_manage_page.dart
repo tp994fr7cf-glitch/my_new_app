@@ -1091,7 +1091,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
             0;
         final draftSegments = LessonMediaSegment.normalizeOrders([
           for (final item in editor.segments)
-            if (item.isLocked || item.hasUrl)
+            if (item.occupiesPersistedLessonSlot)
               item.id == segment.id
                   ? LessonMediaSegment(
                       id: item.id,
@@ -1103,6 +1103,8 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                       whiteboardStartCorrectionMs:
                           item.whiteboardStartCorrectionMs,
                       whiteboardEndCorrectionMs: item.whiteboardEndCorrectionMs,
+                      sourceKind: item.sourceKind,
+                      liveSessionId: item.liveSessionId,
                     )
                   : item.toSegment(fallbackDurationSec: fallbackDurationSec),
         ]);
@@ -1251,10 +1253,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
           parseLessonDurationLabel(editor.durationController.text.trim()) ?? 0;
       final draftSegments = LessonMediaSegment.normalizeOrders([
         for (final item in editor.segments)
-          if (item.isLocked ||
-              item.hasUrl ||
-              item.id == segment.id ||
-              item.isLiveArchive)
+          if (item.occupiesPersistedLessonSlot || item.id == segment.id)
             item.id == segment.id
                 ? LessonMediaSegment(
                     id: item.id,
@@ -1267,6 +1266,10 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                     whiteboardStartCorrectionMs:
                         item.whiteboardStartCorrectionMs,
                     whiteboardEndCorrectionMs: item.whiteboardEndCorrectionMs,
+                    sourceKind: item.sourceKind.isNotEmpty
+                        ? item.sourceKind
+                        : lessonMediaSourceAudioRecording,
+                    liveSessionId: item.liveSessionId,
                   )
                 : item.toSegment(fallbackDurationSec: fallbackDurationSec),
       ]);
@@ -1645,6 +1648,9 @@ class _MediaSegmentEditorState {
       whiteboardEndCorrectionMs: segment.whiteboardEndCorrectionMs,
       sourceKind: segment.sourceKind,
       liveSessionId: segment.liveSessionId,
+      isAudioRecordingDraft:
+          !segment.hasUrl &&
+          segment.sourceKind == lessonMediaSourceAudioRecording,
       isAudioRecordingBusy: false,
       isMediaDraft: isMediaDraft,
     );
@@ -1673,6 +1679,12 @@ class _MediaSegmentEditorState {
   bool get hasUrl => urlController.text.trim().isNotEmpty;
   bool get isLiveArchive => sourceKind == lessonMediaSourceLiveArchive;
   bool get isLiveReserved => isLiveArchive && liveSessionId.isNotEmpty;
+  bool get occupiesPersistedLessonSlot =>
+      isLocked ||
+      hasUrl ||
+      isLiveArchive ||
+      isAudioRecordingDraft ||
+      sourceKind == lessonMediaSourceAudioRecording;
   double get durationSecExact =>
       durationMs > 0 ? durationMs / 1000 : durationSec.toDouble();
 
@@ -1690,7 +1702,9 @@ class _MediaSegmentEditorState {
       durationMs: hasUrl ? durationMs : 0,
       whiteboardStartCorrectionMs: hasUrl ? whiteboardStartCorrectionMs : 0,
       whiteboardEndCorrectionMs: hasUrl ? whiteboardEndCorrectionMs : 0,
-      sourceKind: sourceKind,
+      sourceKind: sourceKind.isNotEmpty
+          ? sourceKind
+          : (isAudioRecordingDraft ? lessonMediaSourceAudioRecording : ''),
       liveSessionId: liveSessionId,
     );
   }
@@ -1813,10 +1827,7 @@ class _LessonEditorState {
         parseLessonDurationLabel(fallbackDurationLabel) ?? 0;
     return LessonMediaSegment.normalizeOrders(
       segments
-          .where(
-            (segment) =>
-                segment.isLocked || segment.hasUrl || segment.isLiveArchive,
-          )
+          .where((segment) => segment.occupiesPersistedLessonSlot)
           .map(
             (segment) =>
                 segment.toSegment(fallbackDurationSec: fallbackDurationSec),
@@ -1899,6 +1910,9 @@ class _LessonEditorState {
             savedSegment.whiteboardStartCorrectionMs;
         segment.whiteboardEndCorrectionMs =
             savedSegment.whiteboardEndCorrectionMs;
+        if (savedSegment.sourceKind.isNotEmpty) {
+          segment.sourceKind = savedSegment.sourceKind;
+        }
         if (savedSegment.liveSessionId.isNotEmpty) {
           segment.liveSessionId = savedSegment.liveSessionId;
         }
@@ -1922,7 +1936,11 @@ class _LessonEditorState {
       titleController: TextEditingController(),
       urlController: TextEditingController(),
       mediaType: mediaType,
-      sourceKind: forLiveArchive ? lessonMediaSourceLiveArchive : '',
+      sourceKind: forLiveArchive
+          ? lessonMediaSourceLiveArchive
+          : forAudioRecording
+          ? lessonMediaSourceAudioRecording
+          : '',
       isAudioRecordingDraft: forAudioRecording,
       isAudioRecordingBusy: false,
       isMediaDraft: false,

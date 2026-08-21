@@ -1,7 +1,7 @@
 import 'lesson_media_segment.dart';
 
 /// Merges published lesson parts with private media drafts without dropping
-/// live reservation slots that have no URL yet.
+/// unpublished numbering slots or reversing the teacher's part order.
 List<LessonMediaSegment> overlayDraftMediaSegments({
   required List<LessonMediaSegment> publishedSegments,
   required List<LessonMediaSegment> draftSegments,
@@ -13,30 +13,37 @@ List<LessonMediaSegment> overlayDraftMediaSegments({
     return LessonMediaSegment.normalizeOrders(draftSegments);
   }
 
-  final publishedById = {
-    for (final segment in publishedSegments) segment.id: segment,
-  };
   final draftById = {
     for (final segment in draftSegments) segment.id: segment,
   };
-  final merged = <LessonMediaSegment>[
+  final mergedById = <String, LessonMediaSegment>{
     for (final published in publishedSegments)
-      _preferDraftMedia(published, draftById[published.id]),
-  ];
-  final extras = [
-    for (final draftSegment in draftSegments)
-      if (!publishedById.containsKey(draftSegment.id)) draftSegment,
-  ];
-  var nextOrder = merged.isEmpty
-      ? 0
-      : merged.map((segment) => segment.order).reduce((a, b) => a > b ? a : b) +
-            1;
-  for (final extra in extras) {
-    merged.add(
-      extra.copyWith(order: extra.order >= nextOrder ? extra.order : nextOrder),
-    );
-    nextOrder += 1;
+      published.id: _preferDraftMedia(published, draftById[published.id]),
+  };
+  for (final draftSegment in draftSegments) {
+    mergedById.putIfAbsent(draftSegment.id, () => draftSegment);
   }
+
+  final orderById = <String, int>{
+    for (final published in publishedSegments) published.id: published.order,
+    for (final draftSegment in draftSegments)
+      draftSegment.id: draftSegment.order,
+  };
+  final publishedIndexById = <String, int>{
+    for (final entry in publishedSegments.indexed) entry.$2.id: entry.$1,
+  };
+  final merged = mergedById.values.toList()
+    ..sort((left, right) {
+      final byOrder = (orderById[left.id] ?? left.order).compareTo(
+        orderById[right.id] ?? right.order,
+      );
+      if (byOrder != 0) {
+        return byOrder;
+      }
+      return (publishedIndexById[left.id] ?? 9999).compareTo(
+        publishedIndexById[right.id] ?? 9999,
+      );
+    });
   return LessonMediaSegment.normalizeOrders(merged);
 }
 
@@ -50,14 +57,21 @@ LessonMediaSegment _preferDraftMedia(
   if (published.hasUrl && !draft.hasUrl) {
     return published;
   }
-  return draft.copyWith(order: published.order);
+  return draft.copyWith(
+    sourceKind: draft.sourceKind.isNotEmpty
+        ? draft.sourceKind
+        : published.sourceKind,
+    liveSessionId: draft.liveSessionId.isNotEmpty
+        ? draft.liveSessionId
+        : published.liveSessionId,
+  );
 }
 
 bool isPersistableMediaDraftSegment(LessonMediaSegment segment) {
   if (segment.id.trim().isEmpty) {
     return false;
   }
-  if (segment.isLivePlaceholder) {
+  if (segment.isUnpublishedNumberingPlaceholder) {
     return true;
   }
   return segment.hasUrl && segment.durationSec > 0;

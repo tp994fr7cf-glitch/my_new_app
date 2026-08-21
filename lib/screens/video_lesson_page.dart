@@ -167,7 +167,10 @@ class _VideoLessonPageState extends State<VideoLessonPage>
 
   List<LessonMediaSegment> get _unplayablePublishedMediaSegments =>
       _allPublishedMediaSegments
-          .where((segment) => !segment.hasUrl && !segment.isLivePlaceholder)
+          .where(
+            (segment) =>
+                !segment.hasUrl && !segment.isUnpublishedNumberingPlaceholder,
+          )
           .toList();
 
   List<String> get _requiredMediaSegmentIds =>
@@ -2935,13 +2938,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   Widget _buildUnplayablePartsNotice(BuildContext context) {
     final publishedParts = _allPublishedMediaSegments;
     if (!publishedParts.any(
-      (segment) => !segment.hasUrl && !segment.isLivePlaceholder,
+      (segment) =>
+          !segment.hasUrl && !segment.isUnpublishedNumberingPlaceholder,
     )) {
       return const SizedBox.shrink();
     }
     final labels = [
       for (final entry in publishedParts.indexed)
-        if (!entry.$2.hasUrl && !entry.$2.isLivePlaceholder)
+        if (!entry.$2.hasUrl && !entry.$2.isUnpublishedNumberingPlaceholder)
           '${_partTitle(entry.$2, entry.$1)}（メディア未設定）',
     ];
     return Card(

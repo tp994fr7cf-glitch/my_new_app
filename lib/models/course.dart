@@ -349,8 +349,8 @@ class CourseLesson {
     );
   }
 
-  /// Published playable parts plus earlier live slots that are not playable
-  /// yet, so learners still see the original part numbers.
+  /// Published playable parts plus earlier unpublished slots that are not
+  /// playable yet, so learners still see the original part numbers.
   List<LessonMediaSegment> get visibleLessonPartSegments {
     if (!_publishedSegmentIdsMetadataValid) {
       return const [];
@@ -369,7 +369,7 @@ class CourseLesson {
     return LessonMediaSegment.normalizeOrders([
       for (var index = 0; index <= lastPublishedIndex; index++)
         if (publishedIds.contains(ordered[index].id) ||
-            ordered[index].isLivePlaceholder)
+            ordered[index].isUnpublishedNumberingPlaceholder)
           ordered[index],
     ]);
   }

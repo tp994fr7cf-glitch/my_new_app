@@ -3,6 +3,7 @@ import 'dart:math';
 import '../utils/firestore_parsing.dart';
 
 const String lessonMediaSourceLiveArchive = 'liveArchive';
+const String lessonMediaSourceAudioRecording = 'audioRecording';
 const int maxLessonWhiteboardTimingCorrectionMs = 5000;
 
 class LessonMediaSegment {
@@ -37,6 +38,13 @@ class LessonMediaSegment {
   bool get isVideo => !isAudio;
   bool get isLiveArchive => sourceKind == lessonMediaSourceLiveArchive;
   bool get isLivePlaceholder => isLiveArchive && !hasUrl;
+  bool get isAudioRecordingSource =>
+      sourceKind == lessonMediaSourceAudioRecording;
+
+  /// Empty live or recording slots that still occupy a learner-facing part
+  /// number before a later part is published.
+  bool get isUnpublishedNumberingPlaceholder =>
+      !hasUrl && (isLiveArchive || isAudioRecordingSource);
   double get durationSecExact =>
       durationMs > 0 ? durationMs / 1000 : durationSec.toDouble();
 

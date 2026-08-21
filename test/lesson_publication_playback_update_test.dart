@@ -35,6 +35,39 @@ void main() {
     expect(target?.id, publishedLive.id);
   });
 
+  test('jumps to an earlier recording that just became playable', () {
+    const unpublishedRecording = LessonMediaSegment(
+      id: 'record',
+      order: 0,
+      mediaType: 'audio',
+      sourceKind: lessonMediaSourceAudioRecording,
+    );
+    const publishedRecording = LessonMediaSegment(
+      id: 'record',
+      order: 0,
+      mediaType: 'audio',
+      url: 'https://example.com/record.mp3',
+      durationSec: 12,
+      sourceKind: lessonMediaSourceAudioRecording,
+    );
+    const laterPublishedLive = LessonMediaSegment(
+      id: 'live',
+      order: 1,
+      mediaType: 'audio',
+      url: 'https://example.com/live.mp3',
+      durationSec: 20,
+      sourceKind: lessonMediaSourceLiveArchive,
+    );
+
+    final target = earliestNewlyPlayableEarlierPart(
+      previousVisibleParts: const [unpublishedRecording, laterPublishedLive],
+      nextVisibleParts: const [publishedRecording, laterPublishedLive],
+      currentPlayableSegmentId: laterPublishedLive.id,
+    );
+
+    expect(target?.id, publishedRecording.id);
+  });
+
   test('does not jump when only a later part is added', () {
     const later = LessonMediaSegment(
       id: 'later',

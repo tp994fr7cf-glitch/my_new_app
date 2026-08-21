@@ -32,7 +32,7 @@ class LessonPublicationValidator {
   }
 
   /// Validates an edited lesson and publishes playable parts plus any earlier
-  /// live placeholders so learners keep the original part numbers.
+  /// unpublished numbering slots so learners keep the original part numbers.
   ///
   /// Publication is append-only: already-published segments keep their
   /// immutable fields, while newly published IDs become locked on this save.
@@ -78,7 +78,8 @@ bool lessonNeedsPendingPartPublishChoice({
   final previousLocked = previous.lockedSegmentIds;
   var sawUnplayableEarlierSlot = false;
   for (final segment in ordered) {
-    if (segment.isLivePlaceholder && !previousLocked.contains(segment.id)) {
+    if (segment.isUnpublishedNumberingPlaceholder &&
+        !previousLocked.contains(segment.id)) {
       sawUnplayableEarlierSlot = true;
       continue;
     }
@@ -131,15 +132,45 @@ CourseLesson _prepareReservationOnly({
     next.mediaSegments,
   );
   final previousLocked = previous.lockedSegmentIds;
+  final firstLiveIndex = orderedSegments.indexWhere(
+    (segment) => segment.isLiveArchive,
+  );
   final reservedSegments = [
-    for (final segment in orderedSegments)
-      if (previousLocked.contains(segment.id) || segment.isLivePlaceholder)
-        segment,
+    for (var index = 0; index < orderedSegments.length; index++)
+      if (previousLocked.contains(orderedSegments[index].id) ||
+          orderedSegments[index].isLiveArchive ||
+          (firstLiveIndex >= 0 &&
+              index < firstLiveIndex &&
+              _shouldKeepUnpublishedEarlierSlot(orderedSegments[index])))
+        previousLocked.contains(orderedSegments[index].id) ||
+                orderedSegments[index].isLiveArchive
+            ? orderedSegments[index]
+            : _toUnpublishedNumberingSlot(orderedSegments[index]),
   ];
   return next.copyWith(
     mediaSegments: LessonMediaSegment.normalizeOrders(reservedSegments),
     publishedSegmentIds: previous.publishedSegmentIds,
     contentRevision: previous.contentRevision,
+  );
+}
+
+bool _shouldKeepUnpublishedEarlierSlot(LessonMediaSegment segment) {
+  if (segment.isLiveArchive) {
+    return false;
+  }
+  return segment.isAudio || segment.isAudioRecordingSource;
+}
+
+LessonMediaSegment _toUnpublishedNumberingSlot(LessonMediaSegment segment) {
+  return segment.copyWith(
+    url: '',
+    durationSec: 0,
+    durationMs: 0,
+    whiteboardStartCorrectionMs: 0,
+    whiteboardEndCorrectionMs: 0,
+    sourceKind: segment.sourceKind.isNotEmpty
+        ? segment.sourceKind
+        : lessonMediaSourceAudioRecording,
   );
 }
 
@@ -214,7 +245,7 @@ String? validateAppendOnlyLessonPublication({
   final protectedIndexes = <int>[
     for (var index = 0; index < previousOrdered.length; index++)
       if (previousLockedIds.contains(previousOrdered[index].id) ||
-          previousOrdered[index].isLivePlaceholder)
+          previousOrdered[index].isUnpublishedNumberingPlaceholder)
         index,
   ];
   if (protectedIndexes.isNotEmpty &&
@@ -227,7 +258,12 @@ String? validateAppendOnlyLessonPublication({
     final nextSegment = nextOrdered[index];
     final fieldsMatch = previousLockedIds.contains(previousSegment.id)
         ? _lockedFieldsMatch(previousSegment, nextSegment)
-        : _reservedLiveFieldsMatch(previousSegment, nextSegment);
+        : previousSegment.isLivePlaceholder
+        ? _reservedLiveFieldsMatch(previousSegment, nextSegment)
+        : _reservedUnpublishedNumberingFieldsMatch(
+            previousSegment,
+            nextSegment,
+          );
     if (!fieldsMatch) {
       return lessonPublishedSegmentsLockedError;
     }
@@ -269,7 +305,9 @@ bool _hasValidPublishedLayout(
     if (isLocked && reachedEditableTail) {
       return false;
     }
-    if (!isLocked && !segment.isLiveArchive) {
+    if (!isLocked &&
+        !segment.isLiveArchive &&
+        !segment.isAudioRecordingSource) {
       reachedEditableTail = true;
     }
   }
@@ -298,6 +336,17 @@ bool _reservedLiveFieldsMatch(
       previous.order == next.order &&
       (previous.liveSessionId.isEmpty ||
           previous.liveSessionId == next.liveSessionId);
+}
+
+bool _reservedUnpublishedNumberingFieldsMatch(
+  LessonMediaSegment previous,
+  LessonMediaSegment next,
+) {
+  return previous.isUnpublishedNumberingPlaceholder &&
+      previous.id == next.id &&
+      previous.mediaType == next.mediaType &&
+      previous.sourceKind == next.sourceKind &&
+      previous.order == next.order;
 }
 
 bool _hasValidUniqueSegmentIds(List<LessonMediaSegment> segments) {

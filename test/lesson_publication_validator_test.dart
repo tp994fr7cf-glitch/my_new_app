@@ -509,6 +509,38 @@ void main() {
   );
 
   test(
+    'asks for a choice when an earlier recording slot is unfinished and a later live part is ready',
+    () {
+      const recordingHole = LessonMediaSegment(
+        id: 'record',
+        order: 0,
+        mediaType: 'audio',
+        sourceKind: lessonMediaSourceAudioRecording,
+      );
+      const liveReady = LessonMediaSegment(
+        id: 'live',
+        order: 1,
+        mediaType: 'audio',
+        url: 'https://example.com/live.mp3',
+        durationSec: 20,
+        sourceKind: lessonMediaSourceLiveArchive,
+      );
+
+      expect(
+        lessonNeedsPendingPartPublishChoice(
+          previous: const CourseLesson(title: 'Lesson', duration: '30秒'),
+          next: const CourseLesson(
+            title: 'Lesson',
+            duration: '30秒',
+            mediaSegments: [recordingHole, liveReady],
+          ),
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test(
     'publishing a later part keeps the earlier live slot in the lesson document',
     () {
       const livePlaceholder = LessonMediaSegment(
@@ -544,6 +576,54 @@ void main() {
     },
   );
 
+  test(
+    'publishing a later live part keeps the earlier recording slot unpublished',
+    () {
+      const recordingHole = LessonMediaSegment(
+        id: 'record',
+        order: 0,
+        mediaType: 'audio',
+        sourceKind: lessonMediaSourceAudioRecording,
+      );
+      const liveReady = LessonMediaSegment(
+        id: 'live',
+        order: 1,
+        mediaType: 'audio',
+        url: 'https://example.com/live.mp3',
+        durationSec: 20,
+        sourceKind: lessonMediaSourceLiveArchive,
+      );
+      final published = LessonPublicationValidator.prepareForPublication(
+        previous: const CourseLesson(title: 'Lesson', duration: '30秒'),
+        next: const CourseLesson(
+          title: 'Lesson',
+          duration: '30秒',
+          mediaSegments: [recordingHole, liveReady],
+        ),
+      );
+
+      expect(published.publishedSegmentIds, ['live']);
+      expect(published.mediaSegments.map((segment) => segment.id), [
+        'record',
+        'live',
+      ]);
+      expect(
+        published.visibleLessonPartSegments.map((segment) => segment.id),
+        ['record', 'live'],
+      );
+      expect(
+        published.effectivePublishedMediaSegments.map((segment) => segment.id),
+        ['live'],
+      );
+      expect(
+        published.visibleLessonPartSegments.first.isUnpublishedNumberingPlaceholder,
+        isTrue,
+      );
+      expect(published.visibleLessonPartSegments[1].id, 'live');
+      expect(published.visibleLessonPartSegments[1].order, 1);
+    },
+  );
+
   test('reservation persist keeps later recorded parts unpublished', () {
     const livePlaceholder = LessonMediaSegment(
       id: 'live',
@@ -565,4 +645,45 @@ void main() {
     expect(reserved.mediaSegments.map((segment) => segment.id), ['live']);
     expect(reserved.visibleLessonPartSegments, isEmpty);
   });
+
+  test(
+    'reservation persist keeps an earlier recording slot and live as part 2',
+    () {
+      const recording = LessonMediaSegment(
+        id: 'record',
+        order: 0,
+        mediaType: 'audio',
+        url: 'https://example.com/record.mp3',
+        durationSec: 12,
+      );
+      const livePlaceholder = LessonMediaSegment(
+        id: 'live',
+        order: 1,
+        mediaType: 'audio',
+        sourceKind: lessonMediaSourceLiveArchive,
+      );
+      final reserved = LessonPublicationValidator.prepareForPersist(
+        previous: const CourseLesson(title: 'Lesson', duration: '30秒'),
+        next: const CourseLesson(
+          title: 'Lesson',
+          duration: '30秒',
+          mediaSegments: [recording, livePlaceholder],
+        ),
+        intent: LessonMediaPersistIntent.keepUnpublishedTails,
+      );
+
+      expect(reserved.publishedSegmentIds, isEmpty);
+      expect(reserved.mediaSegments.map((segment) => segment.id), [
+        'record',
+        'live',
+      ]);
+      expect(reserved.mediaSegments.first.hasUrl, isFalse);
+      expect(
+        reserved.mediaSegments.first.sourceKind,
+        lessonMediaSourceAudioRecording,
+      );
+      expect(reserved.mediaSegments[1].isLivePlaceholder, isTrue);
+      expect(reserved.visibleLessonPartSegments, isEmpty);
+    },
+  );
 }
