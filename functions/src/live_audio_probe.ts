@@ -488,11 +488,13 @@ export function isValidBoardSet(
   for (const event of value.switchEvents) {
     if (
       !isRecord(event) ||
-      !hasOnlyKeys(event, ["boardId", "globalTimestampSec", "sequence"]) ||
+      !hasOnlyKeys(event, ["boardId", "globalTimestampSec", "sequence", "segmentId"]) ||
       typeof event.boardId !== "string" ||
       !boardIds.has(event.boardId) ||
       !isFiniteNonNegative(event.globalTimestampSec) ||
       !isFiniteIntegerInRange(event.sequence, 0, Number.MAX_SAFE_INTEGER) ||
+      (event.segmentId !== undefined &&
+        !isValidOptionalLinkId(event.segmentId)) ||
       switchSequences.has(event.sequence)
     ) {
       return false;
@@ -512,12 +514,15 @@ export function isValidBoardSet(
         "centerX",
         "centerY",
         "scale",
+        "segmentId",
       ]) ||
       typeof event.boardId !== "string" ||
       !boardIds.has(event.boardId) ||
       !isFiniteNonNegative(event.globalTimestampSec) ||
       !isFiniteIntegerInRange(event.sequence, 0, Number.MAX_SAFE_INTEGER) ||
       viewportSequences.has(event.sequence) ||
+      (event.segmentId !== undefined &&
+        !isValidOptionalLinkId(event.segmentId)) ||
       !isFiniteIntegerInRange(event.interactionId, 0, Number.MAX_SAFE_INTEGER) ||
       !isValidViewport(event.centerX, event.centerY, event.scale)
     ) {

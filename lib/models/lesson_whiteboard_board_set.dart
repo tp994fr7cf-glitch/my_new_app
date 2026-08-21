@@ -174,19 +174,25 @@ class LessonWhiteboardBoardSwitchEvent {
     required this.boardId,
     required this.globalTimestampSec,
     required this.sequence,
+    this.segmentId,
   });
 
   final String boardId;
   final double globalTimestampSec;
   final int sequence;
+  final String? segmentId;
 
   factory LessonWhiteboardBoardSwitchEvent.fromMap(Map data) {
+    final rawSegmentId = data['segmentId'];
     return LessonWhiteboardBoardSwitchEvent(
       boardId: data['boardId'] is String ? data['boardId'] as String : '',
       globalTimestampSec: data['globalTimestampSec'] is num
           ? (data['globalTimestampSec'] as num).toDouble()
           : 0,
       sequence: data['sequence'] is num ? (data['sequence'] as num).toInt() : 0,
+      segmentId: rawSegmentId is String && rawSegmentId.trim().isNotEmpty
+          ? rawSegmentId.trim()
+          : null,
     );
   }
 
@@ -195,7 +201,22 @@ class LessonWhiteboardBoardSwitchEvent {
       'boardId': boardId,
       'globalTimestampSec': globalTimestampSec,
       'sequence': sequence,
+      if (segmentId != null && segmentId!.isNotEmpty) 'segmentId': segmentId,
     };
+  }
+
+  LessonWhiteboardBoardSwitchEvent copyWith({
+    String? boardId,
+    double? globalTimestampSec,
+    int? sequence,
+    String? segmentId,
+  }) {
+    return LessonWhiteboardBoardSwitchEvent(
+      boardId: boardId ?? this.boardId,
+      globalTimestampSec: globalTimestampSec ?? this.globalTimestampSec,
+      sequence: sequence ?? this.sequence,
+      segmentId: segmentId ?? this.segmentId,
+    );
   }
 }
 
@@ -279,6 +300,7 @@ class LessonWhiteboardViewportEvent {
     required this.sequence,
     required this.interactionId,
     required this.viewport,
+    this.segmentId,
   });
 
   final String boardId;
@@ -286,8 +308,10 @@ class LessonWhiteboardViewportEvent {
   final int sequence;
   final int interactionId;
   final LessonWhiteboardViewport viewport;
+  final String? segmentId;
 
   factory LessonWhiteboardViewportEvent.fromMap(Map data) {
+    final rawSegmentId = data['segmentId'];
     return LessonWhiteboardViewportEvent(
       boardId: data['boardId'] is String ? data['boardId'] as String : '',
       globalTimestampSec: data['globalTimestampSec'] is num
@@ -308,6 +332,9 @@ class LessonWhiteboardViewportEvent {
             ? (data['scale'] as num).toDouble()
             : minLessonWhiteboardViewportScale,
       ),
+      segmentId: rawSegmentId is String && rawSegmentId.trim().isNotEmpty
+          ? rawSegmentId.trim()
+          : null,
     );
   }
 
@@ -320,7 +347,26 @@ class LessonWhiteboardViewportEvent {
       'centerX': viewport.centerX,
       'centerY': viewport.centerY,
       'scale': viewport.scale,
+      if (segmentId != null && segmentId!.isNotEmpty) 'segmentId': segmentId,
     };
+  }
+
+  LessonWhiteboardViewportEvent copyWith({
+    String? boardId,
+    double? globalTimestampSec,
+    int? sequence,
+    int? interactionId,
+    LessonWhiteboardViewport? viewport,
+    String? segmentId,
+  }) {
+    return LessonWhiteboardViewportEvent(
+      boardId: boardId ?? this.boardId,
+      globalTimestampSec: globalTimestampSec ?? this.globalTimestampSec,
+      sequence: sequence ?? this.sequence,
+      interactionId: interactionId ?? this.interactionId,
+      viewport: viewport ?? this.viewport,
+      segmentId: segmentId ?? this.segmentId,
+    );
   }
 }
 
@@ -596,6 +642,7 @@ class BoardSet {
             boardId: entry.$2.boardId,
             globalTimestampSec: entry.$2.globalTimestampSec,
             sequence: entry.$1,
+            segmentId: entry.$2.segmentId,
           ),
       ],
       viewportEvents: [
@@ -606,6 +653,7 @@ class BoardSet {
             sequence: entry.$1,
             interactionId: entry.$2.interactionId,
             viewport: entry.$2.viewport,
+            segmentId: entry.$2.segmentId,
           ),
       ],
     );

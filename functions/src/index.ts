@@ -2132,6 +2132,7 @@ async function persistLinkedLessonDraft({
         recordingWallDurationSec,
         mediaDurationSec: durationMs / 1000,
         preserveElapsedTime: useHlsMediaOrigin,
+        segmentId,
       });
       if (
         !isValidBoardSet(baselineBoardSet) ||

@@ -2222,6 +2222,11 @@ class _LessonEditorCard extends StatelessWidget {
                                           segmentId: entry.$2.id,
                                           initialBoardSet:
                                               editor.workingBoardSet,
+                                          orderedSegmentIds: [
+                                            for (final segment
+                                                in editor.segments)
+                                              segment.id,
+                                          ],
                                           segmentStartSec: editor.segments
                                               .take(entry.$1)
                                               .where(
@@ -2293,18 +2298,11 @@ class _LessonEditorCard extends StatelessWidget {
                 const SizedBox(height: 8),
                 LessonAudioWhiteboardRecorderPanel(
                   key: ValueKey('audio-recorder-${entry.$2.id}'),
-                  segmentStartSec: editor.segments
-                      .take(entry.$1)
-                      .where((segment) => segment.hasUrl)
-                      .fold<double>(
-                        0,
-                        (total, segment) =>
-                            total +
-                            (segment.durationSec > 0
-                                ? segment.durationSecExact
-                                : (parseLessonDurationLabel(durationLabel) ?? 0)
-                                      .toDouble()),
-                      ),
+                  segmentId: entry.$2.id,
+                  orderedSegmentIds: [
+                    for (final segment in editor.segments) segment.id,
+                  ],
+                  segmentStartSec: 0,
                   initialBoardSet: editor.workingBoardSet,
                   onBusyChanged: (busy) {
                     entry.$2.isAudioRecordingBusy = busy;

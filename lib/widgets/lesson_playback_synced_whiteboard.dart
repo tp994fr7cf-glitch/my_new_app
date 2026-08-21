@@ -6,6 +6,7 @@ import '../models/lesson_media_timeline.dart';
 import '../models/lesson_player_view_state.dart';
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
+import '../models/lesson_whiteboard_part_order.dart';
 import '../models/lesson_whiteboard_timing_correction.dart';
 import '../services/lesson_media_playlist_playback.dart';
 import 'lesson_whiteboard_canvas.dart';
@@ -70,9 +71,7 @@ class _LessonPlaybackSyncedWhiteboardState
     super.initState();
     _livePositionSec = _resolvedMainPositionSec();
     _subPositionSec = _livePositionSec;
-    _selectedBoardId = _boardSet
-        .resolveBoardAt(_lookupAt(_livePositionSec).globalSec)
-        ?.id;
+    _selectedBoardId = _teacherBoardAt(_lookupAt(_livePositionSec))?.id;
     _syncRefreshTimer();
     if (widget.enableSubPlayback) {
       unawaited(_warmMaterialUrls());
@@ -105,9 +104,7 @@ class _LessonPlaybackSyncedWhiteboardState
         _selectedBoardId != null &&
         _boardSet.boardById(_selectedBoardId!) != null;
     if (_followsTeacher || !selectedStillExists) {
-      _selectedBoardId = _boardSet
-          .resolveBoardAt(_lookupAt(_displayPositionSec).globalSec)
-          ?.id;
+      _selectedBoardId = _teacherBoardAt(_lookupAt(_displayPositionSec))?.id;
     }
     _syncRefreshTimer();
   }
@@ -144,9 +141,9 @@ class _LessonPlaybackSyncedWhiteboardState
           _livePositionSec = nextPositionSec;
           _subPositionSec = nextPositionSec;
           if (_followsTeacher) {
-            _selectedBoardId = _boardSet
-                .resolveBoardAt(_lookupAt(nextPositionSec).globalSec)
-                ?.id;
+            _selectedBoardId = _teacherBoardAt(
+              _lookupAt(nextPositionSec),
+            )?.id;
           }
         });
       });
@@ -173,6 +170,26 @@ class _LessonPlaybackSyncedWhiteboardState
     return resolveLessonWhiteboardPlaybackLookup(
       playbackGlobalSec: playbackPositionSec,
       timeline: widget.timeline,
+    );
+  }
+
+  WhiteboardPartOrderPlayback _partOrderAt(
+    LessonWhiteboardPlaybackLookup lookup,
+  ) {
+    return WhiteboardPartOrderPlayback.fromTimeline(
+      widget.timeline,
+      activeSegmentId: lookup.segmentId,
+      segmentLocalSec: lookup.segmentLocalSec,
+    );
+  }
+
+  LessonWhiteboardBoard? _teacherBoardAt(
+    LessonWhiteboardPlaybackLookup lookup,
+  ) {
+    return resolveBoardAtPartOrder(
+      boardSet: _boardSet,
+      globalTimestampSec: lookup.globalSec,
+      partOrder: _partOrderAt(lookup),
     );
   }
 
@@ -237,9 +254,7 @@ class _LessonPlaybackSyncedWhiteboardState
     final positionSec = _displayPositionSec;
     setState(() {
       if (value || _followsTeacher) {
-        _selectedBoardId = _boardSet
-            .resolveBoardAt(_lookupAt(positionSec).globalSec)
-            ?.id;
+        _selectedBoardId = _teacherBoardAt(_lookupAt(positionSec))?.id;
       }
       _followsTeacher = value;
     });
@@ -262,9 +277,7 @@ class _LessonPlaybackSyncedWhiteboardState
       _subPositionSec = nextPositionSec;
       _subSliderDragPositionSec = nextPositionSec;
       if (_followsTeacher) {
-        _selectedBoardId = _boardSet
-            .resolveBoardAt(_lookupAt(nextPositionSec).globalSec)
-            ?.id;
+        _selectedBoardId = _teacherBoardAt(_lookupAt(nextPositionSec))?.id;
       }
     });
     _syncRefreshTimer();
@@ -276,9 +289,7 @@ class _LessonPlaybackSyncedWhiteboardState
       _subPositionSec = nextPositionSec;
       _subSliderDragPositionSec = nextPositionSec;
       if (_followsTeacher) {
-        _selectedBoardId = _boardSet
-            .resolveBoardAt(_lookupAt(nextPositionSec).globalSec)
-            ?.id;
+        _selectedBoardId = _teacherBoardAt(_lookupAt(nextPositionSec))?.id;
       }
     });
   }
@@ -289,9 +300,7 @@ class _LessonPlaybackSyncedWhiteboardState
       _subPositionSec = nextPositionSec;
       _subSliderDragPositionSec = null;
       if (_followsTeacher) {
-        _selectedBoardId = _boardSet
-            .resolveBoardAt(_lookupAt(nextPositionSec).globalSec)
-            ?.id;
+        _selectedBoardId = _teacherBoardAt(_lookupAt(nextPositionSec))?.id;
       }
     });
   }
@@ -304,9 +313,9 @@ class _LessonPlaybackSyncedWhiteboardState
       _subSliderDragPositionSec = null;
       _subPositionDetached = false;
       if (_followsTeacher) {
-        _selectedBoardId = _boardSet
-            .resolveBoardAt(_lookupAt(mainPositionSec).globalSec)
-            ?.id;
+        _selectedBoardId = _teacherBoardAt(
+          _lookupAt(mainPositionSec),
+        )?.id;
       }
     });
     _syncRefreshTimer();
@@ -324,7 +333,8 @@ class _LessonPlaybackSyncedWhiteboardState
     final positionSec = _displayPositionSec;
     final lookup = _lookupAt(positionSec);
     final orderedBoards = _boardSet.orderedBoards;
-    final teacherBoard = _boardSet.resolveBoardAt(lookup.globalSec);
+    final partOrder = _partOrderAt(lookup);
+    final teacherBoard = _teacherBoardAt(lookup);
     final selectedBoard = _followsTeacher
         ? teacherBoard
         : _boardSet.boardById(_selectedBoardId ?? '');
@@ -334,12 +344,15 @@ class _LessonPlaybackSyncedWhiteboardState
       globalPositionSec: lookup.globalSec,
       segmentLocalPositionSec: lookup.segmentLocalSec,
       activeSegmentId: lookup.segmentId,
+      orderedSegmentIds: partOrder.orderedSegmentIds,
     );
     final teacherViewport = activeBoard == null
         ? LessonWhiteboardViewport.full
-        : _boardSet.resolveViewportAt(
+        : resolveViewportAtPartOrder(
+            boardSet: _boardSet,
             boardId: activeBoard.id,
             globalTimestampSec: lookup.globalSec,
+            partOrder: partOrder,
           );
     final nearbyBackgrounds = widget.enableSubPlayback
         ? _nearbyBackgroundsToPreload(

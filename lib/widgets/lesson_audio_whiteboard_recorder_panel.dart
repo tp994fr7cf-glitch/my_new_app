@@ -8,6 +8,7 @@ import '../models/lesson_player_view_state.dart';
 import '../models/lesson_recording_timeline.dart';
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
+import '../models/lesson_whiteboard_part_order.dart';
 import '../services/lesson_audio_recording_service.dart';
 import '../services/lesson_media_storage_service.dart';
 import 'lesson_whiteboard_canvas.dart';
@@ -28,12 +29,16 @@ class LessonAudioWhiteboardRecorderPanel extends StatefulWidget {
     required this.onUseRecording,
     required this.onDiscard,
     required this.onBusyChanged,
+    this.segmentId = '',
+    this.orderedSegmentIds = const [],
     this.validateForPublication,
     this.recordingControllerFactory = createLessonAudioRecordingController,
     this.previewControllerFactory = createLessonAudioPreviewController,
   });
 
   final double segmentStartSec;
+  final String segmentId;
+  final List<String> orderedSegmentIds;
   final BoardSet initialBoardSet;
   final LessonRecordedAudioUseCallback onUseRecording;
   final VoidCallback onDiscard;
@@ -113,11 +118,32 @@ class _LessonAudioWhiteboardRecorderPanelState
       _boardSet.canAddBoard;
   bool get _canSelectBoard =>
       _status == _RecordingStatus.idle || _isRecording || _isPaused;
+  bool get _usesPartOrder => widget.segmentId.trim().isNotEmpty;
+  String? get _eventSegmentId =>
+      _usesPartOrder ? widget.segmentId.trim() : null;
+  double get _recordingOriginSec => _usesPartOrder ? 0 : widget.segmentStartSec;
   double get _recordingPositionSec =>
       _sessionSegmentStartSec + _clock.elapsedSeconds;
+  double get _previewLocalPositionSec =>
+      _preview.position.inMicroseconds / Duration.microsecondsPerSecond;
   double get _previewGlobalPositionSec =>
-      _sessionSegmentStartSec +
-      (_preview.position.inMicroseconds / Duration.microsecondsPerSecond);
+      _sessionSegmentStartSec + _previewLocalPositionSec;
+
+  WhiteboardPartOrderPlayback? get _partOrder {
+    if (!_usesPartOrder) {
+      return null;
+    }
+    final ordered = widget.orderedSegmentIds.isEmpty
+        ? [widget.segmentId]
+        : widget.orderedSegmentIds;
+    return WhiteboardPartOrderPlayback(
+      orderedSegmentIds: ordered,
+      activeSegmentId: widget.segmentId,
+      segmentLocalSec: _status == _RecordingStatus.ready
+          ? _previewLocalPositionSec
+          : _clock.elapsedSeconds,
+    );
+  }
 
   LessonWhiteboardBoard get _selectedBoard =>
       _boardSet.boardById(_selectedBoardId) ??
@@ -125,21 +151,35 @@ class _LessonAudioWhiteboardRecorderPanelState
       _boardSet.ensureEditable().defaultBoard!;
   LessonWhiteboardViewport get _selectedEditorViewport =>
       _editorViewports[_selectedBoardId] ??
-      _boardSet.resolveViewportAt(
+      resolveViewportAtPartOrder(
+        boardSet: _boardSet,
         boardId: _selectedBoardId,
         globalTimestampSec: _recordingPositionSec,
+        partOrder: _partOrder,
       );
 
   List<WhiteboardStroke> get _displayedStrokes {
-    if (_status != _RecordingStatus.ready) {
+    if (!_usesPartOrder && _status != _RecordingStatus.ready) {
       return _strokes;
     }
-    final localPositionSec =
-        _preview.position.inMicroseconds / Duration.microsecondsPerSecond;
+    final bundle = _usesPartOrder
+        ? copyWithSegmentLayerStrokes(
+            bundle: _selectedBoard.layerBundle,
+            segmentId: widget.segmentId,
+            strokes: _strokes,
+          )
+        : _selectedBoard.layerBundle;
+    final isPreview = _status == _RecordingStatus.ready;
     return visibleWhiteboardBundleStrokes(
-      bundle: _selectedBoard.layerBundle,
-      globalPositionSec: _previewGlobalPositionSec,
-      segmentLocalPositionSec: localPositionSec,
+      bundle: bundle,
+      globalPositionSec: isPreview
+          ? _previewGlobalPositionSec
+          : _recordingPositionSec,
+      segmentLocalPositionSec: isPreview
+          ? _previewLocalPositionSec
+          : _clock.elapsedSeconds,
+      activeSegmentId: _usesPartOrder ? widget.segmentId : null,
+      orderedSegmentIds: _partOrder?.orderedSegmentIds ?? const [],
     );
   }
 
@@ -152,13 +192,17 @@ class _LessonAudioWhiteboardRecorderPanelState
     _clock = LessonRecordingClock();
     _lifecycleState =
         WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
-    _sessionSegmentStartSec = widget.segmentStartSec;
+    _sessionSegmentStartSec = _recordingOriginSec;
     _previewPlayingSubscription = _preview.playingStream.listen((playing) {
       if (mounted) {
         setState(() {
           _previewPlaying = playing;
           if (!playing && _status == _RecordingStatus.ready) {
-            final board = _boardSet.resolveBoardAt(_previewGlobalPositionSec);
+            final board = resolveBoardAtPartOrder(
+              boardSet: _boardSet,
+              globalTimestampSec: _previewGlobalPositionSec,
+              partOrder: _partOrder,
+            );
             if (board != null && board.id != _selectedBoardId) {
               _selectedBoardId = board.id;
               _loadSelectedStrokes();
@@ -239,8 +283,13 @@ class _LessonAudioWhiteboardRecorderPanelState
 
   void _resetWorkingBoardSet() {
     _boardSet = widget.initialBoardSet.ensureEditable();
+    _sessionSegmentStartSec = _recordingOriginSec;
     _selectedBoardId =
-        _boardSet.resolveBoardAt(widget.segmentStartSec)?.id ??
+        resolveBoardAtPartOrder(
+          boardSet: _boardSet,
+          globalTimestampSec: _recordingOriginSec,
+          partOrder: _partOrder,
+        )?.id ??
         _boardSet.defaultBoard?.id ??
         LessonWhiteboardBoard.defaultBoardId;
     _loadSelectedStrokes();
@@ -255,9 +304,11 @@ class _LessonAudioWhiteboardRecorderPanelState
     _pendingPausedViewport = null;
     _editorViewports
       ..clear()
-      ..[_selectedBoardId] = _boardSet.resolveViewportAt(
+      ..[_selectedBoardId] = resolveViewportAtPartOrder(
+        boardSet: _boardSet,
         boardId: _selectedBoardId,
         globalTimestampSec: _sessionSegmentStartSec,
+        partOrder: _partOrder,
       );
     _drawingLimitReached = false;
     _payloadWarningShown = false;
@@ -291,7 +342,11 @@ class _LessonAudioWhiteboardRecorderPanelState
     _selectedBoardId =
         (preferredId != null && _boardSet.boardById(preferredId) != null
             ? preferredId
-            : _boardSet.resolveBoardAt(widget.segmentStartSec)?.id) ??
+            : resolveBoardAtPartOrder(
+                boardSet: _boardSet,
+                globalTimestampSec: _recordingOriginSec,
+                partOrder: _partOrder,
+              )?.id) ??
         _boardSet.defaultBoard?.id ??
         LessonWhiteboardBoard.defaultBoardId;
     _editorViewports
@@ -299,9 +354,11 @@ class _LessonAudioWhiteboardRecorderPanelState
       ..addAll(_preRecordingEditorViewports);
     _editorViewports.putIfAbsent(
       _selectedBoardId,
-      () => _boardSet.resolveViewportAt(
+      () => resolveViewportAtPartOrder(
+        boardSet: _boardSet,
         boardId: _selectedBoardId,
-        globalTimestampSec: widget.segmentStartSec,
+        globalTimestampSec: _recordingOriginSec,
+        partOrder: _partOrder,
       ),
     );
     _loadSelectedStrokes();
@@ -322,8 +379,9 @@ class _LessonAudioWhiteboardRecorderPanelState
   }
 
   void _loadSelectedStrokes() {
-    _strokes = List<WhiteboardStroke>.from(
-      _selectedBoard.layerBundle.primaryLayer?.strokes ?? const [],
+    _strokes = strokesForSegmentLayer(
+      bundle: _selectedBoard.layerBundle,
+      segmentId: widget.segmentId,
     );
   }
 
@@ -374,7 +432,7 @@ class _LessonAudioWhiteboardRecorderPanelState
       }
       _capturePreRecordingSetup();
       await _recorder.start();
-      _sessionSegmentStartSec = widget.segmentStartSec;
+      _sessionSegmentStartSec = _recordingOriginSec;
       _clock.start();
       _startDisplayTimer();
       if (!mounted) {
@@ -423,7 +481,11 @@ class _LessonAudioWhiteboardRecorderPanelState
       if (!mounted || !_previewPlaying) {
         return;
       }
-      final board = _boardSet.resolveBoardAt(_previewGlobalPositionSec);
+      final board = resolveBoardAtPartOrder(
+        boardSet: _boardSet,
+        globalTimestampSec: _previewGlobalPositionSec,
+        partOrder: _partOrder,
+      );
       setState(() {
         if (board != null && board.id != _selectedBoardId) {
           _selectedBoardId = board.id;
@@ -593,7 +655,11 @@ class _LessonAudioWhiteboardRecorderPanelState
         _recordedFile = file;
         _recordedDurationSec = durationSec;
         _recordedDurationMs = durationMs;
-        final previewBoard = _boardSet.resolveBoardAt(_sessionSegmentStartSec);
+        final previewBoard = resolveBoardAtPartOrder(
+          boardSet: _boardSet,
+          globalTimestampSec: _sessionSegmentStartSec,
+          partOrder: _partOrder,
+        );
         if (previewBoard != null) {
           _selectedBoardId = previewBoard.id;
           _loadSelectedStrokes();
@@ -682,6 +748,7 @@ class _LessonAudioWhiteboardRecorderPanelState
                   ((event.globalTimestampSec - _sessionSegmentStartSec) * scale)
                       .clamp(0.0, durationSec),
               sequence: event.sequence,
+              segmentId: event.segmentId,
             )
           else
             event,
@@ -989,6 +1056,7 @@ class _LessonAudioWhiteboardRecorderPanelState
       sequence: _boardSet.nextViewportSequence,
       interactionId: interactionId,
       viewport: viewport,
+      segmentId: _eventSegmentId,
     );
     final candidate = _boardSet.copyWith(
       viewportEvents: [..._boardSet.viewportEvents, event],
@@ -1003,7 +1071,12 @@ class _LessonAudioWhiteboardRecorderPanelState
   }
 
   bool _isSelectedBoardShared() =>
-      _boardSet.resolveBoardAt(_recordingPositionSec)?.id == _selectedBoardId;
+      resolveBoardAtPartOrder(
+        boardSet: _boardSet,
+        globalTimestampSec: _recordingPositionSec,
+        partOrder: _partOrder,
+      )?.id ==
+      _selectedBoardId;
 
   void _finishInProgressStroke() {
     if (_inProgressPoints.length >= 2 && _strokeStartSec != null) {
@@ -1066,6 +1139,26 @@ class _LessonAudioWhiteboardRecorderPanelState
     return true;
   }
 
+  LessonWhiteboardLayerBundle _bundleWithCurrentStrokes(
+    LessonWhiteboardLayerBundle bundle, {
+    List<WhiteboardStroke>? strokes,
+  }) {
+    final nextStrokes = strokes ?? _strokes;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (_usesPartOrder) {
+      return copyWithSegmentLayerStrokes(
+        bundle: bundle,
+        segmentId: widget.segmentId,
+        strokes: nextStrokes,
+        updatedAtMs: nowMs,
+      );
+    }
+    return bundle.copyWithPrimaryStrokes(
+      strokes: nextStrokes,
+      updatedAtMs: nowMs,
+    );
+  }
+
   void _commitSelectedBoard() {
     final board = _boardSet.boardById(_selectedBoardId);
     if (board == null) {
@@ -1073,10 +1166,7 @@ class _LessonAudioWhiteboardRecorderPanelState
     }
     _boardSet = _boardSet.replaceBoard(
       board.copyWith(
-        layerBundle: board.layerBundle.copyWithPrimaryStrokes(
-          strokes: List<WhiteboardStroke>.from(_strokes),
-          updatedAtMs: DateTime.now().millisecondsSinceEpoch,
-        ),
+        layerBundle: _bundleWithCurrentStrokes(board.layerBundle),
       ),
     );
   }
@@ -1088,9 +1178,9 @@ class _LessonAudioWhiteboardRecorderPanelState
     }
     return _boardSet.replaceBoard(
       board.copyWith(
-        layerBundle: board.layerBundle.copyWithPrimaryStrokes(
-          strokes: strokes ?? _strokes,
-          updatedAtMs: DateTime.now().millisecondsSinceEpoch,
+        layerBundle: _bundleWithCurrentStrokes(
+          board.layerBundle,
+          strokes: strokes,
         ),
       ),
     );
@@ -1143,9 +1233,11 @@ class _LessonAudioWhiteboardRecorderPanelState
       _selectedBoardId = boardId;
       _editorViewports.putIfAbsent(
         boardId,
-        () => _boardSet.resolveViewportAt(
+        () => resolveViewportAtPartOrder(
+          boardSet: _boardSet,
           boardId: boardId,
           globalTimestampSec: _recordingPositionSec,
+          partOrder: _partOrder,
         ),
       );
       _loadSelectedStrokes();
@@ -1168,6 +1260,7 @@ class _LessonAudioWhiteboardRecorderPanelState
       boardId: _selectedBoardId,
       globalTimestampSec: _recordingPositionSec,
       sequence: sequence,
+      segmentId: _eventSegmentId,
     );
     var candidate = _boardSet.copyWith(
       switchEvents: [..._boardSet.switchEvents, switchEvent],
@@ -1179,6 +1272,7 @@ class _LessonAudioWhiteboardRecorderPanelState
       sequence: viewportSequence,
       interactionId: candidate.nextViewportInteractionId,
       viewport: _selectedEditorViewport,
+      segmentId: _eventSegmentId,
     );
     candidate = candidate.copyWith(
       viewportEvents: [...candidate.viewportEvents, viewportEvent],
@@ -1404,9 +1498,11 @@ class _LessonAudioWhiteboardRecorderPanelState
                   onStrokeCancel: _cancelInProgressStroke,
                   maxWidth: lessonWhiteboardCompactMaxWidth,
                   viewport: _status == _RecordingStatus.ready
-                      ? _boardSet.resolveViewportAt(
+                      ? resolveViewportAtPartOrder(
+                          boardSet: _boardSet,
                           boardId: _selectedBoardId,
                           globalTimestampSec: _previewGlobalPositionSec,
+                          partOrder: _partOrder,
                         )
                       : _selectedEditorViewport,
                   onViewportChanged: _handleViewportChanged,

@@ -1,4 +1,5 @@
 import '../models/lesson_whiteboard_board_set.dart';
+import '../models/lesson_whiteboard_part_order.dart';
 
 double resolveLiveAudioSegmentStartSec({
   required double fallbackSegmentStartSec,
@@ -48,6 +49,7 @@ String resolveLiveAudioDisplayBoardId({
   required String? viewerBoardId,
   required double catchupTimelineSec,
   required Set<String> boardsCreatedDuringSession,
+  WhiteboardPartOrderPlayback? partOrder,
 }) {
   if (!isCatchup) {
     return followPresenter
@@ -65,7 +67,11 @@ String resolveLiveAudioDisplayBoardId({
     return retainedViewerBoardId;
   }
 
-  final recordedBoard = boardSet.resolveBoardAt(catchupTimelineSec);
+  final recordedBoard = resolveBoardAtPartOrder(
+    boardSet: boardSet,
+    globalTimestampSec: catchupTimelineSec,
+    partOrder: partOrder,
+  );
   if (recordedBoard != null &&
       liveAudioBoardExistsAt(
         boardSet: boardSet,

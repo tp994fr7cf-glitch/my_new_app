@@ -259,4 +259,57 @@ void main() {
       );
     },
   );
+
+  test(
+    'copyWithNamedPrimaryStrokes adds primary without replacing later-part ink',
+    () {
+      const later = LessonWhiteboardLayer(
+        id: 'segment-part-2',
+        order: 0,
+        strokes: [
+          WhiteboardStroke(
+            id: 'later',
+            timestampSec: 1,
+            points: [
+              WhiteboardPoint(x: 0, y: 0),
+              WhiteboardPoint(x: 1, y: 1),
+            ],
+          ),
+        ],
+      );
+      const liveStroke = WhiteboardStroke(
+        id: 'live',
+        timestampSec: 2,
+        points: [
+          WhiteboardPoint(x: 0.2, y: 0.2),
+          WhiteboardPoint(x: 0.3, y: 0.3),
+        ],
+      );
+      const bundle = LessonWhiteboardLayerBundle(layers: [later]);
+
+      expect(bundle.namedPrimaryLayer, isNull);
+      expect(bundle.primaryLayer?.id, 'segment-part-2');
+
+      final next = bundle.copyWithNamedPrimaryStrokes(
+        strokes: const [liveStroke],
+        updatedAtMs: 1,
+      );
+
+      expect(next.namedPrimaryLayer?.strokes.single.id, 'live');
+      expect(next.namedPrimaryLayer?.order, 1);
+      expect(
+        next.layers.map((layer) => layer.order).toSet().length,
+        next.layers.length,
+      );
+      expect(
+        next.layers
+            .where((layer) => layer.id == 'segment-part-2')
+            .single
+            .strokes
+            .single
+            .id,
+        'later',
+      );
+    },
+  );
 }

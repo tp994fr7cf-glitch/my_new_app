@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:my_new_app/models/lesson_timed_anchor.dart';
 import 'package:my_new_app/models/lesson_whiteboard.dart';
 import 'package:my_new_app/models/lesson_whiteboard_board_set.dart';
 import 'package:my_new_app/services/live_audio_board_state.dart';
@@ -296,4 +297,68 @@ void main() {
 
     expect(state.selectedBoardId, 'board-1');
   });
+
+  test(
+    'live completed strokes go onto named primary, not a later-part layer',
+    () {
+      const laterStroke = WhiteboardStroke(
+        id: 'part-2-ink',
+        timestampSec: 1,
+        points: [WhiteboardPoint(x: 0.1, y: 0.1), WhiteboardPoint(x: 0.2, y: 0.2)],
+      );
+      const liveStroke = WhiteboardStroke(
+        id: 'live-ink',
+        timestampSec: 2,
+        points: [WhiteboardPoint(x: 0.3, y: 0.3), WhiteboardPoint(x: 0.4, y: 0.4)],
+      );
+      const laterLayer = LessonWhiteboardLayer(
+        id: 'segment-part-2',
+        order: 0,
+        anchorType: LessonTimedAnchorType.segment,
+        segmentId: 'part-2',
+        strokes: [laterStroke],
+      );
+      final state = LiveAudioBoardState.fromBoardSet(
+        const BoardSet(
+          boards: [
+            LessonWhiteboardBoard(
+              id: LessonWhiteboardBoard.defaultBoardId,
+              order: 0,
+              layerBundle: LessonWhiteboardLayerBundle(layers: [laterLayer]),
+            ),
+          ],
+        ),
+      ).saveCompletedStroke(
+        boardId: LessonWhiteboardBoard.defaultBoardId,
+        stroke: liveStroke,
+      );
+
+      final bundle = state.selectedBoard.layerBundle;
+      expect(bundle.namedPrimaryLayer?.strokes.single.id, 'live-ink');
+      expect(bundle.namedPrimaryLayer?.order, 1);
+      expect(
+        bundle.layers.map((layer) => layer.order).toSet().length,
+        bundle.layers.length,
+      );
+      expect(
+        bundle.layers
+            .where((layer) => layer.id == 'segment-part-2')
+            .single
+            .strokes
+            .single
+            .id,
+        'part-2-ink',
+      );
+      expect(
+        visibleWhiteboardBundleStrokes(
+          bundle: bundle,
+          globalPositionSec: 2,
+          segmentLocalPositionSec: 2,
+          activeSegmentId: 'part-1',
+          orderedSegmentIds: const ['part-1', 'part-2'],
+        ).map((stroke) => stroke.id),
+        ['live-ink'],
+      );
+    },
+  );
 }

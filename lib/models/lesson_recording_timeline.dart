@@ -122,5 +122,6 @@ LessonWhiteboardViewportEvent scaleRecordedViewportEvent({
     sequence: event.sequence,
     interactionId: event.interactionId,
     viewport: event.viewport,
+    segmentId: event.segmentId,
   );
 }

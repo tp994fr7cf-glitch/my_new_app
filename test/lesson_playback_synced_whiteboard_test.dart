@@ -593,7 +593,10 @@ void main() {
     var canvas = tester.widget<LessonWhiteboardCanvas>(
       find.byType(LessonWhiteboardCanvas),
     );
-    expect(canvas.strokes.single.id, 'second-stroke');
+    expect(canvas.strokes.map((stroke) => stroke.id), [
+      'first-stroke',
+      'second-stroke',
+    ]);
 
     final slider = tester.widget<Slider>(
       find.byKey(const ValueKey('whiteboard-sub-playback-slider')),

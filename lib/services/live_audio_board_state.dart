@@ -1,5 +1,6 @@
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
+import '../models/lesson_whiteboard_part_order.dart';
 import 'live_audio_probe_message.dart';
 
 class LiveAudioBoardState {
@@ -26,16 +27,24 @@ class LiveAudioBoardState {
   factory LiveAudioBoardState.fromBoardSet(
     BoardSet boardSet, {
     double? selectedAtSec,
+    WhiteboardPartOrderPlayback? partOrder,
   }) {
     final normalized = boardSet.isEmpty
         ? LiveAudioBoardState.initial().boardSet
         : boardSet;
+    final selectedId = partOrder == null
+        ? (selectedAtSec == null
+              ? normalized.orderedSwitchEvents.lastOrNull?.boardId
+              : normalized.resolveBoardAt(selectedAtSec)?.id)
+        : resolveBoardAtPartOrder(
+            boardSet: normalized,
+            globalTimestampSec: selectedAtSec ?? 0,
+            partOrder: partOrder,
+          )?.id;
     return LiveAudioBoardState(
       boardSet: normalized,
       selectedBoardId:
-          (selectedAtSec == null
-              ? normalized.orderedSwitchEvents.lastOrNull?.boardId
-              : normalized.resolveBoardAt(selectedAtSec)?.id) ??
+          selectedId ??
           normalized.defaultBoard?.id ??
           LessonWhiteboardBoard.defaultBoardId,
       savedStrokeIds: {
@@ -62,7 +71,7 @@ class LiveAudioBoardState {
   );
 
   List<WhiteboardStroke> get selectedCompletedStrokes =>
-      selectedBoard.layerBundle.primaryLayer?.strokes ?? const [];
+      selectedBoard.layerBundle.namedPrimaryLayer?.strokes ?? const [];
 
   List<WhiteboardStroke> get selectedRemoteInProgressStrokes =>
       remoteInProgressStrokesForBoard(selectedBoardId);
@@ -150,7 +159,7 @@ class LiveAudioBoardState {
     if (board == null) {
       return this;
     }
-    final existing = board.layerBundle.primaryLayer?.strokes ?? const [];
+    final existing = board.layerBundle.namedPrimaryLayer?.strokes ?? const [];
     final nextStrokes =
         [
           for (final item in existing)
@@ -161,7 +170,7 @@ class LiveAudioBoardState {
           return byTime != 0 ? byTime : a.id.compareTo(b.id);
         });
     final nextBoard = board.copyWith(
-      layerBundle: board.layerBundle.copyWithPrimaryStrokes(
+      layerBundle: board.layerBundle.copyWithNamedPrimaryStrokes(
         strokes: nextStrokes,
       ),
     );
@@ -326,6 +335,7 @@ List<LessonWhiteboardViewportEvent> _boundedViewportEvents(
         sequence: entry.$1,
         interactionId: entry.$2.interactionId,
         viewport: entry.$2.viewport,
+        segmentId: entry.$2.segmentId,
       ),
   ];
 }

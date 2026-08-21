@@ -175,6 +175,7 @@ export function adjustLiveArchiveBoardSet({
   recordingWallDurationSec,
   mediaDurationSec,
   preserveElapsedTime = false,
+  segmentId,
 }: {
   boardSet: unknown;
   baselineBoardSet: unknown;
@@ -183,6 +184,7 @@ export function adjustLiveArchiveBoardSet({
   recordingWallDurationSec: number;
   mediaDurationSec: number;
   preserveElapsedTime?: boolean;
+  segmentId?: string;
 }): Record<string, unknown> | null {
   if (
     !isRecord(boardSet) ||
@@ -230,17 +232,21 @@ export function adjustLiveArchiveBoardSet({
       maximumLocalSec,
       Math.max(0, value - liveStartSec),
     );
-    return Number(
-      (segmentStartSec + recordingLocalSec * scale).toFixed(6),
-    );
+    return Number((recordingLocalSec * scale).toFixed(6));
   };
+
+  const recordingSegmentId =
+    typeof segmentId === "string" && segmentId.trim() ? segmentId.trim() : "";
+  const recordingLayerId = recordingSegmentId ?
+    `segment-${recordingSegmentId}` :
+    "";
 
   const boards: Record<string, unknown>[] = [];
   for (const board of boardSet.boards) {
     if (!isRecord(board) || !Array.isArray(board.layers)) {
       return null;
     }
-    const layers: Record<string, unknown>[] = [];
+    const remappedLayers: Record<string, unknown>[] = [];
     for (const layer of board.layers) {
       if (!isRecord(layer)) {
         return null;
@@ -292,9 +298,74 @@ export function adjustLiveArchiveBoardSet({
           points,
         });
       }
-      layers.push({...layer, ...(layer.strokes === undefined ? {} : {strokes})});
+      remappedLayers.push({
+        ...layer,
+        ...(layer.strokes === undefined ? {} : {strokes}),
+      });
     }
-    boards.push({...board, layers});
+
+    if (!recordingSegmentId) {
+      boards.push({...board, layers: remappedLayers});
+      continue;
+    }
+
+    const newStrokes: Record<string, unknown>[] = [];
+    const keptLayers: Record<string, unknown>[] = [];
+    let recordingLayer: Record<string, unknown> | null = null;
+    let nextOrder = 0;
+    for (const layer of remappedLayers) {
+      const layerId = typeof layer.id === "string" ? layer.id : "";
+      const layerSegmentId =
+        typeof layer.segmentId === "string" ? layer.segmentId : "";
+      const isRecordingLayer =
+        layerId === recordingLayerId || layerSegmentId === recordingSegmentId;
+      const rawStrokes = Array.isArray(layer.strokes) ? layer.strokes : [];
+      const kept: Record<string, unknown>[] = [];
+      for (const stroke of rawStrokes) {
+        if (!isRecord(stroke) || typeof stroke.id !== "string") {
+          return null;
+        }
+        if (baselineStrokeIds.has(stroke.id)) {
+          kept.push(stroke);
+        } else {
+          newStrokes.push(stroke);
+        }
+      }
+      if (typeof layer.order === "number" && layer.order >= nextOrder) {
+        nextOrder = layer.order + 1;
+      }
+      const nextLayer = {...layer, strokes: kept};
+      if (isRecordingLayer) {
+        recordingLayer = nextLayer;
+      } else {
+        keptLayers.push(nextLayer);
+      }
+    }
+    if (recordingLayer !== null) {
+      keptLayers.push({
+        ...recordingLayer,
+        id: typeof recordingLayer.id === "string" && recordingLayer.id ?
+          recordingLayer.id :
+          recordingLayerId,
+        anchorType: "segment",
+        segmentId: recordingSegmentId,
+        strokes: [
+          ...(Array.isArray(recordingLayer.strokes) ?
+            recordingLayer.strokes :
+            []),
+          ...newStrokes,
+        ],
+      });
+    } else if (newStrokes.length > 0) {
+      keptLayers.push({
+        id: recordingLayerId,
+        order: nextOrder,
+        anchorType: "segment",
+        segmentId: recordingSegmentId,
+        strokes: newStrokes,
+      });
+    }
+    boards.push({...board, layers: keptLayers});
   }
 
   const adjustEvents = (
@@ -318,7 +389,11 @@ export function adjustLiveArchiveBoardSet({
       if (globalTimestampSec === null) {
         return null;
       }
-      adjusted.push({...value, globalTimestampSec});
+      adjusted.push({
+        ...value,
+        globalTimestampSec,
+        ...(recordingSegmentId ? {segmentId: recordingSegmentId} : {}),
+      });
     }
     return adjusted;
   };

@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
+import '../models/lesson_whiteboard_part_order.dart';
 import '../models/lesson_payload_size_validator.dart';
 import '../services/live_audio_board_selection.dart';
 import '../services/live_audio_board_state.dart';
@@ -44,6 +45,7 @@ class LiveAudioProbePage extends StatefulWidget {
     this.initialSessionId,
     this.initialBoardSet,
     this.segmentStartSec = 0,
+    this.orderedSegmentIds = const [],
   });
 
   final User user;
@@ -56,6 +58,7 @@ class LiveAudioProbePage extends StatefulWidget {
   final String? initialSessionId;
   final BoardSet? initialBoardSet;
   final double segmentStartSec;
+  final List<String> orderedSegmentIds;
 
   @override
   State<LiveAudioProbePage> createState() => _LiveAudioProbePageState();
@@ -168,6 +171,22 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     ...?_session?.timelineCreatedBoardIds,
     ..._timelineCreatedBoardIds,
   };
+  WhiteboardPartOrderPlayback? get _partOrderPlayback {
+    final segmentId = widget.segmentId;
+    if (segmentId == null ||
+        segmentId.isEmpty ||
+        widget.orderedSegmentIds.isEmpty) {
+      return null;
+    }
+    return WhiteboardPartOrderPlayback(
+      orderedSegmentIds: widget.orderedSegmentIds,
+      activeSegmentId: segmentId,
+      segmentLocalSec: _isCatchup
+          ? _catchupStatus.positionSec
+          : _currentSessionSec,
+    );
+  }
+
   String get _displayBoardId => resolveLiveAudioDisplayBoardId(
     boardSet: _boardState.boardSet,
     presenterBoardId: _boardState.selectedBoardId,
@@ -176,6 +195,7 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
     viewerBoardId: _viewerBoardId,
     catchupTimelineSec: _catchupTimelineSec,
     boardsCreatedDuringSession: _boardsCreatedDuringSession,
+    partOrder: _partOrderPlayback,
   );
 
   List<LessonWhiteboardBoard> get _selectableBoards => _isCatchup
@@ -194,9 +214,11 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       return _viewerViewport!;
     }
     final playbackSec = _isCatchup ? _catchupTimelineSec : double.infinity;
-    return _boardState.boardSet.resolveViewportAt(
+    return resolveViewportAtPartOrder(
+      boardSet: _boardState.boardSet,
       boardId: _displayBoard.id,
       globalTimestampSec: playbackSec,
+      partOrder: _partOrderPlayback,
     );
   }
 
@@ -207,6 +229,15 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
       _boardState = LiveAudioBoardState.fromBoardSet(
         widget.initialBoardSet!,
         selectedAtSec: widget.segmentStartSec,
+        partOrder: widget.segmentId == null ||
+                widget.segmentId!.isEmpty ||
+                widget.orderedSegmentIds.isEmpty
+            ? null
+            : WhiteboardPartOrderPlayback(
+                orderedSegmentIds: widget.orderedSegmentIds,
+                activeSegmentId: widget.segmentId,
+                segmentLocalSec: 0,
+              ),
       );
     }
     _catchupSubscription = _catchup.statuses.listen((status) {
@@ -1949,13 +1980,17 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
 
   Widget _buildRoom() {
     final board = _displayBoard;
-    final completedStrokes = _isCatchup
-        ? visibleWhiteboardBundleStrokes(
-            bundle: board.layerBundle,
-            globalPositionSec: _catchupTimelineSec,
-            segmentLocalPositionSec: _catchupStatus.positionSec,
-          )
-        : board.layerBundle.primaryLayer?.strokes ?? const <WhiteboardStroke>[];
+    final completedStrokes = visibleWhiteboardBundleStrokes(
+      bundle: board.layerBundle,
+      globalPositionSec: _isCatchup
+          ? _catchupTimelineSec
+          : _currentTimelineSec,
+      segmentLocalPositionSec: _isCatchup
+          ? _catchupStatus.positionSec
+          : _currentSessionSec,
+      activeSegmentId: widget.segmentId,
+      orderedSegmentIds: widget.orderedSegmentIds,
+    );
     final displayStrokes = <WhiteboardStroke>[
       ...completedStrokes,
       if (!_isCatchup) ..._boardState.remoteInProgressStrokesForBoard(board.id),

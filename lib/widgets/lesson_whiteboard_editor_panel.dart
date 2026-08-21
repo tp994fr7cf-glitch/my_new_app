@@ -231,6 +231,9 @@ class _LessonWhiteboardEditorPanelState
       segmentLocalPositionSec:
           resolvedPosition?.localSec ?? _currentPositionSecExact,
       activeSegmentId: _playback?.currentSegment?.id,
+      orderedSegmentIds: [
+        for (final segment in _timeline.orderedSegments) segment.id,
+      ],
     );
   }
 

@@ -3,6 +3,44 @@ import 'dart:ui';
 
 import 'lesson_timed_anchor.dart';
 
+String whiteboardSegmentLayerId(String segmentId) => 'segment-$segmentId';
+
+/// How a tagged whiteboard layer/event relates to the part currently playing.
+enum WhiteboardPartOrderRole { earlier, current, later, untagged }
+
+WhiteboardPartOrderRole resolveWhiteboardPartOrderRole({
+  required String? segmentId,
+  required List<String> orderedSegmentIds,
+  String? activeSegmentId,
+}) {
+  if (orderedSegmentIds.isEmpty) {
+    return WhiteboardPartOrderRole.untagged;
+  }
+  final taggedId = segmentId?.trim() ?? '';
+  if (taggedId.isEmpty) {
+    return WhiteboardPartOrderRole.untagged;
+  }
+  final eventIndex = orderedSegmentIds.indexOf(taggedId);
+  if (eventIndex < 0) {
+    return WhiteboardPartOrderRole.later;
+  }
+  final activeId = activeSegmentId?.trim() ?? '';
+  if (activeId.isEmpty) {
+    return WhiteboardPartOrderRole.untagged;
+  }
+  final activeIndex = orderedSegmentIds.indexOf(activeId);
+  if (activeIndex < 0) {
+    return WhiteboardPartOrderRole.untagged;
+  }
+  if (eventIndex < activeIndex) {
+    return WhiteboardPartOrderRole.earlier;
+  }
+  if (eventIndex > activeIndex) {
+    return WhiteboardPartOrderRole.later;
+  }
+  return WhiteboardPartOrderRole.current;
+}
+
 class LessonWhiteboardLayer {
   const LessonWhiteboardLayer({
     required this.id,
@@ -110,14 +148,32 @@ class LessonWhiteboardLayerBundle {
   }
 
   LessonWhiteboardLayer? get primaryLayer {
-    final ordered = orderedLayers.where((layer) => !layer.isEmpty).toList();
+    final ordered = orderedLayers;
     if (ordered.isEmpty) {
       return null;
     }
-    return ordered.firstWhere(
-      (layer) => layer.id == LessonWhiteboardLayer.primaryLayerId,
-      orElse: () => ordered.first,
-    );
+    for (final layer in ordered) {
+      if (layer.id == LessonWhiteboardLayer.primaryLayerId) {
+        return layer;
+      }
+    }
+    for (final layer in ordered) {
+      if (!layer.isEmpty) {
+        return layer;
+      }
+    }
+    return null;
+  }
+
+  /// Layer whose id is `primary`. Unlike [primaryLayer], this does not fall
+  /// back to another part's segment layer.
+  LessonWhiteboardLayer? get namedPrimaryLayer {
+    for (final layer in orderedLayers) {
+      if (layer.id == LessonWhiteboardLayer.primaryLayerId) {
+        return layer;
+      }
+    }
+    return null;
   }
 
   factory LessonWhiteboardLayerBundle.fromMap(Object? data) {
@@ -204,6 +260,53 @@ class LessonWhiteboardLayerBundle {
     }).toList();
 
     return LessonWhiteboardLayerBundle(layers: nextLayers);
+  }
+
+  /// Writes strokes onto the true `primary` layer and keeps other layers.
+  ///
+  /// Live recording must use this instead of [copyWithPrimaryStrokes], which
+  /// can overwrite a later-part segment layer when `primary` is missing.
+  LessonWhiteboardLayerBundle copyWithNamedPrimaryStrokes({
+    required List<WhiteboardStroke> strokes,
+    int? updatedAtMs,
+  }) {
+    final existing = orderedLayers;
+    final index = existing.indexWhere(
+      (layer) => layer.id == LessonWhiteboardLayer.primaryLayerId,
+    );
+    final nowMs = updatedAtMs ?? DateTime.now().millisecondsSinceEpoch;
+    if (index < 0) {
+      if (strokes.isEmpty) {
+        return this;
+      }
+      var nextOrder = 0;
+      for (final layer in existing) {
+        if (layer.order >= nextOrder) {
+          nextOrder = layer.order + 1;
+        }
+      }
+      return LessonWhiteboardLayerBundle(
+        layers: [
+          ...existing,
+          LessonWhiteboardLayer(
+            id: LessonWhiteboardLayer.primaryLayerId,
+            order: nextOrder,
+            anchorType: LessonTimedAnchorType.global,
+            strokes: strokes,
+            updatedAtMs: nowMs,
+          ),
+        ],
+      );
+    }
+    return LessonWhiteboardLayerBundle(
+      layers: [
+        for (var i = 0; i < existing.length; i++)
+          if (i == index)
+            existing[i].copyWith(strokes: strokes, updatedAtMs: nowMs)
+          else
+            existing[i],
+      ],
+    );
   }
 }
 
@@ -518,26 +621,61 @@ List<WhiteboardStroke> visibleWhiteboardBundleStrokes({
   required double globalPositionSec,
   required double segmentLocalPositionSec,
   String? activeSegmentId,
+  List<String> orderedSegmentIds = const [],
 }) {
   final visibleStrokes = <WhiteboardStroke>[];
   for (final layer in bundle.orderedLayers) {
-    if (layer.anchorType == LessonTimedAnchorType.segment) {
-      final layerSegmentId = layer.segmentId;
-      if (layerSegmentId != null &&
-          layerSegmentId.isNotEmpty &&
-          activeSegmentId != null &&
-          layerSegmentId != activeSegmentId) {
-        continue;
+    final layerSegmentId =
+        layer.anchorType == LessonTimedAnchorType.segment
+        ? layer.segmentId
+        : null;
+    if (orderedSegmentIds.isEmpty) {
+      if (layer.anchorType == LessonTimedAnchorType.segment) {
+        if (layerSegmentId != null &&
+            layerSegmentId.isNotEmpty &&
+            activeSegmentId != null &&
+            layerSegmentId != activeSegmentId) {
+          continue;
+        }
       }
+      final positionSec = resolveWhiteboardLayerPositionSec(
+        layer: layer,
+        globalPositionSec: globalPositionSec,
+        segmentLocalPositionSec: segmentLocalPositionSec,
+      );
+      visibleStrokes.addAll(
+        visibleWhiteboardLayerStrokes(layer: layer, positionSec: positionSec),
+      );
+      continue;
     }
-    final positionSec = resolveWhiteboardLayerPositionSec(
-      layer: layer,
-      globalPositionSec: globalPositionSec,
-      segmentLocalPositionSec: segmentLocalPositionSec,
+
+    final role = resolveWhiteboardPartOrderRole(
+      segmentId: layerSegmentId,
+      orderedSegmentIds: orderedSegmentIds,
+      activeSegmentId: activeSegmentId,
     );
-    visibleStrokes.addAll(
-      visibleWhiteboardLayerStrokes(layer: layer, positionSec: positionSec),
-    );
+    switch (role) {
+      case WhiteboardPartOrderRole.later:
+        continue;
+      case WhiteboardPartOrderRole.earlier:
+        visibleStrokes.addAll(layer.strokes);
+        continue;
+      case WhiteboardPartOrderRole.current:
+        visibleStrokes.addAll(
+          visibleWhiteboardLayerStrokes(
+            layer: layer,
+            positionSec: segmentLocalPositionSec,
+          ),
+        );
+        continue;
+      case WhiteboardPartOrderRole.untagged:
+        visibleStrokes.addAll(
+          visibleWhiteboardLayerStrokes(
+            layer: layer,
+            positionSec: globalPositionSec,
+          ),
+        );
+    }
   }
   return visibleStrokes;
 }

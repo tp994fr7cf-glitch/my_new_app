@@ -146,6 +146,7 @@ test("adjusts only board data added during the live archive", () => {
     archiveTimelineOffsetSec: 5,
     recordingWallDurationSec: 20,
     mediaDurationSec: 10,
+    segmentId: "live-slot",
   });
 
   assert.ok(adjusted);
@@ -155,31 +156,46 @@ test("adjusts only board data added during the live archive", () => {
     boards[0].layers[0].strokes[0],
     baselineBoardSet.boards[0].layers[0].strokes[0],
   );
-  assert.deepEqual(boards[0].layers[0].strokes[1], {
-    id: "live",
-    timestampSec: 35,
-    endTimestampSec: 40,
-    colorArgb: 4278190080,
-    strokeWidth: 3,
-    points: [
-      {x: 0.3, y: 0.3, timestampSec: 35},
-      {x: 0.4, y: 0.4, timestampSec: 40},
+  assert.equal(boards[0].layers[0].strokes.length, 1);
+  assert.deepEqual(boards[0].layers[1], {
+    id: "segment-live-slot",
+    order: 1,
+    anchorType: "segment",
+    segmentId: "live-slot",
+    strokes: [
+      {
+        id: "live",
+        timestampSec: 5,
+        endTimestampSec: 10,
+        colorArgb: 4278190080,
+        strokeWidth: 3,
+        points: [
+          {x: 0.3, y: 0.3, timestampSec: 5},
+          {x: 0.4, y: 0.4, timestampSec: 10},
+        ],
+      },
     ],
   });
   assert.deepEqual(adjusted.switchEvents, [
     {boardId: "default", globalTimestampSec: 50, sequence: 0},
-    {boardId: "default", globalTimestampSec: 35, sequence: 1},
+    {
+      boardId: "default",
+      globalTimestampSec: 5,
+      sequence: 1,
+      segmentId: "live-slot",
+    },
   ]);
   assert.deepEqual(adjusted.viewportEvents, [
     baselineBoardSet.viewportEvents[0],
     {
       boardId: "default",
-      globalTimestampSec: 40,
+      globalTimestampSec: 10,
       sequence: 1,
       interactionId: 1,
       centerX: 0.6,
       centerY: 0.6,
       scale: 2,
+      segmentId: "live-slot",
     },
   ]);
 
@@ -191,12 +207,13 @@ test("adjusts only board data added during the live archive", () => {
     recordingWallDurationSec: 20,
     mediaDurationSec: 10,
     preserveElapsedTime: true,
+    segmentId: "live-slot",
   });
   assert.ok(preservedElapsedTime);
   const preservedBoards =
     preservedElapsedTime.boards as typeof boardSet.boards;
-  assert.equal(preservedBoards[0].layers[0].strokes[1].timestampSec, 40);
-  assert.equal(preservedBoards[0].layers[0].strokes[1].endTimestampSec, 40);
+  assert.equal(preservedBoards[0].layers[1].strokes[0].timestampSec, 10);
+  assert.equal(preservedBoards[0].layers[1].strokes[0].endTimestampSec, 10);
 });
 
 test("replaces only a reserved live placeholder", () => {
