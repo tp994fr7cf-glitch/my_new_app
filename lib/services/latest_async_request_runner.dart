@@ -6,6 +6,11 @@ class LatestAsyncRequestRunner<T> {
   bool get isRunning => _activeRun != null;
   Future<void> get whenIdle => _activeRun ?? Future<void>.value();
 
+  void discardPending() {
+    _pendingRequest = null;
+    _hasPendingRequest = false;
+  }
+
   Future<void> run(T request, Future<void> Function(T request) operation) {
     _pendingRequest = request;
     _hasPendingRequest = true;

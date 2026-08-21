@@ -53,4 +53,29 @@ void main() {
 
     expect(runner.isRunning, isFalse);
   });
+
+  test('discardPending drops a queued request without running it', () async {
+    final runner = LatestAsyncRequestRunner<int>();
+    final firstStarted = Completer<void>();
+    final releaseFirst = Completer<void>();
+    final completed = <int>[];
+
+    Future<void> operation(int request) async {
+      if (request == 1) {
+        firstStarted.complete();
+        await releaseFirst.future;
+      }
+      completed.add(request);
+    }
+
+    final first = runner.run(1, operation);
+    await firstStarted.future;
+    unawaited(runner.run(2, operation));
+    runner.discardPending();
+    releaseFirst.complete();
+    await first;
+
+    expect(completed, [1]);
+    expect(runner.isRunning, isFalse);
+  });
 }

@@ -167,6 +167,8 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
   int? _deferredCompletionSegmentIndex;
   int? _deferredCompletionIntentGeneration;
   bool _replayAfterSeekDrain = false;
+  bool _resumePlayAfterSeekDrain = false;
+  Future<void>? _playerReleaseFuture;
 
   /// Bumped when all slots are dropped so an in-flight idle-slot cleanup
   /// cannot dispose a player that a newer activation just opened.
@@ -236,6 +238,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _isResetting = true;
     _playRequested = false;
     _replayAfterSeekDrain = false;
+    _resumePlayAfterSeekDrain = false;
     _deferredCompletionSegmentIndex = null;
     _deferredCompletionIntentGeneration = null;
     try {
@@ -636,8 +639,16 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
         _playRequested = false;
         _globalPositionSec = _timeline.totalDurationSecExact;
         _globalPositionController.add(_globalPositionSec);
-        await _pauseInternal();
-        await _releaseStoppedPlaybackPlayers();
+        // Hold the release lock before pause so a concurrent play/seek cannot
+        // reopen a player that this dump is about to throw away.
+        await _withPlayerReleaseLock(() async {
+          _logSwitch(
+            '_releaseStoppedPlaybackPlayers: dumping players after playlist end '
+            'currentSegmentIndex=$_currentSegmentIndex',
+          );
+          await _pauseInternal();
+          await _disposeAllSlots();
+        });
         return;
       }
 
@@ -713,34 +724,70 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _playbackIntentGeneration++;
     _playRequested = false;
     _replayAfterSeekDrain = false;
+    _resumePlayAfterSeekDrain = false;
     await _pauseInternal();
+  }
+
+  Future<void> _waitForPlayerRelease() async {
+    final pending = _playerReleaseFuture;
+    if (pending != null) {
+      await pending;
+    }
+  }
+
+  Future<void> _playActivePlayer() async {
+    final activePlayer = _activePlayer;
+    if (activePlayer == null) {
+      return;
+    }
+    _logSwitch('_playInternal: currentSegmentIndex=$_currentSegmentIndex');
+    await activePlayer.play();
+    _emitPlaying(true);
+    _syncActivePlaybackPosition(forceEmit: true);
   }
 
   Future<void> _playInternal() async {
     if (_isResetting || _timeline.isEmpty) {
       return;
     }
-    if (isLessonPlaybackAtEnd(
+    await _waitForPlayerRelease();
+    if (_isResetting || _timeline.isEmpty) {
+      return;
+    }
+
+    final atEnd = isLessonPlaybackAtEnd(
       totalDurationSec: _timeline.totalDurationSecExact,
       positionSecExact: _globalPositionSec,
       endToleranceSec: 0.001,
-    )) {
-      if (_seekDrainFuture != null) {
+    );
+
+    // A seek drain must not call seekGlobal (it would wait on itself).
+    // Remember the tap and let the drain reopen/play once it settles.
+    if (_seekDrainFuture != null) {
+      if (atEnd) {
         _replayAfterSeekDrain = true;
         return;
       }
+      if (_activePlayer == null) {
+        _resumePlayAfterSeekDrain = true;
+        return;
+      }
+      await _playActivePlayer();
+      return;
+    }
+
+    if (atEnd) {
       await seekGlobal(0);
       if (_isPlaying) {
         return;
       }
+    } else if (_activePlayer == null) {
+      await seekGlobal(_globalPositionSec);
+      if (_isPlaying) {
+        return;
+      }
     }
-    if (_activePlayer == null) {
-      return;
-    }
-    _logSwitch('_playInternal: currentSegmentIndex=$_currentSegmentIndex');
-    await _activePlayer!.play();
-    _emitPlaying(true);
-    _syncActivePlaybackPosition(forceEmit: true);
+    await _playActivePlayer();
   }
 
   Future<void> _pauseInternal() {
@@ -790,20 +837,38 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       'currentSegmentIndex=$_currentSegmentIndex',
     );
 
-    _pendingSeekTarget = target;
-    final activeDrain = _seekDrainFuture;
-    if (activeDrain != null) {
-      _logSwitch(
-        'seek: another seek already in progress, queued '
-        'target=${target.globalSec}',
-      );
-      return activeDrain;
+    await _waitForPlayerRelease();
+    if (_isResetting || _timeline.isEmpty) {
+      return;
     }
 
-    final completion = Completer<void>();
-    _seekDrainFuture = completion.future;
-    unawaited(_runSeekDrain(target.globalSec, completion));
-    return completion.future;
+    _pendingSeekTarget = target;
+    while (true) {
+      final activeDrain = _seekDrainFuture;
+      if (activeDrain != null) {
+        _logSwitch(
+          'seek: another seek already in progress, queued '
+          'target=${target.globalSec}',
+        );
+        await activeDrain;
+        if (_pendingSeekTarget == null && _seekDrainFuture == null) {
+          return;
+        }
+        if (_seekDrainFuture != null) {
+          continue;
+        }
+      }
+      if (_pendingSeekTarget == null) {
+        return;
+      }
+      final completion = Completer<void>();
+      _seekDrainFuture = completion.future;
+      unawaited(_runSeekDrain(_pendingSeekTarget!.globalSec, completion));
+      await completion.future;
+      if (_pendingSeekTarget == null) {
+        return;
+      }
+    }
   }
 
   Future<void> _runSeekDrain(
@@ -818,14 +883,26 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
           _replayAfterSeekDrain = false;
           await _seekImmediate(const _PlaylistSeekTarget(globalSec: 0));
           if (_playRequested && !_isPlaying) {
-            await _playInternal();
+            await _playActivePlayer();
           }
         } else {
           _replayAfterSeekDrain = false;
         }
+        if (_resumePlayAfterSeekDrain && _playRequested) {
+          _resumePlayAfterSeekDrain = false;
+          if (_activePlayer == null && !_timeline.isEmpty) {
+            await _seekImmediate(
+              _PlaylistSeekTarget(globalSec: _globalPositionSec),
+            );
+          }
+          if (_playRequested && !_isPlaying) {
+            await _playActivePlayer();
+          }
+        }
         if (_pendingSeekTarget == null &&
             _deferredCompletionSegmentIndex == null &&
-            !_replayAfterSeekDrain) {
+            !_replayAfterSeekDrain &&
+            !_resumePlayAfterSeekDrain) {
           break;
         }
       }
@@ -839,6 +916,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
       _deferredCompletionSegmentIndex = null;
       _deferredCompletionIntentGeneration = null;
       _replayAfterSeekDrain = false;
+      _resumePlayAfterSeekDrain = false;
       completion.completeError(error, stackTrace);
     } finally {
       _logSwitch('seek: finished globalSec=$requestedGlobalSec');
@@ -1032,6 +1110,7 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     _isPlaying = false;
     _playRequested = false;
     _replayAfterSeekDrain = false;
+    _resumePlayAfterSeekDrain = false;
     _deferredCompletionSegmentIndex = null;
     _deferredCompletionIntentGeneration = null;
     _pendingSeekTarget = null;
@@ -1115,25 +1194,48 @@ class LessonMediaPlaylistPlayback implements LessonMediaPlaylistController {
     }
   }
 
-  /// After natural end, drop every decoded player while keeping the
-  /// timeline so "play again" can [seekGlobal] to 0 and reopen.
-  Future<void> _releaseStoppedPlaybackPlayers() async {
-    _logSwitch(
-      '_releaseStoppedPlaybackPlayers: dumping players after playlist end '
-      'currentSegmentIndex=$_currentSegmentIndex',
-    );
-    await _disposeAllSlots();
+  Future<void> _withPlayerReleaseLock(Future<void> Function() action) async {
+    final completer = Completer<void>();
+    _playerReleaseFuture = completer.future;
+    try {
+      await action();
+    } finally {
+      if (identical(_playerReleaseFuture, completer.future)) {
+        _playerReleaseFuture = null;
+      }
+      if (!completer.isCompleted) {
+        completer.complete();
+      }
+    }
   }
 
+  /// Drops every decoded player. After natural end the timeline is kept so
+  /// "play again" can [seekGlobal] to 0 and reopen.
   Future<void> _disposeAllSlots() async {
     _slotReleaseGeneration++;
-    await _detachActiveSubscriptions();
+    final positionSubscription = _positionSubscription;
+    final durationSubscription = _durationSubscription;
+    final playingSubscription = _playingSubscription;
+    final completedSubscription = _completedSubscription;
+    _positionSubscription = null;
+    _durationSubscription = null;
+    _playingSubscription = null;
+    _completedSubscription = null;
+
+    // Drop slot ownership before any await so a concurrent play/seek cannot
+    // attach a new player and then have this dump forget it.
     final audioSlots = List<_MediaPlayerSlot>.from(_audioSlots);
     _audioSlots.clear();
     final videoSlot = _videoSlot;
     _videoSlot = null;
     _activePlayer = null;
     _activeSlot = null;
+    _emitPlaying(false);
+
+    await positionSubscription?.cancel();
+    await durationSubscription?.cancel();
+    await playingSubscription?.cancel();
+    await completedSubscription?.cancel();
     for (final slot in audioSlots) {
       await slot.release();
     }

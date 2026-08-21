@@ -5,6 +5,25 @@ import 'package:my_new_app/models/lesson_media_segment.dart';
 import 'package:my_new_app/services/lesson_media_playback.dart';
 import 'package:my_new_app/services/lesson_media_playlist_playback.dart';
 
+List<LessonMediaSegment> twoShortAudioParts() {
+  return [
+    LessonMediaSegment(
+      id: 'audio-0',
+      order: 0,
+      mediaType: 'audio',
+      url: 'https://example.com/audio-0.mp3',
+      durationSec: 2,
+    ),
+    LessonMediaSegment(
+      id: 'audio-1',
+      order: 1,
+      mediaType: 'audio',
+      url: 'https://example.com/audio-1.mp3',
+      durationSec: 2,
+    ),
+  ];
+}
+
 List<LessonMediaSegment> twoPartLessonSegments() {
   return [
     LessonMediaSegment(
@@ -1272,6 +1291,125 @@ void main() {
       reason: 'the play requested mid-switch must be honored once it settles',
     );
     expect(videoPlayer.isPlaying, isTrue);
+  });
+
+  test(
+    'after natural end, part seeks then play restarts from the chosen part',
+    () async {
+      final created = <FakeLessonMediaPlayback>[];
+      final playback = LessonMediaPlaylistPlayback(
+        playbackFactory: ({required bool isAudio}) {
+          final player = FakeLessonMediaPlayback(
+            totalDuration: const Duration(seconds: 2),
+          );
+          created.add(player);
+          return player;
+        },
+      );
+      await playback.openSegments(twoShortAudioParts());
+      await Future<void>.delayed(Duration.zero);
+      await playback.play();
+      await created[0].simulateNaturalCompletion(emitStoppedFirst: true);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await created[1].simulateNaturalCompletion(emitStoppedFirst: true);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(playback.isPlaying, isFalse);
+      expect(created[1].disposeCount, 1);
+
+      await playback.seekToSegmentIndex(1);
+      await playback.seekToSegmentIndex(0);
+      await playback.play();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.currentSegmentIndex, 0);
+      expect(playback.globalPositionSec, lessThan(1));
+      expect(playback.isPlaying, isTrue);
+      expect(created.last.isPlaying, isTrue);
+      await playback.close();
+    },
+  );
+
+  test(
+    'after natural end, overlapping part seeks then play still starts',
+    () async {
+      final created = <FakeLessonMediaPlayback>[];
+      final playback = LessonMediaPlaylistPlayback(
+        playbackFactory: ({required bool isAudio}) {
+          final player = FakeLessonMediaPlayback(
+            totalDuration: const Duration(seconds: 2),
+            seekDelay: const Duration(milliseconds: 80),
+            openDelay: const Duration(milliseconds: 80),
+          );
+          created.add(player);
+          return player;
+        },
+      );
+      await playback.openSegments(twoShortAudioParts());
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await playback.play();
+      await created[0].simulateNaturalCompletion(emitStoppedFirst: true);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await created[1].simulateNaturalCompletion(emitStoppedFirst: true);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      expect(playback.isPlaying, isFalse);
+      expect(created[1].disposeCount, 1);
+
+      final part2 = playback.seekToSegmentIndex(1);
+      final part1 = playback.seekToSegmentIndex(0);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      final play = playback.play();
+      await Future.wait([
+        part2,
+        part1,
+        play,
+      ]).timeout(const Duration(seconds: 3));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(playback.currentSegmentIndex, 0);
+      expect(playback.globalPositionSec, lessThan(1));
+      expect(playback.isPlaying, isTrue);
+      await playback.close();
+    },
+  );
+
+  test('after natural end, play during slow player dump still restarts', () async {
+    final created = <FakeLessonMediaPlayback>[];
+    final playback = LessonMediaPlaylistPlayback(
+      playbackFactory: ({required bool isAudio}) {
+        final player = FakeLessonMediaPlayback(
+          totalDuration: const Duration(seconds: 2),
+        );
+        created.add(player);
+        return player;
+      },
+    );
+    await playback.openSegments(twoShortAudioParts());
+    await Future<void>.delayed(Duration.zero);
+    await playback.play();
+    await created[0].simulateNaturalCompletion(emitStoppedFirst: true);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    created[1].blockDispose = Completer<void>();
+    unawaited(created[1].simulateNaturalCompletion(emitStoppedFirst: true));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    final part2 = playback.seekToSegmentIndex(1);
+    final part1 = playback.seekToSegmentIndex(0);
+    final replay = playback.play();
+    created[1].blockDispose!.complete();
+    await Future.wait([
+      part2,
+      part1,
+      replay,
+    ]).timeout(const Duration(seconds: 3));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(playback.currentSegmentIndex, 0);
+    expect(playback.globalPositionSec, lessThan(1));
+    expect(playback.isPlaying, isTrue);
+    await playback.close();
   });
 }
 

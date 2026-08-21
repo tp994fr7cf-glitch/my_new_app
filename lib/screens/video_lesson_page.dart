@@ -26,6 +26,7 @@ import '../services/course_privacy_service.dart';
 import '../services/lesson_material_cache_service.dart';
 import '../services/lesson_media_playback.dart';
 import '../services/lesson_media_playlist_playback.dart';
+import '../services/latest_async_request_runner.dart';
 import '../services/app_media_memory.dart';
 import '../widgets/async_route_exit_scope.dart';
 import '../widgets/lesson_whiteboard_canvas.dart';
@@ -134,6 +135,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   int? _pendingAutoAdvanceIntentGeneration;
   int _userPlaybackIntentGeneration = 0;
   bool _userWantsPlayback = false;
+  final LatestAsyncRequestRunner<_PostEndPlaybackCommand>
+  _postEndPlaybackCommands = LatestAsyncRequestRunner<_PostEndPlaybackCommand>();
   bool _courseDeleted = false;
   final Map<String, double> _mediaSegmentResumePositionsSec = {};
   final Set<String> _completedMediaSegmentIds = {};
@@ -286,6 +289,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _materialCache = LessonMaterialCacheService();
     WidgetsBinding.instance.addObserver(this);
     _isLoadingLearningState = Firebase.apps.isNotEmpty && !_isTeacherPreview;
+    _materialServerValidated = _isTeacherPreview;
     _listenEntryRequirement();
     _listenCourseAccess();
     _listenLessonUpdates();
@@ -440,7 +444,6 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   Future<void> _refreshMaterialCacheStatus() async {
     final lessonId = lesson.id ?? '';
     if (!_materialCache.supported ||
-        _isTeacherPreview ||
         lessonId.isEmpty ||
         lessonMaterialStoragePaths(lesson.publishedBoardSet).isEmpty) {
       return;
@@ -463,11 +466,11 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     String storagePath,
   ) async {
     final lessonId = lesson.id ?? '';
-    if (_materialServerValidated && lessonId.isNotEmpty) {
+    if (lessonId.isNotEmpty &&
+        (_materialServerValidated || _isTeacherPreview)) {
       final localPath = await _materialCache.localPath(
         courseId: _courseId(),
         lessonId: lessonId,
-        boardSet: lesson.publishedBoardSet,
         storagePath: storagePath,
       );
       if (localPath != null) {
@@ -495,7 +498,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       );
     });
     try {
-      await _materialCache.downloadLesson(
+      final outcome = await _materialCache.downloadLesson(
         courseId: _courseId(),
         lessonId: lessonId,
         boardSet: lesson.publishedBoardSet,
@@ -505,13 +508,22 @@ class _VideoLessonPageState extends State<VideoLessonPage>
           }
         },
         isCancelled: () => _cancelMaterialDownload,
+        overwriteExisting: !_isTeacherPreview,
+        deleteUnlistedFiles: !_isTeacherPreview,
+        skipIfCurrent: _isTeacherPreview,
       );
       await _refreshMaterialCacheStatus();
       if (mounted) {
         setState(() => _materialUpdateAvailable = false);
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('PDF・画像を端末内に保存しました。')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              outcome == LessonMaterialDownloadOutcome.skippedAlreadyCurrent
+                  ? 'この端末には、すでに必要な資料が保存されています。'
+                  : 'PDF・画像を端末内に保存しました。',
+            ),
+          ),
+        );
       }
     } on LessonMaterialCacheCancelled {
       if (mounted) {
@@ -602,11 +614,15 @@ class _VideoLessonPageState extends State<VideoLessonPage>
               !_materialServerValidated
                   ? '最新版と受講権限を確認しています。'
                   : _materialUpdateAvailable
-                  ? '先生の編集により保存済み資料が古くなりました。'
-                        '再保存するまではネットワークから表示します。'
+                  ? (_isTeacherPreview
+                        ? 'まだ端末にない資料があります。保存すると、この端末での表示が速くなります。'
+                        : '先生の編集により保存済み資料が古くなりました。'
+                              '再保存するまではネットワークから表示します。')
                   : hasCurrentCache
                   ? 'このレッスンの資料は端末内に保存済みです'
                         '（${_formatMaterialBytes(status!.totalBytes)}）。'
+                  : _isTeacherPreview
+                  ? '別の端末で上げた資料があるときは、ここでまとめて保存できます。'
                   : '先に保存すると、ボード切り替え時のPDF・画像を'
                         'より早く表示できます。',
             ),
@@ -629,6 +645,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                   label: Text(
                     hasCurrentCache && !_materialUpdateAvailable
                         ? '保存し直す'
+                        : _isTeacherPreview
+                        ? 'このレッスンの資料を保存'
                         : 'このレッスンを保存',
                   ),
                 ),
@@ -747,18 +765,23 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
-    if (_isTeacherPreview &&
-        isLessonPlaybackAtEnd(
-          totalDurationSec: _mediaTimeline.totalDurationSecExact,
-          positionSecExact: _currentPositionSecExact,
-        )) {
-      if (isPlaying) {
+    final atEnd = isLessonPlaybackAtEnd(
+      totalDurationSec: _mediaTimeline.totalDurationSecExact,
+      positionSecExact: _currentPositionSecExact,
+    );
+    if (_isTeacherPreview && atEnd) {
+      if (!isPlaying) {
+        _userWantsPlayback = false;
+        setState(() {
+          _isPlaying = false;
+        });
         return;
       }
-      setState(() {
-        _isPlaying = false;
-      });
-      return;
+      // Native players can emit a brief playing=true at natural end.
+      // Honor it only when the teacher has asked to play again.
+      if (!_userWantsPlayback) {
+        return;
+      }
     }
 
     setState(() {
@@ -775,6 +798,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     }
     if (!_isIndependentPlayback) {
       final isLastSegment = segmentIndex == _publishedMediaSegments.length - 1;
+      if (isLastSegment) {
+        _userWantsPlayback = false;
+      }
       if (!_isTeacherPreview && isLastSegment && !_pendingCompletion) {
         setState(() {
           _syncPlaybackEndPosition();
@@ -1163,6 +1189,62 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       return;
     }
 
+    if (!_isIndependentPlayback && _shouldSerializePostEndPlaybackCommands) {
+      final command = (_isAtEnd || _sessionCompleted)
+          ? const _PostEndPlaybackCommand.replayFromStart()
+          : const _PostEndPlaybackCommand.play();
+      unawaited(
+        _postEndPlaybackCommands.run(command, _executePostEndPlaybackCommand),
+      );
+      return;
+    }
+
+    await _playOrReplayNow();
+  }
+
+  bool get _shouldSerializePostEndPlaybackCommands {
+    return _isAtEnd || _sessionCompleted || _postEndPlaybackCommands.isRunning;
+  }
+
+  void _requestContinuousPartSwitch(int segmentIndex) {
+    if (_shouldSerializePostEndPlaybackCommands) {
+      unawaited(
+        _postEndPlaybackCommands.run(
+          _PostEndPlaybackCommand.switchPart(segmentIndex),
+          _executePostEndPlaybackCommand,
+        ),
+      );
+      return;
+    }
+    unawaited(_switchContinuousPart(segmentIndex));
+  }
+
+  Future<void> _executePostEndPlaybackCommand(
+    _PostEndPlaybackCommand command,
+  ) async {
+    if (!mounted) {
+      return;
+    }
+    try {
+      switch (command.type) {
+        case _PostEndPlaybackCommandType.switchPart:
+          await _switchContinuousPart(command.segmentIndex!);
+        case _PostEndPlaybackCommandType.replayFromStart:
+          await _replayFromLessonStart();
+        case _PostEndPlaybackCommandType.play:
+          await _playFromCurrentPosition();
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _isPlaying = false;
+          _message = '再生に失敗しました: $error';
+        });
+      }
+    }
+  }
+
+  Future<void> _playOrReplayNow() async {
     _userPlaybackIntentGeneration++;
     _userWantsPlayback = true;
     if (_isIndependentPlayback) {
@@ -1177,10 +1259,24 @@ class _VideoLessonPageState extends State<VideoLessonPage>
         await _switchToPart(_currentMediaSegmentIndex, forceLocalStartSec: 0);
       }
     } else if (_sessionCompleted || _isAtEnd) {
-      _resetPlaybackCycleState(positionSec: 0);
-      await _seekMediaPlayback(0);
+      await _replayFromLessonStart();
+      return;
     }
 
+    await _playFromCurrentPosition();
+  }
+
+  Future<void> _replayFromLessonStart() async {
+    _userPlaybackIntentGeneration++;
+    _userWantsPlayback = true;
+    _resetPlaybackCycleState(positionSec: 0);
+    await _seekMediaPlayback(0);
+    await _playFromCurrentPosition();
+  }
+
+  Future<void> _playFromCurrentPosition() async {
+    _userPlaybackIntentGeneration++;
+    _userWantsPlayback = true;
     final prepared = await _ensureSession(preservePlaybackPosition: true);
     if (!prepared || !mounted) {
       return;
@@ -1335,6 +1431,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     _playbackTimer?.cancel();
     _userPlaybackIntentGeneration++;
     _userWantsPlayback = false;
+    _postEndPlaybackCommands.discardPending();
     await _playlistPlayback?.pause();
     if (mounted) {
       _syncDisplayedPlaybackPositionFromPlayer();
@@ -2894,8 +2991,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                         OutlinedButton(
                           onPressed: !canControlPlayback
                               ? null
-                              : () =>
-                                    unawaited(_switchContinuousPart(entry.$1)),
+                              : () => _requestContinuousPartSwitch(entry.$1),
                           child: Text(_partTitle(entry.$2, entry.$1)),
                         ),
                   ],
@@ -3223,8 +3319,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                                     onPressed: !canControlPlayback
                                         ? null
                                         : () {
-                                            unawaited(
-                                              _switchContinuousPart(entry.$1),
+                                            _requestContinuousPartSwitch(
+                                              entry.$1,
                                             );
                                           },
                                     child: Text(
@@ -3241,8 +3337,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                     ),
                   ),
                 ),
-              if (!_isTeacherPreview &&
-                  _materialCache.supported &&
+              if (_materialCache.supported &&
                   lessonMaterialStoragePaths(
                     lesson.publishedBoardSet,
                   ).isNotEmpty) ...[
@@ -3596,4 +3691,22 @@ class _BulletText extends StatelessWidget {
       ),
     );
   }
+}
+
+enum _PostEndPlaybackCommandType { switchPart, replayFromStart, play }
+
+class _PostEndPlaybackCommand {
+  const _PostEndPlaybackCommand.switchPart(this.segmentIndex)
+    : type = _PostEndPlaybackCommandType.switchPart;
+
+  const _PostEndPlaybackCommand.replayFromStart()
+    : type = _PostEndPlaybackCommandType.replayFromStart,
+      segmentIndex = null;
+
+  const _PostEndPlaybackCommand.play()
+    : type = _PostEndPlaybackCommandType.play,
+      segmentIndex = null;
+
+  final _PostEndPlaybackCommandType type;
+  final int? segmentIndex;
 }
