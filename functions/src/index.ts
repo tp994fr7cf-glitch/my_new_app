@@ -37,6 +37,10 @@ import {
   selectManifestObject,
 } from "./live_archive_draft";
 import {
+  calculatedLiveStartSec,
+  nextDraftBaseDocumentVersionAfterLiveReservation,
+} from "./live_segment_reservation";
+import {
   availableHlsDurationMs,
   createHlsAccessToken,
   finalizedHlsDurationMs,
@@ -428,10 +432,15 @@ export const createLiveAudioProbeSession = onCall(
         const lessonReference = courseReference
           .collection("lessons")
           .doc(links.lessonId);
-        const [courseSnapshot, lessonSnapshot] = await Promise.all([
-          transaction.get(courseReference),
-          transaction.get(lessonReference),
-        ]);
+        const draftReference = courseReference
+          .collection("lessonDrafts")
+          .doc(links.lessonId);
+        const [courseSnapshot, lessonSnapshot, draftSnapshot] =
+          await Promise.all([
+            transaction.get(courseReference),
+            transaction.get(lessonReference),
+            transaction.get(draftReference),
+          ]);
         if (!courseSnapshot.exists || !lessonSnapshot.exists) {
           throw new HttpsError(
             "not-found",
@@ -465,6 +474,20 @@ export const createLiveAudioProbeSession = onCall(
           updatedAt: now,
         });
         transaction.update(courseReference, {updatedAt: now});
+        const nextDraftBase =
+          nextDraftBaseDocumentVersionAfterLiveReservation({
+            draftExists: draftSnapshot.exists,
+            draftBaseDocumentVersion:
+              draftSnapshot.data()?.baseLessonDocumentVersion,
+            currentLessonDocumentVersion: lesson.documentVersion,
+            nextLessonDocumentVersion: reserved.documentVersion,
+          });
+        if (nextDraftBase !== null) {
+          transaction.update(draftReference, {
+            baseLessonDocumentVersion: nextDraftBase,
+            updatedAt: now,
+          });
+        }
       }
       transaction.create(sessionReference, sessionData);
       transaction.create(participantReference, participantData);
@@ -1416,7 +1439,10 @@ export const retryLiveAudioProbeArchive = onCall(
       });
     }
     if (storedSessionState(session) === "draftReady") {
-      return safeArchiveStatus(session);
+      return reattachLinkedLessonDraftFromReadySession(
+        sessionReference,
+        session,
+      );
     }
     const closing = await moveSessionToFinalizing(
       sessionReference,
@@ -1984,6 +2010,104 @@ async function copyArchiveFileWithRetry(
   throw lastError;
 }
 
+async function reattachLinkedLessonDraftFromReadySession(
+  sessionReference: DocumentReference<DocumentData>,
+  session: DocumentData,
+): Promise<Record<string, unknown>> {
+  const playbackUrl = stringField(session.archivePlaybackUrl);
+  const destinationObjectPath = stringField(session.archivePlaybackObjectPath);
+  const courseId = stringField(session.courseId);
+  const lessonId = stringField(session.lessonId);
+  const segmentId = stringField(session.segmentId);
+  const ownerUid = stringField(session.ownerUid);
+  const draftReady = isObjectRecord(session.draftReady) ?
+    session.draftReady :
+    {};
+  const durationSec =
+    safeNonNegativeInteger(draftReady.durationSec) ||
+    safeNonNegativeInteger(session.hlsAvailableDurationSec);
+  const durationMs =
+    safeNonNegativeInteger(draftReady.durationMs) ||
+    durationSec * 1000;
+  const durationSource =
+    draftReady.durationSource === "hls" ||
+    session.archiveDurationSource === "hls" ?
+      "hls" :
+      "wallClock";
+  const finalizedAtMs =
+    safeNonNegativeInteger(draftReady.finalizedAtMs) ||
+    safeNonNegativeInteger(session.archiveFinalizedAtMs) ||
+    Date.now();
+  const manifest = archiveManifestFromStored(session.archiveManifest);
+  if (
+    !playbackUrl ||
+    !destinationObjectPath ||
+    !isValidOptionalLinkId(courseId) ||
+    !isValidOptionalLinkId(lessonId) ||
+    !isValidOptionalLinkId(segmentId) ||
+    !ownerUid ||
+    durationSec < 1 ||
+    manifest === null
+  ) {
+    throw new HttpsError(
+      "failed-precondition",
+      "録音は残っていますが、レッスンへ反映する情報が足りません。時間をおいて再試行してください。",
+    );
+  }
+  const hlsManifestObjectPath =
+    stringField(session.hlsManifestObjectPath) || null;
+  const rawHlsMediaStartedAtMs = session.hlsMediaStartedAtMs;
+  const hlsMediaStartedAtMs =
+    typeof rawHlsMediaStartedAtMs === "number" &&
+    Number.isSafeInteger(rawHlsMediaStartedAtMs) &&
+    rawHlsMediaStartedAtMs > 0 ?
+      rawHlsMediaStartedAtMs :
+      null;
+  const hlsMediaTimelineOffsetSec =
+    typeof session.hlsMediaTimelineOffsetSec === "number" &&
+    Number.isFinite(session.hlsMediaTimelineOffsetSec) ?
+      Math.max(0, session.hlsMediaTimelineOffsetSec) :
+      null;
+  try {
+    await persistLinkedLessonDraft({
+      sessionReference,
+      ownerUid,
+      courseId,
+      lessonId,
+      segmentId,
+      playbackUrl,
+      destinationObjectPath,
+      durationSec,
+      durationMs,
+      durationSource,
+      finalizedAtMs,
+      hlsManifestObjectPath,
+      hlsMediaStartedAtMs,
+      hlsMediaTimelineOffsetSec,
+      audioPlaybackCompensationSec: safeNonNegativeInteger(
+        session.audioPlaybackCompensationSec,
+      ),
+      audioPlaybackCompensationSource:
+        stringField(session.audioPlaybackCompensationSource) || "none",
+      manifest,
+    });
+    const latest = await sessionReference.get();
+    return safeArchiveStatus(latest.data() ?? session);
+  } catch (error) {
+    logArchiveError("reattach-draft", error);
+    if (error instanceof HttpsError) {
+      throw error;
+    }
+    if (error instanceof ArchiveFinalizationError) {
+      throw new HttpsError("failed-precondition", error.publicWarning);
+    }
+    throw new HttpsError(
+      "internal",
+      "録音は残っていますが、レッスンへの反映に失敗しました。もう一度お試しください。",
+    );
+  }
+}
+
 async function persistLinkedLessonDraft({
   sessionReference,
   ownerUid,
@@ -2055,7 +2179,10 @@ async function persistLinkedLessonDraft({
       currentSession.courseId !== courseId ||
       currentSession.lessonId !== lessonId ||
       currentSession.segmentId !== segmentId ||
-      storedSessionState(currentSession) !== "finalizing" ||
+      (
+        storedSessionState(currentSession) !== "finalizing" &&
+        storedSessionState(currentSession) !== "draftReady"
+      ) ||
       course.instructorId !== ownerUid ||
       course.status === "deleting" ||
       course.status === "deleted" ||
@@ -2729,32 +2856,10 @@ function reserveLiveSegmentForSession({
     typeof target.order === "number" && Number.isFinite(target.order) ?
       target.order :
       targetIndex;
-  const calculatedStartSec = typedSegments.reduce((total, segment, index) => {
-    const order =
-      typeof segment.order === "number" && Number.isFinite(segment.order) ?
-        segment.order :
-        index;
-    if (order >= targetOrder) {
-      return total;
-    }
-    const url = typeof segment.url === "string" ? segment.url.trim() : "";
-    if (!url) {
-      return total;
-    }
-    const durationMs =
-      typeof segment.durationMs === "number" &&
-      Number.isFinite(segment.durationMs) &&
-      segment.durationMs > 0 ?
-        segment.durationMs :
-        0;
-    const durationSec =
-      typeof segment.durationSec === "number" &&
-      Number.isFinite(segment.durationSec) &&
-      segment.durationSec > 0 ?
-        segment.durationSec :
-        0;
-    return total + (durationMs > 0 ? durationMs / 1000 : durationSec);
-  }, 0);
+  const calculatedStartSec = calculatedLiveStartSec(
+    typedSegments,
+    targetOrder,
+  );
   if (Math.abs(calculatedStartSec - requestedStartSec) > 0.1) {
     return {
       ok: false,
@@ -2902,6 +3007,10 @@ function requireNonEmptyString(value: unknown, message: string): string {
 
 function stringField(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function stringListField(value: unknown): string[] {

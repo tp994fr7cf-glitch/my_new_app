@@ -36,10 +36,14 @@ bool whiteboardPartOrderTimestampIsActive({
   required double timestampSec,
   required WhiteboardPartOrderPlayback playback,
   required double globalSec,
+  bool inheritEarlierPartEvents = false,
 }) {
   switch (role) {
     case WhiteboardPartOrderRole.earlier:
-      return true;
+      // Strokes still inherit earlier parts. Board switches and viewport
+      // events do not: each independently recorded part starts from the
+      // default board unless that part itself switched.
+      return inheritEarlierPartEvents;
     case WhiteboardPartOrderRole.later:
       return false;
     case WhiteboardPartOrderRole.current:

@@ -101,6 +101,36 @@ void main() {
     expect(promoted.single.toMap(), isNot(contains('draftBoardSet')));
   });
 
+  test('uses fallback duration when a playable part has no measured length', () {
+    expect(
+      resolvedLessonMediaDurationSec(
+        isRetired: false,
+        hasUrl: true,
+        durationSec: 0,
+        fallbackDurationSec: 90,
+      ),
+      90,
+    );
+    expect(
+      resolvedLessonMediaDurationSec(
+        isRetired: false,
+        hasUrl: true,
+        durationSec: 12,
+        fallbackDurationSec: 90,
+      ),
+      12,
+    );
+    expect(
+      resolvedLessonMediaDurationSec(
+        isRetired: true,
+        hasUrl: true,
+        durationSec: 12,
+        fallbackDurationSec: 90,
+      ),
+      0,
+    );
+  });
+
   test(
     'external lesson drafts are accepted only for the loaded course version',
     () {
@@ -560,6 +590,8 @@ void main() {
     );
     await tester.tap(find.text('レッスン情報を保存'));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('選んだパートを公開'));
+    await tester.pumpAndSettle();
 
     expect(saves, hasLength(1));
     expect(saves.single.single.publishedSegmentIds, ['locked', 'tail']);
@@ -863,5 +895,326 @@ void main() {
 
     expect(find.textContaining('下書きの版が変わりました'), findsOneWidget);
     expect(find.text('先生として配信を開始'), findsNothing);
+  });
+
+  testWidgets('空の動画パート枠を未公開のまま保存できる', (tester) async {
+    CourseLesson? saved;
+    await tester.binding.setSurfaceSize(const Size(800, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonManagePage(
+          course: _course,
+          mediaStorageService: _RecordingMediaStorageService(),
+          onSaveOverride: (lessons) async {
+            saved = lessons.single;
+          },
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('パートを追加'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('動画'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('レッスン情報を保存'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('レッスン情報を保存'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('選んだパートを公開'), findsNothing);
+    expect(saved?.publishedSegmentIds, isEmpty);
+    expect(saved?.mediaSegments, hasLength(1));
+    expect(saved?.mediaSegments.single.mediaType, 'video');
+    expect(saved?.mediaSegments.single.hasUrl, isFalse);
+  });
+
+  testWidgets('完成パートのうち選んだものだけ公開できる', (tester) async {
+    const videoHole = LessonMediaSegment(
+      id: 'video',
+      order: 0,
+      mediaType: 'video',
+    );
+    const firstReady = LessonMediaSegment(
+      id: 'first',
+      order: 1,
+      title: '動画A',
+      mediaType: 'video',
+      url: 'https://example.com/first.mp4',
+      durationSec: 10,
+    );
+    const secondReady = LessonMediaSegment(
+      id: 'second',
+      order: 2,
+      title: '動画B',
+      mediaType: 'video',
+      url: 'https://example.com/second.mp4',
+      durationSec: 20,
+    );
+    CourseLesson? saved;
+    await tester.binding.setSurfaceSize(const Size(800, 1800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonManagePage(
+          course: _courseWithLesson(
+            const CourseLesson(
+              title: '複数パート',
+              duration: '30秒',
+              mediaSegments: [videoHole, firstReady, secondReady],
+              publishedSegmentIds: [],
+            ),
+          ),
+          onSaveOverride: (lessons) async {
+            saved = lessons.single;
+          },
+        ),
+      ),
+    );
+
+    await tester.scrollUntilVisible(
+      find.text('レッスン情報を保存'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('レッスン情報を保存'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('公開するパートを選んでください'), findsOneWidget);
+    await tester.tap(find.text('パート2（動画A）'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('選んだパートを公開'));
+    await tester.pumpAndSettle();
+
+    expect(saved?.publishedSegmentIds, ['second']);
+    expect(saved?.mediaSegments.map((segment) => segment.id), [
+      'video',
+      'first',
+      'second',
+    ]);
+    expect(saved?.mediaSegments[1].hasUrl, isFalse);
+    expect(saved?.mediaSegments[1].durationSec, 10);
+    expect(saved?.visibleLessonPartSegments, hasLength(3));
+  });
+
+  testWidgets('未公開の仮作成パートを保存前に削除できる', (tester) async {
+    CourseLesson? saved;
+    await tester.binding.setSurfaceSize(const Size(800, 1600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonManagePage(
+          course: _courseWithLesson(
+            const CourseLesson(
+              title: '仮作成',
+              duration: '10分',
+              mediaSegments: [
+                LessonMediaSegment(id: 'one', order: 0, mediaType: 'video'),
+                LessonMediaSegment(id: 'two', order: 1, mediaType: 'audio'),
+                LessonMediaSegment(
+                  id: 'three',
+                  order: 2,
+                  mediaType: 'audio',
+                  sourceKind: lessonMediaSourceLiveArchive,
+                ),
+              ],
+              publishedSegmentIds: [],
+            ),
+          ),
+          onSaveOverride: (lessons) async {
+            saved = lessons.single;
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final enabledDelete = find.byWidgetPredicate(
+      (widget) =>
+          widget is IconButton &&
+          widget.tooltip == '削除' &&
+          widget.onPressed != null,
+    );
+    expect(enabledDelete, findsNWidgets(3));
+    await tester.tap(enabledDelete.at(1));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('レッスン情報を保存'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('レッスン情報を保存'));
+    await tester.pumpAndSettle();
+
+    expect(saved?.mediaSegments.map((segment) => segment.id), ['one', 'three']);
+    expect(saved?.mediaSegments.any((segment) => segment.isRetired), isFalse);
+  });
+
+  testWidgets('公開済みに挟まった未公開枠を消すと欠番になり番号は詰めて見える', (tester) async {
+    const later = LessonMediaSegment(
+      id: 'later',
+      order: 2,
+      title: '後半',
+      mediaType: 'audio',
+      url: 'https://example.com/later.m4a',
+      durationSec: 12,
+    );
+    CourseLesson? saved;
+    await tester.binding.setSurfaceSize(const Size(800, 1800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonManagePage(
+          course: _courseWithLesson(
+            const CourseLesson(
+              title: '挟まった穴',
+              duration: '20分',
+              mediaSegments: [
+                _lockedSegment,
+                LessonMediaSegment(
+                  id: 'hole',
+                  order: 1,
+                  mediaType: 'audio',
+                  durationSec: 18,
+                ),
+                later,
+              ],
+              publishedSegmentIds: ['locked', 'later'],
+            ),
+          ),
+          onSaveOverride: (lessons) async {
+            saved = lessons.single;
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('パート1'), findsOneWidget);
+    expect(find.text('パート2'), findsOneWidget);
+    expect(find.text('パート3'), findsOneWidget);
+
+    final enabledDelete = find.byWidgetPredicate(
+      (widget) =>
+          widget is IconButton &&
+          widget.tooltip == '削除' &&
+          widget.onPressed != null,
+    );
+    expect(enabledDelete, findsOneWidget);
+    await tester.tap(enabledDelete);
+    await tester.pumpAndSettle();
+
+    expect(find.text('パート3'), findsNothing);
+    expect(find.text('パート2'), findsOneWidget);
+
+    await tester.scrollUntilVisible(
+      find.text('レッスン情報を保存'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('レッスン情報を保存'));
+    await tester.pumpAndSettle();
+
+    expect(saved?.mediaSegments.map((segment) => segment.id), [
+      'locked',
+      'hole',
+      'later',
+    ]);
+    expect(saved?.mediaSegments[1].isRetired, isTrue);
+    expect(saved?.mediaSegments[1].durationSec, 0);
+    expect(saved?.visibleLessonPartSegments.map((segment) => segment.id), [
+      'locked',
+      'later',
+    ]);
+  });
+
+  testWidgets('本作成済みの未公開パートを保護パートの前で消すと公開確認は出ず録音も残らない', (
+    tester,
+  ) async {
+    const recorded = LessonMediaSegment(
+      id: 'recorded',
+      order: 1,
+      title: '録音',
+      mediaType: 'audio',
+      url: 'https://example.com/recorded.m4a',
+      durationSec: 9,
+      sourceKind: lessonMediaSourceAudioRecording,
+    );
+    const later = LessonMediaSegment(
+      id: 'later',
+      order: 2,
+      title: '後半',
+      mediaType: 'audio',
+      url: 'https://example.com/later.m4a',
+      durationSec: 12,
+    );
+    CourseLesson? saved;
+    await tester.binding.setSurfaceSize(const Size(800, 1800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonManagePage(
+          course: _courseWithLesson(
+            CourseLesson(
+              title: '録音を消す',
+              duration: '20分',
+              mediaSegments: [
+                _lockedSegment,
+                recorded.copyWith(url: ''),
+                later,
+              ],
+              publishedSegmentIds: const ['locked', 'later'],
+            ),
+          ),
+          onSaveOverride: (lessons) async {
+            saved = lessons.single;
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('パート2'), findsOneWidget);
+    expect(find.text('パート3'), findsOneWidget);
+
+    final enabledDelete = find.byWidgetPredicate(
+      (widget) =>
+          widget is IconButton &&
+          widget.tooltip == '削除' &&
+          widget.onPressed != null,
+    );
+    expect(enabledDelete, findsOneWidget);
+    await tester.tap(enabledDelete);
+    await tester.pumpAndSettle();
+
+    expect(find.text('パート2'), findsOneWidget);
+    expect(find.text('パート3'), findsNothing);
+
+    await tester.scrollUntilVisible(
+      find.text('レッスン情報を保存'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('レッスン情報を保存'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('公開するパートを選んでください'), findsNothing);
+    expect(find.textContaining('パート0'), findsNothing);
+    expect(saved?.mediaSegments.map((segment) => segment.id), [
+      'locked',
+      'recorded',
+      'later',
+    ]);
+    expect(saved?.mediaSegments[1].isRetired, isTrue);
+    expect(saved?.mediaSegments[1].hasUrl, isFalse);
+    expect(saved?.publishedSegmentIds, ['locked', 'later']);
+    expect(saved?.visibleLessonPartSegments.map((segment) => segment.id), [
+      'locked',
+      'later',
+    ]);
   });
 }

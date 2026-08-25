@@ -256,21 +256,26 @@ void main() {
     );
   });
 
-  test('rejects unpublishing a locked part or publishing a non-prefix gap', () {
+  test('rejects unpublishing a locked part and allows unpublished numbering holes', () {
     final unpublished = previousLesson().copyWith(
       publishedSegmentIds: const [],
     );
-    final invalidGap = previousLesson().copyWith(
+    final numberingHole = previousLesson().copyWith(
       mediaSegments: const [
         locked,
         LessonMediaSegment(id: 'draft', order: 1),
-        LessonMediaSegment(id: 'published-after-gap', order: 2),
+        LessonMediaSegment(
+          id: 'published-after-gap',
+          order: 2,
+          url: 'https://example.com/after.mp4',
+          durationSec: 8,
+        ),
       ],
       publishedSegmentIds: const ['locked', 'published-after-gap'],
     );
 
     expect(validate(unpublished), lessonPublishedSegmentsLockedError);
-    expect(validate(invalidGap), lessonPublishedSegmentsLockedError);
+    expect(validate(numberingHole), isNull);
   });
 
   test('reserves a live archive slot between published parts', () {
@@ -321,6 +326,7 @@ void main() {
       order: 1,
       mediaType: 'audio',
       sourceKind: lessonMediaSourceLiveArchive,
+      liveSessionId: 'session-1',
     );
     final previous = previousLesson().copyWith(
       mediaSegments: const [locked, livePlaceholder],
@@ -642,7 +648,11 @@ void main() {
     );
 
     expect(reserved.publishedSegmentIds, isEmpty);
-    expect(reserved.mediaSegments.map((segment) => segment.id), ['live']);
+    expect(reserved.mediaSegments.map((segment) => segment.id), [
+      'live',
+      'tail',
+    ]);
+    expect(reserved.mediaSegments[1].hasUrl, isFalse);
     expect(reserved.visibleLessonPartSegments, isEmpty);
   });
 
@@ -678,12 +688,300 @@ void main() {
         'live',
       ]);
       expect(reserved.mediaSegments.first.hasUrl, isFalse);
-      expect(
-        reserved.mediaSegments.first.sourceKind,
-        lessonMediaSourceAudioRecording,
-      );
+      expect(reserved.mediaSegments.first.durationSec, 12);
       expect(reserved.mediaSegments[1].isLivePlaceholder, isTrue);
       expect(reserved.visibleLessonPartSegments, isEmpty);
     },
   );
+
+  test('publishes only the selected completed part and keeps other slots', () {
+    const videoHole = LessonMediaSegment(
+      id: 'video',
+      order: 0,
+      mediaType: 'video',
+    );
+    const audioReady = LessonMediaSegment(
+      id: 'audio',
+      order: 1,
+      mediaType: 'audio',
+      url: 'https://example.com/audio.mp3',
+      durationSec: 10,
+    );
+    const liveReady = LessonMediaSegment(
+      id: 'live',
+      order: 2,
+      mediaType: 'audio',
+      url: 'https://example.com/live.mp3',
+      durationSec: 20,
+      sourceKind: lessonMediaSourceLiveArchive,
+    );
+    const laterHole = LessonMediaSegment(
+      id: 'later',
+      order: 3,
+      mediaType: 'video',
+    );
+    final published = LessonPublicationValidator.prepareForPersist(
+      previous: const CourseLesson(title: 'Lesson', duration: '30秒'),
+      next: const CourseLesson(
+        title: 'Lesson',
+        duration: '30秒',
+        mediaSegments: [videoHole, audioReady, liveReady, laterHole],
+      ),
+      intent: LessonMediaPersistIntent.publishReadyParts,
+      publishSegmentIds: {'live'},
+    );
+
+    expect(published.publishedSegmentIds, ['live']);
+    expect(published.mediaSegments.map((segment) => segment.id), [
+      'video',
+      'audio',
+      'live',
+      'later',
+    ]);
+    expect(published.mediaSegments[1].hasUrl, isFalse);
+    expect(published.mediaSegments[1].durationSec, 10);
+    expect(published.visibleLessonPartSegments.map((segment) => segment.id), [
+      'video',
+      'audio',
+      'live',
+      'later',
+    ]);
+    expect(published.isPlayableLessonPart(published.mediaSegments[2]), isTrue);
+    expect(published.isPlayableLessonPart(published.mediaSegments[1]), isFalse);
+    expect(published.visibleLessonPartSegments[3].isUnpublishedNumberingPlaceholder, isTrue);
+  });
+
+  test('asks for a choice when any unpublished completed part exists', () {
+    expect(
+      lessonNeedsPendingPartPublishChoice(
+        previous: previousLesson(),
+        next: previousLesson().copyWith(mediaSegments: const [locked, tail]),
+      ),
+      isTrue,
+    );
+  });
+
+  test('allows deleting unpublished slots when nothing is published', () {
+    const firstHole = LessonMediaSegment(id: 'first', order: 0, mediaType: 'video');
+    const secondHole = LessonMediaSegment(id: 'second', order: 1, mediaType: 'audio');
+    const thirdHole = LessonMediaSegment(
+      id: 'third',
+      order: 2,
+      mediaType: 'audio',
+      sourceKind: lessonMediaSourceLiveArchive,
+    );
+    final previous = const CourseLesson(
+      title: 'Lesson',
+      duration: '30秒',
+      mediaSegments: [firstHole, secondHole, thirdHole],
+      publishedSegmentIds: [],
+    );
+    final next = previous.copyWith(
+      mediaSegments: [
+        firstHole,
+        thirdHole.copyWith(order: 1),
+      ],
+    );
+
+    expect(validateAppendOnlyLessonPublication(previous: previous, next: next), isNull);
+  });
+
+  test('allows deleting a trailing unpublished slot after published parts', () {
+    const laterHole = LessonMediaSegment(id: 'later', order: 1, mediaType: 'video');
+    final previous = previousLesson().copyWith(
+      mediaSegments: const [locked, laterHole],
+    );
+    final next = previous.copyWith(mediaSegments: const [locked]);
+
+    expect(validate(next), isNull);
+  });
+
+  test('hides a middle unpublished slot as retired without shifting published parts', () {
+    const hole = LessonMediaSegment(id: 'hole', order: 1, mediaType: 'audio');
+    const later = LessonMediaSegment(
+      id: 'later',
+      order: 2,
+      mediaType: 'audio',
+      url: 'https://example.com/later.m4a',
+      durationSec: 10,
+    );
+    final previous = previousLesson().copyWith(
+      mediaSegments: const [locked, hole, later],
+      publishedSegmentIds: const ['locked', 'later'],
+    );
+    final next = previous.copyWith(
+      mediaSegments: [locked, hole.copyWith(isRetired: true), later],
+    );
+
+    expect(validateAppendOnlyLessonPublication(previous: previous, next: next), isNull);
+    expect(next.visibleLessonPartSegments.map((segment) => segment.id), [
+      'locked',
+      'later',
+    ]);
+    expect(
+      LessonMediaSegment.visibleDisplayOrder(
+        segments: next.mediaSegments,
+        segmentId: 'later',
+      ),
+      2,
+    );
+  });
+
+  test('persists retirement for an unpublished hole that still has a duration', () {
+    const hole = LessonMediaSegment(
+      id: 'hole',
+      order: 1,
+      mediaType: 'audio',
+      durationSec: 18,
+    );
+    const later = LessonMediaSegment(
+      id: 'later',
+      order: 2,
+      mediaType: 'audio',
+      url: 'https://example.com/later.m4a',
+      durationSec: 10,
+    );
+    final previous = previousLesson().copyWith(
+      mediaSegments: const [locked, hole, later],
+      publishedSegmentIds: const ['locked', 'later'],
+    );
+    final published = LessonPublicationValidator.prepareForPersist(
+      previous: previous,
+      next: previous.copyWith(
+        mediaSegments: [locked, hole.copyWith(isRetired: true), later],
+      ),
+      intent: LessonMediaPersistIntent.publishReadyParts,
+    );
+
+    expect(published.mediaSegments[1].isRetired, isTrue);
+    expect(published.mediaSegments[1].hasUrl, isFalse);
+    expect(published.mediaSegments[1].durationSec, 0);
+    expect(published.visibleLessonPartSegments.map((segment) => segment.id), [
+      'locked',
+      'later',
+    ]);
+  });
+
+  test('does not treat a retired recording as an unpublished completed part', () {
+    const recorded = LessonMediaSegment(
+      id: 'recorded',
+      order: 1,
+      mediaType: 'audio',
+      url: 'https://example.com/recorded.m4a',
+      durationSec: 15,
+      sourceKind: lessonMediaSourceAudioRecording,
+    );
+    const laterLive = LessonMediaSegment(
+      id: 'later',
+      order: 2,
+      mediaType: 'audio',
+      url: 'https://example.com/later.m4a',
+      durationSec: 20,
+      sourceKind: lessonMediaSourceLiveArchive,
+    );
+    final previous = previousLesson().copyWith(
+      mediaSegments: [
+        locked,
+        recorded.copyWith(url: '', whiteboardStartCorrectionMs: 0),
+        laterLive,
+      ],
+      publishedSegmentIds: const ['locked', 'later'],
+    );
+    final next = previous.copyWith(
+      mediaSegments: [
+        locked,
+        recorded.copyWith(isRetired: true),
+        laterLive,
+      ],
+    );
+
+    expect(
+      unpublishedCompletedMediaSegments(previous: previous, next: next),
+      isEmpty,
+    );
+    expect(
+      lessonNeedsPendingPartPublishChoice(previous: previous, next: next),
+      isFalse,
+    );
+  });
+
+  test(
+    'persist never publishes a retired part even if it still has a URL',
+    () {
+      const recordedHole = LessonMediaSegment(
+        id: 'recorded',
+        order: 1,
+        mediaType: 'audio',
+        durationSec: 15,
+        sourceKind: lessonMediaSourceAudioRecording,
+      );
+      const laterLive = LessonMediaSegment(
+        id: 'later',
+        order: 2,
+        mediaType: 'audio',
+        url: 'https://example.com/later.m4a',
+        durationSec: 20,
+        sourceKind: lessonMediaSourceLiveArchive,
+      );
+      final previous = previousLesson().copyWith(
+        mediaSegments: const [locked, recordedHole, laterLive],
+        publishedSegmentIds: const ['locked', 'later'],
+      );
+      final retiredRecording = recordedHole.copyWith(
+        url: 'https://example.com/recorded.m4a',
+        isRetired: true,
+        whiteboardStartCorrectionMs: 200,
+      );
+
+      final published = LessonPublicationValidator.prepareForPersist(
+        previous: previous,
+        next: previous.copyWith(
+          mediaSegments: [locked, retiredRecording, laterLive],
+        ),
+        intent: LessonMediaPersistIntent.publishReadyParts,
+        publishSegmentIds: {retiredRecording.id, laterLive.id},
+      );
+
+      expect(published.publishedSegmentIds, ['locked', 'later']);
+      expect(published.mediaSegments[1].id, 'recorded');
+      expect(published.mediaSegments[1].isRetired, isTrue);
+      expect(published.mediaSegments[1].hasUrl, isFalse);
+      expect(published.mediaSegments[1].whiteboardStartCorrectionMs, 0);
+      expect(published.mediaSegments[1].durationSec, 0);
+      expect(published.visibleLessonPartSegments.map((segment) => segment.id), [
+        'locked',
+        'later',
+      ]);
+
+      final publishedByDefault = LessonPublicationValidator.prepareForPersist(
+        previous: previous,
+        next: previous.copyWith(
+          mediaSegments: [locked, retiredRecording, laterLive],
+        ),
+        intent: LessonMediaPersistIntent.publishReadyParts,
+      );
+      expect(publishedByDefault.publishedSegmentIds, ['locked', 'later']);
+      expect(publishedByDefault.mediaSegments[1].isRetired, isTrue);
+      expect(publishedByDefault.mediaSegments[1].hasUrl, isFalse);
+    },
+  );
+
+  test('rejects deleting a live slot after a session exists', () {
+    const liveReserved = LessonMediaSegment(
+      id: 'live',
+      order: 1,
+      mediaType: 'audio',
+      sourceKind: lessonMediaSourceLiveArchive,
+      liveSessionId: 'session-1',
+    );
+    final previous = previousLesson().copyWith(
+      mediaSegments: const [locked, liveReserved],
+    );
+    final next = previous.copyWith(mediaSegments: const [locked]);
+
+    expect(
+      validateAppendOnlyLessonPublication(previous: previous, next: next),
+      lessonPublishedSegmentsLockedError,
+    );
+  });
 }

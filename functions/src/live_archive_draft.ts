@@ -1,5 +1,4 @@
 export type LiveArchiveDraftFailureCode =
-  | "versionConflict"
   | "invalidLesson"
   | "invalidDraft"
   | "placeholderMissing";
@@ -63,6 +62,65 @@ export function resolveLiveArchiveDuration({
   };
 }
 
+export function mergeStaleLiveArchiveDraftMedia({
+  lessonSegments,
+  draftSegments,
+  archiveSegmentId,
+}: {
+  lessonSegments: unknown;
+  draftSegments: unknown;
+  archiveSegmentId: string;
+}): unknown {
+  if (!Array.isArray(lessonSegments)) {
+    return lessonSegments;
+  }
+  if (!Array.isArray(draftSegments)) {
+    return lessonSegments.map((segment) =>
+      isRecord(segment) ? {...segment} : segment,
+    );
+  }
+  const draftById = new Map<string, Record<string, unknown>>();
+  for (const segment of draftSegments) {
+    if (!isRecord(segment) || typeof segment.id !== "string") {
+      continue;
+    }
+    draftById.set(segment.id, segment);
+  }
+  return lessonSegments.map((segment) => {
+    if (!isRecord(segment) || typeof segment.id !== "string") {
+      return segment;
+    }
+    if (segment.id === archiveSegmentId || segment.retired === true) {
+      return {...segment};
+    }
+    const draft = draftById.get(segment.id);
+    if (draft === undefined) {
+      return {...segment};
+    }
+    const draftUrl = typeof draft.url === "string" ? draft.url.trim() : "";
+    const lessonUrl = typeof segment.url === "string" ? segment.url.trim() : "";
+    if (!draftUrl || lessonUrl) {
+      return {...segment};
+    }
+    return {
+      ...segment,
+      url: draft.url,
+      ...(typeof draft.durationSec === "number" ?
+        {durationSec: draft.durationSec} :
+        {}),
+      ...(typeof draft.durationMs === "number" ?
+        {durationMs: draft.durationMs} :
+        {}),
+      ...(typeof draft.sourceKind === "string" && draft.sourceKind ?
+        {sourceKind: draft.sourceKind} :
+        {}),
+      ...(typeof draft.liveSessionId === "string" && draft.liveSessionId ?
+        {liveSessionId: draft.liveSessionId} :
+        {}),
+    };
+  });
+}
+
 export function prepareLiveArchiveDraft({
   lesson,
   existingDraft,
@@ -94,18 +152,29 @@ export function prepareLiveArchiveDraft({
     if (!isRecord(existingDraft)) {
       return {ok: false, code: "invalidDraft"};
     }
-    if (existingDraft.baseLessonDocumentVersion !== documentVersion) {
-      return {ok: false, code: "versionConflict"};
+    const draftMatchesVersion =
+      existingDraft.baseLessonDocumentVersion === documentVersion;
+    if (draftMatchesVersion) {
+      if (
+        !isPositiveSafeInteger(existingDraft.draftRevision) ||
+        !isRecord(existingDraft.boardSet)
+      ) {
+        return {ok: false, code: "invalidDraft"};
+      }
+      draftRevision = existingDraft.draftRevision;
+    } else {
+      draftRevision = isPositiveSafeInteger(existingDraft.draftRevision) ?
+        existingDraft.draftRevision :
+        0;
     }
-    if (
-      !isPositiveSafeInteger(existingDraft.draftRevision) ||
-      !isRecord(existingDraft.boardSet)
-    ) {
-      return {ok: false, code: "invalidDraft"};
-    }
-    draftRevision = existingDraft.draftRevision;
     if (Array.isArray(existingDraft.mediaSegments)) {
-      sourceSegments = existingDraft.mediaSegments;
+      // Always rebuild from the published lesson slots. Same-version drafts
+      // may contain only persistable URLs (no empty live placeholder).
+      sourceSegments = mergeStaleLiveArchiveDraftMedia({
+        lessonSegments: lesson.mediaSegments,
+        draftSegments: existingDraft.mediaSegments,
+        archiveSegmentId: segmentId,
+      });
     }
   }
 
@@ -141,8 +210,8 @@ export function prepareLiveArchiveDraft({
         "";
     if (
       value.sourceKind !== "liveArchive" ||
-      existingUrl ||
-      (existingSessionId && existingSessionId !== liveSessionId)
+      (existingSessionId && existingSessionId !== liveSessionId) ||
+      (existingUrl && existingSessionId !== liveSessionId)
     ) {
       return {ok: false, code: "placeholderMissing"};
     }

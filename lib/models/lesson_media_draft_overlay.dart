@@ -20,38 +20,37 @@ List<LessonMediaSegment> overlayDraftMediaSegments({
     for (final published in publishedSegments)
       published.id: _preferDraftMedia(published, draftById[published.id]),
   };
-  for (final draftSegment in draftSegments) {
-    mergedById.putIfAbsent(draftSegment.id, () => draftSegment);
-  }
-
-  final orderById = <String, int>{
-    for (final published in publishedSegments) published.id: published.order,
+  final publishedIds = {
+    for (final published in publishedSegments) published.id,
+  };
+  final orderedPublished = [
+    for (final published in LessonMediaSegment.normalizeOrders(
+      publishedSegments,
+    ))
+      mergedById[published.id]!.copyWith(order: published.order),
+  ];
+  final extras = [
     for (final draftSegment in draftSegments)
-      draftSegment.id: draftSegment.order,
-  };
-  final publishedIndexById = <String, int>{
-    for (final entry in publishedSegments.indexed) entry.$2.id: entry.$1,
-  };
-  final merged = mergedById.values.toList()
-    ..sort((left, right) {
-      final byOrder = (orderById[left.id] ?? left.order).compareTo(
-        orderById[right.id] ?? right.order,
-      );
-      if (byOrder != 0) {
-        return byOrder;
-      }
-      return (publishedIndexById[left.id] ?? 9999).compareTo(
-        publishedIndexById[right.id] ?? 9999,
-      );
-    });
-  return LessonMediaSegment.normalizeOrders(merged);
+      if (!publishedIds.contains(draftSegment.id) && draftSegment.hasUrl)
+        draftSegment,
+  ]..sort((left, right) => left.order.compareTo(right.order));
+
+  final merged = [...orderedPublished];
+  for (final extra in extras) {
+    final index = extra.order.clamp(0, merged.length);
+    merged.insert(index, extra);
+  }
+  return [
+    for (var index = 0; index < merged.length; index++)
+      merged[index].copyWith(order: index),
+  ];
 }
 
 LessonMediaSegment _preferDraftMedia(
   LessonMediaSegment published,
   LessonMediaSegment? draft,
 ) {
-  if (draft == null) {
+  if (draft == null || published.isRetired) {
     return published;
   }
   if (published.hasUrl && !draft.hasUrl) {
@@ -68,11 +67,8 @@ LessonMediaSegment _preferDraftMedia(
 }
 
 bool isPersistableMediaDraftSegment(LessonMediaSegment segment) {
-  if (segment.id.trim().isEmpty) {
+  if (segment.id.trim().isEmpty || segment.isRetired) {
     return false;
-  }
-  if (segment.isUnpublishedNumberingPlaceholder) {
-    return true;
   }
   return segment.hasUrl && segment.durationSec > 0;
 }

@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../models/course.dart';
+import '../models/lesson_draft_save_policy.dart';
 import '../models/lesson_media_segment.dart';
 import '../models/lesson_media_draft_overlay.dart';
 import '../models/lesson_payload_size_validator.dart';
@@ -39,10 +40,14 @@ class CourseLessonSaveResult {
   const CourseLessonSaveResult({
     required this.previousLesson,
     required this.savedLesson,
+    required this.savedDraftRevision,
+    this.keptExistingDraft = false,
   });
 
   final CourseLesson previousLesson;
   final CourseLesson savedLesson;
+  final int savedDraftRevision;
+  final bool keptExistingDraft;
 }
 
 class CourseLessonRepository {
@@ -120,6 +125,7 @@ class CourseLessonRepository {
     int expectedDraftRevision = 0,
     bool keepDrafts = false,
     bool publishDraftBoard = true,
+    List<LessonMediaSegment>? draftMediaSegments,
   }) async {
     final lessonId = editedLesson.id;
     if (lessonId == null || lessonId.isEmpty) {
@@ -153,9 +159,19 @@ class CourseLessonRepository {
       final actualDraftRevision = storedDraftRevision == null
           ? 0
           : _positiveInt(storedDraftRevision);
-      if (actualDraftRevision != expectedDraftRevision) {
-        throw StateError(lessonDraftRevisionConflictMessage);
+      if (keepDrafts) {
+        ensureKeepDraftsRevisionMatches(
+          actualDraftRevision: actualDraftRevision,
+          expectedDraftRevision: expectedDraftRevision,
+        );
       }
+      final publishedDraftDisposition = keepDrafts
+          ? null
+          : resolvePublishedLessonDraftDisposition(
+              draftExists: draftSnapshot.exists,
+              actualDraftRevision: actualDraftRevision,
+              expectedDraftRevision: expectedDraftRevision,
+            );
       BoardSet? persistedDraft;
       if (draftData != null) {
         if (draftData['baseLessonDocumentVersion'] !=
@@ -176,7 +192,9 @@ class CourseLessonRepository {
         lessonEvents: previous.lessonEvents,
         createdAt: previous.createdAt,
         publishedBoardSet: publishDraftBoard
-            ? (persistedDraft ?? editedLesson.publishedBoardSet)
+            ? (persistedDraft != null && persistedDraft.isNotEmpty
+                  ? persistedDraft
+                  : editedLesson.publishedBoardSet)
             : previous.publishedBoardSet,
         clearDraftBoardSet: true,
       );
@@ -190,19 +208,53 @@ class CourseLessonRepository {
       transaction.update(courseReference, {
         'updatedAt': FieldValue.serverTimestamp(),
       });
-      if (draftSnapshot.exists) {
-        if (keepDrafts) {
+      var savedDraftRevision = 0;
+      var keptExistingDraft = false;
+      if (keepDrafts) {
+        final persistableDraftMedia = LessonMediaSegment.normalizeOrders(
+          (draftMediaSegments ?? const <LessonMediaSegment>[])
+              .where(isPersistableMediaDraftSegment)
+              .toList(),
+        );
+        if (draftSnapshot.exists) {
+          savedDraftRevision = actualDraftRevision + 1;
           transaction.update(draftReference, {
             'baseLessonDocumentVersion': nextDocumentVersion,
+            'draftRevision': savedDraftRevision,
+            if (persistableDraftMedia.isNotEmpty)
+              'mediaSegments': persistableDraftMedia
+                  .map((segment) => segment.toMap())
+                  .toList()
+            else
+              'mediaSegments': FieldValue.delete(),
             'updatedAt': FieldValue.serverTimestamp(),
           });
-        } else {
+        } else if (persistableDraftMedia.isNotEmpty) {
+          savedDraftRevision = 1;
+          transaction.set(draftReference, {
+            'lessonId': lessonId,
+            'boardSet': (persistedDraft ?? const BoardSet()).toMap(),
+            'mediaSegments': persistableDraftMedia
+                .map((segment) => segment.toMap())
+                .toList(),
+            'baseLessonDocumentVersion': nextDocumentVersion,
+            'draftRevision': savedDraftRevision,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        }
+      } else if (publishedDraftDisposition != null) {
+        if (publishedDraftDisposition.deleteDraft) {
           transaction.delete(draftReference);
+        } else {
+          savedDraftRevision = publishedDraftDisposition.savedDraftRevision;
+          keptExistingDraft = publishedDraftDisposition.keptExistingDraft;
         }
       }
       return CourseLessonSaveResult(
         previousLesson: previous,
         savedLesson: saved,
+        savedDraftRevision: savedDraftRevision,
+        keptExistingDraft: keptExistingDraft,
       );
     });
   }
@@ -295,18 +347,15 @@ class CourseLessonRepository {
           draftData['boardSet'] is! Map) {
         throw const LessonDocumentVersionConflict();
       }
-      final normalizedSegments = LessonMediaSegment.normalizeOrders(
-        mediaSegments,
+      final persistableSegments = LessonMediaSegment.normalizeOrders(
+        mediaSegments.where(isPersistableMediaDraftSegment).toList(),
       );
-      if (normalizedSegments.length > 100 ||
-          normalizedSegments.any(
-            (segment) => !isPersistableMediaDraftSegment(segment),
-          )) {
+      if (persistableSegments.isEmpty || persistableSegments.length > 100) {
         throw StateError('録音した音声の下書きデータが不正です。');
       }
       final nextDraftRevision = currentDraftRevision + 1;
       transaction.update(draftReference, {
-        'mediaSegments': normalizedSegments
+        'mediaSegments': persistableSegments
             .map((segment) => segment.toMap())
             .toList(),
         'draftRevision': nextDraftRevision,

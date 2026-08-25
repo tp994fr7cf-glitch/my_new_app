@@ -163,13 +163,16 @@ class _VideoLessonPageState extends State<VideoLessonPage>
       lesson.visibleLessonPartSegments;
 
   List<LessonMediaSegment> get _publishedMediaSegments =>
-      _allPublishedMediaSegments.where((segment) => segment.hasUrl).toList();
+      _allPublishedMediaSegments
+          .where(lesson.isPlayableLessonPart)
+          .toList();
 
   List<LessonMediaSegment> get _unplayablePublishedMediaSegments =>
       _allPublishedMediaSegments
           .where(
             (segment) =>
-                !segment.hasUrl && !segment.isUnpublishedNumberingPlaceholder,
+                lesson.publishedSegmentIds.contains(segment.id) &&
+                !segment.hasUrl,
           )
           .toList();
 
@@ -557,7 +560,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
   }
 
   void _onVisiblePartPressed(LessonMediaSegment segment) {
-    if (!segment.hasUrl) {
+    if (!lesson.isPlayableLessonPart(segment)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text(unpublishedLessonPartMessage)),
       );
@@ -2939,13 +2942,14 @@ class _VideoLessonPageState extends State<VideoLessonPage>
     final publishedParts = _allPublishedMediaSegments;
     if (!publishedParts.any(
       (segment) =>
-          !segment.hasUrl && !segment.isUnpublishedNumberingPlaceholder,
+          lesson.publishedSegmentIds.contains(segment.id) && !segment.hasUrl,
     )) {
       return const SizedBox.shrink();
     }
     final labels = [
       for (final entry in publishedParts.indexed)
-        if (!entry.$2.hasUrl && !entry.$2.isUnpublishedNumberingPlaceholder)
+        if (lesson.publishedSegmentIds.contains(entry.$2.id) &&
+            !entry.$2.hasUrl)
           '${_partTitle(entry.$2, entry.$1)}（メディア未設定）',
     ];
     return Card(
@@ -3132,7 +3136,9 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                         )
                       else
                         OutlinedButton(
-                          onPressed: !segment.hasUrl || canControlPlayback
+                          onPressed:
+                              !lesson.isPlayableLessonPart(segment) ||
+                                  canControlPlayback
                               ? () => _onVisiblePartPressed(segment)
                               : null,
                           child: Text(_partTitle(segment)),
@@ -3173,7 +3179,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                       key: ValueKey('lesson-part-panel-header-${segment.id}'),
                       dense: true,
                       leading: Icon(
-                        !segment.hasUrl
+                        !lesson.isPlayableLessonPart(segment)
                             ? Icons.schedule
                             : _completedMediaSegmentIds.contains(segment.id)
                             ? Icons.check_circle
@@ -3181,7 +3187,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                       ),
                       title: Text(_partTitle(segment)),
                       subtitle: Text(
-                        !segment.hasUrl
+                        !lesson.isPlayableLessonPart(segment)
                             ? unpublishedLessonPartMessage
                             : '${_completedMediaSegmentIds.contains(segment.id) ? '完了' : '未完了'}・'
                                   '${formatLessonTime(segment.id == _activeMediaSegment?.id ? _currentLocalPositionSecExact.round() : _partProgress.resumePositionSecForPart(segment.id).round())}',
@@ -3193,7 +3199,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                       ),
                       onTap: () {
                         final displayIndex = _displayIndexForSegment(segment);
-                        if (!segment.hasUrl) {
+                        if (!lesson.isPlayableLessonPart(segment)) {
                           _onVisiblePartPressed(segment);
                           setState(() {
                             _expandedPanelIndex =
@@ -3225,7 +3231,7 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                 if (_displayIndexForSegment(segment) == _expandedPanelIndex)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-                    child: segment.hasUrl
+                    child: lesson.isPlayableLessonPart(segment)
                         ? _buildPlayerSurface(
                             context,
                             canControlPlayback: canControlPlayback,
@@ -3487,7 +3493,8 @@ class _VideoLessonPageState extends State<VideoLessonPage>
                                 for (final segment in _allPublishedMediaSegments)
                                   OutlinedButton(
                                     onPressed:
-                                        !segment.hasUrl || canControlPlayback
+                                        !lesson.isPlayableLessonPart(segment) ||
+                                            canControlPlayback
                                         ? () => _onVisiblePartPressed(segment)
                                         : null,
                                     child: Text(_partTitle(segment)),

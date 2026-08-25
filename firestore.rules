@@ -1671,7 +1671,7 @@ service cloud.firestore {
 
       match /lessonDrafts/{lessonId} {
         function currentLessonDocumentVersion() {
-          return get(
+          return getAfter(
             /databases/$(database)/documents/courses/$(courseId)/lessons/$(lessonId)
           ).data.documentVersion;
         }

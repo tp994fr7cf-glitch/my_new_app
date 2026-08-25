@@ -19,6 +19,7 @@ class LessonMediaSegment {
     this.whiteboardEndCorrectionMs = 0,
     this.sourceKind = '',
     this.liveSessionId = '',
+    this.isRetired = false,
   });
 
   final String id;
@@ -32,19 +33,20 @@ class LessonMediaSegment {
   final int whiteboardEndCorrectionMs;
   final String sourceKind;
   final String liveSessionId;
+  final bool isRetired;
 
   bool get hasUrl => url.trim().isNotEmpty;
   bool get isAudio => mediaType == 'audio';
   bool get isVideo => !isAudio;
   bool get isLiveArchive => sourceKind == lessonMediaSourceLiveArchive;
   bool get isLivePlaceholder => isLiveArchive && !hasUrl;
+  bool get isLiveReserved => isLivePlaceholder && liveSessionId.isNotEmpty;
   bool get isAudioRecordingSource =>
       sourceKind == lessonMediaSourceAudioRecording;
 
-  /// Empty live or recording slots that still occupy a learner-facing part
-  /// number before a later part is published.
-  bool get isUnpublishedNumberingPlaceholder =>
-      !hasUrl && (isLiveArchive || isAudioRecordingSource);
+  /// Empty slots that still occupy a learner-facing part number until they
+  /// are published. Live, recording, audio, and video placeholders all count.
+  bool get isUnpublishedNumberingPlaceholder => !hasUrl;
   double get durationSecExact =>
       durationMs > 0 ? durationMs / 1000 : durationSec.toDouble();
 
@@ -65,6 +67,7 @@ class LessonMediaSegment {
       ),
       sourceKind: parseStringField(data['sourceKind']),
       liveSessionId: parseStringField(data['liveSessionId']),
+      isRetired: data['retired'] == true,
     );
   }
 
@@ -83,6 +86,7 @@ class LessonMediaSegment {
         'whiteboardEndCorrectionMs': whiteboardEndCorrectionMs,
       if (sourceKind.isNotEmpty) 'sourceKind': sourceKind,
       if (liveSessionId.isNotEmpty) 'liveSessionId': liveSessionId,
+      if (isRetired) 'retired': true,
     };
   }
 
@@ -98,6 +102,7 @@ class LessonMediaSegment {
     int? whiteboardEndCorrectionMs,
     String? sourceKind,
     String? liveSessionId,
+    bool? isRetired,
   }) {
     return LessonMediaSegment(
       id: id ?? this.id,
@@ -113,7 +118,20 @@ class LessonMediaSegment {
           whiteboardEndCorrectionMs ?? this.whiteboardEndCorrectionMs,
       sourceKind: sourceKind ?? this.sourceKind,
       liveSessionId: liveSessionId ?? this.liveSessionId,
+      isRetired: isRetired ?? this.isRetired,
     );
+  }
+
+  static int visibleDisplayOrder({
+    required List<LessonMediaSegment> segments,
+    required String segmentId,
+  }) {
+    final visible = [
+      for (final segment in normalizeOrders(segments))
+        if (!segment.isRetired) segment,
+    ];
+    final index = visible.indexWhere((segment) => segment.id == segmentId);
+    return index + 1;
   }
 
   static String generateId() {
@@ -146,4 +164,25 @@ class LessonMediaSegment {
 
 bool lessonHasMediaSegments(List<LessonMediaSegment> segments) {
   return segments.any((segment) => segment.hasUrl);
+}
+
+/// Start second for a live part, counting previous parts that already have a
+/// duration even when their URL is still unpublished.
+double liveStartSecBeforeIndex(
+  List<LessonMediaSegment> segments, {
+  required int index,
+}) {
+  final ordered = LessonMediaSegment.normalizeOrders(segments);
+  final end = index < 0
+      ? 0
+      : (index < ordered.length ? index : ordered.length);
+  var total = 0.0;
+  for (var i = 0; i < end; i++) {
+    final segment = ordered[i];
+    if (segment.isRetired || segment.durationSecExact <= 0) {
+      continue;
+    }
+    total += segment.durationSecExact;
+  }
+  return total;
 }

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   adjustLiveArchiveBoardSet,
   firebaseStorageDownloadUrl,
+  mergeStaleLiveArchiveDraftMedia,
   prepareLiveArchiveDraft,
   resolveLiveArchiveDuration,
   selectManifestObject,
@@ -245,19 +246,40 @@ test("replaces only a reserved live placeholder", () => {
   });
 });
 
-test("prefers a same-version draft and increments its revision", () => {
-  const draftSegments = publishedSegments.map((segment) => ({...segment}));
-  draftSegments[0].title = "下書きの導入";
+test("same-version persistable-only drafts still attach the live slot", () => {
+  const lessonSegments = [
+    {
+      ...publishedSegments[0],
+      url: "",
+      durationSec: 0,
+    },
+    publishedSegments[1],
+    {
+      id: "video-slot",
+      order: 2,
+      title: "動画",
+      mediaType: "video",
+      url: "https://example.com/published.mp4",
+      durationSec: 90,
+    },
+  ];
   const prepared = prepareLiveArchiveDraft({
     lesson: {
       documentVersion: 7,
-      mediaSegments: publishedSegments,
+      mediaSegments: lessonSegments,
     },
     existingDraft: {
       baseLessonDocumentVersion: 7,
       draftRevision: 3,
       boardSet: {boards: []},
-      mediaSegments: draftSegments,
+      mediaSegments: [
+        {
+          ...lessonSegments[0],
+          url: "https://example.com/unpublished-intro.m4a",
+          durationSec: 12,
+        },
+        lessonSegments[2],
+      ],
     },
     segmentId: "live-slot",
     playbackUrl: "https://firebasestorage.example/live.mp4",
@@ -266,29 +288,98 @@ test("prefers a same-version draft and increments its revision", () => {
     liveSessionId: "session-1",
   });
   assert.equal(prepared.ok, true);
+  if (!prepared.ok) {
+    return;
+  }
+  assert.equal(prepared.draftRevision, 4);
+  assert.equal(prepared.mediaSegments[0].title, "導入");
+  assert.equal(
+    prepared.mediaSegments[0].url,
+    "https://example.com/unpublished-intro.m4a",
+  );
+  assert.equal(
+    prepared.mediaSegments[1].url,
+    "https://firebasestorage.example/live.mp4",
+  );
+  assert.equal(prepared.mediaSegments[1].liveSessionId, "session-1");
+  assert.equal(
+    prepared.mediaSegments[2].url,
+    "https://example.com/published.mp4",
+  );
+});
+
+test("rebuilds from the current lesson when the draft version is stale", () => {
+  const currentLessonSegments = [
+    {
+      ...publishedSegments[0],
+      url: "",
+      durationSec: 0,
+    },
+    publishedSegments[1],
+  ];
+  const staleDraftSegments = [
+    {
+      ...publishedSegments[0],
+      url: "https://example.com/unpublished-intro.m4a",
+      durationSec: 12,
+    },
+    publishedSegments[1],
+  ];
+  const prepared = prepareLiveArchiveDraft({
+    lesson: {documentVersion: 7, mediaSegments: currentLessonSegments},
+    existingDraft: {
+      baseLessonDocumentVersion: 6,
+      draftRevision: 2,
+      boardSet: {boards: []},
+      mediaSegments: staleDraftSegments,
+    },
+    segmentId: "live-slot",
+    playbackUrl: "https://example.com/live.mp4",
+    durationSec: 45,
+    durationMs: 45000,
+    liveSessionId: "session-1",
+  });
+  assert.equal(prepared.ok, true);
+  if (!prepared.ok) {
+    return;
+  }
+  assert.equal(prepared.baseLessonDocumentVersion, 7);
+  assert.equal(prepared.draftRevision, 3);
+  assert.equal(
+    prepared.mediaSegments[0].url,
+    "https://example.com/unpublished-intro.m4a",
+  );
+  assert.equal(prepared.mediaSegments[1].url, "https://example.com/live.mp4");
+  assert.equal(prepared.mediaSegments[1].liveSessionId, "session-1");
+});
+
+test("reattaches the same live session URL onto its placeholder", () => {
+  const prepared = prepareLiveArchiveDraft({
+    lesson: {
+      documentVersion: 7,
+      mediaSegments: [
+        publishedSegments[0],
+        {
+          ...publishedSegments[1],
+          url: "https://example.com/old-live.mp4",
+          liveSessionId: "session-1",
+        },
+      ],
+    },
+    existingDraft: null,
+    segmentId: "live-slot",
+    playbackUrl: "https://example.com/live.mp4",
+    durationSec: 45,
+    durationMs: 45000,
+    liveSessionId: "session-1",
+  });
+  assert.equal(prepared.ok, true);
   if (prepared.ok) {
-    assert.equal(prepared.draftRevision, 4);
-    assert.equal(prepared.mediaSegments[0].title, "下書きの導入");
+    assert.equal(prepared.mediaSegments[1].url, "https://example.com/live.mp4");
   }
 });
 
-test("rejects version conflicts and missing placeholders", () => {
-  assert.deepEqual(
-    prepareLiveArchiveDraft({
-      lesson: {documentVersion: 7, mediaSegments: publishedSegments},
-      existingDraft: {
-        baseLessonDocumentVersion: 6,
-        draftRevision: 2,
-        boardSet: {boards: []},
-      },
-      segmentId: "live-slot",
-      playbackUrl: "https://example.com/live.mp4",
-      durationSec: 45,
-      durationMs: 45000,
-      liveSessionId: "session-1",
-    }),
-    {ok: false, code: "versionConflict"},
-  );
+test("rejects missing placeholders", () => {
   assert.deepEqual(
     prepareLiveArchiveDraft({
       lesson: {documentVersion: 7, mediaSegments: publishedSegments},
@@ -301,6 +392,64 @@ test("rejects version conflicts and missing placeholders", () => {
     }),
     {ok: false, code: "placeholderMissing"},
   );
+});
+
+test("keeps unpublished draft media when merging a stale archive draft", () => {
+  const merged = mergeStaleLiveArchiveDraftMedia({
+    lessonSegments: [
+      {
+        ...publishedSegments[0],
+        url: "",
+        durationSec: 0,
+      },
+      publishedSegments[1],
+    ],
+    draftSegments: [
+      {
+        ...publishedSegments[0],
+        url: "https://example.com/draft-intro.m4a",
+        durationSec: 8,
+      },
+      publishedSegments[1],
+    ],
+    archiveSegmentId: "live-slot",
+  });
+  assert.equal(Array.isArray(merged), true);
+  if (!Array.isArray(merged)) {
+    return;
+  }
+  assert.equal(merged[0].url, "https://example.com/draft-intro.m4a");
+  assert.equal(merged[1].url, "");
+});
+
+test("does not overlay draft media onto a retired lesson slot", () => {
+  const merged = mergeStaleLiveArchiveDraftMedia({
+    lessonSegments: [
+      {
+        ...publishedSegments[0],
+        url: "",
+        durationSec: 0,
+        retired: true,
+      },
+      publishedSegments[1],
+    ],
+    draftSegments: [
+      {
+        ...publishedSegments[0],
+        url: "https://example.com/retired-intro.m4a",
+        durationSec: 8,
+      },
+      publishedSegments[1],
+    ],
+    archiveSegmentId: "live-slot",
+  });
+  assert.equal(Array.isArray(merged), true);
+  if (!Array.isArray(merged)) {
+    return;
+  }
+  assert.equal(merged[0].url, "");
+  assert.equal(merged[0].retired, true);
+  assert.equal(merged[1].url, "");
 });
 
 test("builds persistent Firebase URL and selects safe manifest files", () => {

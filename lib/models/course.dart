@@ -349,29 +349,26 @@ class CourseLesson {
     );
   }
 
-  /// Published playable parts plus earlier unpublished slots that are not
-  /// playable yet, so learners still see the original part numbers.
+  /// Published playable parts plus unpublished slots, including later
+  /// placeholders, so learners keep the original part numbers.
   List<LessonMediaSegment> get visibleLessonPartSegments {
     if (!_publishedSegmentIdsMetadataValid) {
       return const [];
     }
     final publishedIds = publishedSegmentIds.toSet();
-    final ordered = LessonMediaSegment.normalizeOrders(mediaSegments);
-    var lastPublishedIndex = -1;
-    for (var index = 0; index < ordered.length; index++) {
-      if (publishedIds.contains(ordered[index].id)) {
-        lastPublishedIndex = index;
-      }
-    }
-    if (lastPublishedIndex < 0) {
+    if (publishedIds.isEmpty) {
       return const [];
     }
     return LessonMediaSegment.normalizeOrders([
-      for (var index = 0; index <= lastPublishedIndex; index++)
-        if (publishedIds.contains(ordered[index].id) ||
-            ordered[index].isUnpublishedNumberingPlaceholder)
-          ordered[index],
+      for (final segment in mediaSegments)
+        if (!segment.isRetired) segment,
     ]);
+  }
+
+  bool isPlayableLessonPart(LessonMediaSegment segment) {
+    return hasValidPublishedSegmentIdsMetadata &&
+        publishedSegmentIds.contains(segment.id) &&
+        segment.hasUrl;
   }
 
   LessonMediaTimeline get mediaTimeline =>

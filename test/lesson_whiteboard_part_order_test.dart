@@ -173,6 +173,93 @@ void main() {
     );
   });
 
+  test('part 2 board switches do not stick during a later recorded part', () {
+    const extraBoard = LessonWhiteboardBoard(id: 'live-board', order: 1);
+    const laterIds = ['part-1', 'part-2', 'part-3'];
+    final withSwitch = BoardSet(
+      boards: [...boardSet.boards, extraBoard],
+      switchEvents: [
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: extraBoard.id,
+          globalTimestampSec: 8,
+          sequence: 1,
+          segmentId: 'part-2',
+        ),
+      ],
+    );
+    expect(
+      resolveBoardAtPartOrder(
+        boardSet: withSwitch,
+        globalTimestampSec: 10,
+        partOrder: WhiteboardPartOrderPlayback(
+          orderedSegmentIds: laterIds,
+          activeSegmentId: 'part-3',
+          segmentLocalSec: 1,
+        ),
+      )?.id,
+      LessonWhiteboardBoard.defaultBoardId,
+    );
+    expect(
+      resolveBoardAtPartOrder(
+        boardSet: withSwitch,
+        globalTimestampSec: 6,
+        partOrder: WhiteboardPartOrderPlayback(
+          orderedSegmentIds: laterIds,
+          activeSegmentId: 'part-2',
+          segmentLocalSec: 8,
+        ),
+      )?.id,
+      extraBoard.id,
+    );
+  });
+
+  test('part 2 viewport events do not stick during a later recorded part', () {
+    const laterIds = ['part-1', 'part-2', 'part-3'];
+    final zoomed = BoardSet(
+      boards: boardSet.boards,
+      viewportEvents: [
+        LessonWhiteboardViewportEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 2,
+          sequence: 1,
+          interactionId: 1,
+          viewport: const LessonWhiteboardViewport(
+            centerX: 0.4,
+            centerY: 0.4,
+            scale: 3,
+          ),
+          segmentId: 'part-2',
+        ),
+      ],
+    );
+    expect(
+      resolveViewportAtPartOrder(
+        boardSet: zoomed,
+        boardId: LessonWhiteboardBoard.defaultBoardId,
+        globalTimestampSec: 10,
+        partOrder: WhiteboardPartOrderPlayback(
+          orderedSegmentIds: laterIds,
+          activeSegmentId: 'part-3',
+          segmentLocalSec: 1,
+        ),
+      ),
+      LessonWhiteboardViewport.full,
+    );
+    expect(
+      resolveViewportAtPartOrder(
+        boardSet: zoomed,
+        boardId: LessonWhiteboardBoard.defaultBoardId,
+        globalTimestampSec: 7,
+        partOrder: WhiteboardPartOrderPlayback(
+          orderedSegmentIds: laterIds,
+          activeSegmentId: 'part-2',
+          segmentLocalSec: 2,
+        ),
+      ).scale,
+      3,
+    );
+  });
+
   test('legacy untagged strokes still follow the global clock', () {
     const bundle = LessonWhiteboardLayerBundle(
       layers: [

@@ -149,6 +149,7 @@ void main() {
         '              == currentLessonDocumentVersion()',
       ),
     );
+    expect(rules, contains('getAfter('));
     expect(rules, contains('request.resource.data.draftRevision == 1'));
     expect(
       rules,
