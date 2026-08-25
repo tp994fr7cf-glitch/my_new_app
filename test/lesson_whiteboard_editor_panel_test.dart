@@ -1765,6 +1765,200 @@ void main() {
       isEmpty,
     );
   });
+
+  testWidgets(
+    'scoped save with overwrite on asks whether to pin until the part ends',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1000, 1400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      BoardSet? saved;
+      const published = BoardSet(
+        boards: [
+          LessonWhiteboardBoard(
+            id: LessonWhiteboardBoard.defaultBoardId,
+            order: 0,
+            title: '一枚目',
+          ),
+          LessonWhiteboardBoard(id: 'second', order: 1, title: '二枚目'),
+        ],
+        switchEvents: [
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: 'second',
+            globalTimestampSec: 8,
+            sequence: 0,
+            segmentId: 'part-2',
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: LessonWhiteboardEditorPanel(
+                courseId: 'course-1',
+                lessonNumber: 1,
+                mediaSegments: const [
+                  LessonMediaSegment(
+                    id: 'part-2',
+                    order: 1,
+                    mediaType: 'audio',
+                    url: 'https://example.com/part-2.mp3',
+                    durationSec: 30,
+                  ),
+                ],
+                durationLabel: '30秒',
+                scopedSegmentId: 'part-2',
+                orderedSegmentIds: const ['part-1', 'part-2'],
+                publishedBoardSet: published,
+                publishedTimelineDurationSec: 30,
+                onBoardSetDraftSaved: (boardSet) async {
+                  saved = boardSet;
+                },
+                playlistPlaybackFactory: fakePlaylistPlaybackFactory(
+                  durationSec: 30,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('screen-share-override-checkbox')),
+      );
+      await tester.tap(
+        find.byKey(const ValueKey('screen-share-override-checkbox')),
+      );
+      await tester.pump();
+
+      await tester.ensureVisible(find.text('書き物を一時保存'));
+      await tester.tap(find.widgetWithText(OutlinedButton, '書き物を一時保存'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('今のボードを最後まで固定する'), findsOneWidget);
+      expect(find.text('チェック入れた部分だけ保存'), findsOneWidget);
+      expect(saved, isNull);
+
+      await tester.tap(find.text('キャンセル'));
+      await tester.pumpAndSettle();
+      expect(saved, isNull);
+
+      await tester.tap(find.widgetWithText(OutlinedButton, '書き物を一時保存'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('screen-share-override-save-pin-until-end')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(saved, isNotNull);
+      expect(
+        saved!.switchEvents.any(
+          (event) =>
+              event.segmentId == 'part-2' && event.boardId == 'second',
+        ),
+        isFalse,
+      );
+      expect(
+        resolveBoardAtPartOrder(
+          boardSet: saved!,
+          globalTimestampSec: 9,
+          partOrder: const WhiteboardPartOrderPlayback(
+            orderedSegmentIds: ['part-1', 'part-2'],
+            activeSegmentId: 'part-2',
+            segmentLocalSec: 9,
+          ),
+        )?.id,
+        LessonWhiteboardBoard.defaultBoardId,
+      );
+    },
+  );
+
+  testWidgets(
+    'scoped save can keep only the checked overwrite interval',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1000, 1400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      BoardSet? saved;
+      const published = BoardSet(
+        boards: [
+          LessonWhiteboardBoard(
+            id: LessonWhiteboardBoard.defaultBoardId,
+            order: 0,
+            title: '一枚目',
+          ),
+          LessonWhiteboardBoard(id: 'second', order: 1, title: '二枚目'),
+        ],
+        switchEvents: [
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: 'second',
+            globalTimestampSec: 8,
+            sequence: 0,
+            segmentId: 'part-2',
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: LessonWhiteboardEditorPanel(
+                courseId: 'course-1',
+                lessonNumber: 1,
+                mediaSegments: const [
+                  LessonMediaSegment(
+                    id: 'part-2',
+                    order: 1,
+                    mediaType: 'audio',
+                    url: 'https://example.com/part-2.mp3',
+                    durationSec: 30,
+                  ),
+                ],
+                durationLabel: '30秒',
+                scopedSegmentId: 'part-2',
+                orderedSegmentIds: const ['part-1', 'part-2'],
+                publishedBoardSet: published,
+                publishedTimelineDurationSec: 30,
+                onBoardSetDraftSaved: (boardSet) async {
+                  saved = boardSet;
+                },
+                playlistPlaybackFactory: fakePlaylistPlaybackFactory(
+                  durationSec: 30,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('screen-share-override-checkbox')),
+      );
+      await tester.tap(
+        find.byKey(const ValueKey('screen-share-override-checkbox')),
+      );
+      await tester.pump();
+      await tester.ensureVisible(find.text('書き物を一時保存'));
+      await tester.tap(find.widgetWithText(OutlinedButton, '書き物を一時保存'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('screen-share-override-save-interval-only')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(saved, isNotNull);
+      expect(
+        saved!.switchEvents.any(
+          (event) =>
+              event.segmentId == 'part-2' && event.boardId == 'second',
+        ),
+        isTrue,
+      );
+    },
+  );
 }
 
 BoardSet _twoPartScopedDraft({String boardTitle = ''}) {

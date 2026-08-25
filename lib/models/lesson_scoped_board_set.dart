@@ -80,6 +80,10 @@ BoardSet clearLessonSegmentWriting({
 }
 
 /// Replaces one part's recorded screen-share interval without touching others.
+///
+/// When [pinUntilPartEnd] is true, later automatic switches and zooms in this
+/// part are dropped so [pinnedBoardId] and [pinnedViewport] stay until the
+/// part ends. Other parts are left unchanged.
 BoardSet replaceScopedScreenShareTimelineInterval({
   required BoardSet current,
   required BoardSet baseline,
@@ -89,12 +93,18 @@ BoardSet replaceScopedScreenShareTimelineInterval({
   required double endLocalSec,
   required List<LessonWhiteboardBoardSwitchEvent> replacementSwitchEvents,
   required List<LessonWhiteboardViewportEvent> replacementViewportEvents,
+  bool pinUntilPartEnd = false,
+  String? pinnedBoardId,
+  LessonWhiteboardViewport? pinnedViewport,
 }) {
   final trimmedId = segmentId.trim();
   if (trimmedId.isEmpty ||
       !startLocalSec.isFinite ||
       !endLocalSec.isFinite ||
-      endLocalSec <= startLocalSec) {
+      endLocalSec < startLocalSec) {
+    return current;
+  }
+  if (!pinUntilPartEnd && endLocalSec <= startLocalSec) {
     return current;
   }
 
@@ -145,14 +155,33 @@ BoardSet replaceScopedScreenShareTimelineInterval({
     globalTimestampSec: endLocalSec,
     partOrder: endPartOrder,
   );
+  final pinBoardId =
+      pinnedBoardId != null && validBoardIds.contains(pinnedBoardId)
+      ? pinnedBoardId
+      : null;
+  bool keepThisSegmentSwitch(LessonWhiteboardBoardSwitchEvent event) {
+    if (pinUntilPartEnd) {
+      return event.globalTimestampSec < startLocalSec;
+    }
+    return event.globalTimestampSec < startLocalSec ||
+        event.globalTimestampSec > endLocalSec;
+  }
+
   final mergedSwitches = <LessonWhiteboardBoardSwitchEvent>[
     for (final event in current.switchEvents)
-      if (!isThisSegment(event.segmentId) ||
-          event.globalTimestampSec < startLocalSec ||
-          event.globalTimestampSec > endLocalSec)
+      if (!isThisSegment(event.segmentId) || keepThisSegmentSwitch(event))
         event,
     ...replacementSwitches,
-    if (restoredBoard != null && validBoardIds.contains(restoredBoard.id))
+    if (pinUntilPartEnd && pinBoardId != null)
+      LessonWhiteboardBoardSwitchEvent(
+        boardId: pinBoardId,
+        globalTimestampSec: endLocalSec,
+        sequence: nextSwitchSequence,
+        segmentId: trimmedId,
+      )
+    else if (!pinUntilPartEnd &&
+        restoredBoard != null &&
+        validBoardIds.contains(restoredBoard.id))
       LessonWhiteboardBoardSwitchEvent(
         boardId: restoredBoard.id,
         globalTimestampSec: endLocalSec,
@@ -180,12 +209,18 @@ BoardSet replaceScopedScreenShareTimelineInterval({
     activeSegmentId: trimmedId,
     segmentLocalSec: startLocalSec,
   );
+  bool keepThisSegmentViewport(LessonWhiteboardViewportEvent event) {
+    if (pinUntilPartEnd) {
+      return event.globalTimestampSec < startLocalSec;
+    }
+    return !touchedBoardIds.contains(event.boardId) ||
+        event.globalTimestampSec < startLocalSec ||
+        event.globalTimestampSec > endLocalSec;
+  }
+
   final mergedViewports = <LessonWhiteboardViewportEvent>[
     for (final event in current.viewportEvents)
-      if (!isThisSegment(event.segmentId) ||
-          !touchedBoardIds.contains(event.boardId) ||
-          event.globalTimestampSec < startLocalSec ||
-          event.globalTimestampSec > endLocalSec)
+      if (!isThisSegment(event.segmentId) || keepThisSegmentViewport(event))
         event,
     for (final boardId in touchedBoardIds)
       if (validBoardIds.contains(boardId))
@@ -203,21 +238,31 @@ BoardSet replaceScopedScreenShareTimelineInterval({
           segmentId: trimmedId,
         ),
     ...replacementViewports,
-    for (final boardId in touchedBoardIds)
-      if (validBoardIds.contains(boardId))
-        LessonWhiteboardViewportEvent(
-          boardId: boardId,
-          globalTimestampSec: endLocalSec,
-          sequence: nextViewportSequence++,
-          interactionId: nextInteractionId++,
-          viewport: resolveViewportAtPartOrder(
-            boardSet: baseline,
+    if (pinUntilPartEnd && pinBoardId != null)
+      LessonWhiteboardViewportEvent(
+        boardId: pinBoardId,
+        globalTimestampSec: endLocalSec,
+        sequence: nextViewportSequence++,
+        interactionId: nextInteractionId++,
+        viewport: pinnedViewport ?? LessonWhiteboardViewport.full,
+        segmentId: trimmedId,
+      )
+    else if (!pinUntilPartEnd)
+      for (final boardId in touchedBoardIds)
+        if (validBoardIds.contains(boardId))
+          LessonWhiteboardViewportEvent(
             boardId: boardId,
             globalTimestampSec: endLocalSec,
-            partOrder: endPartOrder,
+            sequence: nextViewportSequence++,
+            interactionId: nextInteractionId++,
+            viewport: resolveViewportAtPartOrder(
+              boardSet: baseline,
+              boardId: boardId,
+              globalTimestampSec: endLocalSec,
+              partOrder: endPartOrder,
+            ),
+            segmentId: trimmedId,
           ),
-          segmentId: trimmedId,
-        ),
   ]..sort(_compareViewportEvents);
 
   return current.copyWith(

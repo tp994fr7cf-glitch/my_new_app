@@ -239,6 +239,320 @@ void main() {
   });
 
   test(
+    'interval-only restore keeps later switches and viewports in the same part',
+    () {
+      const boards = [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+        ),
+        LessonWhiteboardBoard(id: 'second', order: 1),
+      ];
+      const baseline = BoardSet(
+        boards: boards,
+        switchEvents: [
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: 'second',
+            globalTimestampSec: 1,
+            sequence: 0,
+            segmentId: 'part-1',
+          ),
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: LessonWhiteboardBoard.defaultBoardId,
+            globalTimestampSec: 2,
+            sequence: 1,
+            segmentId: 'part-2',
+          ),
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: 'second',
+            globalTimestampSec: 8,
+            sequence: 2,
+            segmentId: 'part-2',
+          ),
+        ],
+        viewportEvents: [
+          LessonWhiteboardViewportEvent(
+            boardId: 'second',
+            globalTimestampSec: 8,
+            sequence: 0,
+            interactionId: 0,
+            viewport: LessonWhiteboardViewport(
+              centerX: 0.5,
+              centerY: 0.5,
+              scale: 3,
+            ),
+            segmentId: 'part-2',
+          ),
+        ],
+      );
+
+      final overwritten = replaceScopedScreenShareTimelineInterval(
+        current: baseline,
+        baseline: baseline,
+        segmentId: 'part-2',
+        orderedSegmentIds: const ['part-1', 'part-2'],
+        startLocalSec: 1,
+        endLocalSec: 5,
+        replacementSwitchEvents: const [
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: 'second',
+            globalTimestampSec: 2,
+            sequence: 0,
+            segmentId: 'part-2',
+          ),
+        ],
+        replacementViewportEvents: const [
+          LessonWhiteboardViewportEvent(
+            boardId: 'second',
+            globalTimestampSec: 3,
+            sequence: 0,
+            interactionId: 1,
+            viewport: LessonWhiteboardViewport(
+              centerX: 0.4,
+              centerY: 0.4,
+              scale: 2,
+            ),
+            segmentId: 'part-2',
+          ),
+        ],
+      );
+
+      WhiteboardPartOrderPlayback partOrderAt(double localSec) {
+        return WhiteboardPartOrderPlayback(
+          orderedSegmentIds: const ['part-1', 'part-2'],
+          activeSegmentId: 'part-2',
+          segmentLocalSec: localSec,
+        );
+      }
+
+      expect(
+        resolveBoardAtPartOrder(
+          boardSet: overwritten,
+          globalTimestampSec: 6,
+          partOrder: partOrderAt(6),
+        )?.id,
+        LessonWhiteboardBoard.defaultBoardId,
+      );
+      expect(
+        resolveBoardAtPartOrder(
+          boardSet: overwritten,
+          globalTimestampSec: 9,
+          partOrder: partOrderAt(9),
+        )?.id,
+        'second',
+      );
+      expect(
+        resolveViewportAtPartOrder(
+          boardSet: overwritten,
+          boardId: 'second',
+          globalTimestampSec: 9,
+          partOrder: partOrderAt(9),
+        ).scale,
+        3,
+      );
+      expect(
+        overwritten.switchEvents.any(
+          (event) => event.segmentId == 'part-1' && event.boardId == 'second',
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'pin until part end holds board and viewport and drops later same-part events',
+    () {
+      const boards = [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+        ),
+        LessonWhiteboardBoard(id: 'second', order: 1),
+      ];
+      const pinnedViewport = LessonWhiteboardViewport(
+        centerX: 0.4,
+        centerY: 0.4,
+        scale: 2,
+      );
+      const baseline = BoardSet(
+        boards: boards,
+        switchEvents: [
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: 'second',
+            globalTimestampSec: 1,
+            sequence: 0,
+            segmentId: 'part-1',
+          ),
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: LessonWhiteboardBoard.defaultBoardId,
+            globalTimestampSec: 2,
+            sequence: 1,
+            segmentId: 'part-2',
+          ),
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: 'second',
+            globalTimestampSec: 8,
+            sequence: 2,
+            segmentId: 'part-2',
+          ),
+        ],
+        viewportEvents: [
+          LessonWhiteboardViewportEvent(
+            boardId: 'second',
+            globalTimestampSec: 8,
+            sequence: 0,
+            interactionId: 0,
+            viewport: LessonWhiteboardViewport(
+              centerX: 0.5,
+              centerY: 0.5,
+              scale: 3,
+            ),
+            segmentId: 'part-2',
+          ),
+        ],
+      );
+
+      final overwritten = replaceScopedScreenShareTimelineInterval(
+        current: baseline,
+        baseline: baseline,
+        segmentId: 'part-2',
+        orderedSegmentIds: const ['part-1', 'part-2'],
+        startLocalSec: 1,
+        endLocalSec: 5,
+        replacementSwitchEvents: const [
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: 'second',
+            globalTimestampSec: 2,
+            sequence: 0,
+            segmentId: 'part-2',
+          ),
+        ],
+        replacementViewportEvents: const [
+          LessonWhiteboardViewportEvent(
+            boardId: 'second',
+            globalTimestampSec: 3,
+            sequence: 0,
+            interactionId: 1,
+            viewport: pinnedViewport,
+            segmentId: 'part-2',
+          ),
+        ],
+        pinUntilPartEnd: true,
+        pinnedBoardId: 'second',
+        pinnedViewport: pinnedViewport,
+      );
+
+      WhiteboardPartOrderPlayback partOrderAt(double localSec) {
+        return WhiteboardPartOrderPlayback(
+          orderedSegmentIds: const ['part-1', 'part-2'],
+          activeSegmentId: 'part-2',
+          segmentLocalSec: localSec,
+        );
+      }
+
+      expect(
+        overwritten.switchEvents.any(
+          (event) =>
+              event.segmentId == 'part-2' && event.globalTimestampSec > 5,
+        ),
+        isFalse,
+      );
+      expect(
+        overwritten.viewportEvents.any(
+          (event) =>
+              event.segmentId == 'part-2' && event.globalTimestampSec > 5,
+        ),
+        isFalse,
+      );
+      expect(
+        resolveBoardAtPartOrder(
+          boardSet: overwritten,
+          globalTimestampSec: 9,
+          partOrder: partOrderAt(9),
+        )?.id,
+        'second',
+      );
+      expect(
+        resolveViewportAtPartOrder(
+          boardSet: overwritten,
+          boardId: 'second',
+          globalTimestampSec: 9,
+          partOrder: partOrderAt(9),
+        ),
+        pinnedViewport,
+      );
+      expect(
+        overwritten.switchEvents
+            .where((event) => event.segmentId == 'part-1')
+            .single
+            .boardId,
+        'second',
+      );
+    },
+  );
+
+  test('pin at the override start still drops later same-part events', () {
+    const boards = [
+      LessonWhiteboardBoard(
+        id: LessonWhiteboardBoard.defaultBoardId,
+        order: 0,
+      ),
+      LessonWhiteboardBoard(id: 'second', order: 1),
+    ];
+    const baseline = BoardSet(
+      boards: boards,
+      switchEvents: [
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: 'second',
+          globalTimestampSec: 8,
+          sequence: 0,
+          segmentId: 'part-2',
+        ),
+      ],
+    );
+
+    final overwritten = replaceScopedScreenShareTimelineInterval(
+      current: baseline,
+      baseline: baseline,
+      segmentId: 'part-2',
+      orderedSegmentIds: const ['part-1', 'part-2'],
+      startLocalSec: 0,
+      endLocalSec: 0,
+      replacementSwitchEvents: const [
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 0,
+          sequence: 0,
+          segmentId: 'part-2',
+        ),
+      ],
+      replacementViewportEvents: const [],
+      pinUntilPartEnd: true,
+      pinnedBoardId: LessonWhiteboardBoard.defaultBoardId,
+      pinnedViewport: LessonWhiteboardViewport.full,
+    );
+
+    expect(
+      overwritten.switchEvents.any(
+        (event) => event.segmentId == 'part-2' && event.boardId == 'second',
+      ),
+      isFalse,
+    );
+    expect(
+      resolveBoardAtPartOrder(
+        boardSet: overwritten,
+        globalTimestampSec: 9,
+        partOrder: const WhiteboardPartOrderPlayback(
+          orderedSegmentIds: ['part-1', 'part-2'],
+          activeSegmentId: 'part-2',
+          segmentLocalSec: 9,
+        ),
+      )?.id,
+      LessonWhiteboardBoard.defaultBoardId,
+    );
+  });
+
+  test(
     'merge re-numbers switch history after a part editor reindexes the full list',
     () {
       const boards = [

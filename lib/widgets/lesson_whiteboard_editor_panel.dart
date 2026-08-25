@@ -980,7 +980,19 @@ class _LessonWhiteboardEditorPanelState
 
   Future<void> _saveDraft() async {
     if (_screenShareOverrideEnabled) {
-      _finishScreenShareOverride(endGlobalSec: _recordingPositionSec);
+      if (_isScoped) {
+        final choice = await _askScreenShareOverrideSaveChoice();
+        if (!mounted || choice == null) {
+          return;
+        }
+        _finishScreenShareOverride(
+          endGlobalSec: _recordingPositionSec,
+          pinUntilPartEnd:
+              choice == _ScreenShareOverrideSaveChoice.pinUntilPartEnd,
+        );
+      } else {
+        _finishScreenShareOverride(endGlobalSec: _recordingPositionSec);
+      }
     }
     setState(() {
       _isSavingDraft = true;
@@ -1042,7 +1054,10 @@ class _LessonWhiteboardEditorPanelState
     _finishScreenShareOverride(endGlobalSec: _recordingPositionSec);
   }
 
-  void _finishScreenShareOverride({required double endGlobalSec}) {
+  void _finishScreenShareOverride({
+    required double endGlobalSec,
+    bool pinUntilPartEnd = false,
+  }) {
     if (!_screenShareOverrideEnabled) {
       return;
     }
@@ -1072,6 +1087,9 @@ class _LessonWhiteboardEditorPanelState
             endLocalSec: boundedEnd,
             replacementSwitchEvents: List.of(_overrideSwitchEvents),
             replacementViewportEvents: List.of(_overrideViewportEvents),
+            pinUntilPartEnd: pinUntilPartEnd,
+            pinnedBoardId: _selectedBoardId,
+            pinnedViewport: _selectedEditorViewport,
           )
         : _boardSet.replaceScreenShareTimelineInterval(
             baseline: baseline,
@@ -1092,10 +1110,67 @@ class _LessonWhiteboardEditorPanelState
     setState(() {
       _boardSet = merged;
       _clearScreenShareOverride();
-      _message = '画面共有の上書きを終了しました。この先は元の共有内容を引き継ぎます。';
+      _message = pinUntilPartEnd
+          ? '今のボードと拡大を、このパートの終わりまで固定しました。'
+          : '画面共有の上書きを終了しました。この先は元の共有内容を引き継ぎます。';
     });
     widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
     _syncRecordedScreenShare(_recordingPositionSec);
+  }
+
+  Future<_ScreenShareOverrideSaveChoice?>
+  _askScreenShareOverrideSaveChoice() {
+    return showDialog<_ScreenShareOverrideSaveChoice>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('画面共有の上書き'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'チェックを入れたまま一時保存します。このパートの残り時間を、どうしますか。',
+                ),
+                const SizedBox(height: 16),
+                FilledButton(
+                  key: const ValueKey(
+                    'screen-share-override-save-pin-until-end',
+                  ),
+                  onPressed: () => Navigator.of(
+                    dialogContext,
+                  ).pop(_ScreenShareOverrideSaveChoice.pinUntilPartEnd),
+                  child: const Text('今のボードを最後まで固定する'),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  '今の紙と、今の拡大・位置をこのパートの終わりまで保ちます。この先の自動切替は捨てます。',
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton(
+                  key: const ValueKey(
+                    'screen-share-override-save-interval-only',
+                  ),
+                  onPressed: () => Navigator.of(
+                    dialogContext,
+                  ).pop(_ScreenShareOverrideSaveChoice.intervalOnly),
+                  child: const Text('チェック入れた部分だけ保存'),
+                ),
+                const SizedBox(height: 4),
+                const Text('いま上書きした区間だけを残し、そのあとは元の共有に戻します。'),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('キャンセル'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void _finishOverrideAtPublishedBoundaryIfNeeded() {
@@ -2285,6 +2360,8 @@ class _LessonWhiteboardEditorPanelState
 }
 
 enum _WhiteboardEditChoice { published, draft, reset }
+
+enum _ScreenShareOverrideSaveChoice { intervalOnly, pinUntilPartEnd }
 
 /// Persists a whiteboard draft for a single lesson.
 ///
