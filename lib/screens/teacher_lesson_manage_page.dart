@@ -16,6 +16,7 @@ import '../models/lesson_payload_size_validator.dart';
 import '../models/lesson_playback_mode.dart';
 import '../models/lesson_publication_validator.dart';
 import '../models/lesson_media_draft_overlay.dart';
+import '../models/lesson_scoped_board_set.dart';
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
 import '../services/course_lesson_repository.dart';
@@ -23,10 +24,13 @@ import '../services/lesson_media_duration_service.dart';
 import '../services/lesson_media_storage_service.dart';
 import '../services/live_audio_probe_service.dart';
 import '../services/app_media_memory.dart';
+import '../services/lesson_media_playlist_playback.dart';
 import '../utils/firebase_error_message.dart';
 import '../widgets/lesson_audio_whiteboard_recorder_panel.dart';
 import '../widgets/lesson_material_preparation_panel.dart';
+import '../widgets/lesson_media_playback_gate.dart';
 import '../widgets/lesson_whiteboard_editor_panel.dart';
+import '../widgets/lesson_whiteboard_overview_preview.dart';
 import 'live_audio_probe_page.dart';
 import 'teacher_quiz_manage_page.dart';
 
@@ -307,6 +311,7 @@ class TeacherLessonManagePage extends StatefulWidget {
     this.initialLessonDraftRevisions = const {},
     this.mediaStorageService = const LessonMediaStorageService(),
     this.durationService = const LessonMediaDurationService(),
+    this.playlistPlaybackFactory = createLessonMediaPlaylistPlayback,
   });
 
   final Course course;
@@ -318,6 +323,7 @@ class TeacherLessonManagePage extends StatefulWidget {
   final Map<int, int> initialLessonDraftRevisions;
   final LessonMediaStorageService mediaStorageService;
   final LessonMediaDurationService durationService;
+  final LessonMediaPlaylistPlaybackFactory playlistPlaybackFactory;
 
   @override
   State<TeacherLessonManagePage> createState() =>
@@ -1772,6 +1778,7 @@ class _TeacherLessonManagePageState extends State<TeacherLessonManagePage> {
                       widget.lessonId != null && widget.lessonId!.isNotEmpty,
                   mediaConfig: _mediaConfig,
                   mediaStorageService: widget.mediaStorageService,
+                  playlistPlaybackFactory: widget.playlistPlaybackFactory,
                   requiredText: _requiredText,
                   onAddSegment: (segment) {
                     unawaited(
@@ -2331,6 +2338,7 @@ class _LessonEditorCardHost extends StatefulWidget {
     required this.canRecordAudio,
     required this.mediaConfig,
     required this.mediaStorageService,
+    required this.playlistPlaybackFactory,
     required this.requiredText,
     required this.onAddSegment,
     required this.onUploadSegment,
@@ -2351,6 +2359,7 @@ class _LessonEditorCardHost extends StatefulWidget {
   final bool canRecordAudio;
   final LessonMediaConfig mediaConfig;
   final LessonMediaStorageService mediaStorageService;
+  final LessonMediaPlaylistPlaybackFactory playlistPlaybackFactory;
   final String? Function(String? value) requiredText;
   final ValueChanged<_MediaSegmentEditorState> onAddSegment;
   final ValueChanged<_MediaSegmentEditorState> onUploadSegment;
@@ -2372,6 +2381,8 @@ class _LessonEditorCardHost extends StatefulWidget {
 }
 
 class _LessonEditorCardHostState extends State<_LessonEditorCardHost> {
+  final LessonMediaPlaybackGate _playbackGate = LessonMediaPlaybackGate();
+
   @override
   Widget build(BuildContext context) {
     return _LessonEditorCard(
@@ -2385,7 +2396,9 @@ class _LessonEditorCardHostState extends State<_LessonEditorCardHost> {
       canRecordAudio: widget.canRecordAudio,
       mediaConfig: widget.mediaConfig,
       mediaStorageService: widget.mediaStorageService,
+      playlistPlaybackFactory: widget.playlistPlaybackFactory,
       requiredText: widget.requiredText,
+      playbackGate: _playbackGate,
       onChanged: () => setState(() {}),
       onAddSegment: widget.onAddSegment,
       onUploadSegment: widget.onUploadSegment,
@@ -2410,7 +2423,9 @@ class _LessonEditorCard extends StatelessWidget {
     required this.canRecordAudio,
     required this.mediaConfig,
     required this.mediaStorageService,
+    required this.playlistPlaybackFactory,
     required this.requiredText,
+    required this.playbackGate,
     required this.onChanged,
     required this.onAddSegment,
     required this.onUploadSegment,
@@ -2431,7 +2446,9 @@ class _LessonEditorCard extends StatelessWidget {
   final bool canRecordAudio;
   final LessonMediaConfig mediaConfig;
   final LessonMediaStorageService mediaStorageService;
+  final LessonMediaPlaylistPlaybackFactory playlistPlaybackFactory;
   final String? Function(String? value) requiredText;
+  final LessonMediaPlaybackGate playbackGate;
   final VoidCallback onChanged;
   final ValueChanged<_MediaSegmentEditorState> onAddSegment;
   final ValueChanged<_MediaSegmentEditorState> onUploadSegment;
@@ -2447,6 +2464,30 @@ class _LessonEditorCard extends StatelessWidget {
   final Future<void> Function() onPersistRequested;
   final Future<bool> Function() onLiveReservationRequested;
   final Future<void> Function() onReloadRequested;
+
+  BoardSet get _currentBoardSet {
+    if (editor.workingBoardSet.isNotEmpty) {
+      return editor.workingBoardSet;
+    }
+    if (editor.draftBoardSet.isNotEmpty) {
+      return editor.draftBoardSet;
+    }
+    return editor.publishedBoardSet;
+  }
+
+  void _applyScopedBoardSet({
+    required String segmentId,
+    required BoardSet scoped,
+  }) {
+    editor.workingBoardSet = mergeScopedLessonBoardSet(
+      baseline: _currentBoardSet,
+      scoped: scoped,
+      segmentId: segmentId,
+    );
+    editor.workingWhiteboardLayers =
+        editor.workingBoardSet.defaultBoard?.layerBundle ??
+        const LessonWhiteboardLayerBundle();
+  }
 
   void _showAddSegmentDialog(BuildContext context) {
     unawaited(
@@ -2517,11 +2558,11 @@ class _LessonEditorCard extends StatelessWidget {
     final publishedSegmentIds = editor.publishedSegmentIdsMetadataValid
         ? editor.publishedSegmentIds.toSet()
         : builtSegments.map((segment) => segment.id).toSet();
-    final publishedTimelineDurationSec = LessonMediaTimeline(
-      segments: builtSegments
-          .where((segment) => publishedSegmentIds.contains(segment.id))
-          .toList(),
-    ).totalDurationSecExact;
+    final publishedPartDurationSecById = <String, double>{
+      for (final segment in builtSegments)
+        if (publishedSegmentIds.contains(segment.id))
+          segment.id: segment.durationSecExact,
+    };
     final canAddSegment = mediaConfig.canAddSegment(
       currentSegmentCount: editor.segments.length,
     );
@@ -2841,6 +2882,43 @@ class _LessonEditorCard extends StatelessWidget {
                       ),
                 ),
               ],
+              if (entry.$2.hasUrl && courseId.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                LessonWhiteboardEditorPanel(
+                  key: ValueKey('part-whiteboard-${entry.$2.id}'),
+                  courseId: courseId,
+                  lessonNumber: index,
+                  lessonId: lessonId,
+                  mediaSegments: [
+                    for (final segment in builtSegments)
+                      if (segment.id == entry.$2.id) segment,
+                  ],
+                  durationLabel: durationLabel,
+                  enabled: !editor.hasAudioRecordingInProgress,
+                  scopedSegmentId: entry.$2.id,
+                  orderedSegmentIds: editor.visibleOrderedSegmentIds,
+                  playbackGate: playbackGate,
+                  playbackOwnerId: 'part-${entry.$2.id}',
+                  playlistPlaybackFactory: playlistPlaybackFactory,
+                  publishedBoardSet: editor.publishedBoardSet,
+                  draftBoardSet: _currentBoardSet,
+                  publishedTimelineDurationSec:
+                      publishedPartDurationSecById[entry.$2.id] ?? 0,
+                  onBoardSetDraftSaved: (boardSet) async {
+                    _applyScopedBoardSet(
+                      segmentId: entry.$2.id,
+                      scoped: boardSet,
+                    );
+                    await onDraftSaved(editor.workingBoardSet);
+                  },
+                  onBoardSetChanged: (boardSet) {
+                    _applyScopedBoardSet(
+                      segmentId: entry.$2.id,
+                      scoped: boardSet,
+                    );
+                  },
+                ),
+              ],
               const SizedBox(height: 12),
             ],
             Wrap(
@@ -2891,26 +2969,22 @@ class _LessonEditorCard extends StatelessWidget {
               const SizedBox(height: 16),
               const Divider(),
               const SizedBox(height: 16),
-              LessonWhiteboardEditorPanel(
+              LessonWhiteboardOverviewPreview(
                 key: ValueKey(
-                  '${courseId}_${index}_${builtSegments.map((s) => s.id).join('_')}',
+                  'overview_${courseId}_$index',
                 ),
                 courseId: courseId,
-                lessonNumber: index,
                 lessonId: lessonId,
-                mediaSegments: builtSegments,
+                mediaSegments: [
+                  for (final segment in builtSegments)
+                    if (segment.hasUrl) segment,
+                ],
                 durationLabel: durationLabel,
-                enabled: !editor.hasAudioRecordingDraft,
-                publishedBoardSet: editor.publishedBoardSet,
-                draftBoardSet: editor.draftBoardSet,
-                publishedTimelineDurationSec: publishedTimelineDurationSec,
-                onBoardSetDraftSaved: onDraftSaved,
-                onBoardSetChanged: (boardSet) {
-                  editor.workingBoardSet = boardSet;
-                  editor.workingWhiteboardLayers =
-                      boardSet.defaultBoard?.layerBundle ??
-                      const LessonWhiteboardLayerBundle();
-                },
+                boardSet: _currentBoardSet,
+                enabled: !editor.hasAudioRecordingInProgress,
+                playbackGate: playbackGate,
+                playbackOwnerId: 'overview-$index',
+                playlistPlaybackFactory: playlistPlaybackFactory,
               ),
             ],
           ],

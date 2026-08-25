@@ -6,8 +6,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:video_player/video_player.dart';
 import 'package:my_new_app/models/lesson_material_library.dart';
 import 'package:my_new_app/models/lesson_media_segment.dart';
+import 'package:my_new_app/models/lesson_timed_anchor.dart';
 import 'package:my_new_app/models/lesson_whiteboard.dart';
 import 'package:my_new_app/models/lesson_whiteboard_board_set.dart';
+import 'package:my_new_app/models/lesson_whiteboard_part_order.dart';
 import 'package:my_new_app/services/lesson_material_library_service.dart';
 import 'package:my_new_app/services/lesson_media_playlist_playback.dart';
 import 'package:my_new_app/services/lesson_material_storage_service.dart';
@@ -1576,6 +1578,241 @@ void main() {
     expect(workingBoardSet!.orderedBoards.last.background?.isImage, isTrue);
     expect(find.text('2/20'), findsOneWidget);
   });
+
+  testWidgets('scoped editor shows earlier-part ink and hides PDF menu', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: const [
+                LessonMediaSegment(
+                  id: 'part-2',
+                  order: 1,
+                  mediaType: 'audio',
+                  url: 'https://example.com/part-2.mp3',
+                  durationSec: 10,
+                ),
+              ],
+              durationLabel: '10秒',
+              scopedSegmentId: 'part-2',
+              orderedSegmentIds: const ['part-1', 'part-2'],
+              draftBoardSet: _twoPartScopedDraft(),
+              onBoardSetDraftSaved: (_) async {},
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(
+                durationSec: 10,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('このパートのホワイトボード'), findsOneWidget);
+    expect(find.text('書き物を描き直す'), findsNothing);
+    expect(find.text('編集の選び直し'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('whiteboard-add-material-menu')),
+      findsNothing,
+    );
+
+    var canvas = tester.widget<LessonWhiteboardCanvas>(
+      find.byType(LessonWhiteboardCanvas),
+    );
+    expect(canvas.strokes.map((stroke) => stroke.id), ['p1']);
+
+    final slider = tester.widget<Slider>(find.byType(Slider));
+    _completeSliderSeek(slider, 5);
+    await tester.pumpAndSettle();
+
+    canvas = tester.widget<LessonWhiteboardCanvas>(
+      find.byType(LessonWhiteboardCanvas),
+    );
+    expect(canvas.strokes.map((stroke) => stroke.id), ['p1', 'p2']);
+  });
+
+  testWidgets('scoped reset clears only this part and keeps papers', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    BoardSet? working;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: const [
+                LessonMediaSegment(
+                  id: 'part-2',
+                  order: 1,
+                  mediaType: 'audio',
+                  url: 'https://example.com/part-2.mp3',
+                  durationSec: 10,
+                ),
+              ],
+              durationLabel: '10秒',
+              scopedSegmentId: 'part-2',
+              orderedSegmentIds: const ['part-1', 'part-2'],
+              draftBoardSet: _twoPartScopedDraft(boardTitle: '表'),
+              onBoardSetDraftSaved: (_) async {},
+              onBoardSetChanged: (boardSet) => working = boardSet,
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(
+                durationSec: 10,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('リセット'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'リセット'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('このパートの書き物だけを消します'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'リセット'));
+    await tester.pumpAndSettle();
+
+    expect(working, isNotNull);
+    expect(working!.defaultBoard?.title, '表');
+    expect(
+      strokesForSegmentLayer(
+        bundle: working!.defaultBoard!.layerBundle,
+        segmentId: 'part-1',
+      ).single.id,
+      'p1',
+    );
+    expect(
+      strokesForSegmentLayer(
+        bundle: working!.defaultBoard!.layerBundle,
+        segmentId: 'part-2',
+      ),
+      isEmpty,
+    );
+  });
+
+  testWidgets('scoped save keeps writing on the part layer', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    BoardSet? saved;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: const [
+                LessonMediaSegment(
+                  id: 'part-2',
+                  order: 1,
+                  mediaType: 'audio',
+                  url: 'https://example.com/part-2.mp3',
+                  durationSec: 10,
+                ),
+              ],
+              durationLabel: '10秒',
+              scopedSegmentId: 'part-2',
+              orderedSegmentIds: const ['part-1', 'part-2'],
+              draftBoardSet: _twoPartScopedDraft(),
+              onBoardSetDraftSaved: (boardSet) async {
+                saved = boardSet;
+              },
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(
+                durationSec: 10,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('書き物を一時保存'));
+    await tester.tap(find.widgetWithText(OutlinedButton, '書き物を一時保存'));
+    await tester.pumpAndSettle();
+
+    expect(saved, isNotNull);
+    expect(
+      strokesForSegmentLayer(
+        bundle: saved!.defaultBoard!.layerBundle,
+        segmentId: 'part-1',
+      ).single.id,
+      'p1',
+    );
+    expect(
+      strokesForSegmentLayer(
+        bundle: saved!.defaultBoard!.layerBundle,
+        segmentId: 'part-2',
+      ).single.id,
+      'p2',
+    );
+    expect(
+      saved!.defaultBoard!.layerBundle.namedPrimaryLayer?.strokes ?? const [],
+      isEmpty,
+    );
+  });
+}
+
+BoardSet _twoPartScopedDraft({String boardTitle = ''}) {
+  return BoardSet(
+    boards: [
+      LessonWhiteboardBoard(
+        id: LessonWhiteboardBoard.defaultBoardId,
+        order: 0,
+        title: boardTitle,
+        layerBundle: LessonWhiteboardLayerBundle(
+          layers: [
+            LessonWhiteboardLayer(
+              id: whiteboardSegmentLayerId('part-1'),
+              order: 0,
+              anchorType: LessonTimedAnchorType.segment,
+              segmentId: 'part-1',
+              strokes: const [
+                WhiteboardStroke(
+                  id: 'p1',
+                  timestampSec: 1,
+                  points: [
+                    WhiteboardPoint(x: 0.1, y: 0.1, timestampSec: 1),
+                    WhiteboardPoint(x: 0.2, y: 0.2, timestampSec: 1),
+                  ],
+                ),
+              ],
+            ),
+            LessonWhiteboardLayer(
+              id: whiteboardSegmentLayerId('part-2'),
+              order: 1,
+              anchorType: LessonTimedAnchorType.segment,
+              segmentId: 'part-2',
+              strokes: const [
+                WhiteboardStroke(
+                  id: 'p2',
+                  timestampSec: 1,
+                  points: [
+                    WhiteboardPoint(x: 0.7, y: 0.5, timestampSec: 1),
+                    WhiteboardPoint(x: 0.8, y: 0.5, timestampSec: 1),
+                  ],
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ],
+  );
 }
 
 Future<void> _selectBoard(WidgetTester tester, String label) async {

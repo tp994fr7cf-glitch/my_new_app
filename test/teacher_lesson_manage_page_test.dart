@@ -9,7 +9,10 @@ import 'package:my_new_app/models/lesson_publication_validator.dart';
 import 'package:my_new_app/models/lesson_whiteboard.dart';
 import 'package:my_new_app/models/lesson_whiteboard_board_set.dart';
 import 'package:my_new_app/screens/teacher_lesson_manage_page.dart';
+import 'package:my_new_app/services/lesson_media_playlist_playback.dart';
 import 'package:my_new_app/services/lesson_media_storage_service.dart';
+import 'package:my_new_app/widgets/lesson_whiteboard_editor_panel.dart';
+import 'package:my_new_app/widgets/lesson_whiteboard_overview_preview.dart';
 
 class _RecordingMediaStorageService extends LessonMediaStorageService {
   int pickCount = 0;
@@ -71,6 +74,19 @@ Course _courseWithLesson(
     lessons: [lesson],
     lessonContentVersion: lessonContentVersion,
   );
+}
+
+LessonMediaPlaylistPlaybackFactory get _fakePlaylistFactory {
+  return () => FakeLessonMediaPlaylistPlayback(totalDurationSec: 30);
+}
+
+Future<void> _revealInMainList(WidgetTester tester, Finder finder) async {
+  await tester.dragUntilVisible(
+    finder,
+    find.byType(ListView).first,
+    const Offset(0, -280),
+  );
+  await tester.pumpAndSettle();
 }
 
 void main() {
@@ -303,6 +319,7 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
             course: _course,
             mediaStorageService: storageService,
             onSaveOverride: (_) async {},
@@ -338,6 +355,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
           course: course,
           lessonId: 'lesson-1',
           mediaStorageService: storageService,
@@ -369,6 +387,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
           course: course,
           lessonId: 'lesson-1',
           onSaveOverride: (_) async {},
@@ -391,6 +410,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
           course: _course,
           onSaveOverride: (_) async {},
         ),
@@ -428,6 +448,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
           course: course,
           mediaStorageService: storageService,
           onSaveOverride: (_) async {},
@@ -482,7 +503,7 @@ void main() {
       isNull,
     );
 
-    await tester.ensureVisible(find.text('パートを追加'));
+    await _revealInMainList(tester, find.text('パートを追加'));
     await tester.tap(find.text('パートを追加'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('音声'));
@@ -514,6 +535,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
           course: course,
           onSaveOverride: (lessons) async {
             saved = lessons.single;
@@ -575,6 +597,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
           course: course,
           onSaveOverride: (lessons) async {
             saves.add(lessons);
@@ -647,6 +670,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
           course: course,
           onSaveOverride: (lessons) async {
             saved = lessons.single;
@@ -702,6 +726,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
           course: course,
           initialLessonDrafts: const {1: draftBoardSet},
           onSaveOverride: (lessons) async {
@@ -740,6 +765,7 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
             course: course,
             onSaveOverride: (_) async {
               saveCalled = true;
@@ -850,6 +876,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
           course: course,
           lessonId: 'lesson-1',
           onSaveOverride: (_) async {},
@@ -881,6 +908,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
           course: _course,
           onSaveOverride: (_) async {
             throw StateError('下書きの版が変わりました。画面を開き直してください。');
@@ -904,6 +932,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
           course: _course,
           mediaStorageService: _RecordingMediaStorageService(),
           onSaveOverride: (lessons) async {
@@ -960,6 +989,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
           course: _courseWithLesson(
             const CourseLesson(
               title: '複数パート',
@@ -1007,6 +1037,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
           course: _courseWithLesson(
             const CourseLesson(
               title: '仮作成',
@@ -1069,6 +1100,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
           course: _courseWithLesson(
             const CourseLesson(
               title: '挟まった穴',
@@ -1105,6 +1137,7 @@ void main() {
           widget.onPressed != null,
     );
     expect(enabledDelete, findsOneWidget);
+    await _revealInMainList(tester, enabledDelete);
     await tester.tap(enabledDelete);
     await tester.pumpAndSettle();
 
@@ -1158,6 +1191,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
           course: _courseWithLesson(
             CourseLesson(
               title: '録音を消す',
@@ -1188,6 +1222,7 @@ void main() {
           widget.onPressed != null,
     );
     expect(enabledDelete, findsOneWidget);
+    await _revealInMainList(tester, enabledDelete);
     await tester.tap(enabledDelete);
     await tester.pumpAndSettle();
 
@@ -1216,5 +1251,68 @@ void main() {
       'locked',
       'later',
     ]);
+  });
+
+  testWidgets('URLのあるパートに板書エディタを出し全体プレビューは閲覧のみ', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 2400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
+          course: _courseWithLesson(
+            const CourseLesson(
+              title: 'レッスン1',
+              duration: '30秒',
+              mediaSegments: [_lockedSegment],
+              publishedSegmentIds: ['locked'],
+            ),
+          ),
+          onSaveOverride: (_) async {},
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.byType(LessonWhiteboardEditorPanel), findsOneWidget);
+    expect(find.byType(LessonWhiteboardOverviewPreview), findsOneWidget);
+    expect(find.text('このパートのホワイトボード'), findsOneWidget);
+    expect(find.text('レッスン全体のプレビュー'), findsOneWidget);
+    expect(find.text('メディアプレビュー'), findsNothing);
+    expect(find.text('書き物を描き直す'), findsNothing);
+  });
+
+  testWidgets('URLのないパートには板書エディタを出さない', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 1600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonManagePage(
+            playlistPlaybackFactory: _fakePlaylistFactory,
+          course: _courseWithLesson(
+            const CourseLesson(
+              title: 'レッスン1',
+              duration: '10秒',
+              mediaSegments: [
+                LessonMediaSegment(
+                  id: 'empty',
+                  order: 0,
+                  mediaType: 'video',
+                ),
+              ],
+            ),
+          ),
+          onSaveOverride: (_) async {},
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(LessonWhiteboardEditorPanel), findsNothing);
+    expect(find.byType(LessonWhiteboardOverviewPreview), findsNothing);
+    expect(find.text('このパートのホワイトボード'), findsNothing);
   });
 }

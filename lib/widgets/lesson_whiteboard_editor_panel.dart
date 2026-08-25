@@ -11,6 +11,7 @@ import '../models/lesson_media_timeline.dart';
 import '../models/lesson_payload_size_validator.dart';
 import '../models/lesson_player_view_state.dart';
 import '../models/lesson_publication_validator.dart';
+import '../models/lesson_scoped_board_set.dart';
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
 import '../models/lesson_whiteboard_part_order.dart';
@@ -21,6 +22,7 @@ import '../services/lesson_media_playback.dart';
 import '../services/lesson_media_playlist_playback.dart';
 import '../services/lesson_material_storage_service.dart';
 import 'lesson_material_library_picker.dart';
+import 'lesson_media_playback_gate.dart';
 import 'lesson_whiteboard_canvas.dart';
 
 typedef WhiteboardDraftSaveCallback =
@@ -46,6 +48,10 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
     this.onBoardSetChanged,
     this.publishedTimelineDurationSec = 0,
     this.enabled = true,
+    this.scopedSegmentId,
+    this.orderedSegmentIds = const [],
+    this.playbackGate,
+    this.playbackOwnerId,
     this.playlistPlaybackFactory = createLessonMediaPlaylistPlayback,
     this.materialStorageService = const LessonMaterialStorageService(),
     this.materialLibraryService = const LessonMaterialLibraryService(),
@@ -69,6 +75,10 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
   final ValueChanged<BoardSet>? onBoardSetChanged;
   final double publishedTimelineDurationSec;
   final bool enabled;
+  final String? scopedSegmentId;
+  final List<String> orderedSegmentIds;
+  final LessonMediaPlaybackGate? playbackGate;
+  final String? playbackOwnerId;
   final LessonMediaPlaylistPlaybackFactory playlistPlaybackFactory;
   final LessonMaterialStorageService materialStorageService;
   final LessonMaterialLibraryService materialLibraryService;
@@ -119,8 +129,36 @@ class _LessonWhiteboardEditorPanelState
   int _nextOverrideSwitchSequence = 0;
   int _nextOverrideViewportSequence = 0;
   int _nextOverrideInteractionId = 0;
+  late final String _gateOwnerId;
 
   bool get _isDraggingSlider => _sliderDragPositionSec != null;
+
+  String? get _scopedSegmentId {
+    final id = widget.scopedSegmentId?.trim();
+    return (id == null || id.isEmpty) ? null : id;
+  }
+
+  bool get _isScoped => _scopedSegmentId != null;
+
+  List<String> get _effectiveOrderedSegmentIds {
+    if (widget.orderedSegmentIds.isNotEmpty) {
+      return widget.orderedSegmentIds;
+    }
+    return [for (final segment in _timeline.orderedSegments) segment.id];
+  }
+
+  List<WhiteboardStroke> _workingStrokesFor(LessonWhiteboardBoard board) {
+    final scopedId = _scopedSegmentId;
+    if (scopedId != null) {
+      return strokesForSegmentLayer(
+        bundle: board.layerBundle,
+        segmentId: scopedId,
+      );
+    }
+    return List<WhiteboardStroke>.from(
+      board.layerBundle.primaryLayer?.strokes ?? const [],
+    );
+  }
 
   int get _displayedPositionSec =>
       (_sliderDragPositionSec ?? _currentPositionSec.toDouble()).round();
@@ -185,9 +223,9 @@ class _LessonWhiteboardEditorPanelState
   WhiteboardPartOrderPlayback _partOrderFor(
     LessonWhiteboardPlaybackLookup lookup,
   ) {
-    return WhiteboardPartOrderPlayback.fromTimeline(
-      _timeline,
-      activeSegmentId: lookup.segmentId,
+    return WhiteboardPartOrderPlayback(
+      orderedSegmentIds: _effectiveOrderedSegmentIds,
+      activeSegmentId: _scopedSegmentId ?? lookup.segmentId,
       segmentLocalSec: lookup.segmentLocalSec,
     );
   }
@@ -257,6 +295,15 @@ class _LessonWhiteboardEditorPanelState
 
   LessonWhiteboardLayerBundle get _selectedWorkingBundle {
     final bundle = _selectedBoard.layerBundle;
+    final scopedId = _scopedSegmentId;
+    if (scopedId != null) {
+      return copyWithSegmentLayerStrokes(
+        bundle: bundle,
+        segmentId: scopedId,
+        strokes: _strokes,
+        updatedAtMs: bundle.primaryLayer?.updatedAtMs ?? 0,
+      );
+    }
     return bundle.copyWithPrimaryStrokes(
       strokes: _strokes,
       updatedAtMs: bundle.primaryLayer?.updatedAtMs ?? 0,
@@ -272,16 +319,21 @@ class _LessonWhiteboardEditorPanelState
       globalPositionSec: _currentPositionSecExact,
       segmentLocalPositionSec:
           resolvedPosition?.localSec ?? _currentPositionSecExact,
-      activeSegmentId: _playback?.currentSegment?.id,
-      orderedSegmentIds: [
-        for (final segment in _timeline.orderedSegments) segment.id,
-      ],
+      activeSegmentId: _scopedSegmentId ?? _playback?.currentSegment?.id,
+      orderedSegmentIds: _effectiveOrderedSegmentIds,
     );
   }
 
   @override
   void initState() {
     super.initState();
+    _gateOwnerId = widget.playbackOwnerId?.trim().isNotEmpty == true
+        ? widget.playbackOwnerId!.trim()
+        : 'editor-${identityHashCode(this)}';
+    widget.playbackGate?.register(
+      ownerId: _gateOwnerId,
+      pause: _pauseFromGate,
+    );
     _loadInitialStrokes();
     if (lessonHasPlayableMedia(mediaSegments: widget.mediaSegments)) {
       unawaited(_initializeMediaPlayer());
@@ -291,6 +343,14 @@ class _LessonWhiteboardEditorPanelState
   @override
   void didUpdateWidget(covariant LessonWhiteboardEditorPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.playbackGate != widget.playbackGate ||
+        oldWidget.playbackOwnerId != widget.playbackOwnerId) {
+      oldWidget.playbackGate?.unregister(_gateOwnerId);
+      widget.playbackGate?.register(
+        ownerId: _gateOwnerId,
+        pause: _pauseFromGate,
+      );
+    }
     if (!_segmentsEqual(oldWidget.mediaSegments, widget.mediaSegments)) {
       unawaited(_reloadMediaPlayer());
     }
@@ -312,6 +372,18 @@ class _LessonWhiteboardEditorPanelState
   }
 
   void _loadInitialStrokes({bool preserveActiveSession = false}) {
+    if (_isScoped) {
+      final source = _hasUnpublishedDraft
+          ? _draftBoardSet
+          : (_publishedBoardSet.isNotEmpty
+                ? _publishedBoardSet
+                : const BoardSet());
+      _loadBoardSet(source);
+      _editSessionKind = source.isEmpty
+          ? WhiteboardEditSessionKind.fresh
+          : WhiteboardEditSessionKind.draft;
+      return;
+    }
     if (!_hasPublishedWhiteboard) {
       _loadBoardSet(_hasUnpublishedDraft ? _draftBoardSet : const BoardSet());
       _editSessionKind = WhiteboardEditSessionKind.fresh;
@@ -337,9 +409,7 @@ class _LessonWhiteboardEditorPanelState
     _boardSet = boardSet.ensureEditable();
     final selected = _boardSet.boardById(_selectedBoardId);
     _selectedBoardId = selected?.id ?? _boardSet.defaultBoard!.id;
-    _strokes = List<WhiteboardStroke>.from(
-      _selectedBoard.layerBundle.primaryLayer?.strokes ?? const [],
-    );
+    _strokes = _workingStrokesFor(_selectedBoard);
     _pendingPausedViewport = null;
     _activeViewportInteractionId = null;
     _lastViewportEventSec = null;
@@ -372,6 +442,7 @@ class _LessonWhiteboardEditorPanelState
 
   @override
   void dispose() {
+    widget.playbackGate?.unregister(_gateOwnerId);
     _viewportRefreshTimer?.cancel();
     _positionSubscription?.cancel();
     _durationSubscription?.cancel();
@@ -538,6 +609,7 @@ class _LessonWhiteboardEditorPanelState
     });
 
     try {
+      await widget.playbackGate?.claim(_gateOwnerId);
       final resumePositionSec = _currentPositionSecExact;
       await _playback?.play();
       _flushPendingViewport(timestampSec: resumePositionSec);
@@ -560,6 +632,13 @@ class _LessonWhiteboardEditorPanelState
       });
     }
     _finishInProgressStroke();
+  }
+
+  Future<void> _pauseFromGate() async {
+    if (!_isPlaying) {
+      return;
+    }
+    await _pauseRecording();
   }
 
   void _setFollowsRecordedScreenShare(bool value) {
@@ -593,9 +672,7 @@ class _LessonWhiteboardEditorPanelState
     _commitSelectedBoard();
     setState(() {
       _selectedBoardId = followedBoard.id;
-      _strokes = List<WhiteboardStroke>.from(
-        followedBoard.layerBundle.primaryLayer?.strokes ?? const [],
-      );
+      _strokes = _workingStrokesFor(followedBoard);
     });
   }
 
@@ -680,6 +757,7 @@ class _LessonWhiteboardEditorPanelState
           : _boardSet.nextViewportSequence,
       interactionId: interactionId,
       viewport: viewport,
+      segmentId: _scopedSegmentId,
     );
     if (_screenShareOverrideEnabled) {
       _overrideViewportEvents.add(event);
@@ -857,10 +935,17 @@ class _LessonWhiteboardEditorPanelState
     }
     _boardSet = _boardSet.replaceBoard(
       board.copyWith(
-        layerBundle: board.layerBundle.copyWithPrimaryStrokes(
-          strokes: List<WhiteboardStroke>.from(_strokes),
-          updatedAtMs: DateTime.now().millisecondsSinceEpoch,
-        ),
+        layerBundle: _isScoped
+            ? copyWithSegmentLayerStrokes(
+                bundle: board.layerBundle,
+                segmentId: _scopedSegmentId!,
+                strokes: List<WhiteboardStroke>.from(_strokes),
+                updatedAtMs: DateTime.now().millisecondsSinceEpoch,
+              )
+            : board.layerBundle.copyWithPrimaryStrokes(
+                strokes: List<WhiteboardStroke>.from(_strokes),
+                updatedAtMs: DateTime.now().millisecondsSinceEpoch,
+              ),
       ),
     );
   }
@@ -977,13 +1062,24 @@ class _LessonWhiteboardEditorPanelState
       return;
     }
     _commitSelectedBoard();
-    final merged = _boardSet.replaceScreenShareTimelineInterval(
-      baseline: baseline,
-      startGlobalSec: startGlobalSec,
-      endGlobalSec: boundedEnd,
-      replacementSwitchEvents: List.of(_overrideSwitchEvents),
-      replacementViewportEvents: List.of(_overrideViewportEvents),
-    );
+    final merged = _isScoped
+        ? replaceScopedScreenShareTimelineInterval(
+            current: _boardSet,
+            baseline: baseline,
+            segmentId: _scopedSegmentId!,
+            orderedSegmentIds: _effectiveOrderedSegmentIds,
+            startLocalSec: startGlobalSec,
+            endLocalSec: boundedEnd,
+            replacementSwitchEvents: List.of(_overrideSwitchEvents),
+            replacementViewportEvents: List.of(_overrideViewportEvents),
+          )
+        : _boardSet.replaceScreenShareTimelineInterval(
+            baseline: baseline,
+            startGlobalSec: startGlobalSec,
+            endGlobalSec: boundedEnd,
+            replacementSwitchEvents: List.of(_overrideSwitchEvents),
+            replacementViewportEvents: List.of(_overrideViewportEvents),
+          );
     if (merged.switchEvents.length > maxLessonBoardSwitchEvents ||
         merged.viewportEvents.length > maxLessonViewportEvents) {
       setState(() {
@@ -1045,9 +1141,7 @@ class _LessonWhiteboardEditorPanelState
         _followsRecordedScreenShare = false;
       }
       _selectedBoardId = boardId;
-      _strokes = List<WhiteboardStroke>.from(
-        _selectedBoard.layerBundle.primaryLayer?.strokes ?? const [],
-      );
+      _strokes = _workingStrokesFor(_selectedBoard);
       if (stopsFollowing) {
         _editorViewports[boardId] = _resolvedViewportAt(
           boardId: boardId,
@@ -1110,6 +1204,7 @@ class _LessonWhiteboardEditorPanelState
       sequence: _screenShareOverrideEnabled
           ? _nextOverrideSwitchSequence++
           : _boardSet.nextSwitchSequence,
+      segmentId: _scopedSegmentId,
     );
     if (_screenShareOverrideEnabled) {
       _overrideSwitchEvents.add(switchEvent);
@@ -1634,9 +1729,7 @@ class _LessonWhiteboardEditorPanelState
           positionSec: _recordingPositionSec,
         ),
       );
-      _strokes = List<WhiteboardStroke>.from(
-        _selectedBoard.layerBundle.primaryLayer?.strokes ?? const [],
-      );
+      _strokes = _workingStrokesFor(_selectedBoard);
     });
     if (_screenShareOverrideEnabled && _isInPublishedTimeline) {
       _recordSharedBoardSelection();
@@ -1663,9 +1756,13 @@ class _LessonWhiteboardEditorPanelState
       builder: (dialogContext) {
         return AlertDialog(
           title: const Text('書き物をリセット'),
-          content: const Text(
-            'ホワイトボードの書き物をすべて消します。\n'
-            '反映は「書き物を一時保存」を押した時点で確定します。',
+          content: Text(
+            _isScoped
+                ? 'このパートの書き物だけを消します。\n'
+                      'ほかのパートの書き物とボード自体は残ります。\n'
+                      '反映は「書き物を一時保存」を押した時点で確定します。'
+                : 'ホワイトボードの書き物をすべて消します。\n'
+                      '反映は「書き物を一時保存」を押した時点で確定します。',
           ),
           actions: [
             TextButton(
@@ -1789,6 +1886,23 @@ class _LessonWhiteboardEditorPanelState
   }
 
   Future<void> _beginPendingReset() async {
+    if (_isScoped) {
+      setState(() {
+        _loadBoardSet(
+          clearLessonSegmentWriting(
+            boardSet: _boardSet,
+            segmentId: _scopedSegmentId!,
+          ),
+        );
+        _editSessionKind = WhiteboardEditSessionKind.draft;
+        _message = 'このパートの書き物を消しました。一時保存で確定してください。';
+      });
+      _clearInProgressStroke();
+      await _playback?.pause();
+      await _seekPlaybackPosition(0);
+      widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
+      return;
+    }
     setState(() {
       _loadBoardSet(const BoardSet());
       _editSessionKind = WhiteboardEditSessionKind.pendingReset;
@@ -1847,7 +1961,10 @@ class _LessonWhiteboardEditorPanelState
               const Text('録音パートの作業中は、こちらの既存編集機能を一時停止しています。'),
               const SizedBox(height: 8),
             ],
-            Text('メディアプレビュー', style: Theme.of(context).textTheme.titleSmall),
+            Text(
+              _isScoped ? 'このパートのプレビュー' : 'メディアプレビュー',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
             const SizedBox(height: 8),
             if (_isLoadingMedia) ...[
               const LinearProgressIndicator(),
@@ -1899,7 +2016,10 @@ class _LessonWhiteboardEditorPanelState
               ),
             ],
             const SizedBox(height: 16),
-            Text('ホワイトボード', style: Theme.of(context).textTheme.titleSmall),
+            Text(
+              _isScoped ? 'このパートのホワイトボード' : 'ホワイトボード',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
             const SizedBox(height: 4),
             Text(
               _isPlaying ? '再生中はペンで書けます。' : 'スタートを押すとメディアが流れ、同時に書けるようになります。',
@@ -2001,32 +2121,36 @@ class _LessonWhiteboardEditorPanelState
                     icon: const Icon(Icons.delete_outline),
                     label: const Text('ボードを削除'),
                   ),
-                  PopupMenuButton<String>(
-                    key: const ValueKey('whiteboard-add-material-menu'),
-                    enabled: !_isUploadingMaterial && _boardSet.canAddBoard,
-                    tooltip: 'PDF・画像を追加',
-                    icon: const Icon(Icons.note_add_outlined),
-                    onSelected: (value) {
-                      if (value == 'pdf') {
-                        unawaited(_addPdfMaterial());
-                      } else if (value == 'library') {
-                        unawaited(_addFromLibrary());
-                      } else {
-                        unawaited(
-                          _addImageMaterials(fromGallery: value == 'gallery'),
-                        );
-                      }
-                    },
-                    itemBuilder: (context) => const [
-                      PopupMenuItem(value: 'pdf', child: Text('PDFを追加')),
-                      PopupMenuItem(
-                        value: 'image-file',
-                        child: Text('画像ファイルを追加'),
-                      ),
-                      PopupMenuItem(value: 'gallery', child: Text('写真から追加')),
-                      PopupMenuItem(value: 'library', child: Text('保存済みから選ぶ')),
-                    ],
-                  ),
+                  if (!_isScoped)
+                    PopupMenuButton<String>(
+                      key: const ValueKey('whiteboard-add-material-menu'),
+                      enabled: !_isUploadingMaterial && _boardSet.canAddBoard,
+                      tooltip: 'PDF・画像を追加',
+                      icon: const Icon(Icons.note_add_outlined),
+                      onSelected: (value) {
+                        if (value == 'pdf') {
+                          unawaited(_addPdfMaterial());
+                        } else if (value == 'library') {
+                          unawaited(_addFromLibrary());
+                        } else {
+                          unawaited(
+                            _addImageMaterials(fromGallery: value == 'gallery'),
+                          );
+                        }
+                      },
+                      itemBuilder: (context) => const [
+                        PopupMenuItem(value: 'pdf', child: Text('PDFを追加')),
+                        PopupMenuItem(
+                          value: 'image-file',
+                          child: Text('画像ファイルを追加'),
+                        ),
+                        PopupMenuItem(value: 'gallery', child: Text('写真から追加')),
+                        PopupMenuItem(
+                          value: 'library',
+                          child: Text('保存済みから選ぶ'),
+                        ),
+                      ],
+                    ),
                   Text('${_boardSet.boards.length}/$maxLessonWhiteboardBoards'),
                 ],
               ),
@@ -2138,13 +2262,14 @@ class _LessonWhiteboardEditorPanelState
                     icon: const Icon(Icons.delete_outline),
                     label: const Text('リセット'),
                   ),
-                  OutlinedButton.icon(
-                    onPressed: _isSavingDraft
-                        ? null
-                        : () => unawaited(_showEditOptions()),
-                    icon: const Icon(Icons.edit_outlined),
-                    label: const Text('編集の選び直し'),
-                  ),
+                  if (!_isScoped)
+                    OutlinedButton.icon(
+                      onPressed: _isSavingDraft
+                          ? null
+                          : () => unawaited(_showEditOptions()),
+                      icon: const Icon(Icons.edit_outlined),
+                      label: const Text('編集の選び直し'),
+                    ),
                 ],
               ),
             ],
