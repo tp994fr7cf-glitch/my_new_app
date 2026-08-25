@@ -26,6 +26,19 @@ List<LessonMediaSegment> testMediaSegments({int durationSec = 90}) {
   ];
 }
 
+List<LessonMediaSegment> threePartMediaSegments({int partDurationSec = 10}) {
+  return [
+    for (var index = 0; index < 3; index++)
+      LessonMediaSegment(
+        id: 'part-${index + 1}',
+        order: index,
+        mediaType: 'audio',
+        url: 'https://example.com/part-${index + 1}.mp3',
+        durationSec: partDurationSec,
+      ),
+  ];
+}
+
 LessonMediaPlaylistPlaybackFactory fakePlaylistPlaybackFactory({
   int durationSec = 90,
 }) {
@@ -824,6 +837,85 @@ void main() {
         find.byType(LessonWhiteboardCanvas),
       );
       expect(followedCanvas.viewport?.scale, 2);
+    },
+  );
+
+  testWidgets(
+    'unpublished preview follows only the playing part board switches',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(900, 1500));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      const partDurationSec = 10;
+      final playback = _ControllableLivePositionPlaylistPlayback(
+        totalDurationSec: partDurationSec * 3,
+      );
+      const defaultId = LessonWhiteboardBoard.defaultBoardId;
+      const draft = BoardSet(
+        boards: [
+          LessonWhiteboardBoard(id: defaultId, order: 0, title: 'ボード1'),
+          LessonWhiteboardBoard(id: 'board-2', order: 1, title: 'ボード2'),
+          LessonWhiteboardBoard(id: 'board-3', order: 2, title: 'ボード3'),
+        ],
+        switchEvents: [
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: 'board-2',
+            globalTimestampSec: 2,
+            sequence: 0,
+            segmentId: 'part-2',
+          ),
+          LessonWhiteboardBoardSwitchEvent(
+            boardId: 'board-3',
+            globalTimestampSec: 3,
+            sequence: 1,
+            segmentId: 'part-3',
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: LessonWhiteboardEditorPanel(
+                courseId: 'course-1',
+                lessonNumber: 1,
+                mediaSegments: threePartMediaSegments(
+                  partDurationSec: partDurationSec,
+                ),
+                durationLabel: '30秒',
+                draftBoardSet: draft,
+                onBoardSetDraftSaved: (_) async {},
+                playlistPlaybackFactory: () => playback,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(FilledButton, 'スタート'));
+      await tester.pump();
+
+      playback.liveOffsetSec = 4;
+      await tester.pump(const Duration(milliseconds: 60));
+      expect(
+        find.byKey(const ValueKey('whiteboard-board-dropdown-$defaultId')),
+        findsOneWidget,
+      );
+
+      playback.liveOffsetSec = 12;
+      await tester.pump(const Duration(milliseconds: 60));
+      expect(
+        find.byKey(const ValueKey('whiteboard-board-dropdown-board-2')),
+        findsOneWidget,
+      );
+
+      playback.liveOffsetSec = 23;
+      await tester.pump(const Duration(milliseconds: 60));
+      expect(
+        find.byKey(const ValueKey('whiteboard-board-dropdown-board-3')),
+        findsOneWidget,
+      );
     },
   );
 

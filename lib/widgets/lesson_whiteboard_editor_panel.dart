@@ -13,6 +13,8 @@ import '../models/lesson_player_view_state.dart';
 import '../models/lesson_publication_validator.dart';
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
+import '../models/lesson_whiteboard_part_order.dart';
+import '../models/lesson_whiteboard_timing_correction.dart';
 import '../services/lesson_material_library_service.dart';
 import '../services/lesson_material_source_resolver.dart';
 import '../services/lesson_media_playback.dart';
@@ -161,16 +163,55 @@ class _LessonWhiteboardEditorPanelState
 
   LessonWhiteboardViewport get _selectedEditorViewport {
     if (_isFollowingRecordedScreenShare) {
-      return _boardSet.resolveViewportAt(
+      return _resolvedViewportAt(
         boardId: _selectedBoardId,
-        globalTimestampSec: _recordingPositionSec,
+        positionSec: _recordingPositionSec,
       );
     }
     return _editorViewports[_selectedBoardId] ??
-        _boardSet.resolveViewportAt(
+        _resolvedViewportAt(
           boardId: _selectedBoardId,
-          globalTimestampSec: _recordingPositionSec,
+          positionSec: _recordingPositionSec,
         );
+  }
+
+  LessonWhiteboardPlaybackLookup _playbackLookupAt(double positionSec) {
+    return resolveLessonWhiteboardPlaybackLookup(
+      playbackGlobalSec: positionSec,
+      timeline: _timeline,
+    );
+  }
+
+  WhiteboardPartOrderPlayback _partOrderFor(
+    LessonWhiteboardPlaybackLookup lookup,
+  ) {
+    return WhiteboardPartOrderPlayback.fromTimeline(
+      _timeline,
+      activeSegmentId: lookup.segmentId,
+      segmentLocalSec: lookup.segmentLocalSec,
+    );
+  }
+
+  LessonWhiteboardBoard? _resolvedBoardAt(double positionSec) {
+    final lookup = _playbackLookupAt(positionSec);
+    return resolveBoardAtPartOrder(
+      boardSet: _boardSet,
+      globalTimestampSec: lookup.globalSec,
+      partOrder: _partOrderFor(lookup),
+    );
+  }
+
+  LessonWhiteboardViewport _resolvedViewportAt({
+    required String boardId,
+    required double positionSec,
+  }) {
+    final lookup = _playbackLookupAt(positionSec);
+    return resolveViewportAtPartOrder(
+      boardSet: _boardSet,
+      boardId: boardId,
+      globalTimestampSec: lookup.globalSec,
+      partOrder: _partOrderFor(lookup),
+    );
   }
 
   bool get _hasUnpublishedDraft {
@@ -305,9 +346,9 @@ class _LessonWhiteboardEditorPanelState
     _followsRecordedScreenShare = true;
     _editorViewports
       ..clear()
-      ..[_selectedBoardId] = _boardSet.resolveViewportAt(
+      ..[_selectedBoardId] = _resolvedViewportAt(
         boardId: _selectedBoardId,
-        globalTimestampSec: _recordingPositionSec,
+        positionSec: _recordingPositionSec,
       );
     _clearScreenShareOverride();
   }
@@ -526,9 +567,9 @@ class _LessonWhiteboardEditorPanelState
       return;
     }
     if (!value && _isFollowingRecordedScreenShare) {
-      _editorViewports[_selectedBoardId] = _boardSet.resolveViewportAt(
+      _editorViewports[_selectedBoardId] = _resolvedViewportAt(
         boardId: _selectedBoardId,
-        globalTimestampSec: _recordingPositionSec,
+        positionSec: _recordingPositionSec,
       );
     }
     setState(() => _followsRecordedScreenShare = value);
@@ -541,7 +582,7 @@ class _LessonWhiteboardEditorPanelState
     if (!_shouldShowEditingCanvas || !_isFollowingRecordedScreenShare) {
       return;
     }
-    final followedBoard = _boardSet.resolveBoardAt(positionSec);
+    final followedBoard = _resolvedBoardAt(positionSec);
     if (followedBoard == null || followedBoard.id == _selectedBoardId) {
       return;
     }
@@ -661,8 +702,7 @@ class _LessonWhiteboardEditorPanelState
     if (_isInPublishedTimeline) {
       return false;
     }
-    return _boardSet.resolveBoardAt(_recordingPositionSec)?.id ==
-        _selectedBoardId;
+    return _resolvedBoardAt(_recordingPositionSec)?.id == _selectedBoardId;
   }
 
   int _allocateViewportInteractionId() {
@@ -1009,16 +1049,16 @@ class _LessonWhiteboardEditorPanelState
         _selectedBoard.layerBundle.primaryLayer?.strokes ?? const [],
       );
       if (stopsFollowing) {
-        _editorViewports[boardId] = _boardSet.resolveViewportAt(
+        _editorViewports[boardId] = _resolvedViewportAt(
           boardId: boardId,
-          globalTimestampSec: _recordingPositionSec,
+          positionSec: _recordingPositionSec,
         );
       } else {
         _editorViewports.putIfAbsent(
           boardId,
-          () => _boardSet.resolveViewportAt(
+          () => _resolvedViewportAt(
             boardId: boardId,
-            globalTimestampSec: _recordingPositionSec,
+            positionSec: _recordingPositionSec,
           ),
         );
       }
@@ -1589,9 +1629,9 @@ class _LessonWhiteboardEditorPanelState
       _editorViewports.remove(removedId);
       _editorViewports.putIfAbsent(
         nextId,
-        () => _boardSet.resolveViewportAt(
+        () => _resolvedViewportAt(
           boardId: nextId,
-          globalTimestampSec: _recordingPositionSec,
+          positionSec: _recordingPositionSec,
         ),
       );
       _strokes = List<WhiteboardStroke>.from(
@@ -1770,7 +1810,7 @@ class _LessonWhiteboardEditorPanelState
       return null;
     }
     final isShared =
-        _boardSet.resolveBoardAt(_recordingPositionSec)?.id == _selectedBoardId;
+        _resolvedBoardAt(_recordingPositionSec)?.id == _selectedBoardId;
     final colorScheme = Theme.of(context).colorScheme;
     return FilledButton.icon(
       key: const ValueKey('whiteboard-share-current-board'),
