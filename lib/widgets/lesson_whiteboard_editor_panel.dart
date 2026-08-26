@@ -15,6 +15,7 @@ import '../models/lesson_scoped_board_set.dart';
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
 import '../models/lesson_whiteboard_part_order.dart';
+import '../models/lesson_whiteboard_stroke_history.dart';
 import '../models/lesson_whiteboard_timing_correction.dart';
 import '../services/lesson_material_library_service.dart';
 import '../services/lesson_material_source_resolver.dart';
@@ -119,6 +120,7 @@ class _LessonWhiteboardEditorPanelState
   int? _activeViewportInteractionId;
   double? _lastViewportEventSec;
   LessonWhiteboardViewport? _pendingPausedViewport;
+  final WhiteboardStrokeHistory _strokeHistory = WhiteboardStrokeHistory();
   final Map<String, LessonWhiteboardViewport> _editorViewports = {};
   bool _followsRecordedScreenShare = true;
   bool _screenShareOverrideEnabled = false;
@@ -182,7 +184,7 @@ class _LessonWhiteboardEditorPanelState
     return _currentPositionSecExact;
   }
 
-  bool get _drawingEnabled => _isPlaying && widget.enabled;
+  bool get _drawingEnabled => widget.enabled && _canControlPlayback;
   bool get _hasPublishedWhiteboard => _publishedBoardSet.isNotEmpty;
   bool get _isInPublishedTimeline {
     final publishedEnd = widget.publishedTimelineDurationSec;
@@ -311,14 +313,14 @@ class _LessonWhiteboardEditorPanelState
   }
 
   List<WhiteboardStroke> get _visibleStrokes {
+    final positionSec = _recordingPositionSec;
     final resolvedPosition = _timeline.isEmpty
         ? null
-        : _timeline.resolveGlobalSec(_currentPositionSecExact);
+        : _timeline.resolveGlobalSec(positionSec);
     return visibleWhiteboardBundleStrokes(
       bundle: _selectedWorkingBundle,
-      globalPositionSec: _currentPositionSecExact,
-      segmentLocalPositionSec:
-          resolvedPosition?.localSec ?? _currentPositionSecExact,
+      globalPositionSec: positionSec,
+      segmentLocalPositionSec: resolvedPosition?.localSec ?? positionSec,
       activeSegmentId: _scopedSegmentId ?? _playback?.currentSegment?.id,
       orderedSegmentIds: _effectiveOrderedSegmentIds,
     );
@@ -330,10 +332,7 @@ class _LessonWhiteboardEditorPanelState
     _gateOwnerId = widget.playbackOwnerId?.trim().isNotEmpty == true
         ? widget.playbackOwnerId!.trim()
         : 'editor-${identityHashCode(this)}';
-    widget.playbackGate?.register(
-      ownerId: _gateOwnerId,
-      pause: _pauseFromGate,
-    );
+    widget.playbackGate?.register(ownerId: _gateOwnerId, pause: _pauseFromGate);
     _loadInitialStrokes();
     if (lessonHasPlayableMedia(mediaSegments: widget.mediaSegments)) {
       unawaited(_initializeMediaPlayer());
@@ -410,6 +409,7 @@ class _LessonWhiteboardEditorPanelState
     final selected = _boardSet.boardById(_selectedBoardId);
     _selectedBoardId = selected?.id ?? _boardSet.defaultBoard!.id;
     _strokes = _workingStrokesFor(_selectedBoard);
+    _strokeHistory.clear();
     _pendingPausedViewport = null;
     _activeViewportInteractionId = null;
     _lastViewportEventSec = null;
@@ -794,6 +794,7 @@ class _LessonWhiteboardEditorPanelState
     if (_totalDurationSec <= 0) {
       return;
     }
+    _finishInProgressStroke();
     if (_screenShareOverrideEnabled) {
       _finishScreenShareOverride(endGlobalSec: _recordingPositionSec);
     }
@@ -808,6 +809,12 @@ class _LessonWhiteboardEditorPanelState
   }
 
   void _handleStrokeStart() {
+    if (!_drawingEnabled) {
+      return;
+    }
+    if (_isFollowingRecordedScreenShare) {
+      _setFollowsRecordedScreenShare(false);
+    }
     _strokeStartSec = _recordingPositionSec;
     _inProgressPoints = [];
   }
@@ -882,16 +889,14 @@ class _LessonWhiteboardEditorPanelState
 
     final points = _finalizeStrokePoints(point);
     if (points.length >= 2) {
-      final stroke = WhiteboardStroke(
-        id: '${DateTime.now().microsecondsSinceEpoch}',
-        timestampSec: _strokeStartSec!,
-        endTimestampSec: _recordingPositionSec,
-        points: points,
+      _recordCompletedStroke(
+        WhiteboardStroke(
+          id: '${DateTime.now().microsecondsSinceEpoch}',
+          timestampSec: _strokeStartSec!,
+          endTimestampSec: _recordingPositionSec,
+          points: points,
+        ),
       );
-      setState(() {
-        _strokes = [..._strokes, stroke];
-      });
-      _notifyWhiteboardChanged();
     }
 
     _clearInProgressStroke();
@@ -899,18 +904,117 @@ class _LessonWhiteboardEditorPanelState
 
   void _finishInProgressStroke() {
     if (_inProgressPoints.length >= 2 && _strokeStartSec != null) {
-      final stroke = WhiteboardStroke(
-        id: '${DateTime.now().microsecondsSinceEpoch}',
-        timestampSec: _strokeStartSec!,
-        endTimestampSec: _recordingPositionSec,
-        points: List<WhiteboardPoint>.from(_inProgressPoints),
+      _recordCompletedStroke(
+        WhiteboardStroke(
+          id: '${DateTime.now().microsecondsSinceEpoch}',
+          timestampSec: _strokeStartSec!,
+          endTimestampSec: _recordingPositionSec,
+          points: List<WhiteboardPoint>.from(_inProgressPoints),
+        ),
       );
-      setState(() {
-        _strokes = [..._strokes, stroke];
-      });
-      _notifyWhiteboardChanged();
     }
     _clearInProgressStroke();
+  }
+
+  void _recordCompletedStroke(WhiteboardStroke stroke) {
+    setState(() {
+      _strokes = [..._strokes, stroke];
+    });
+    _strokeHistory.recordDrawn(boardId: _selectedBoardId, strokeId: stroke.id);
+    _notifyWhiteboardChanged();
+  }
+
+  WhiteboardStroke? _strokeForHistory(WhiteboardStrokeHistoryEntry entry) {
+    if (entry.boardId == _selectedBoardId) {
+      for (final stroke in _strokes) {
+        if (stroke.id == entry.strokeId) {
+          return stroke;
+        }
+      }
+    }
+    return _boardSet.strokeById(
+      boardId: entry.boardId,
+      strokeId: entry.strokeId,
+    );
+  }
+
+  bool _isHistoryStrokeVisible(WhiteboardStrokeHistoryEntry entry) {
+    final stroke = _strokeForHistory(entry);
+    if (stroke == null) {
+      return false;
+    }
+    return visiblePortionOfWhiteboardStroke(
+          stroke: stroke,
+          positionSec: _recordingPositionSec,
+        ) !=
+        null;
+  }
+
+  void _applyStrokeHiddenAt({
+    required WhiteboardStrokeHistoryEntry entry,
+    required double? hiddenAtSec,
+  }) {
+    _boardSet = _boardSet.replaceStroke(
+      boardId: entry.boardId,
+      strokeId: entry.strokeId,
+      update: (stroke) => hiddenAtSec == null
+          ? stroke.copyWith(clearHiddenAtSec: true)
+          : stroke.copyWith(hiddenAtSec: hiddenAtSec),
+    );
+    if (entry.boardId != _selectedBoardId) {
+      return;
+    }
+    _strokes = [
+      for (final stroke in _strokes)
+        if (stroke.id == entry.strokeId)
+          hiddenAtSec == null
+              ? stroke.copyWith(clearHiddenAtSec: true)
+              : stroke.copyWith(hiddenAtSec: hiddenAtSec)
+        else
+          stroke,
+    ];
+  }
+
+  void _undoStroke() {
+    if (!_drawingEnabled) {
+      return;
+    }
+    _finishInProgressStroke();
+    _commitSelectedBoard();
+    final entry = _strokeHistory.takeUndoVisible(_isHistoryStrokeVisible);
+    if (entry == null) {
+      return;
+    }
+    final board = _boardSet.boardById(entry.boardId);
+    setState(() {
+      _applyStrokeHiddenAt(entry: entry, hiddenAtSec: _recordingPositionSec);
+      _strokeHistory.pushRedo(entry);
+      if (entry.boardId != _selectedBoardId) {
+        final title = (board?.title ?? '').trim();
+        _message = title.isEmpty ? '別のボードの直前の線を戻しました。' : '「$title」の直前の線を戻しました。';
+      } else {
+        _message = null;
+      }
+    });
+    widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
+  }
+
+  void _redoStroke() {
+    if (!_drawingEnabled) {
+      return;
+    }
+    _finishInProgressStroke();
+    _commitSelectedBoard();
+    final entry = _strokeHistory.takeRedo();
+    if (entry == null) {
+      return;
+    }
+    setState(() {
+      _applyStrokeHiddenAt(entry: entry, hiddenAtSec: null);
+      _strokeHistory.pushUndo(entry);
+      _message = null;
+    });
+    widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
   }
 
   void _clearInProgressStroke() {
@@ -1009,6 +1113,7 @@ class _LessonWhiteboardEditorPanelState
         await widget.onDraftSaved!(_buildCurrentWhiteboard());
       }
       if (mounted) {
+        _strokeHistory.clear();
         setState(() {
           _editSessionKind = WhiteboardEditSessionKind.draft;
           _message = '書き物を一時保存しました。';
@@ -1118,8 +1223,7 @@ class _LessonWhiteboardEditorPanelState
     _syncRecordedScreenShare(_recordingPositionSec);
   }
 
-  Future<_ScreenShareOverrideSaveChoice?>
-  _askScreenShareOverrideSaveChoice() {
+  Future<_ScreenShareOverrideSaveChoice?> _askScreenShareOverrideSaveChoice() {
     return showDialog<_ScreenShareOverrideSaveChoice>(
       context: context,
       builder: (dialogContext) {
@@ -1130,9 +1234,7 @@ class _LessonWhiteboardEditorPanelState
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
-                  'チェックを入れたまま一時保存します。このパートの残り時間を、どうしますか。',
-                ),
+                const Text('チェックを入れたまま一時保存します。このパートの残り時間を、どうしますか。'),
                 const SizedBox(height: 16),
                 FilledButton(
                   key: const ValueKey(
@@ -1144,9 +1246,7 @@ class _LessonWhiteboardEditorPanelState
                   child: const Text('今のボードを最後まで固定する'),
                 ),
                 const SizedBox(height: 4),
-                const Text(
-                  '今の紙と、今の拡大・位置をこのパートの終わりまで保ちます。この先の自動切替は捨てます。',
-                ),
+                const Text('今の紙と、今の拡大・位置をこのパートの終わりまで保ちます。この先の自動切替は捨てます。'),
                 const SizedBox(height: 12),
                 OutlinedButton(
                   key: const ValueKey(
@@ -1707,32 +1807,11 @@ class _LessonWhiteboardEditorPanelState
 
   Future<void> _renameSelectedBoard() async {
     final board = _selectedBoard;
-    final controller = TextEditingController(text: board.title);
     final title = await showDialog<String>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('ボード名を変更'),
-        content: TextField(
-          key: const ValueKey('whiteboard-board-title-field'),
-          controller: controller,
-          autofocus: true,
-          maxLength: 40,
-          decoration: const InputDecoration(labelText: 'ボード名'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('キャンセル'),
-          ),
-          FilledButton(
-            onPressed: () =>
-                Navigator.of(dialogContext).pop(controller.text.trim()),
-            child: const Text('変更'),
-          ),
-        ],
-      ),
+      builder: (dialogContext) =>
+          _BoardTitleRenameDialog(initialTitle: board.title),
     );
-    controller.dispose();
     if (title == null || !mounted) {
       return;
     }
@@ -2029,332 +2108,437 @@ class _LessonWhiteboardEditorPanelState
       ignoring: !widget.enabled,
       child: Opacity(
         opacity: widget.enabled ? 1 : 0.55,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (!widget.enabled) ...[
-              const Text('録音パートの作業中は、こちらの既存編集機能を一時停止しています。'),
-              const SizedBox(height: 8),
-            ],
-            Text(
-              _isScoped ? 'このパートのプレビュー' : 'メディアプレビュー',
-              style: Theme.of(context).textTheme.titleSmall,
-            ),
-            const SizedBox(height: 8),
-            if (_isLoadingMedia) ...[
-              const LinearProgressIndicator(),
-              const SizedBox(height: 8),
-              const Text('音声を読み込み中…'),
-            ] else if (_mediaLoadError != null) ...[
-              Text(
-                _mediaLoadError!,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
-              ),
-            ] else if (_canControlPlayback) ...[
-              Text(
-                '${formatLessonTime(_displayedPositionSec)} / ${formatLessonTime(_totalDurationSec)}',
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-              Slider(
-                value:
-                    (_sliderDragPositionSec ?? _currentPositionSec.toDouble())
-                        .clamp(0, _totalDurationSec)
-                        .toDouble(),
-                min: 0,
-                max: sliderMax,
-                divisions: _totalDurationSec > 0 ? _totalDurationSec : null,
-                label: formatLessonTime(_displayedPositionSec),
-                onChangeStart: _isPlaying
-                    ? null
-                    : (_) {
-                        setState(() {
-                          _sliderDragPositionSec = _currentPositionSec
-                              .toDouble();
-                        });
-                      },
-                onChanged: _isPlaying
-                    ? null
-                    : (value) {
-                        setState(() {
-                          _sliderDragPositionSec = value;
-                        });
-                      },
-                onChangeEnd: _isPlaying
-                    ? null
-                    : (value) {
-                        final targetSec = value.round();
-                        setState(() {
-                          _sliderDragPositionSec = null;
-                        });
-                        unawaited(_seekPlaybackPosition(targetSec));
-                      },
-              ),
-            ],
-            const SizedBox(height: 16),
-            Text(
-              _isScoped ? 'このパートのホワイトボード' : 'ホワイトボード',
-              style: Theme.of(context).textTheme.titleSmall,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              _isPlaying ? '再生中はペンで書けます。' : 'スタートを押すとメディアが流れ、同時に書けるようになります。',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 8),
-            Row(
-              key: const ValueKey('whiteboard-board-selector'),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final content = Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    key: ValueKey(
-                      'whiteboard-board-dropdown-$_selectedBoardId',
-                    ),
-                    initialValue: _selectedBoardId,
-                    isExpanded: true,
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      labelText: '表示するボード',
-                      isDense: true,
-                    ),
-                    items: [
-                      for (final entry in _boardSet.orderedBoards.indexed)
-                        DropdownMenuItem(
-                          value: entry.$2.id,
-                          child: Text(
-                            _boardLabel(entry.$1, entry.$2),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                    ],
-                    onChanged: (boardId) {
-                      if (boardId != null) {
-                        _switchBoard(boardId);
-                      }
-                    },
-                  ),
-                ),
-                if (_shouldShowEditingCanvas) ...[
-                  const SizedBox(width: 8),
-                  OutlinedButton.icon(
-                    key: const ValueKey('whiteboard-add-board'),
-                    onPressed: _boardSet.canAddBoard ? _addBoard : null,
-                    icon: const Icon(Icons.add),
-                    label: const Text('追加'),
-                  ),
+                if (!widget.enabled) ...[
+                  const Text('録音パートの作業中は、こちらの既存編集機能を一時停止しています。'),
+                  const SizedBox(height: 8),
                 ],
-              ],
-            ),
-            if (_shouldShowEditingCanvas && _hasRecordedScreenShareTimeline)
-              SizedBox(
-                height: 30,
-                child: Tooltip(
-                  message: _screenShareOverrideEnabled
-                      ? '「画面共有を上書き」の間は一時停止しています。'
-                      : '記録時のボード切り替えと拡大・移動を再現します'
-                            '（自分で操作すると一時解除）。',
-                  child: Row(
-                    children: [
-                      Switch(
-                        key: const ValueKey(
-                          'editor-recorded-screen-share-follow-switch',
-                        ),
-                        value: _followsRecordedScreenShare,
-                        onChanged: _screenShareOverrideEnabled
-                            ? null
-                            : _setFollowsRecordedScreenShare,
-                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
-                      const SizedBox(width: 4),
-                      Expanded(
-                        child: Text(
-                          _screenShareOverrideEnabled
-                              ? '記録した画面共有に合わせる（上書き中は停止）'
-                              : '記録した画面共有に合わせる',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ),
-                    ],
-                  ),
+                Text(
+                  _isScoped ? 'このパートのプレビュー' : 'メディアプレビュー',
+                  style: Theme.of(context).textTheme.titleSmall,
                 ),
-              ),
-            if (_shouldShowEditingCanvas) ...[
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextButton.icon(
-                    onPressed: () => unawaited(_renameSelectedBoard()),
-                    icon: const Icon(Icons.drive_file_rename_outline),
-                    label: const Text('名前を変更'),
-                  ),
-                  TextButton.icon(
-                    key: const ValueKey('whiteboard-delete-board'),
-                    onPressed:
-                        _boardSet.boards.length > 1 &&
-                            !_selectedMaterialBoardIsPublished
-                        ? () => unawaited(_deleteSelectedBoard())
-                        : null,
-                    icon: const Icon(Icons.delete_outline),
-                    label: const Text('ボードを削除'),
-                  ),
-                  if (!_isScoped)
-                    PopupMenuButton<String>(
-                      key: const ValueKey('whiteboard-add-material-menu'),
-                      enabled: !_isUploadingMaterial && _boardSet.canAddBoard,
-                      tooltip: 'PDF・画像を追加',
-                      icon: const Icon(Icons.note_add_outlined),
-                      onSelected: (value) {
-                        if (value == 'pdf') {
-                          unawaited(_addPdfMaterial());
-                        } else if (value == 'library') {
-                          unawaited(_addFromLibrary());
-                        } else {
-                          unawaited(
-                            _addImageMaterials(fromGallery: value == 'gallery'),
-                          );
-                        }
-                      },
-                      itemBuilder: (context) => const [
-                        PopupMenuItem(value: 'pdf', child: Text('PDFを追加')),
-                        PopupMenuItem(
-                          value: 'image-file',
-                          child: Text('画像ファイルを追加'),
-                        ),
-                        PopupMenuItem(value: 'gallery', child: Text('写真から追加')),
-                        PopupMenuItem(
-                          value: 'library',
-                          child: Text('保存済みから選ぶ'),
-                        ),
-                      ],
-                    ),
-                  Text('${_boardSet.boards.length}/$maxLessonWhiteboardBoards'),
-                ],
-              ),
-              if (_isUploadingMaterial) ...[
                 const SizedBox(height: 8),
-                const LinearProgressIndicator(
-                  key: ValueKey('whiteboard-material-upload-progress'),
+                if (_isLoadingMedia) ...[
+                  const LinearProgressIndicator(),
+                  const SizedBox(height: 8),
+                  const Text('音声を読み込み中…'),
+                ] else if (_mediaLoadError != null) ...[
+                  Text(
+                    _mediaLoadError!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                ] else if (_canControlPlayback) ...[
+                  Text(
+                    '${formatLessonTime(_displayedPositionSec)} / ${formatLessonTime(_totalDurationSec)}',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  Slider(
+                    value:
+                        (_sliderDragPositionSec ??
+                                _currentPositionSec.toDouble())
+                            .clamp(0, _totalDurationSec)
+                            .toDouble(),
+                    min: 0,
+                    max: sliderMax,
+                    divisions: _totalDurationSec > 0 ? _totalDurationSec : null,
+                    label: formatLessonTime(_displayedPositionSec),
+                    onChangeStart: _isPlaying
+                        ? null
+                        : (_) {
+                            _finishInProgressStroke();
+                            setState(() {
+                              _sliderDragPositionSec = _currentPositionSec
+                                  .toDouble();
+                            });
+                          },
+                    onChanged: _isPlaying
+                        ? null
+                        : (value) {
+                            setState(() {
+                              _sliderDragPositionSec = value;
+                            });
+                          },
+                    onChangeEnd: _isPlaying
+                        ? null
+                        : (value) {
+                            final targetSec = value.round();
+                            setState(() {
+                              _sliderDragPositionSec = null;
+                            });
+                            unawaited(_seekPlaybackPosition(targetSec));
+                          },
+                  ),
+                ],
+                const SizedBox(height: 16),
+                Text(
+                  _isScoped ? 'このパートのホワイトボード' : 'ホワイトボード',
+                  style: Theme.of(context).textTheme.titleSmall,
                 ),
+                const SizedBox(height: 4),
+                Text(
+                  _canControlPlayback
+                      ? '再生中も一時停止中もペンで書けます。一時停止中に書いた線は、その秒にまとめて現れます。'
+                      : 'スタートを押すとメディアが流れ、同時に書けるようになります。',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  key: const ValueKey('whiteboard-board-selector'),
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        key: ValueKey(
+                          'whiteboard-board-dropdown-$_selectedBoardId',
+                        ),
+                        initialValue: _selectedBoardId,
+                        isExpanded: true,
+                        decoration: const InputDecoration(
+                          border: OutlineInputBorder(),
+                          labelText: '表示するボード',
+                          isDense: true,
+                        ),
+                        items: [
+                          for (final entry in _boardSet.orderedBoards.indexed)
+                            DropdownMenuItem(
+                              value: entry.$2.id,
+                              child: Text(
+                                _boardLabel(entry.$1, entry.$2),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                        ],
+                        onChanged: (boardId) {
+                          if (boardId != null) {
+                            _switchBoard(boardId);
+                          }
+                        },
+                      ),
+                    ),
+                    if (_shouldShowEditingCanvas) ...[
+                      const SizedBox(width: 8),
+                      OutlinedButton.icon(
+                        key: const ValueKey('whiteboard-add-board'),
+                        onPressed: _boardSet.canAddBoard ? _addBoard : null,
+                        icon: const Icon(Icons.add),
+                        label: const Text('追加'),
+                      ),
+                    ],
+                  ],
+                ),
+                if (_shouldShowEditingCanvas && _hasRecordedScreenShareTimeline)
+                  SizedBox(
+                    height: 30,
+                    child: Tooltip(
+                      message: _screenShareOverrideEnabled
+                          ? '「画面共有を上書き」の間は一時停止しています。'
+                          : '記録時のボード切り替えと拡大・移動を再現します'
+                                '（自分で操作すると一時解除）。',
+                      child: Row(
+                        children: [
+                          Switch(
+                            key: const ValueKey(
+                              'editor-recorded-screen-share-follow-switch',
+                            ),
+                            value: _followsRecordedScreenShare,
+                            onChanged: _screenShareOverrideEnabled
+                                ? null
+                                : _setFollowsRecordedScreenShare,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              _screenShareOverrideEnabled
+                                  ? '記録した画面共有に合わせる（上書き中は停止）'
+                                  : '記録した画面共有に合わせる',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                if (_shouldShowEditingCanvas) ...[
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      TextButton.icon(
+                        onPressed: () => unawaited(_renameSelectedBoard()),
+                        icon: const Icon(Icons.drive_file_rename_outline),
+                        label: const Text('名前を変更'),
+                      ),
+                      TextButton.icon(
+                        key: const ValueKey('whiteboard-delete-board'),
+                        onPressed:
+                            _boardSet.boards.length > 1 &&
+                                !_selectedMaterialBoardIsPublished
+                            ? () => unawaited(_deleteSelectedBoard())
+                            : null,
+                        icon: const Icon(Icons.delete_outline),
+                        label: const Text('ボードを削除'),
+                      ),
+                      if (!_isScoped)
+                        PopupMenuButton<String>(
+                          key: const ValueKey('whiteboard-add-material-menu'),
+                          enabled:
+                              !_isUploadingMaterial && _boardSet.canAddBoard,
+                          tooltip: 'PDF・画像を追加',
+                          icon: const Icon(Icons.note_add_outlined),
+                          onSelected: (value) {
+                            if (value == 'pdf') {
+                              unawaited(_addPdfMaterial());
+                            } else if (value == 'library') {
+                              unawaited(_addFromLibrary());
+                            } else {
+                              unawaited(
+                                _addImageMaterials(
+                                  fromGallery: value == 'gallery',
+                                ),
+                              );
+                            }
+                          },
+                          itemBuilder: (context) => const [
+                            PopupMenuItem(value: 'pdf', child: Text('PDFを追加')),
+                            PopupMenuItem(
+                              value: 'image-file',
+                              child: Text('画像ファイルを追加'),
+                            ),
+                            PopupMenuItem(
+                              value: 'gallery',
+                              child: Text('写真から追加'),
+                            ),
+                            PopupMenuItem(
+                              value: 'library',
+                              child: Text('保存済みから選ぶ'),
+                            ),
+                          ],
+                        ),
+                      Text(
+                        '${_boardSet.boards.length}/$maxLessonWhiteboardBoards',
+                      ),
+                    ],
+                  ),
+                  if (_isUploadingMaterial) ...[
+                    const SizedBox(height: 8),
+                    const LinearProgressIndicator(
+                      key: ValueKey('whiteboard-material-upload-progress'),
+                    ),
+                  ],
+                ],
+                if (_shouldShowEditingCanvas &&
+                    _hasPublishedWhiteboard &&
+                    _isInPublishedTimeline) ...[
+                  const SizedBox(height: 4),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 420),
+                      child: CheckboxListTile(
+                        key: const ValueKey('screen-share-override-checkbox'),
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        dense: true,
+                        title: const Text('画面共有を上書き'),
+                        subtitle: Text(
+                          _screenShareOverrideEnabled
+                              ? '先生が開くボードとズームを受講者向けに記録しています。'
+                              : 'オフの間は、公開済みの画面共有を変更しません。',
+                        ),
+                        value: _screenShareOverrideEnabled,
+                        onChanged: (value) =>
+                            _setScreenShareOverride(value ?? false),
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 8),
+                if (_hasPublishedWhiteboard && !_shouldShowEditingCanvas) ...[
+                  LessonWhiteboardCanvas(
+                    key: ValueKey('published-canvas-$_selectedBoardId'),
+                    strokes: [
+                      for (final layer
+                          in _selectedBoard.layerBundle.orderedLayers)
+                        ...layer.strokes,
+                    ],
+                    drawingEnabled: false,
+                    maxWidth: lessonWhiteboardCompactMaxWidth,
+                    showViewportControls: false,
+                    background: _selectedBoard.background,
+                    aspectRatio: _selectedBoard.aspectRatio,
+                    materialUrlResolver: _resolveMaterialSource,
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: _isSavingDraft
+                        ? null
+                        : () => unawaited(_showEditOptions()),
+                    icon: const Icon(Icons.edit_outlined),
+                    label: const Text('書き物を描き直す'),
+                  ),
+                ] else ...[
+                  LessonWhiteboardCanvas(
+                    key: ValueKey('editor-canvas-$_selectedBoardId'),
+                    strokes: _visibleStrokes,
+                    inProgressStroke: _inProgressStroke,
+                    drawingEnabled: _drawingEnabled,
+                    onStrokeStart: _handleStrokeStart,
+                    onStrokeUpdate: _handleStrokeUpdate,
+                    onStrokeEnd: _handleStrokeEnd,
+                    onStrokeCancel: _clearInProgressStroke,
+                    maxWidth: lessonWhiteboardCompactMaxWidth,
+                    viewport: _selectedEditorViewport,
+                    onViewportChanged: _handleViewportChanged,
+                    showViewportControls: false,
+                    bottomLeftOverlay: _buildScreenShareButton(context),
+                    background: _selectedBoard.background,
+                    aspectRatio: _selectedBoard.aspectRatio,
+                    materialUrlResolver: _resolveMaterialSource,
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      FilledButton.icon(
+                        onPressed: !_canControlPlayback || _isPlaying
+                            ? null
+                            : () => unawaited(_startRecording()),
+                        icon: const Icon(Icons.play_arrow),
+                        label: const Text('スタート'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: !_isPlaying
+                            ? null
+                            : () => unawaited(_pauseRecording()),
+                        icon: const Icon(Icons.pause),
+                        label: const Text('一時停止'),
+                      ),
+                      OutlinedButton.icon(
+                        key: const ValueKey('whiteboard-undo-stroke'),
+                        style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        onPressed:
+                            !_drawingEnabled ||
+                                !_strokeHistory.canUndoVisible(
+                                  _isHistoryStrokeVisible,
+                                )
+                            ? null
+                            : _undoStroke,
+                        icon: const Icon(Icons.undo, size: 18),
+                        label: const Text('戻る'),
+                      ),
+                      OutlinedButton.icon(
+                        key: const ValueKey('whiteboard-redo-stroke'),
+                        style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        onPressed: !_drawingEnabled || !_strokeHistory.canRedo
+                            ? null
+                            : _redoStroke,
+                        icon: const Icon(Icons.redo, size: 18),
+                        label: const Text('進む'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _isSavingDraft
+                            ? null
+                            : () => unawaited(_saveDraft()),
+                        icon: const Icon(Icons.save_outlined),
+                        label: const Text('書き物を一時保存'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _isSavingDraft
+                            ? null
+                            : () => unawaited(_resetWhiteboard()),
+                        icon: const Icon(Icons.delete_outline),
+                        label: const Text('リセット'),
+                      ),
+                      if (!_isScoped)
+                        OutlinedButton.icon(
+                          onPressed: _isSavingDraft
+                              ? null
+                              : () => unawaited(_showEditOptions()),
+                          icon: const Icon(Icons.edit_outlined),
+                          label: const Text('編集の選び直し'),
+                        ),
+                    ],
+                  ),
+                ],
+                if (_message != null) ...[
+                  const SizedBox(height: 8),
+                  Text(_message!),
+                ],
               ],
-            ],
-            if (_shouldShowEditingCanvas &&
-                _hasPublishedWhiteboard &&
-                _isInPublishedTimeline) ...[
-              const SizedBox(height: 4),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 420),
-                  child: CheckboxListTile(
-                    key: const ValueKey('screen-share-override-checkbox'),
-                    contentPadding: EdgeInsets.zero,
-                    controlAffinity: ListTileControlAffinity.leading,
-                    dense: true,
-                    title: const Text('画面共有を上書き'),
-                    subtitle: Text(
-                      _screenShareOverrideEnabled
-                          ? '先生が開くボードとズームを受講者向けに記録しています。'
-                          : 'オフの間は、公開済みの画面共有を変更しません。',
-                    ),
-                    value: _screenShareOverrideEnabled,
-                    onChanged: (value) =>
-                        _setScreenShareOverride(value ?? false),
-                  ),
-                ),
-              ),
-            ],
-            const SizedBox(height: 8),
-            if (_hasPublishedWhiteboard && !_shouldShowEditingCanvas) ...[
-              LessonWhiteboardCanvas(
-                key: ValueKey('published-canvas-$_selectedBoardId'),
-                strokes: [
-                  for (final layer in _selectedBoard.layerBundle.orderedLayers)
-                    ...layer.strokes,
-                ],
-                drawingEnabled: false,
-                maxWidth: lessonWhiteboardCompactMaxWidth,
-                showViewportControls: false,
-                background: _selectedBoard.background,
-                aspectRatio: _selectedBoard.aspectRatio,
-                materialUrlResolver: _resolveMaterialSource,
-              ),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: _isSavingDraft
-                    ? null
-                    : () => unawaited(_showEditOptions()),
-                icon: const Icon(Icons.edit_outlined),
-                label: const Text('書き物を描き直す'),
-              ),
-            ] else ...[
-              LessonWhiteboardCanvas(
-                key: ValueKey('editor-canvas-$_selectedBoardId'),
-                strokes: _visibleStrokes,
-                inProgressStroke: _inProgressStroke,
-                drawingEnabled: _drawingEnabled,
-                onStrokeStart: _handleStrokeStart,
-                onStrokeUpdate: _handleStrokeUpdate,
-                onStrokeEnd: _handleStrokeEnd,
-                onStrokeCancel: _clearInProgressStroke,
-                maxWidth: lessonWhiteboardCompactMaxWidth,
-                viewport: _selectedEditorViewport,
-                onViewportChanged: _handleViewportChanged,
-                showViewportControls: false,
-                bottomLeftOverlay: _buildScreenShareButton(context),
-                background: _selectedBoard.background,
-                aspectRatio: _selectedBoard.aspectRatio,
-                materialUrlResolver: _resolveMaterialSource,
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  FilledButton.icon(
-                    onPressed: !_canControlPlayback || _isPlaying
-                        ? null
-                        : () => unawaited(_startRecording()),
-                    icon: const Icon(Icons.play_arrow),
-                    label: const Text('スタート'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: !_isPlaying
-                        ? null
-                        : () => unawaited(_pauseRecording()),
-                    icon: const Icon(Icons.pause),
-                    label: const Text('一時停止'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: _isSavingDraft
-                        ? null
-                        : () => unawaited(_saveDraft()),
-                    icon: const Icon(Icons.save_outlined),
-                    label: const Text('書き物を一時保存'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: _isSavingDraft
-                        ? null
-                        : () => unawaited(_resetWhiteboard()),
-                    icon: const Icon(Icons.delete_outline),
-                    label: const Text('リセット'),
-                  ),
-                  if (!_isScoped)
-                    OutlinedButton.icon(
-                      onPressed: _isSavingDraft
-                          ? null
-                          : () => unawaited(_showEditOptions()),
-                      icon: const Icon(Icons.edit_outlined),
-                      label: const Text('編集の選び直し'),
-                    ),
-                ],
-              ),
-            ],
-            if (_message != null) ...[
-              const SizedBox(height: 8),
-              Text(_message!),
-            ],
-          ],
+            );
+            if (constraints.maxHeight.isFinite) {
+              return SingleChildScrollView(child: content);
+            }
+            return content;
+          },
         ),
       ),
+    );
+  }
+}
+
+class _BoardTitleRenameDialog extends StatefulWidget {
+  const _BoardTitleRenameDialog({required this.initialTitle});
+
+  final String initialTitle;
+
+  @override
+  State<_BoardTitleRenameDialog> createState() =>
+      _BoardTitleRenameDialogState();
+}
+
+class _BoardTitleRenameDialogState extends State<_BoardTitleRenameDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialTitle);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('ボード名を変更'),
+      content: TextField(
+        key: const ValueKey('whiteboard-board-title-field'),
+        controller: _controller,
+        autofocus: true,
+        maxLength: 40,
+        decoration: const InputDecoration(labelText: 'ボード名'),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('キャンセル'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
+          child: const Text('変更'),
+        ),
+      ],
     );
   }
 }

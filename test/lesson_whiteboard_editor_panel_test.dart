@@ -53,6 +53,16 @@ void _completeSliderSeek(Slider slider, double value) {
   slider.onChangeEnd?.call(value);
 }
 
+void _drawEditorStroke(
+  LessonWhiteboardCanvas canvas, {
+  double x0 = 0.1,
+  double x1 = 0.4,
+}) {
+  canvas.onStrokeStart?.call();
+  canvas.onStrokeUpdate?.call(WhiteboardPoint(x: x0, y: 0.5));
+  canvas.onStrokeEnd?.call(WhiteboardPoint(x: x1, y: 0.5));
+}
+
 void main() {
   testWidgets(
     'Teacher whiteboard editor shows strokes up to the seek position',
@@ -296,7 +306,7 @@ void main() {
         find.byType(LessonWhiteboardCanvas),
       );
       expect(canvas.strokes.single.id, 'draft-new');
-      expect(canvas.drawingEnabled, isFalse);
+      expect(canvas.drawingEnabled, isTrue);
     },
   );
 
@@ -1431,6 +1441,102 @@ void main() {
     );
   });
 
+  testWidgets(
+    'board action buttons wrap instead of overflowing on a narrow phone',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(272, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      await tester.pumpWidget(
+        MediaQuery(
+          data: const MediaQueryData(size: Size(272, 800)),
+          child: MaterialApp(
+            home: Scaffold(
+              body: LessonWhiteboardEditorPanel(
+                courseId: 'course-1',
+                lessonNumber: 1,
+                mediaSegments: const [],
+                durationLabel: '1分30秒',
+                draftBoardSet: const BoardSet(
+                  boards: [
+                    LessonWhiteboardBoard(
+                      id: LessonWhiteboardBoard.defaultBoardId,
+                      order: 0,
+                      title: 'ボード1',
+                    ),
+                    LessonWhiteboardBoard(
+                      id: 'second',
+                      order: 1,
+                      title: 'ボード2',
+                    ),
+                  ],
+                ),
+                onBoardSetDraftSaved: (boardSet) async {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('名前を変更'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('whiteboard-delete-board')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'renaming a board keeps the title field alive until the dialog finishes closing',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(400, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      await tester.pumpWidget(
+        MediaQuery(
+          data: const MediaQueryData(size: Size(400, 800)),
+          child: MaterialApp(
+            home: Scaffold(
+              body: SingleChildScrollView(
+                child: LessonWhiteboardEditorPanel(
+                  courseId: 'course-1',
+                  lessonNumber: 1,
+                  mediaSegments: const [],
+                  durationLabel: '1分30秒',
+                  draftBoardSet: const BoardSet(
+                    boards: [
+                      LessonWhiteboardBoard(
+                        id: LessonWhiteboardBoard.defaultBoardId,
+                        order: 0,
+                        title: 'ボード1',
+                      ),
+                    ],
+                  ),
+                  onBoardSetDraftSaved: (boardSet) async {},
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      await tester.tap(find.text('名前を変更'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('whiteboard-board-title-field')),
+        '表紙',
+      );
+      await tester.tap(find.widgetWithText(FilledButton, '変更'));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('1. 表紙'), findsOneWidget);
+    },
+  );
+
   testWidgets('twenty boards are allowed but the twenty-first is disabled', (
     tester,
   ) async {
@@ -1855,8 +1961,7 @@ void main() {
       expect(saved, isNotNull);
       expect(
         saved!.switchEvents.any(
-          (event) =>
-              event.segmentId == 'part-2' && event.boardId == 'second',
+          (event) => event.segmentId == 'part-2' && event.boardId == 'second',
         ),
         isFalse,
       );
@@ -1875,30 +1980,94 @@ void main() {
     },
   );
 
+  testWidgets('scoped save can keep only the checked overwrite interval', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    BoardSet? saved;
+    const published = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+          title: '一枚目',
+        ),
+        LessonWhiteboardBoard(id: 'second', order: 1, title: '二枚目'),
+      ],
+      switchEvents: [
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: 'second',
+          globalTimestampSec: 8,
+          sequence: 0,
+          segmentId: 'part-2',
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: const [
+                LessonMediaSegment(
+                  id: 'part-2',
+                  order: 1,
+                  mediaType: 'audio',
+                  url: 'https://example.com/part-2.mp3',
+                  durationSec: 30,
+                ),
+              ],
+              durationLabel: '30秒',
+              scopedSegmentId: 'part-2',
+              orderedSegmentIds: const ['part-1', 'part-2'],
+              publishedBoardSet: published,
+              publishedTimelineDurationSec: 30,
+              onBoardSetDraftSaved: (boardSet) async {
+                saved = boardSet;
+              },
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(
+                durationSec: 30,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(
+      find.byKey(const ValueKey('screen-share-override-checkbox')),
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('screen-share-override-checkbox')),
+    );
+    await tester.pump();
+    await tester.ensureVisible(find.text('書き物を一時保存'));
+    await tester.tap(find.widgetWithText(OutlinedButton, '書き物を一時保存'));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('screen-share-override-save-interval-only')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(saved, isNotNull);
+    expect(
+      saved!.switchEvents.any(
+        (event) => event.segmentId == 'part-2' && event.boardId == 'second',
+      ),
+      isTrue,
+    );
+  });
+
   testWidgets(
-    'scoped save can keep only the checked overwrite interval',
+    'Teacher can draw while paused and undo then redo the newest visible stroke',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(1000, 1400));
       addTearDown(() => tester.binding.setSurfaceSize(null));
-      BoardSet? saved;
-      const published = BoardSet(
-        boards: [
-          LessonWhiteboardBoard(
-            id: LessonWhiteboardBoard.defaultBoardId,
-            order: 0,
-            title: '一枚目',
-          ),
-          LessonWhiteboardBoard(id: 'second', order: 1, title: '二枚目'),
-        ],
-        switchEvents: [
-          LessonWhiteboardBoardSwitchEvent(
-            boardId: 'second',
-            globalTimestampSec: 8,
-            sequence: 0,
-            segmentId: 'part-2',
-          ),
-        ],
-      );
 
       await tester.pumpWidget(
         MaterialApp(
@@ -1907,26 +2076,11 @@ void main() {
               child: LessonWhiteboardEditorPanel(
                 courseId: 'course-1',
                 lessonNumber: 1,
-                mediaSegments: const [
-                  LessonMediaSegment(
-                    id: 'part-2',
-                    order: 1,
-                    mediaType: 'audio',
-                    url: 'https://example.com/part-2.mp3',
-                    durationSec: 30,
-                  ),
-                ],
-                durationLabel: '30秒',
-                scopedSegmentId: 'part-2',
-                orderedSegmentIds: const ['part-1', 'part-2'],
-                publishedBoardSet: published,
-                publishedTimelineDurationSec: 30,
-                onBoardSetDraftSaved: (boardSet) async {
-                  saved = boardSet;
-                },
-                playlistPlaybackFactory: fakePlaylistPlaybackFactory(
-                  durationSec: 30,
-                ),
+                mediaSegments: testMediaSegments(),
+                durationLabel: '1分30秒',
+                draftWhiteboard: null,
+                onDraftSaved: (_) async {},
+                playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
               ),
             ),
           ),
@@ -1934,28 +2088,210 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.ensureVisible(
-        find.byKey(const ValueKey('screen-share-override-checkbox')),
+      var canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
       );
-      await tester.tap(
-        find.byKey(const ValueKey('screen-share-override-checkbox')),
-      );
-      await tester.pump();
-      await tester.ensureVisible(find.text('書き物を一時保存'));
-      await tester.tap(find.widgetWithText(OutlinedButton, '書き物を一時保存'));
+      expect(canvas.drawingEnabled, isTrue);
+
+      final slider = tester.widget<Slider>(find.byType(Slider));
+      _completeSliderSeek(slider, 25);
       await tester.pumpAndSettle();
-      await tester.tap(
-        find.byKey(const ValueKey('screen-share-override-save-interval-only')),
+
+      canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+      _drawEditorStroke(canvas);
+      await tester.pump();
+      canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+      _drawEditorStroke(canvas, x0: 0.5, x1: 0.8);
+      await tester.pump();
+
+      canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+      expect(canvas.strokes, hasLength(2));
+      expect(
+        canvas.strokes.every((stroke) => stroke.timestampSec == 25),
+        isTrue,
+      );
+
+      await tester.tap(find.byKey(const ValueKey('whiteboard-undo-stroke')));
+      await tester.pump();
+      canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+      expect(canvas.strokes, hasLength(1));
+
+      await tester.tap(find.byKey(const ValueKey('whiteboard-redo-stroke')));
+      await tester.pump();
+      canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+      expect(canvas.strokes, hasLength(2));
+    },
+  );
+
+  testWidgets('Teacher undo skips a future stroke after seeking back', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: testMediaSegments(),
+              durationLabel: '1分30秒',
+              draftWhiteboard: null,
+              onDraftSaved: (_) async {},
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    var canvas = tester.widget<LessonWhiteboardCanvas>(
+      find.byType(LessonWhiteboardCanvas),
+    );
+    _drawEditorStroke(canvas);
+    await tester.pump();
+
+    final slider = tester.widget<Slider>(find.byType(Slider));
+    _completeSliderSeek(slider, 25);
+    await tester.pumpAndSettle();
+
+    canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+    _drawEditorStroke(canvas, x0: 0.5, x1: 0.8);
+    await tester.pump();
+    canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+    expect(canvas.strokes, hasLength(2));
+
+    await tester.tap(find.byKey(const ValueKey('whiteboard-undo-stroke')));
+    await tester.pump();
+    canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+    expect(canvas.strokes.map((stroke) => stroke.timestampSec), [0]);
+
+    _completeSliderSeek(slider, 0);
+    await tester.pumpAndSettle();
+    canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+    expect(canvas.strokes, hasLength(1));
+    expect(canvas.strokes.single.timestampSec, 0);
+  });
+
+  testWidgets('Teacher draft save clears undo and redo', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: testMediaSegments(),
+              durationLabel: '1分30秒',
+              draftWhiteboard: null,
+              onDraftSaved: (_) async {},
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    var canvas = tester.widget<LessonWhiteboardCanvas>(
+      find.byType(LessonWhiteboardCanvas),
+    );
+    _drawEditorStroke(canvas);
+    await tester.pump();
+
+    expect(
+      tester
+          .widget<OutlinedButton>(
+            find.byKey(const ValueKey('whiteboard-undo-stroke')),
+          )
+          .onPressed,
+      isNotNull,
+    );
+
+    await tester.tap(find.widgetWithText(OutlinedButton, '書き物を一時保存'));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester
+          .widget<OutlinedButton>(
+            find.byKey(const ValueKey('whiteboard-undo-stroke')),
+          )
+          .onPressed,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<OutlinedButton>(
+            find.byKey(const ValueKey('whiteboard-redo-stroke')),
+          )
+          .onPressed,
+      isNull,
+    );
+  });
+
+  testWidgets(
+    'Teacher undo on another board shows a short message without switching',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1000, 1400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: LessonWhiteboardEditorPanel(
+                courseId: 'course-1',
+                lessonNumber: 1,
+                mediaSegments: testMediaSegments(),
+                durationLabel: '1分30秒',
+                draftBoardSet: const BoardSet(
+                  boards: [
+                    LessonWhiteboardBoard(
+                      id: LessonWhiteboardBoard.defaultBoardId,
+                      order: 0,
+                      title: 'ボード1',
+                    ),
+                    LessonWhiteboardBoard(
+                      id: 'second',
+                      order: 1,
+                      title: 'ボード2',
+                    ),
+                  ],
+                ),
+                onBoardSetDraftSaved: (_) async {},
+                playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+              ),
+            ),
+          ),
+        ),
       );
       await tester.pumpAndSettle();
 
-      expect(saved, isNotNull);
+      await _selectBoard(tester, '2. ボード2');
+      var canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      _drawEditorStroke(canvas);
+      await tester.pump();
+
+      await _selectBoard(tester, '1. ボード1');
+      await tester.tap(find.byKey(const ValueKey('whiteboard-undo-stroke')));
+      await tester.pump();
+
+      expect(find.text('「ボード2」の直前の線を戻しました。'), findsOneWidget);
       expect(
-        saved!.switchEvents.any(
-          (event) =>
-              event.segmentId == 'part-2' && event.boardId == 'second',
+        find.byKey(
+          ValueKey(
+            'whiteboard-board-dropdown-${LessonWhiteboardBoard.defaultBoardId}',
+          ),
         ),
-        isTrue,
+        findsOneWidget,
       );
     },
   );

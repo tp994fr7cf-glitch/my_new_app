@@ -25,6 +25,7 @@ void main() {
       id: 'recorded',
       timestampSec: 30,
       endTimestampSec: 34,
+      hiddenAtSec: 32,
       points: [
         WhiteboardPoint(x: 0, y: 0, timestampSec: 30),
         WhiteboardPoint(x: 1, y: 1, timestampSec: 34),
@@ -40,6 +41,7 @@ void main() {
 
     expect(scaled.timestampSec, 30);
     expect(scaled.endTimestampSec, 36);
+    expect(scaled.hiddenAtSec, 33);
     expect(scaled.points.last.timestampSec, 36);
   });
 

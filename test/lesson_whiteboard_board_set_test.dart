@@ -602,4 +602,52 @@ void main() {
       1,
     );
   });
+
+  test('replaceStroke updates a stroke by id', () {
+    final withStroke = boardSet.replaceBoard(
+      boardSet.defaultBoard!.copyWith(
+        layerBundle: LessonWhiteboardLayerBundle(
+          layers: [
+            defaultLayer.copyWith(
+              strokes: const [
+                WhiteboardStroke(
+                  id: 'ink',
+                  timestampSec: 1,
+                  points: [
+                    WhiteboardPoint(x: 0, y: 0),
+                    WhiteboardPoint(x: 1, y: 1),
+                  ],
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(
+      withStroke
+          .strokeById(
+            boardId: LessonWhiteboardBoard.defaultBoardId,
+            strokeId: 'ink',
+          )
+          ?.id,
+      'ink',
+    );
+
+    final hidden = withStroke.replaceStroke(
+      boardId: LessonWhiteboardBoard.defaultBoardId,
+      strokeId: 'ink',
+      update: (stroke) => stroke.copyWith(hiddenAtSec: 4),
+    );
+    expect(
+      hidden
+          .strokeById(
+            boardId: LessonWhiteboardBoard.defaultBoardId,
+            strokeId: 'ink',
+          )
+          ?.hiddenAtSec,
+      4,
+    );
+  });
 }

@@ -165,6 +165,32 @@ test("validates bounded whiteboard strokes", () => {
     }),
     false,
   );
+  assert.equal(
+    isValidWhiteboardStroke({
+      id: "stroke_hidden",
+      timestampSec: 1.2,
+      endTimestampSec: 1.5,
+      hiddenAtSec: 2.0,
+      colorArgb: 0xff000000,
+      strokeWidth: 3,
+      points: [
+        {x: 0.1, y: 0.2, timestampSec: 1.2},
+        {x: 0.3, y: 0.4, timestampSec: 1.4},
+      ],
+    }),
+    true,
+  );
+  assert.equal(
+    isValidWhiteboardStroke({
+      id: "stroke_hidden_too_early",
+      timestampSec: 1.2,
+      hiddenAtSec: 1.0,
+      colorArgb: 0xff000000,
+      strokeWidth: 3,
+      points: [{x: 0.1, y: 0.2, timestampSec: 1.2}],
+    }),
+    false,
+  );
 });
 
 test("validates BoardSet snapshots and bounded timeline chunks", () => {
@@ -199,6 +225,34 @@ test("validates BoardSet snapshots and bounded timeline chunks", () => {
     ],
   };
   assert.equal(isValidBoardSet(boardSet), true);
+  const hiddenStrokeBoardSet = {
+    ...boardSet,
+    boards: [
+      {
+        ...boardSet.boards[0],
+        layers: [
+          {
+            ...boardSet.boards[0].layers[0],
+            strokes: [
+              {
+                id: "stroke_hidden",
+                timestampSec: 1.2,
+                endTimestampSec: 1.5,
+                hiddenAtSec: 2.0,
+                colorArgb: 0xff000000,
+                strokeWidth: 3,
+                points: [
+                  {x: 0.1, y: 0.2, timestampSec: 1.2},
+                  {x: 0.3, y: 0.4, timestampSec: 1.4},
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  assert.equal(isValidBoardSet(hiddenStrokeBoardSet), true);
   const materialBackground = {
     assetId: "material-1",
     storagePath:

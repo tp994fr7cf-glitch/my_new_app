@@ -58,6 +58,7 @@ export type WhiteboardStroke = {
   id: string;
   timestampSec: number;
   endTimestampSec?: number;
+  hiddenAtSec?: number;
   colorArgb: number;
   strokeWidth: number;
   points: Array<{x: number; y: number; timestampSec?: number}>;
@@ -301,6 +302,7 @@ export function isValidWhiteboardStroke(
       "id",
       "timestampSec",
       "endTimestampSec",
+      "hiddenAtSec",
       "colorArgb",
       "strokeWidth",
       "points",
@@ -324,6 +326,15 @@ export function isValidWhiteboardStroke(
     (
       !isFiniteNonNegative(value.endTimestampSec) ||
       value.endTimestampSec < value.timestampSec
+    )
+  ) {
+    return false;
+  }
+  if (
+    value.hiddenAtSec !== undefined &&
+    (
+      !isFiniteNonNegative(value.hiddenAtSec) ||
+      value.hiddenAtSec < value.timestampSec
     )
   ) {
     return false;

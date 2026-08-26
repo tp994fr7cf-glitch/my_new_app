@@ -371,6 +371,7 @@ class WhiteboardStroke {
     required this.timestampSec,
     required this.points,
     this.endTimestampSec,
+    this.hiddenAtSec,
     this.colorArgb = 0xFF000000,
     this.strokeWidth = 3,
   });
@@ -378,6 +379,7 @@ class WhiteboardStroke {
   final String id;
   final double timestampSec;
   final double? endTimestampSec;
+  final double? hiddenAtSec;
   final List<WhiteboardPoint> points;
   final int colorArgb;
   final double strokeWidth;
@@ -392,6 +394,7 @@ class WhiteboardStroke {
       id: data['id'] as String? ?? '',
       timestampSec: (data['timestampSec'] as num?)?.toDouble() ?? 0,
       endTimestampSec: (data['endTimestampSec'] as num?)?.toDouble(),
+      hiddenAtSec: (data['hiddenAtSec'] as num?)?.toDouble(),
       points: pointsData is List
           ? pointsData.whereType<Map>().map(WhiteboardPoint.fromMap).toList()
           : const [],
@@ -405,17 +408,24 @@ class WhiteboardStroke {
       'id': id,
       'timestampSec': timestampSec,
       if (endTimestampSec != null) 'endTimestampSec': endTimestampSec,
+      if (hiddenAtSec != null) 'hiddenAtSec': hiddenAtSec,
       'points': points.map((point) => point.toMap()).toList(),
       'colorArgb': colorArgb,
       'strokeWidth': strokeWidth,
     };
   }
 
-  WhiteboardStroke copyWith({List<WhiteboardPoint>? points}) {
+  WhiteboardStroke copyWith({
+    List<WhiteboardPoint>? points,
+    double? endTimestampSec,
+    double? hiddenAtSec,
+    bool clearHiddenAtSec = false,
+  }) {
     return WhiteboardStroke(
       id: id,
       timestampSec: timestampSec,
-      endTimestampSec: endTimestampSec,
+      endTimestampSec: endTimestampSec ?? this.endTimestampSec,
+      hiddenAtSec: clearHiddenAtSec ? null : hiddenAtSec ?? this.hiddenAtSec,
       points: points ?? this.points,
       colorArgb: colorArgb,
       strokeWidth: strokeWidth,
@@ -500,11 +510,22 @@ List<WhiteboardStroke> visibleWhiteboardStrokes({
   return visibleStrokes;
 }
 
+bool isWhiteboardStrokeHiddenAt({
+  required WhiteboardStroke stroke,
+  required double positionSec,
+}) {
+  final hiddenAtSec = stroke.hiddenAtSec;
+  return hiddenAtSec != null && positionSec >= hiddenAtSec;
+}
+
 WhiteboardStroke? visiblePortionOfWhiteboardStroke({
   required WhiteboardStroke stroke,
   required double positionSec,
 }) {
   if (stroke.timestampSec > positionSec) {
+    return null;
+  }
+  if (isWhiteboardStrokeHiddenAt(stroke: stroke, positionSec: positionSec)) {
     return null;
   }
 
@@ -625,8 +646,7 @@ List<WhiteboardStroke> visibleWhiteboardBundleStrokes({
 }) {
   final visibleStrokes = <WhiteboardStroke>[];
   for (final layer in bundle.orderedLayers) {
-    final layerSegmentId =
-        layer.anchorType == LessonTimedAnchorType.segment
+    final layerSegmentId = layer.anchorType == LessonTimedAnchorType.segment
         ? layer.segmentId
         : null;
     if (orderedSegmentIds.isEmpty) {
@@ -658,7 +678,10 @@ List<WhiteboardStroke> visibleWhiteboardBundleStrokes({
       case WhiteboardPartOrderRole.later:
         continue;
       case WhiteboardPartOrderRole.earlier:
-        visibleStrokes.addAll(layer.strokes);
+        visibleStrokes.addAll([
+          for (final stroke in layer.strokes)
+            if (stroke.hiddenAtSec == null) stroke,
+        ]);
         continue;
       case WhiteboardPartOrderRole.current:
         visibleStrokes.addAll(

@@ -74,16 +74,19 @@ void main() {
     ],
   );
 
-  test('part 1 playback hides later-part writing even if it was recorded first', () {
-    final strokes = visibleWhiteboardBundleStrokes(
-      bundle: boardSet.defaultBoard!.layerBundle,
-      globalPositionSec: 3,
-      segmentLocalPositionSec: 3,
-      activeSegmentId: 'part-1',
-      orderedSegmentIds: orderedIds,
-    );
-    expect(strokes.map((stroke) => stroke.id), ['n1', 'n2', 'n3']);
-  });
+  test(
+    'part 1 playback hides later-part writing even if it was recorded first',
+    () {
+      final strokes = visibleWhiteboardBundleStrokes(
+        bundle: boardSet.defaultBoard!.layerBundle,
+        globalPositionSec: 3,
+        segmentLocalPositionSec: 3,
+        activeSegmentId: 'part-1',
+        orderedSegmentIds: orderedIds,
+      );
+      expect(strokes.map((stroke) => stroke.id), ['n1', 'n2', 'n3']);
+    },
+  );
 
   test('part 2 playback inherits completed part 1 writing', () {
     final atStart = visibleWhiteboardBundleStrokes(
@@ -113,23 +116,26 @@ void main() {
     ]);
   });
 
-  test('independent part 2 playback still inherits completed part 1 writing', () {
-    final strokes = visibleWhiteboardBundleStrokes(
-      bundle: boardSet.defaultBoard!.layerBundle,
-      globalPositionSec: 1,
-      segmentLocalPositionSec: 1,
-      activeSegmentId: 'part-2',
-      orderedSegmentIds: orderedIds,
-    );
-    expect(strokes.map((stroke) => stroke.id), [
-      'n1',
-      'n2',
-      'n3',
-      'n4',
-      'n5',
-      'n6',
-    ]);
-  });
+  test(
+    'independent part 2 playback still inherits completed part 1 writing',
+    () {
+      final strokes = visibleWhiteboardBundleStrokes(
+        bundle: boardSet.defaultBoard!.layerBundle,
+        globalPositionSec: 1,
+        segmentLocalPositionSec: 1,
+        activeSegmentId: 'part-2',
+        orderedSegmentIds: orderedIds,
+      );
+      expect(strokes.map((stroke) => stroke.id), [
+        'n1',
+        'n2',
+        'n3',
+        'n4',
+        'n5',
+        'n6',
+      ]);
+    },
+  );
 
   test('part 2 board switches do not apply during part 1', () {
     const extraBoard = LessonWhiteboardBoard(id: 'later-board', order: 1);
@@ -338,4 +344,33 @@ void main() {
       expect(visible.map((stroke) => stroke.id), ['live-now']);
     },
   );
+
+  test('part 2 playback does not inherit undone part 1 strokes', () {
+    final bundle = LessonWhiteboardLayerBundle(
+      layers: [
+        _segmentLayer(
+          segmentId: 'part-1',
+          order: 0,
+          strokes: [
+            _numberStroke('n1', 1),
+            _numberStroke('n-hidden', 2).copyWith(hiddenAtSec: 3),
+          ],
+        ),
+        _segmentLayer(
+          segmentId: 'part-2',
+          order: 1,
+          strokes: [_numberStroke('n6', 1)],
+        ),
+      ],
+    );
+
+    final strokes = visibleWhiteboardBundleStrokes(
+      bundle: bundle,
+      globalPositionSec: 5,
+      segmentLocalPositionSec: 1,
+      activeSegmentId: 'part-2',
+      orderedSegmentIds: orderedIds,
+    );
+    expect(strokes.map((stroke) => stroke.id), ['n1', 'n6']);
+  });
 }

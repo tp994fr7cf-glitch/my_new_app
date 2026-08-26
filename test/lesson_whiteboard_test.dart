@@ -11,6 +11,7 @@ void main() {
           id: 'stroke-1',
           timestampSec: 10.5,
           endTimestampSec: 11.2,
+          hiddenAtSec: 12.5,
           points: [
             WhiteboardPoint(x: 0.1, y: 0.2, timestampSec: 10.5),
             WhiteboardPoint(x: 0.4, y: 0.6, timestampSec: 11.0),
@@ -24,6 +25,7 @@ void main() {
     expect(restored.updatedAtMs, 123);
     expect(restored.strokes, hasLength(1));
     expect(restored.strokes.first.timestampSec, 10.5);
+    expect(restored.strokes.first.hiddenAtSec, 12.5);
     expect(restored.strokes.first.points, hasLength(2));
     expect(restored.strokes.first.points.last.timestampSec, 11.0);
   });
@@ -92,6 +94,27 @@ void main() {
 
     final atEnd = visibleWhiteboardStrokes(strokes: [stroke], positionSec: 8);
     expect(atEnd.first.points, hasLength(4));
+  });
+
+  test('visibleWhiteboardStrokes hides a stroke at hiddenAtSec', () {
+    const stroke = WhiteboardStroke(
+      id: 'hidden',
+      timestampSec: 5,
+      hiddenAtSec: 8,
+      points: [
+        WhiteboardPoint(x: 0.0, y: 0.5, timestampSec: 5.0),
+        WhiteboardPoint(x: 1.0, y: 0.5, timestampSec: 7.0),
+      ],
+    );
+
+    expect(
+      visibleWhiteboardStrokes(strokes: [stroke], positionSec: 7.9),
+      hasLength(1),
+    );
+    expect(
+      visibleWhiteboardStrokes(strokes: [stroke], positionSec: 8),
+      isEmpty,
+    );
   });
 
   test('shouldSampleWhiteboardPoint thins dense points', () {
@@ -270,10 +293,7 @@ void main() {
           WhiteboardStroke(
             id: 'later',
             timestampSec: 1,
-            points: [
-              WhiteboardPoint(x: 0, y: 0),
-              WhiteboardPoint(x: 1, y: 1),
-            ],
+            points: [WhiteboardPoint(x: 0, y: 0), WhiteboardPoint(x: 1, y: 1)],
           ),
         ],
       );

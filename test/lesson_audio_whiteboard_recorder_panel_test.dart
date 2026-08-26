@@ -705,4 +705,73 @@ void main() {
 
     expect(recorder.deleted, isTrue);
   });
+
+  testWidgets(
+    'paused recording accepts distance-sampled strokes and can undo them',
+    (tester) async {
+      final recorder = _FakeRecordingController();
+      final preview = _FakePreviewController();
+      await tester.binding.setSurfaceSize(const Size(800, 1200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: LessonAudioWhiteboardRecorderPanel(
+                segmentStartSec: 0,
+                initialBoardSet: const BoardSet(),
+                recordingControllerFactory: () => recorder,
+                previewControllerFactory: () => preview,
+                onDiscard: () {},
+                onBusyChanged: (_) {},
+                onUseRecording: (_, _, _, _) async {},
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(
+        find.byKey(const ValueKey('start-audio-whiteboard-recording')),
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('pause-audio-recording')));
+      await tester.pumpAndSettle();
+
+      var canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      expect(canvas.drawingEnabled, isTrue);
+
+      canvas.onStrokeStart?.call();
+      canvas.onStrokeUpdate?.call(const WhiteboardPoint(x: 0.10, y: 0.50));
+      canvas.onStrokeUpdate?.call(const WhiteboardPoint(x: 0.20, y: 0.50));
+      canvas.onStrokeUpdate?.call(const WhiteboardPoint(x: 0.30, y: 0.50));
+      canvas.onStrokeEnd?.call(const WhiteboardPoint(x: 0.40, y: 0.50));
+      await tester.pump();
+
+      canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+      expect(canvas.strokes, hasLength(1));
+      expect(canvas.strokes.single.points, hasLength(4));
+      expect(
+        canvas.strokes.single.points.map((point) => point.timestampSec).toSet(),
+        hasLength(1),
+      );
+
+      await tester.tap(
+        find.byKey(const ValueKey('audio-whiteboard-undo-stroke')),
+      );
+      await tester.pump();
+      canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+      expect(canvas.strokes, isEmpty);
+
+      await tester.tap(
+        find.byKey(const ValueKey('audio-whiteboard-redo-stroke')),
+      );
+      await tester.pump();
+      canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+      expect(canvas.strokes, hasLength(1));
+    },
+  );
 }

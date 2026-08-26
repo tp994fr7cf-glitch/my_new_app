@@ -84,12 +84,15 @@ WhiteboardStroke scaleRecordedWhiteboardStroke({
     return segmentStartSec + (localSec * scale).clamp(0.0, segmentDurationSec);
   }
 
-  return WhiteboardStroke(
+    return WhiteboardStroke(
     id: stroke.id,
     timestampSec: scaleTimestamp(stroke.timestampSec),
     endTimestampSec: stroke.endTimestampSec == null
         ? null
         : scaleTimestamp(stroke.endTimestampSec!),
+    hiddenAtSec: stroke.hiddenAtSec == null
+        ? null
+        : scaleTimestamp(stroke.hiddenAtSec!),
     points: [
       for (final point in stroke.points)
         WhiteboardPoint(

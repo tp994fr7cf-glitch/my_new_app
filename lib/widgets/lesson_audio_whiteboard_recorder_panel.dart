@@ -9,6 +9,7 @@ import '../models/lesson_recording_timeline.dart';
 import '../models/lesson_whiteboard.dart';
 import '../models/lesson_whiteboard_board_set.dart';
 import '../models/lesson_whiteboard_part_order.dart';
+import '../models/lesson_whiteboard_stroke_history.dart';
 import '../services/lesson_audio_recording_service.dart';
 import '../services/lesson_material_source_resolver.dart';
 import '../services/lesson_media_storage_service.dart';
@@ -79,6 +80,7 @@ class _LessonAudioWhiteboardRecorderPanelState
   List<WhiteboardPoint> _inProgressPoints = [];
   double? _strokeStartSec;
   final Set<String> _sessionStrokeIds = {};
+  final WhiteboardStrokeHistory _strokeHistory = WhiteboardStrokeHistory();
   final Set<int> _sessionSwitchSequences = {};
   final Set<int> _sessionViewportSequences = {};
   int? _activeViewportInteractionId;
@@ -116,7 +118,9 @@ class _LessonAudioWhiteboardRecorderPanelState
       _isUploading ||
       _isDeletingCurrentRecording;
   bool get _controlsBusy => _isUploading || _isDeletingCurrentRecording;
-  bool get _drawingEnabled => _isRecording && !_drawingLimitReached;
+  bool get _drawingEnabled =>
+      (_isRecording || _isPaused) && !_drawingLimitReached;
+  bool get _canUseStrokeHistory => _isRecording || _isPaused;
   bool get _canAddBoard =>
       (_status == _RecordingStatus.idle || _isRecording || _isPaused) &&
       !_drawingLimitReached &&
@@ -165,7 +169,13 @@ class _LessonAudioWhiteboardRecorderPanelState
 
   List<WhiteboardStroke> get _displayedStrokes {
     if (!_usesPartOrder && _status != _RecordingStatus.ready) {
-      return _strokes;
+      if (!_isRecording && !_isPaused) {
+        return _strokes;
+      }
+      return visibleWhiteboardStrokes(
+        strokes: _strokes,
+        positionSec: _recordingPositionSec,
+      );
     }
     final bundle = _usesPartOrder
         ? copyWithSegmentLayerStrokes(
@@ -302,6 +312,7 @@ class _LessonAudioWhiteboardRecorderPanelState
     _inProgressPoints = [];
     _strokeStartSec = null;
     _sessionStrokeIds.clear();
+    _strokeHistory.clear();
     _sessionSwitchSequences.clear();
     _sessionViewportSequences.clear();
     _activeViewportInteractionId = null;
@@ -328,6 +339,7 @@ class _LessonAudioWhiteboardRecorderPanelState
     _preRecordingSelectedBoardId = _selectedBoardId;
     _preRecordingEditorViewports = Map.of(_editorViewports);
     _sessionStrokeIds.clear();
+    _strokeHistory.clear();
     _sessionSwitchSequences.clear();
     _sessionViewportSequences.clear();
     _activeViewportInteractionId = null;
@@ -371,6 +383,7 @@ class _LessonAudioWhiteboardRecorderPanelState
     _inProgressPoints = [];
     _strokeStartSec = null;
     _sessionStrokeIds.clear();
+    _strokeHistory.clear();
     _sessionSwitchSequences.clear();
     _sessionViewportSequences.clear();
     _activeViewportInteractionId = null;
@@ -527,7 +540,7 @@ class _LessonAudioWhiteboardRecorderPanelState
       if (mounted) {
         setState(() {
           _status = _RecordingStatus.paused;
-          _message = '一時停止中です。再開すると録音と書き物の時計が同時に進みます。';
+          _message = '一時停止中です。この秒にペンで書けます。再開すると録音の時計が進みます。';
         });
       }
     } catch (error) {
@@ -565,6 +578,7 @@ class _LessonAudioWhiteboardRecorderPanelState
     }
     setState(() => _status = _RecordingStatus.resuming);
     try {
+      _finishInProgressStroke();
       await _recorder.resume();
       _flushPendingViewport();
       _clock.resume();
@@ -953,11 +967,19 @@ class _LessonAudioWhiteboardRecorderPanelState
       y: point.y,
       timestampSec: timestampSec,
     );
-    if (!shouldSampleRecordedWhiteboardPoint(
-      existingPoints: _inProgressPoints,
-      nextTimestampSec: timestampSec,
-      force: force,
-    )) {
+    final shouldSample = _isPaused
+        ? shouldSampleWhiteboardPoint(
+            existingPoints: _inProgressPoints,
+            nextPoint: timedPoint,
+            nextTimestampSec: timestampSec,
+            force: force,
+          )
+        : shouldSampleRecordedWhiteboardPoint(
+            existingPoints: _inProgressPoints,
+            nextTimestampSec: timestampSec,
+            force: force,
+          );
+    if (!shouldSample) {
       return;
     }
     final candidatePoints = [..._inProgressPoints, timedPoint];
@@ -1096,6 +1118,7 @@ class _LessonAudioWhiteboardRecorderPanelState
       if (_canAcceptBoardSet(candidate)) {
         _sessionStrokeIds.add(id);
         _strokes = [..._strokes, stroke];
+        _strokeHistory.recordDrawn(boardId: _selectedBoardId, strokeId: id);
       }
     }
     if (mounted) {
@@ -1116,6 +1139,94 @@ class _LessonAudioWhiteboardRecorderPanelState
       _inProgressStroke = null;
       _inProgressPoints = [];
       _strokeStartSec = null;
+    });
+  }
+
+  WhiteboardStroke? _strokeForHistory(WhiteboardStrokeHistoryEntry entry) {
+    if (entry.boardId == _selectedBoardId) {
+      for (final stroke in _strokes) {
+        if (stroke.id == entry.strokeId) {
+          return stroke;
+        }
+      }
+    }
+    return _boardSet.strokeById(
+      boardId: entry.boardId,
+      strokeId: entry.strokeId,
+    );
+  }
+
+  bool _isHistoryStrokeVisible(WhiteboardStrokeHistoryEntry entry) {
+    final stroke = _strokeForHistory(entry);
+    if (stroke == null || !_sessionStrokeIds.contains(stroke.id)) {
+      return false;
+    }
+    return visiblePortionOfWhiteboardStroke(
+          stroke: stroke,
+          positionSec: _recordingPositionSec,
+        ) !=
+        null;
+  }
+
+  void _applyStrokeHiddenAt({
+    required WhiteboardStrokeHistoryEntry entry,
+    required double? hiddenAtSec,
+  }) {
+    _boardSet = _boardSet.replaceStroke(
+      boardId: entry.boardId,
+      strokeId: entry.strokeId,
+      update: (stroke) => hiddenAtSec == null
+          ? stroke.copyWith(clearHiddenAtSec: true)
+          : stroke.copyWith(hiddenAtSec: hiddenAtSec),
+    );
+    if (entry.boardId != _selectedBoardId) {
+      return;
+    }
+    _strokes = [
+      for (final stroke in _strokes)
+        if (stroke.id == entry.strokeId)
+          hiddenAtSec == null
+              ? stroke.copyWith(clearHiddenAtSec: true)
+              : stroke.copyWith(hiddenAtSec: hiddenAtSec)
+        else
+          stroke,
+    ];
+  }
+
+  void _undoStroke() {
+    if (!_canUseStrokeHistory) {
+      return;
+    }
+    _finishInProgressStroke();
+    _commitSelectedBoard();
+    final entry = _strokeHistory.takeUndoVisible(_isHistoryStrokeVisible);
+    if (entry == null) {
+      return;
+    }
+    final board = _boardSet.boardById(entry.boardId);
+    setState(() {
+      _applyStrokeHiddenAt(entry: entry, hiddenAtSec: _recordingPositionSec);
+      _strokeHistory.pushRedo(entry);
+      if (entry.boardId != _selectedBoardId) {
+        final title = (board?.title ?? '').trim();
+        _message = title.isEmpty ? '別のボードの直前の線を戻しました。' : '「$title」の直前の線を戻しました。';
+      }
+    });
+  }
+
+  void _redoStroke() {
+    if (!_canUseStrokeHistory) {
+      return;
+    }
+    _finishInProgressStroke();
+    _commitSelectedBoard();
+    final entry = _strokeHistory.takeRedo();
+    if (entry == null) {
+      return;
+    }
+    setState(() {
+      _applyStrokeHiddenAt(entry: entry, hiddenAtSec: null);
+      _strokeHistory.pushUndo(entry);
     });
   }
 
@@ -1358,13 +1469,32 @@ class _LessonAudioWhiteboardRecorderPanelState
             icon: const Icon(Icons.mic),
             label: const Text('録音を再開'),
           ),
-        if (_isRecording || _isPaused)
+        if (_isRecording || _isPaused) ...[
           FilledButton.icon(
             key: const ValueKey('stop-audio-recording'),
             onPressed: _isStopping ? null : _stopRecording,
             icon: const Icon(Icons.stop),
             label: const Text('録音を停止'),
           ),
+          OutlinedButton.icon(
+            key: const ValueKey('audio-whiteboard-undo-stroke'),
+            onPressed:
+                !_canUseStrokeHistory ||
+                    !_strokeHistory.canUndoVisible(_isHistoryStrokeVisible)
+                ? null
+                : _undoStroke,
+            icon: const Icon(Icons.undo),
+            label: const Text('戻る'),
+          ),
+          OutlinedButton.icon(
+            key: const ValueKey('audio-whiteboard-redo-stroke'),
+            onPressed: !_canUseStrokeHistory || !_strokeHistory.canRedo
+                ? null
+                : _redoStroke,
+            icon: const Icon(Icons.redo),
+            label: const Text('進む'),
+          ),
+        ],
         if (_status == _RecordingStatus.ready) ...[
           OutlinedButton.icon(
             key: const ValueKey('preview-audio-recording'),
@@ -1445,10 +1575,10 @@ class _LessonAudioWhiteboardRecorderPanelState
                 Text(
                   _status == _RecordingStatus.idle
                       ? '録音開始前は、ボードの追加と表示するボードの選択だけできます。'
-                      : _drawingEnabled
+                      : _isRecording
                       ? '録音中はペンで書けます（最大20点/秒）。'
                       : _isPaused
-                      ? '一時停止中は書けませんが、ボードの追加と切替はできます。'
+                      ? '一時停止中もペンで書けます。書いた線は、止めた秒にまとめて現れます。'
                       : '録音した書き物を確認できます。',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),

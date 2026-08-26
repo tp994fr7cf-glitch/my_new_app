@@ -891,6 +891,57 @@ class BoardSet {
       ],
     );
   }
+
+  WhiteboardStroke? strokeById({
+    required String boardId,
+    required String strokeId,
+  }) {
+    final board = boardById(boardId);
+    if (board == null) {
+      return null;
+    }
+    for (final layer in board.layerBundle.layers) {
+      for (final stroke in layer.strokes) {
+        if (stroke.id == strokeId) {
+          return stroke;
+        }
+      }
+    }
+    return null;
+  }
+
+  BoardSet replaceStroke({
+    required String boardId,
+    required String strokeId,
+    required WhiteboardStroke Function(WhiteboardStroke stroke) update,
+  }) {
+    final board = boardById(boardId);
+    if (board == null) {
+      return this;
+    }
+    var found = false;
+    final nextLayers = <LessonWhiteboardLayer>[];
+    for (final layer in board.layerBundle.orderedLayers) {
+      final nextStrokes = <WhiteboardStroke>[];
+      for (final stroke in layer.strokes) {
+        if (stroke.id == strokeId) {
+          found = true;
+          nextStrokes.add(update(stroke));
+        } else {
+          nextStrokes.add(stroke);
+        }
+      }
+      nextLayers.add(layer.copyWith(strokes: nextStrokes));
+    }
+    if (!found) {
+      return this;
+    }
+    return replaceBoard(
+      board.copyWith(
+        layerBundle: LessonWhiteboardLayerBundle(layers: nextLayers),
+      ),
+    );
+  }
 }
 
 typedef LessonWhiteboardBoardSet = BoardSet;
