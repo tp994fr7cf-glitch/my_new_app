@@ -6,6 +6,7 @@ import 'package:my_new_app/models/lesson_whiteboard_board_set.dart';
 import 'package:my_new_app/services/lesson_media_playlist_playback.dart';
 import 'package:my_new_app/widgets/lesson_media_playback_gate.dart';
 import 'package:my_new_app/widgets/lesson_whiteboard_overview_preview.dart';
+import 'package:my_new_app/widgets/lesson_whiteboard_payload_meter.dart';
 
 void main() {
   testWidgets('overview preview is view-only and claims the playback gate', (
@@ -109,6 +110,8 @@ void main() {
     expect(find.text('リセット'), findsNothing);
     expect(find.text('書き物を一時保存'), findsNothing);
     expect(find.text('書き物を描き直す'), findsNothing);
+    expect(find.byType(LessonWhiteboardPayloadMeter), findsOneWidget);
+    expect(find.textContaining('/850'), findsOneWidget);
 
     await tester.tap(find.widgetWithText(FilledButton, 'スタート').first);
     await tester.pump();

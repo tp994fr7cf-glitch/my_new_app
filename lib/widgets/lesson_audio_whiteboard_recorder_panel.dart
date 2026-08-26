@@ -14,6 +14,7 @@ import '../services/lesson_audio_recording_service.dart';
 import '../services/lesson_material_source_resolver.dart';
 import '../services/lesson_media_storage_service.dart';
 import 'lesson_whiteboard_canvas.dart';
+import 'lesson_whiteboard_payload_meter.dart';
 
 typedef LessonRecordedAudioUseCallback =
     Future<void> Function(
@@ -72,6 +73,7 @@ class _LessonAudioWhiteboardRecorderPanelState
   _RecordingStatus _status = _RecordingStatus.idle;
   late BoardSet _boardSet;
   late String _selectedBoardId;
+  int _payloadMeterEpoch = 0;
   BoardSet? _preRecordingBoardSet;
   String? _preRecordingSelectedBoardId;
   Map<String, LessonWhiteboardViewport> _preRecordingEditorViewports = {};
@@ -298,6 +300,7 @@ class _LessonAudioWhiteboardRecorderPanelState
 
   void _resetWorkingBoardSet() {
     _boardSet = widget.initialBoardSet.ensureEditable();
+    _payloadMeterEpoch++;
     _sessionSegmentStartSec = _recordingOriginSec;
     _selectedBoardId =
         resolveBoardAtPartOrder(
@@ -1656,6 +1659,13 @@ class _LessonAudioWhiteboardRecorderPanelState
                   background: _selectedBoard.background,
                   aspectRatio: _selectedBoard.aspectRatio,
                   showViewportControls: false,
+                  topLeftOverlay: LessonWhiteboardPayloadMeter(
+                    boardSet: _boardSet,
+                    scopeKey: Object.hash(
+                      widget.lessonId ?? widget.courseId,
+                      _payloadMeterEpoch,
+                    ),
+                  ),
                   bottomLeftOverlay: _buildScreenShareButton(context),
                   materialUrlResolver: _resolveMaterialSource,
                 ),

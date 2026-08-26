@@ -26,6 +26,7 @@ import '../services/lesson_material_cache_service.dart';
 import '../services/app_media_memory.dart';
 import '../widgets/async_route_exit_scope.dart';
 import '../widgets/lesson_whiteboard_canvas.dart';
+import '../widgets/lesson_whiteboard_payload_meter.dart';
 
 const bool liveAudioProbeEnabled = bool.fromEnvironment(
   'ENABLE_LIVE_AUDIO',
@@ -2187,6 +2188,12 @@ class _LiveAudioProbePageState extends State<LiveAudioProbePage> {
           viewportInteractionEnabled:
               !_isCatchup && (!_isDrawer || _canUseSharedTimeline),
           showViewportControls: !_isCatchup,
+          topLeftOverlay: _isTeacher
+              ? LessonWhiteboardPayloadMeter(
+                  boardSet: _boardState.boardSet,
+                  scopeKey: _sessionId ?? widget.courseId,
+                )
+              : null,
           background: board.background,
           aspectRatio: board.aspectRatio,
           materialUrlResolver: _resolveLiveMaterialSource,

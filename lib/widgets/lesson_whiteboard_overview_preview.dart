@@ -363,6 +363,8 @@ class _LessonWhiteboardOverviewPreviewState
                 positionSecExact: _currentPositionSecExact,
                 totalDurationSec: _totalDurationSec,
                 materialUrlResolver: _resolveMaterialSource,
+                showLessonPayloadMeter: true,
+                payloadMeterScopeKey: widget.lessonId ?? widget.courseId,
               ),
             ],
           ],

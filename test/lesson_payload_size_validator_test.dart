@@ -9,6 +9,14 @@ void main() {
     expect(estimateSerializedUtf8JsonBytes('あ'), 5);
   });
 
+  test('formats lesson payload usage as kilobytes over 850', () {
+    expect(formatLessonPayloadUsageFraction(0), '0/850');
+    expect(formatLessonPayloadUsageFraction(1023), '0/850');
+    expect(formatLessonPayloadUsageFraction(1024), '1/850');
+    expect(formatLessonPayloadUsageFraction(850 * 1024), '850/850');
+    expect(formatLessonPayloadUsageFraction(851 * 1024), '851/850');
+  });
+
   test('accepts a normal board set and lessons payload', () {
     const boardSet = BoardSet(
       boards: [

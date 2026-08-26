@@ -64,6 +64,7 @@ void main() {
         find.byType(LessonWhiteboardCanvas),
       );
       expect(canvas.strokes, isEmpty);
+      expect(canvas.topLeftOverlay, isNull);
 
       playback.liveOffsetSec = 0.2;
       await tester.pump(const Duration(milliseconds: 50));

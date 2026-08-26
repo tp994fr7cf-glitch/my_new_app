@@ -15,6 +15,7 @@ import 'package:my_new_app/services/lesson_media_playlist_playback.dart';
 import 'package:my_new_app/services/lesson_material_storage_service.dart';
 import 'package:my_new_app/widgets/lesson_whiteboard_canvas.dart';
 import 'package:my_new_app/widgets/lesson_whiteboard_editor_panel.dart';
+import 'package:my_new_app/widgets/lesson_whiteboard_payload_meter.dart';
 
 List<LessonMediaSegment> testMediaSegments({int durationSec = 90}) {
   return [
@@ -108,6 +109,8 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byType(LessonWhiteboardCanvas), findsOneWidget);
+      expect(find.byType(LessonWhiteboardPayloadMeter), findsOneWidget);
+      expect(find.textContaining('/850'), findsOneWidget);
       var canvas = tester.widget<LessonWhiteboardCanvas>(
         find.byType(LessonWhiteboardCanvas),
       );

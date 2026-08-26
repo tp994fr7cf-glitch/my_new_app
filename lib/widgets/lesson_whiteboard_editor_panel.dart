@@ -25,6 +25,7 @@ import '../services/lesson_material_storage_service.dart';
 import 'lesson_material_library_picker.dart';
 import 'lesson_media_playback_gate.dart';
 import 'lesson_whiteboard_canvas.dart';
+import 'lesson_whiteboard_payload_meter.dart';
 
 typedef WhiteboardDraftSaveCallback =
     Future<void> Function(LessonWhiteboard whiteboard);
@@ -102,6 +103,7 @@ class _LessonWhiteboardEditorPanelState
   List<WhiteboardStroke> _strokes = [];
   BoardSet _boardSet = const BoardSet();
   String _selectedBoardId = LessonWhiteboardBoard.defaultBoardId;
+  int _payloadMeterEpoch = 0;
   WhiteboardStroke? _inProgressStroke;
   List<WhiteboardPoint> _inProgressPoints = [];
 
@@ -289,6 +291,14 @@ class _LessonWhiteboardEditorPanelState
       _boardSet.defaultBoard ??
       _boardSet.ensureEditable().defaultBoard!;
 
+  Widget get _payloadMeter => LessonWhiteboardPayloadMeter(
+    boardSet: _boardSet,
+    scopeKey: Object.hash(
+      widget.lessonId ?? '${widget.courseId}-${widget.lessonNumber}',
+      _payloadMeterEpoch,
+    ),
+  );
+
   bool get _selectedMaterialBoardIsPublished =>
       _publishedBoardSet.boardById(_selectedBoardId)?.background != null;
 
@@ -406,6 +416,7 @@ class _LessonWhiteboardEditorPanelState
 
   void _loadBoardSet(BoardSet boardSet) {
     _boardSet = boardSet.ensureEditable();
+    _payloadMeterEpoch++;
     final selected = _boardSet.boardById(_selectedBoardId);
     _selectedBoardId = selected?.id ?? _boardSet.defaultBoard!.id;
     _strokes = _workingStrokesFor(_selectedBoard);
@@ -2373,6 +2384,7 @@ class _LessonWhiteboardEditorPanelState
                     drawingEnabled: false,
                     maxWidth: lessonWhiteboardCompactMaxWidth,
                     showViewportControls: false,
+                    topLeftOverlay: _payloadMeter,
                     background: _selectedBoard.background,
                     aspectRatio: _selectedBoard.aspectRatio,
                     materialUrlResolver: _resolveMaterialSource,
@@ -2399,6 +2411,7 @@ class _LessonWhiteboardEditorPanelState
                     viewport: _selectedEditorViewport,
                     onViewportChanged: _handleViewportChanged,
                     showViewportControls: false,
+                    topLeftOverlay: _payloadMeter,
                     bottomLeftOverlay: _buildScreenShareButton(context),
                     background: _selectedBoard.background,
                     aspectRatio: _selectedBoard.aspectRatio,

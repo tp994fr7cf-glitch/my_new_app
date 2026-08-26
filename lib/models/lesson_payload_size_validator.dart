@@ -5,6 +5,13 @@ import 'lesson_whiteboard_board_set.dart';
 
 const int maxLessonPayloadUtf8Bytes = 850 * 1024;
 const int lessonPayloadWarningUtf8Bytes = 700 * 1024;
+const int lessonPayloadLimitDisplayKb = maxLessonPayloadUtf8Bytes ~/ 1024;
+
+String formatLessonPayloadUsageFraction(int usedBytes) {
+  final usedKb = usedBytes < 0 ? 0 : usedBytes ~/ 1024;
+  return '$usedKb/$lessonPayloadLimitDisplayKb';
+}
+
 const String lessonPayloadTooLargeMessage =
     '書き物のデータ量が大きすぎるため保存できません。内容を減らしてください。';
 const String lessonBoardLimitMessage = '書き物は20枚まで保存できます。';

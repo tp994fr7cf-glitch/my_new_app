@@ -10,6 +10,7 @@ import '../models/lesson_whiteboard_part_order.dart';
 import '../models/lesson_whiteboard_timing_correction.dart';
 import '../services/lesson_media_playlist_playback.dart';
 import 'lesson_whiteboard_canvas.dart';
+import 'lesson_whiteboard_payload_meter.dart';
 
 /// Keeps the lesson whiteboard in sync with playback using sub-second
 /// position reads, without rebuilding the surrounding lesson page every tick.
@@ -25,6 +26,8 @@ class LessonPlaybackSyncedWhiteboard extends StatefulWidget {
     required this.totalDurationSec,
     this.enableSubPlayback = false,
     this.materialUrlResolver = resolveLessonWhiteboardMaterialUrl,
+    this.showLessonPayloadMeter = false,
+    this.payloadMeterScopeKey,
   }) : assert(bundle != null || boardSet != null);
 
   final LessonWhiteboardLayerBundle? bundle;
@@ -36,6 +39,8 @@ class LessonPlaybackSyncedWhiteboard extends StatefulWidget {
   final int totalDurationSec;
   final bool enableSubPlayback;
   final LessonWhiteboardMaterialUrlResolver materialUrlResolver;
+  final bool showLessonPayloadMeter;
+  final Object? payloadMeterScopeKey;
 
   @override
   State<LessonPlaybackSyncedWhiteboard> createState() =>
@@ -454,6 +459,12 @@ class _LessonPlaybackSyncedWhiteboardState
           background: activeBoard?.background,
           aspectRatio: activeBoard?.aspectRatio ?? lessonWhiteboardAspectRatio,
           materialUrlResolver: widget.materialUrlResolver,
+          topLeftOverlay: widget.showLessonPayloadMeter
+              ? LessonWhiteboardPayloadMeter(
+                  boardSet: _boardSet,
+                  scopeKey: widget.payloadMeterScopeKey,
+                )
+              : null,
         ),
         LessonWhiteboardBackgroundPreloader(
           backgrounds: nearbyBackgrounds,
