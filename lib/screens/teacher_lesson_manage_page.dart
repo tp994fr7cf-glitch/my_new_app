@@ -2902,6 +2902,9 @@ class _LessonEditorCard extends StatelessWidget {
                   playlistPlaybackFactory: playlistPlaybackFactory,
                   publishedBoardSet: editor.publishedBoardSet,
                   draftBoardSet: _currentBoardSet,
+                  lastPersistedBoardSet: editor.draftBoardSet.isNotEmpty
+                      ? editor.draftBoardSet
+                      : editor.publishedBoardSet,
                   publishedTimelineDurationSec:
                       publishedPartDurationSecById[entry.$2.id] ?? 0,
                   onBoardSetDraftSaved: (boardSet) async {
@@ -2917,6 +2920,7 @@ class _LessonEditorCard extends StatelessWidget {
                       scoped: boardSet,
                     );
                   },
+                  onUnsavedEditsDiscarded: onChanged,
                 ),
               ],
               const SizedBox(height: 12),

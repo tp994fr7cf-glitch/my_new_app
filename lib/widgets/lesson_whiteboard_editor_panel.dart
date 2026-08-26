@@ -48,6 +48,8 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
     this.onBoardSetDraftSaved,
     this.onWhiteboardChanged,
     this.onBoardSetChanged,
+    this.onUnsavedEditsDiscarded,
+    this.lastPersistedBoardSet,
     this.publishedTimelineDurationSec = 0,
     this.enabled = true,
     this.scopedSegmentId,
@@ -75,6 +77,8 @@ class LessonWhiteboardEditorPanel extends StatefulWidget {
   final WhiteboardBoardSetDraftSaveCallback? onBoardSetDraftSaved;
   final ValueChanged<LessonWhiteboard>? onWhiteboardChanged;
   final ValueChanged<BoardSet>? onBoardSetChanged;
+  final VoidCallback? onUnsavedEditsDiscarded;
+  final BoardSet? lastPersistedBoardSet;
   final double publishedTimelineDurationSec;
   final bool enabled;
   final String? scopedSegmentId;
@@ -123,6 +127,7 @@ class _LessonWhiteboardEditorPanelState
   double? _lastViewportEventSec;
   LessonWhiteboardViewport? _pendingPausedViewport;
   final WhiteboardStrokeHistory _strokeHistory = WhiteboardStrokeHistory();
+  BoardSet _sessionPersistedBoardSet = const BoardSet();
   final Map<String, LessonWhiteboardViewport> _editorViewports = {};
   bool _followsRecordedScreenShare = true;
   bool _screenShareOverrideEnabled = false;
@@ -256,8 +261,29 @@ class _LessonWhiteboardEditorPanelState
     );
   }
 
-  bool get _hasUnpublishedDraft {
-    return _draftBoardSet.isNotEmpty;
+  BoardSet get _fallbackPersistedBoardSet {
+    if (_draftBoardSet.isNotEmpty) {
+      return _draftBoardSet;
+    }
+    return _publishedBoardSet;
+  }
+
+  BoardSet get _lastPersistedBoardSet => _sessionPersistedBoardSet;
+
+  bool get _hasDiscardableUnsavedEdits {
+    if (!_isScoped || !widget.enabled) {
+      return false;
+    }
+    if (_screenShareOverrideEnabled ||
+        _inProgressStroke != null ||
+        _pendingPausedViewport != null) {
+      return true;
+    }
+    return hasUnsavedScopedLessonEdits(
+      current: _boardSet,
+      lastPersisted: _lastPersistedBoardSet,
+      segmentId: _scopedSegmentId!,
+    );
   }
 
   BoardSet get _publishedBoardSet {
@@ -284,6 +310,10 @@ class _LessonWhiteboardEditorPanelState
         : BoardSet.fromLegacyLayers(
             LessonWhiteboardLayerBundle.fromLegacyWhiteboard(legacy).layers,
           );
+  }
+
+  bool get _hasUnpublishedDraft {
+    return _draftBoardSet.isNotEmpty;
   }
 
   LessonWhiteboardBoard get _selectedBoard =>
@@ -343,6 +373,8 @@ class _LessonWhiteboardEditorPanelState
         ? widget.playbackOwnerId!.trim()
         : 'editor-${identityHashCode(this)}';
     widget.playbackGate?.register(ownerId: _gateOwnerId, pause: _pauseFromGate);
+    _sessionPersistedBoardSet =
+        widget.lastPersistedBoardSet ?? _fallbackPersistedBoardSet;
     _loadInitialStrokes();
     if (lessonHasPlayableMedia(mediaSegments: widget.mediaSegments)) {
       unawaited(_initializeMediaPlayer());
@@ -377,6 +409,10 @@ class _LessonWhiteboardEditorPanelState
               _editSessionKind == WhiteboardEditSessionKind.pendingReset,
         );
       }
+    }
+    if (oldWidget.lastPersistedBoardSet != widget.lastPersistedBoardSet &&
+        widget.lastPersistedBoardSet != null) {
+      _sessionPersistedBoardSet = widget.lastPersistedBoardSet!;
     }
   }
 
@@ -1084,8 +1120,9 @@ class _LessonWhiteboardEditorPanelState
     // Keep the parent working copy current even before Firestore draft save.
     // This lets a newly-added recording session start from every visible
     // stroke without publishing those edits prematurely.
+    _commitSelectedBoard();
     widget.onWhiteboardChanged?.call(_buildCurrentWhiteboard());
-    widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
+    widget.onBoardSetChanged?.call(_boardSet);
   }
 
   void _syncWorkingWhiteboardAfterDraftSave() {
@@ -1125,6 +1162,7 @@ class _LessonWhiteboardEditorPanelState
       }
       if (mounted) {
         _strokeHistory.clear();
+        _sessionPersistedBoardSet = boardSet;
         setState(() {
           _editSessionKind = WhiteboardEditSessionKind.draft;
           _message = '書き物を一時保存しました。';
@@ -1144,6 +1182,43 @@ class _LessonWhiteboardEditorPanelState
         });
       }
     }
+  }
+
+  Future<void> _discardUnsavedEdits() async {
+    if (!_hasDiscardableUnsavedEdits || _isSavingDraft) {
+      return;
+    }
+    final shouldDiscard = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('誤操作を消す'),
+          content: const Text('クラウドには保存しません。最後の一時保存の状態に戻します'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('キャンセル'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('消す'),
+            ),
+          ],
+        );
+      },
+    );
+    if (shouldDiscard != true || !mounted) {
+      return;
+    }
+
+    _clearInProgressStroke();
+    setState(() {
+      _loadBoardSet(_lastPersistedBoardSet);
+      _message = '未保存の書き物を消しました。クラウドには保存していません。';
+    });
+    _syncRecordedScreenShare(_recordingPositionSec);
+    widget.onBoardSetChanged?.call(_buildCurrentBoardSet());
+    widget.onUnsavedEditsDiscarded?.call();
   }
 
   void _setScreenShareOverride(bool enabled) {
@@ -2471,6 +2546,16 @@ class _LessonWhiteboardEditorPanelState
                         icon: const Icon(Icons.save_outlined),
                         label: const Text('書き物を一時保存'),
                       ),
+                      if (_isScoped)
+                        OutlinedButton.icon(
+                          key: const ValueKey('whiteboard-discard-unsaved'),
+                          onPressed:
+                              _isSavingDraft || !_hasDiscardableUnsavedEdits
+                              ? null
+                              : () => unawaited(_discardUnsavedEdits()),
+                          icon: const Icon(Icons.restore_outlined, size: 18),
+                          label: const Text('誤操作を消す'),
+                        ),
                       OutlinedButton.icon(
                         onPressed: _isSavingDraft
                             ? null

@@ -45,6 +45,215 @@ BoardSet mergeScopedLessonBoardSet({
   );
 }
 
+/// True when discarding unsaved edits for [segmentId] would change [current].
+///
+/// Other parts' ink and recorded events are ignored. Board add / rename /
+/// delete / PDF are lesson-wide, so those count even when they were made
+/// from another part editor.
+bool hasUnsavedScopedLessonEdits({
+  required BoardSet current,
+  required BoardSet lastPersisted,
+  required String segmentId,
+}) {
+  final trimmedId = segmentId.trim();
+  if (trimmedId.isEmpty) {
+    return false;
+  }
+  final persisted = lastPersisted.ensureEditable();
+  final working = current.ensureEditable();
+  return !_sameBoardStructure(working, persisted) ||
+      !_sameSegmentStrokes(working, persisted, trimmedId) ||
+      !_sameSegmentSwitchEvents(working, persisted, trimmedId) ||
+      !_sameSegmentViewportEvents(working, persisted, trimmedId);
+}
+
+/// Restores this part's unsaved traces and unsaved board/PDF changes.
+///
+/// Other parts' unsaved ink on boards that still exist after the restore is
+/// kept. Ink on a board that was never saved is dropped with that board.
+BoardSet restoreLastPersistedScopedLessonEdits({
+  required BoardSet working,
+  required BoardSet lastPersisted,
+  required String segmentId,
+}) {
+  return mergeScopedLessonBoardSet(
+    baseline: working,
+    scoped: lastPersisted.ensureEditable(),
+    segmentId: segmentId,
+  );
+}
+
+bool _sameBoardStructure(BoardSet left, BoardSet right) {
+  final leftBoards = left.orderedBoards;
+  final rightBoards = right.orderedBoards;
+  if (leftBoards.length != rightBoards.length) {
+    return false;
+  }
+  for (var index = 0; index < leftBoards.length; index++) {
+    final a = leftBoards[index];
+    final b = rightBoards[index];
+    if (a.id != b.id || a.title != b.title || a.order != b.order) {
+      return false;
+    }
+    final aBackground = a.background == null
+        ? null
+        : Map<String, dynamic>.from(a.background!.toMap());
+    final bBackground = b.background == null
+        ? null
+        : Map<String, dynamic>.from(b.background!.toMap());
+    if (!_sameMap(aBackground, bBackground)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool _sameSegmentStrokes(BoardSet left, BoardSet right, String segmentId) {
+  final boardIds = <String>{
+    for (final board in left.orderedBoards) board.id,
+    for (final board in right.orderedBoards) board.id,
+  };
+  for (final boardId in boardIds) {
+    final leftStrokes = strokesForSegmentLayer(
+      bundle: left.boardById(boardId)?.layerBundle ??
+          const LessonWhiteboardLayerBundle(),
+      segmentId: segmentId,
+    );
+    final rightStrokes = strokesForSegmentLayer(
+      bundle: right.boardById(boardId)?.layerBundle ??
+          const LessonWhiteboardLayerBundle(),
+      segmentId: segmentId,
+    );
+    if (leftStrokes.length != rightStrokes.length) {
+      return false;
+    }
+    for (var index = 0; index < leftStrokes.length; index++) {
+      if (!_sameStroke(leftStrokes[index], rightStrokes[index])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool _sameSegmentSwitchEvents(BoardSet left, BoardSet right, String segmentId) {
+  return _sameEventMaps(
+    _segmentSwitchMaps(left, segmentId),
+    _segmentSwitchMaps(right, segmentId),
+  );
+}
+
+bool _sameSegmentViewportEvents(
+  BoardSet left,
+  BoardSet right,
+  String segmentId,
+) {
+  return _sameEventMaps(
+    _segmentViewportMaps(left, segmentId),
+    _segmentViewportMaps(right, segmentId),
+  );
+}
+
+List<Map<String, dynamic>> _segmentSwitchMaps(
+  BoardSet boardSet,
+  String segmentId,
+) {
+  final events = [
+    for (final event in boardSet.switchEvents)
+      if ((event.segmentId ?? '').trim() == segmentId)
+        <String, dynamic>{
+          'boardId': event.boardId,
+          'globalTimestampSec': event.globalTimestampSec,
+        },
+  ];
+  events.sort(_compareEventMaps);
+  return events;
+}
+
+List<Map<String, dynamic>> _segmentViewportMaps(
+  BoardSet boardSet,
+  String segmentId,
+) {
+  final events = [
+    for (final event in boardSet.viewportEvents)
+      if ((event.segmentId ?? '').trim() == segmentId)
+        <String, dynamic>{
+          'boardId': event.boardId,
+          'globalTimestampSec': event.globalTimestampSec,
+          'interactionId': event.interactionId,
+          'centerX': event.viewport.centerX,
+          'centerY': event.viewport.centerY,
+          'scale': event.viewport.scale,
+        },
+  ];
+  events.sort(_compareEventMaps);
+  return events;
+}
+
+int _compareEventMaps(Map<String, dynamic> left, Map<String, dynamic> right) {
+  final leftTime = left['globalTimestampSec'];
+  final rightTime = right['globalTimestampSec'];
+  if (leftTime is num && rightTime is num) {
+    final timeComparison = leftTime.compareTo(rightTime);
+    if (timeComparison != 0) {
+      return timeComparison;
+    }
+  }
+  final leftBoard = left['boardId']?.toString() ?? '';
+  final rightBoard = right['boardId']?.toString() ?? '';
+  return leftBoard.compareTo(rightBoard);
+}
+
+bool _sameStroke(WhiteboardStroke left, WhiteboardStroke right) {
+  if (left.id != right.id ||
+      left.timestampSec != right.timestampSec ||
+      left.endTimestampSec != right.endTimestampSec ||
+      left.hiddenAtSec != right.hiddenAtSec ||
+      left.colorArgb != right.colorArgb ||
+      left.strokeWidth != right.strokeWidth ||
+      left.points.length != right.points.length) {
+    return false;
+  }
+  for (var index = 0; index < left.points.length; index++) {
+    final a = left.points[index];
+    final b = right.points[index];
+    if (a.x != b.x || a.y != b.y || a.timestampSec != b.timestampSec) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool _sameEventMaps(
+  List<Map<String, dynamic>> left,
+  List<Map<String, dynamic>> right,
+) {
+  if (left.length != right.length) {
+    return false;
+  }
+  for (var index = 0; index < left.length; index++) {
+    if (!_sameMap(left[index], right[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool _sameMap(Map<String, dynamic>? left, Map<String, dynamic>? right) {
+  if (identical(left, right)) {
+    return true;
+  }
+  if (left == null || right == null || left.length != right.length) {
+    return false;
+  }
+  for (final entry in left.entries) {
+    if (!right.containsKey(entry.key) || right[entry.key] != entry.value) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /// Clears only one part's ink and that part's recorded screen-share events.
 BoardSet clearLessonSegmentWriting({
   required BoardSet boardSet,

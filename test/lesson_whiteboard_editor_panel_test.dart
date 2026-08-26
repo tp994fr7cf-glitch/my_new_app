@@ -2298,6 +2298,403 @@ void main() {
       );
     },
   );
+
+  testWidgets('scoped discard button is disabled until there are unsaved edits', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: const [
+                LessonMediaSegment(
+                  id: 'part-2',
+                  order: 1,
+                  mediaType: 'audio',
+                  url: 'https://example.com/part-2.mp3',
+                  durationSec: 10,
+                ),
+              ],
+              durationLabel: '10秒',
+              scopedSegmentId: 'part-2',
+              orderedSegmentIds: const ['part-1', 'part-2'],
+              draftBoardSet: _twoPartScopedDraft(),
+              lastPersistedBoardSet: _twoPartScopedDraft(),
+              onBoardSetDraftSaved: (_) async {},
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(
+                durationSec: 10,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('誤操作を消す'), findsOneWidget);
+    expect(
+      tester
+          .widget<OutlinedButton>(
+            find.byKey(const ValueKey('whiteboard-discard-unsaved')),
+          )
+          .onPressed,
+      isNull,
+    );
+
+    final slider = tester.widget<Slider>(find.byType(Slider));
+    _completeSliderSeek(slider, 5);
+    await tester.pumpAndSettle();
+
+    final canvas = tester.widget<LessonWhiteboardCanvas>(
+      find.byType(LessonWhiteboardCanvas),
+    );
+    expect(canvas.drawingEnabled, isTrue);
+    _drawEditorStroke(canvas);
+    await tester.pumpAndSettle();
+
+    expect(
+      tester
+          .widget<OutlinedButton>(
+            find.byKey(const ValueKey('whiteboard-discard-unsaved')),
+          )
+          .onPressed,
+      isNotNull,
+    );
+  });
+
+  testWidgets(
+    'scoped discard restores this part without saving and keeps other parts',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1000, 1400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      BoardSet? working;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: LessonWhiteboardEditorPanel(
+                courseId: 'course-1',
+                lessonNumber: 1,
+                mediaSegments: const [
+                  LessonMediaSegment(
+                    id: 'part-2',
+                    order: 1,
+                    mediaType: 'audio',
+                    url: 'https://example.com/part-2.mp3',
+                    durationSec: 10,
+                  ),
+                ],
+                durationLabel: '10秒',
+                scopedSegmentId: 'part-2',
+                orderedSegmentIds: const ['part-1', 'part-2'],
+                draftBoardSet: _twoPartScopedDraft(),
+                lastPersistedBoardSet: _twoPartScopedDraft(),
+                onBoardSetDraftSaved: (_) async {
+                  fail('discard must not save to the cloud');
+                },
+                onBoardSetChanged: (boardSet) => working = boardSet,
+                playlistPlaybackFactory: fakePlaylistPlaybackFactory(
+                  durationSec: 10,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final slider = tester.widget<Slider>(find.byType(Slider));
+      _completeSliderSeek(slider, 5);
+      await tester.pumpAndSettle();
+
+      var canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      expect(canvas.strokes.map((stroke) => stroke.id), ['p1', 'p2']);
+      _drawEditorStroke(canvas);
+      await tester.pump();
+      canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+      expect(canvas.strokes, hasLength(3));
+
+      await tester.ensureVisible(find.text('誤操作を消す'));
+      await tester.tap(find.widgetWithText(OutlinedButton, '誤操作を消す'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('クラウドには保存しません'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, '消す'));
+      await tester.pumpAndSettle();
+
+      canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+      expect(canvas.strokes.map((stroke) => stroke.id), ['p1', 'p2']);
+      expect(working, isNotNull);
+      expect(
+        strokesForSegmentLayer(
+          bundle: working!.defaultBoard!.layerBundle,
+          segmentId: 'part-1',
+        ).single.id,
+        'p1',
+      );
+      expect(
+        strokesForSegmentLayer(
+          bundle: working!.defaultBoard!.layerBundle,
+          segmentId: 'part-2',
+        ).single.id,
+        'p2',
+      );
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.byKey(const ValueKey('whiteboard-redo-stroke')),
+            )
+            .onPressed,
+        isNull,
+      );
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.byKey(const ValueKey('whiteboard-discard-unsaved')),
+            )
+            .onPressed,
+        isNull,
+      );
+    },
+  );
+
+  testWidgets(
+    'scoped discard after save only drops strokes written since that save',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1000, 1400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      BoardSet? saved;
+      BoardSet? working;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: LessonWhiteboardEditorPanel(
+                courseId: 'course-1',
+                lessonNumber: 1,
+                mediaSegments: const [
+                  LessonMediaSegment(
+                    id: 'part-2',
+                    order: 1,
+                    mediaType: 'audio',
+                    url: 'https://example.com/part-2.mp3',
+                    durationSec: 10,
+                  ),
+                ],
+                durationLabel: '10秒',
+                scopedSegmentId: 'part-2',
+                orderedSegmentIds: const ['part-1', 'part-2'],
+                draftBoardSet: _twoPartScopedDraft(),
+                lastPersistedBoardSet: _twoPartScopedDraft(),
+                onBoardSetDraftSaved: (boardSet) async {
+                  saved = boardSet;
+                },
+                onBoardSetChanged: (boardSet) => working = boardSet,
+                playlistPlaybackFactory: fakePlaylistPlaybackFactory(
+                  durationSec: 10,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      var canvas = tester.widget<LessonWhiteboardCanvas>(
+        find.byType(LessonWhiteboardCanvas),
+      );
+      _drawEditorStroke(canvas);
+      await tester.pump();
+
+      await tester.ensureVisible(find.text('書き物を一時保存'));
+      await tester.tap(find.widgetWithText(OutlinedButton, '書き物を一時保存'));
+      await tester.pumpAndSettle();
+      expect(saved, isNotNull);
+      expect(
+        strokesForSegmentLayer(
+          bundle: saved!.defaultBoard!.layerBundle,
+          segmentId: 'part-2',
+        ),
+        hasLength(2),
+      );
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.byKey(const ValueKey('whiteboard-discard-unsaved')),
+            )
+            .onPressed,
+        isNull,
+      );
+
+      canvas = tester.widget(find.byType(LessonWhiteboardCanvas));
+      _drawEditorStroke(canvas, x0: 0.5, x1: 0.8);
+      await tester.pump();
+
+      await tester.tap(find.widgetWithText(OutlinedButton, '誤操作を消す'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, '消す'));
+      await tester.pumpAndSettle();
+
+      expect(
+        strokesForSegmentLayer(
+          bundle: working!.defaultBoard!.layerBundle,
+          segmentId: 'part-2',
+        ),
+        hasLength(2),
+      );
+    },
+  );
+
+  testWidgets('scoped discard restores an unsaved extra board', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    BoardSet? working;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: const [
+                LessonMediaSegment(
+                  id: 'part-2',
+                  order: 1,
+                  mediaType: 'audio',
+                  url: 'https://example.com/part-2.mp3',
+                  durationSec: 10,
+                ),
+              ],
+              durationLabel: '10秒',
+              scopedSegmentId: 'part-2',
+              orderedSegmentIds: const ['part-1', 'part-2'],
+              draftBoardSet: _twoPartScopedDraft(),
+              lastPersistedBoardSet: _twoPartScopedDraft(),
+              onBoardSetDraftSaved: (_) async {},
+              onBoardSetChanged: (boardSet) => working = boardSet,
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(
+                durationSec: 10,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('whiteboard-add-board')));
+    await tester.pumpAndSettle();
+    expect(find.text('2/20'), findsOneWidget);
+
+    await tester.ensureVisible(find.text('誤操作を消す'));
+    await tester.tap(find.widgetWithText(OutlinedButton, '誤操作を消す'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '消す'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('1/20'), findsOneWidget);
+    expect(working!.orderedBoards, hasLength(1));
+  });
+
+  testWidgets('scoped discard can drop a stroke drawn while playing', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    BoardSet? working;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: const [
+                LessonMediaSegment(
+                  id: 'part-2',
+                  order: 1,
+                  mediaType: 'audio',
+                  url: 'https://example.com/part-2.mp3',
+                  durationSec: 10,
+                ),
+              ],
+              durationLabel: '10秒',
+              scopedSegmentId: 'part-2',
+              orderedSegmentIds: const ['part-1', 'part-2'],
+              draftBoardSet: _twoPartScopedDraft(),
+              lastPersistedBoardSet: _twoPartScopedDraft(),
+              onBoardSetDraftSaved: (_) async {},
+              onBoardSetChanged: (boardSet) => working = boardSet,
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(
+                durationSec: 10,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, 'スタート'));
+    await tester.pumpAndSettle();
+
+    var canvas = tester.widget<LessonWhiteboardCanvas>(
+      find.byType(LessonWhiteboardCanvas),
+    );
+    _drawEditorStroke(canvas);
+    await tester.pump();
+
+    await tester.ensureVisible(find.text('誤操作を消す'));
+    await tester.tap(find.widgetWithText(OutlinedButton, '誤操作を消す'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '消す'));
+    await tester.pumpAndSettle();
+
+    expect(
+      strokesForSegmentLayer(
+        bundle: working!.defaultBoard!.layerBundle,
+        segmentId: 'part-2',
+      ).single.id,
+      'p2',
+    );
+  });
+
+  testWidgets('unscoped editor does not show discard unsaved', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: LessonWhiteboardEditorPanel(
+              courseId: 'course-1',
+              lessonNumber: 1,
+              mediaSegments: testMediaSegments(),
+              durationLabel: '1分30秒',
+              draftWhiteboard: null,
+              onDraftSaved: (_) async {},
+              playlistPlaybackFactory: fakePlaylistPlaybackFactory(),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('誤操作を消す'), findsNothing);
+  });
 }
 
 BoardSet _twoPartScopedDraft({String boardTitle = ''}) {

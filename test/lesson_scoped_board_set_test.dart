@@ -678,4 +678,119 @@ void main() {
       );
     },
   );
+
+  test('unsaved detection ignores other parts and notices this part', () {
+    final persisted = _twoPartBoardSet();
+    final otherPartOnly = _twoPartBoardSet(
+      part1Strokes: [_stroke('p1-new', 2)],
+    );
+    final thisPartChanged = _twoPartBoardSet(
+      part2Strokes: [_stroke('p2', 1), _stroke('p2-new', 2)],
+    );
+
+    expect(
+      hasUnsavedScopedLessonEdits(
+        current: otherPartOnly,
+        lastPersisted: persisted,
+        segmentId: 'part-2',
+      ),
+      isFalse,
+    );
+    expect(
+      hasUnsavedScopedLessonEdits(
+        current: thisPartChanged,
+        lastPersisted: persisted,
+        segmentId: 'part-2',
+      ),
+      isTrue,
+    );
+  });
+
+  test('unsaved detection notices board add and this-part switch events', () {
+    final persisted = _twoPartBoardSet();
+    final withBoard = BoardSet(
+      boards: [
+        ...persisted.boards,
+        const LessonWhiteboardBoard(id: 'second', order: 1, title: '二枚目'),
+      ],
+    );
+    final withSwitch = persisted.copyWith(
+      switchEvents: const [
+        LessonWhiteboardBoardSwitchEvent(
+          boardId: LessonWhiteboardBoard.defaultBoardId,
+          globalTimestampSec: 2,
+          sequence: 0,
+          segmentId: 'part-2',
+        ),
+      ],
+    );
+
+    expect(
+      hasUnsavedScopedLessonEdits(
+        current: withBoard,
+        lastPersisted: persisted,
+        segmentId: 'part-2',
+      ),
+      isTrue,
+    );
+    expect(
+      hasUnsavedScopedLessonEdits(
+        current: withSwitch,
+        lastPersisted: persisted,
+        segmentId: 'part-2',
+      ),
+      isTrue,
+    );
+  });
+
+  test('restore keeps other-part unsaved ink and drops this-part unsaved ink', () {
+    final persisted = _twoPartBoardSet();
+    final working = BoardSet(
+      boards: [
+        LessonWhiteboardBoard(
+          id: LessonWhiteboardBoard.defaultBoardId,
+          order: 0,
+          layerBundle: LessonWhiteboardLayerBundle(
+            layers: [
+              _segmentLayer(
+                segmentId: 'part-1',
+                order: 0,
+                strokes: [_stroke('p1-new', 2)],
+              ),
+              _segmentLayer(
+                segmentId: 'part-2',
+                order: 1,
+                strokes: [_stroke('p2', 1), _stroke('p2-new', 2)],
+              ),
+            ],
+          ),
+        ),
+        const LessonWhiteboardBoard(id: 'second', order: 1, title: '二枚目'),
+      ],
+    );
+
+    final restored = restoreLastPersistedScopedLessonEdits(
+      working: working,
+      lastPersisted: persisted,
+      segmentId: 'part-2',
+    );
+
+    expect(restored.orderedBoards.map((board) => board.id), [
+      LessonWhiteboardBoard.defaultBoardId,
+    ]);
+    expect(
+      strokesForSegmentLayer(
+        bundle: restored.defaultBoard!.layerBundle,
+        segmentId: 'part-1',
+      ).single.id,
+      'p1-new',
+    );
+    expect(
+      strokesForSegmentLayer(
+        bundle: restored.defaultBoard!.layerBundle,
+        segmentId: 'part-2',
+      ).single.id,
+      'p2',
+    );
+  });
 }
