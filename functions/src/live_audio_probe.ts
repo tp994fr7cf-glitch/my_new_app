@@ -6,7 +6,7 @@ export const liveAudioProbeMaxDurationMs =
   liveAudioProbeMaxDurationSec * 1000;
 export const liveAudioArchiveTokenLifetimeSec =
   liveAudioProbeMaxDurationSec;
-export const maxLiveAudioProbeStrokes = 2000;
+export const maxLiveAudioProbeStrokes = 4000;
 export const maxLiveAudioProbePointsPerStroke = 600;
 export const maxLiveAudioBoardSetBytes = 750 * 1024;
 export const maxLiveAudioBoards = 20;
@@ -488,7 +488,7 @@ export function isValidBoardSet(
         }
         totalStrokes += 1;
         totalPoints += stroke.points.length;
-        if (totalStrokes > 2000 || totalPoints > 100000) {
+        if (totalStrokes > maxLiveAudioProbeStrokes || totalPoints > 100000) {
           return false;
         }
       }

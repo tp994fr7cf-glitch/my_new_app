@@ -20,6 +20,7 @@ import {
   remainingLiveAudioProbeDurationSec,
   rtcUidForFirebaseUser,
   validateTimelineBoardReferences,
+  maxLiveAudioProbeStrokes,
 } from "./live_audio_probe";
 
 test("assigns stable non-zero Agora IDs", () => {
@@ -191,6 +192,39 @@ test("validates bounded whiteboard strokes", () => {
     }),
     false,
   );
+});
+
+function boardSetWithStrokeCount(count: number) {
+  return {
+    boards: [
+      {
+        id: "default",
+        order: 0,
+        layers: [
+          {
+            id: "primary",
+            order: 0,
+            anchorType: "global",
+            strokes: Array.from({length: count}, (_, index) => ({
+              id: `s${index}`,
+              timestampSec: 0,
+              colorArgb: 0xff000000,
+              strokeWidth: 3,
+              points: [{x: 0.1, y: 0.2, timestampSec: 0}],
+            })),
+          },
+        ],
+      },
+    ],
+    switchEvents: [],
+    viewportEvents: [],
+  };
+}
+
+test("accepts 4000 live strokes and rejects more", () => {
+  assert.equal(maxLiveAudioProbeStrokes, 4000);
+  assert.equal(isValidBoardSet(boardSetWithStrokeCount(4000)), true);
+  assert.equal(isValidBoardSet(boardSetWithStrokeCount(4001)), false);
 });
 
 test("validates BoardSet snapshots and bounded timeline chunks", () => {
