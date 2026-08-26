@@ -3113,10 +3113,6 @@ class _SegmentEditorTile extends StatelessWidget {
             ],
             if (segment.hasUrl) ...[
               const SizedBox(height: 8),
-              Text(
-                'URL: ${segment.urlController.text}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
               if (segment.durationSec > 0) Text('長さ: ${segment.durationSec}秒'),
               const SizedBox(height: 8),
               _WhiteboardTimingCorrectionEditor(
@@ -3184,11 +3180,12 @@ class _WhiteboardTimingCorrectionEditor extends StatelessWidget {
     required String label,
     required int valueMs,
     required ValueChanged<int> onChanged,
+    bool showLabel = true,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('$label: ${_description(valueMs)}'),
+        if (showLabel) Text('$label: ${_description(valueMs)}'),
         Slider(
           key: key,
           value: (valueMs / 1000).clamp(-5.0, 5.0),
@@ -3217,21 +3214,13 @@ class _WhiteboardTimingCorrectionEditor extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '音声・動画に対する板書タイミング補正',
+              '音声補正',
               style: Theme.of(context).textTheme.titleSmall,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              '右へ動かすと板書を早め、左へ動かすと遅らせます。',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            Text(
-              '結果は「レッスン情報を保存」後、先生プレビューで確認できます。',
-              style: Theme.of(context).textTheme.bodySmall,
             ),
             _slider(
               key: ValueKey('segment-${segment.id}-uniform-correction'),
               label: 'パート全体を同じ秒数で補正',
+              showLabel: false,
               valueMs: uniformValueMs,
               onChanged: (milliseconds) {
                 segment.whiteboardStartCorrectionMs = milliseconds;

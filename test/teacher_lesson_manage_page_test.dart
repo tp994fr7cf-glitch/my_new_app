@@ -1253,6 +1253,70 @@ void main() {
     ]);
   });
 
+  testWidgets('アップロード済みパートにメディアURLを表示しない', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 1600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonManagePage(
+          playlistPlaybackFactory: _fakePlaylistFactory,
+          course: _courseWithLesson(
+            const CourseLesson(
+              title: 'レッスン1',
+              duration: '30秒',
+              mediaSegments: [_lockedSegment],
+              publishedSegmentIds: ['locked'],
+            ),
+          ),
+          onSaveOverride: (_) async {},
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('パート1'), findsOneWidget);
+    expect(find.text('長さ: 30秒'), findsOneWidget);
+    expect(find.textContaining('URL:'), findsNothing);
+    expect(find.textContaining(_lockedSegment.url), findsNothing);
+  });
+
+  testWidgets('補正枠の上部は音声補正だけを表示する', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(800, 1600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TeacherLessonManagePage(
+          playlistPlaybackFactory: _fakePlaylistFactory,
+          course: _courseWithLesson(
+            const CourseLesson(
+              title: 'レッスン1',
+              duration: '30秒',
+              mediaSegments: [_lockedSegment],
+              publishedSegmentIds: ['locked'],
+            ),
+          ),
+          onSaveOverride: (_) async {},
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('音声補正'), findsOneWidget);
+    expect(find.text('音声・動画に対する板書タイミング補正'), findsNothing);
+    expect(find.textContaining('右へ動かすと'), findsNothing);
+    expect(find.textContaining('先生プレビューで確認できます'), findsNothing);
+    expect(find.textContaining('パート全体を同じ秒数で補正'), findsNothing);
+    expect(find.text('開始・終了を別々に補正（2点補正）'), findsOneWidget);
+    expect(find.text('補正を0に戻す'), findsOneWidget);
+
+    await tester.tap(find.text('開始・終了を別々に補正（2点補正）'));
+    await tester.pumpAndSettle();
+    expect(find.text('開始時: 補正なし'), findsOneWidget);
+    expect(find.text('終了時: 補正なし'), findsOneWidget);
+  });
+
   testWidgets('URLのあるパートに板書エディタを出し全体プレビューは閲覧のみ', (tester) async {
     await tester.binding.setSurfaceSize(const Size(800, 2400));
     addTearDown(() => tester.binding.setSurfaceSize(null));
